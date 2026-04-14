@@ -1,0 +1,33 @@
+[package]
+name = "qrcode2txt"
+version = "0.1.0"
+edition = "2021"
+description = "Decode one or more QR codes from files, stdin, or the clipboard"
+license = "MIT"
+
+[lib]
+name = "qrcode2txt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qrcode2txt"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+arboard = "3"
+clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = true, features = ["png", "jpeg", "webp"] }
+rayon = "1"
+rqrr = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"
+
+[dev-dependencies]
+assert_cmd = "2"
+image = { version = "0.25", default-features = true, features = ["png", "jpeg", "webp"] }
+predicates = "3"
+qrcode = "0.14"
+tempfile = "3"

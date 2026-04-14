@@ -1,0 +1,64 @@
+# Default configuration for LLM/VLM Analysis Tool
+
+# Model configuration
+model:
+  device: "auto"  # Options: "auto", "cuda", "cpu"
+  torch_dtype: "auto"  # Options: "auto", "float32", "float16", "bfloat16"
+  trust_remote_code: false
+
+# Analysis configuration
+analysis:
+  # What to extract
+  extract_logits: true
+  extract_attention: false
+  analyze_layers: true
+  analyze_attention: true
+  analyze_confidence_progression: true
+
+  # Analysis parameters
+  top_k: 10  # Number of top tokens to analyze
+  confidence_method: "all"  # Options: "max_prob", "entropy", "top_k", "margin", "temperature_scaled", "variance", "all"
+
+  # Attention analysis parameters
+  attention_head_limit: 4  # Maximum number of attention heads to save plots for
+
+# Layer configuration
+layers:
+  indices: [0, -1]  # Which layers to analyze (supports negative indexing)
+  extract_all: false  # If true, extract all layers (overrides indices)
+
+# Output configuration
+output:
+  output_dir: "./results"
+  format: "json"  # Options: "json", "yaml", "pickle"
+  save_attention_plots: false
+  save_layer_statistics: true
+  create_summary_report: true
+  export_for_analysis: false
+
+# Generation configuration (for generative models)
+generation:
+  max_new_tokens: 50
+  temperature: 1.0
+  do_sample: false
+  top_k: 50
+  top_p: 1.0
+  repetition_penalty: 1.0
+
+# Input processing
+input:
+  max_length: 512
+  truncation: true
+  padding: true
+
+# Visualization settings
+visualization:
+  plot_format: "png"  # Options: "png", "pdf", "svg"
+  dpi: 300
+  figsize: [10, 8]
+  colormap: "Blues"
+
+# Logging configuration
+logging:
+  level: "INFO"  # Options: "DEBUG", "INFO", "WARNING", "ERROR"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
