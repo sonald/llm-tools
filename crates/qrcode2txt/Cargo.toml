@@ -30,4 +30,5 @@ assert_cmd = "2"
 image = { version = "0.25", default-features = true, features = ["png", "jpeg", "webp"] }
 predicates = "3"
 qrcode = "0.14"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 tempfile = "3"
