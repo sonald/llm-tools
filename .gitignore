@@ -13,4 +13,4 @@ wheels/
 /crates/qrcode2txt/target/
 
 # SwiftPM build output
-/.build/
+.build/
