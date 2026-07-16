@@ -11,3 +11,6 @@ wheels/
 
 # Rust build output
 /crates/qrcode2txt/target/
+
+# SwiftPM build output
+/.build/
