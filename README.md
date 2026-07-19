@@ -12,7 +12,7 @@ A collection of small tools for inspecting language models and handling data aro
 
 ## ModelFiles
 
-`ModelFiles` is a native SwiftUI macOS app for inspecting files published with a model without loading the model itself. Enter a model ID such as `Qwen/Qwen3-4B`; the app can load from ModelScope, Hugging Face, or automatically use the first available source.
+`ModelFiles` is a native SwiftUI macOS app for inspecting files published with a model without loading the model itself. Enter a model ID such as `Qwen/Qwen3-4B`, or paste its Hugging Face/ModelScope repository URL; the app can load from either source or automatically use the first available one.
 
 It provides purpose-built views for:
 

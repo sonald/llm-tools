@@ -10,26 +10,6 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 7) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("筛选文件", text: $store.filter)
-                    .textFieldStyle(.plain)
-                if !store.filter.isEmpty {
-                    Button {
-                        store.filter = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.horizontal, 9)
-            .frame(height: 30)
-            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
-            .padding(12)
-
             if store.isLoadingRepository {
                 Spacer()
                 ProgressView("读取文件清单…")
@@ -44,6 +24,16 @@ struct SidebarView: View {
                     message: "输入模型 ID 后打开仓库。"
                 )
                 Spacer()
+            } else if !store.filter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      !store.hasMatchingFiles {
+                EmptyStateView(
+                    title: "没有匹配文件",
+                    systemImage: "doc.text.magnifyingglass",
+                    message: "换个关键词，或清除当前筛选。",
+                    actionTitle: "清除筛选"
+                ) {
+                    store.filter = ""
+                }
             } else {
                 List(selection: Binding(
                     get: { store.selectedPath },
@@ -92,6 +82,7 @@ struct SidebarView: View {
             }
         }
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.42))
+        .searchable(text: $store.filter, placement: .sidebar, prompt: "筛选文件")
     }
 }
 

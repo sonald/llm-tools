@@ -3,8 +3,10 @@ import Foundation
 
 @MainActor
 final class ModelFilesStore: ObservableObject {
-    @Published var modelID = "Qwen/Qwen3-4B"
-    @Published var sourceSelection: SourceSelection = .automatic
+    @Published var modelID = UserDefaults.standard.string(forKey: "ModelFiles.lastModelID") ?? "Qwen/Qwen3-4B"
+    @Published var sourceSelection = SourceSelection(
+        rawValue: UserDefaults.standard.string(forKey: "ModelFiles.sourceSelection") ?? ""
+    ) ?? .automatic
     @Published private(set) var snapshot: RepositorySnapshot?
     @Published var selectedPath: String?
     @Published var filter = ""
@@ -38,6 +40,10 @@ final class ModelFilesStore: ObservableObject {
         return "已选择 " + components.joined(separator: " · ")
     }
 
+    var hasMatchingFiles: Bool {
+        FileCategory.allCases.contains { !files(in: $0).isEmpty }
+    }
+
     func files(in category: FileCategory) -> [RemoteFile] {
         guard let snapshot else { return [] }
         let term = filter.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -53,6 +59,7 @@ final class ModelFilesStore: ObservableObject {
         errorMessage = nil
         snapshot = nil
         selectedPath = nil
+        loadingPath = nil
         contents.removeAll()
 
         let requestedID = modelID
@@ -62,16 +69,20 @@ final class ModelFilesStore: ObservableObject {
             do {
                 let snapshot = try await service.loadRepository(modelID: requestedID, selection: requestedSource)
                 try Task.checkCancellation()
+                self.modelID = snapshot.modelID
                 self.snapshot = snapshot
                 self.isLoadingRepository = false
+                UserDefaults.standard.set(snapshot.modelID, forKey: "ModelFiles.lastModelID")
+                UserDefaults.standard.set(requestedSource.rawValue, forKey: "ModelFiles.sourceSelection")
                 let preferred = snapshot.files.first { $0.path == "config.json" && !$0.isBlocked }
                     ?? snapshot.files.first { !$0.isBlocked }
                 self.selectedPath = preferred?.path
                 self.detailMode = .summary
                 self.loadSelectedFile()
             } catch is CancellationError {
-                self.isLoadingRepository = false
+                return
             } catch {
+                guard !Task.isCancelled else { return }
                 self.isLoadingRepository = false
                 self.errorMessage = error.localizedDescription
             }
@@ -97,6 +108,7 @@ final class ModelFilesStore: ObservableObject {
             return
         }
 
+        errorMessage = nil
         loadingPath = file.path
         fileTask = Task { [weak self] in
             guard let self else { return }
@@ -106,8 +118,9 @@ final class ModelFilesStore: ObservableObject {
                 self.contents[file.path] = data
                 self.loadingPath = nil
             } catch is CancellationError {
-                self.loadingPath = nil
+                return
             } catch {
+                guard !Task.isCancelled else { return }
                 self.loadingPath = nil
                 self.errorMessage = error.localizedDescription
             }

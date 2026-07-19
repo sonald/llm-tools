@@ -46,10 +46,7 @@ struct RepositoryService: Sendable {
     }
 
     func loadRepository(modelID: String, selection: SourceSelection) async throws -> RepositorySnapshot {
-        let normalized = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard normalized.split(separator: "/").count >= 2 else {
-            throw ServiceError.invalidModelID
-        }
+        let normalized = try Self.normalizedModelID(from: modelID)
 
         switch selection {
         case .modelScope:
@@ -80,6 +77,35 @@ struct RepositoryService: Sendable {
                 throw ServiceError.noSourceAvailable(failures)
             }
         }
+    }
+
+    static func normalizedModelID(from input: String) throws -> String {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: trimmed),
+           let scheme = url.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            guard let host = url.host?.lowercased() else { throw ServiceError.invalidModelID }
+            var components = url.pathComponents.filter { $0 != "/" }
+            switch host {
+            case "huggingface.co", "www.huggingface.co":
+                break
+            case "modelscope.cn", "www.modelscope.cn":
+                guard components.first?.lowercased() == "models" else {
+                    throw ServiceError.invalidModelID
+                }
+                components.removeFirst()
+            default:
+                throw ServiceError.invalidModelID
+            }
+            guard components.count >= 2 else { throw ServiceError.invalidModelID }
+            return components.prefix(2).joined(separator: "/")
+        }
+
+        let components = trimmed.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count == 2, components.allSatisfy({ !$0.isEmpty }) else {
+            throw ServiceError.invalidModelID
+        }
+        return trimmed
     }
 
     func loadFile(_ file: RemoteFile, from snapshot: RepositorySnapshot) async throws -> Data {

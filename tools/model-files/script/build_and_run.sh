@@ -12,6 +12,10 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 MODE="${1:-run}"
 
+stop_running() {
+  pkill -x "$APP_NAME" 2>/dev/null || true
+}
+
 build_and_stage() {
   cd "$ROOT_DIR"
   swift build -c debug
@@ -59,10 +63,12 @@ PLIST
 
 case "$MODE" in
   run)
+    stop_running
     build_and_stage
     /usr/bin/open -n "$APP_DIR"
     ;;
   debug)
+    stop_running
     build_and_stage
     exec /usr/bin/lldb "$MACOS_DIR/$APP_NAME"
     ;;

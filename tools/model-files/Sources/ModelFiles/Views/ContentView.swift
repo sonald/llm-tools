@@ -34,10 +34,11 @@ private struct AppToolbarView: View {
                 .foregroundStyle(.primary)
                 .fixedSize()
 
-            TextField("组织/模型", text: $store.modelID)
+            TextField("组织/模型或仓库 URL", text: $store.modelID)
                 .textFieldStyle(.roundedBorder)
                 .frame(minWidth: 245, idealWidth: 330, maxWidth: 390)
                 .onSubmit { store.openModel() }
+                .help("可粘贴 Hugging Face 或 ModelScope 仓库 URL")
 
             Picker("来源", selection: $store.sourceSelection) {
                 ForEach(SourceSelection.allCases) { source in

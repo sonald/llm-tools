@@ -71,6 +71,28 @@ final class FileClassifierTests: XCTestCase {
         XCTAssertEqual(result.overview?.fields.first { $0.name == "model" }?.detail, "对象 · 3 字段 · type: BPE")
     }
 
+    func testNormalizesModelIDsAndRepositoryURLs() throws {
+        XCTAssertEqual(try RepositoryService.normalizedModelID(from: " Qwen/Qwen3-4B "), "Qwen/Qwen3-4B")
+        XCTAssertEqual(
+            try RepositoryService.normalizedModelID(
+                from: "https://huggingface.co/Qwen/Qwen3-4B/blob/main/config.json"
+            ),
+            "Qwen/Qwen3-4B"
+        )
+        XCTAssertEqual(
+            try RepositoryService.normalizedModelID(
+                from: "https://modelscope.cn/models/Qwen/Qwen3-4B/files"
+            ),
+            "Qwen/Qwen3-4B"
+        )
+    }
+
+    func testRejectsUnrecognizedRepositoryURLs() {
+        XCTAssertThrowsError(
+            try RepositoryService.normalizedModelID(from: "https://example.com/Qwen/Qwen3-4B")
+        )
+    }
+
     private func remoteWeight(_ path: String) -> RemoteFile {
         RemoteFile(
             path: path,

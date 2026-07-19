@@ -16,8 +16,11 @@ struct DetailView: View {
                 EmptyStateView(
                     title: "无法打开模型",
                     systemImage: "exclamationmark.triangle",
-                    message: message
-                )
+                    message: message,
+                    actionTitle: "重试"
+                ) {
+                    store.openModel()
+                }
             } else {
                 EmptyStateView(
                     title: "选择一个文件",
@@ -63,8 +66,11 @@ struct DetailView: View {
             EmptyStateView(
                 title: "无法读取文件",
                 systemImage: "wifi.exclamationmark",
-                message: message
-            )
+                message: message,
+                actionTitle: "重试"
+            ) {
+                store.loadSelectedFile()
+            }
         } else {
             EmptyStateView(title: "没有内容", systemImage: "doc", message: "源站未返回可显示的内容。")
         }
