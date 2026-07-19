@@ -220,6 +220,8 @@ private struct FileReaderView: View {
             GenerationSummaryView(object: jsonDictionary)
         } else if name == "tokenizer_config.json" {
             TokenizerSummaryView(object: jsonDictionary)
+        } else if file.category == .templates {
+            TemplatePlaygroundView(template: text, tokenizerConfig: [:])
         } else if name == "vocab.json" {
             VocabView(object: jsonDictionary)
         } else if name == "tokenizer.json" {

@@ -6,7 +6,7 @@ final class TemplateRendererTests: XCTestCase {
         let request = TemplateRenderRequest(
             template: """
             {%- for message in messages %}{{ message.role }}={{ message.content }};{%- endfor %}
-            {{- tools | tojson }};thinking={{ enable_thinking }}
+            {{- tools | tojson(sort_keys=true, separators=(",", ":")) }};thinking={{ enable_thinking }}
             """,
             messages: [TemplateMessage(role: "user", content: "hello")],
             includeTools: true,

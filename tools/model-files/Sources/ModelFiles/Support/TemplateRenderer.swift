@@ -101,14 +101,32 @@ enum TemplateRenderer {
     static func render(_ request: TemplateRenderRequest) -> TemplateRenderOutcome {
         do {
             let template = try Template(request.template)
+            let environment = Environment()
+            environment["tojson"] = .function(compatibleToJSON)
             return TemplateRenderOutcome(
-                output: try template.render(context(for: request)),
+                output: try template.render(context(for: request), environment: environment),
                 error: nil
             )
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
             return TemplateRenderOutcome(output: "", error: message)
         }
+    }
+
+    private static let compatibleToJSON: @Sendable ([Value], [String: Value], Environment) throws -> Value = {
+        args, kwargs, environment in
+        var kwargs = kwargs
+        if let sortKeys = kwargs.removeValue(forKey: "sort_keys") {
+            guard case .boolean(true) = sortKeys else {
+                throw RenderError("tojson 目前只支持 sort_keys=true。")
+            }
+        }
+        if let separators = kwargs.removeValue(forKey: "separators") {
+            guard case .array([.string(","), .string(":")]) = separators else {
+                throw RenderError("tojson 目前只支持 separators=(\",\", \":\")。")
+            }
+        }
+        return try Filters.tojson(args, kwargs: kwargs, env: environment)
     }
 
     static func context(for request: TemplateRenderRequest) throws -> [String: Value] {
