@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -20,10 +21,12 @@ struct ContentView: View {
                     .font(.headline)
                     .fixedSize()
 
-                TextField("组织/模型或仓库 URL", text: $store.modelID)
-                    .textFieldStyle(.roundedBorder)
+                ModelHistoryField(
+                    text: $store.modelID,
+                    history: store.modelHistory,
+                    onSubmit: store.openModel
+                )
                     .frame(width: 320)
-                    .onSubmit { store.openModel() }
                     .help("可粘贴 Hugging Face 或 ModelScope 仓库 URL")
 
                 Picker("来源", selection: $store.sourceSelection) {
@@ -64,6 +67,73 @@ struct ContentView: View {
             if store.snapshot == nil && !store.isLoadingRepository {
                 store.openModel()
             }
+        }
+    }
+}
+
+private struct ModelHistoryField: NSViewRepresentable {
+    @Binding var text: String
+    let history: [String]
+    let onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, onSubmit: onSubmit)
+    }
+
+    func makeNSView(context: Context) -> NSComboBox {
+        let field = NSComboBox()
+        field.placeholderString = "组织/模型或仓库 URL"
+        field.completes = true
+        field.numberOfVisibleItems = 10
+        field.stringValue = text
+        field.addItems(withObjectValues: history)
+        field.delegate = context.coordinator
+        return field
+    }
+
+    func updateNSView(_ field: NSComboBox, context: Context) {
+        context.coordinator.text = $text
+        context.coordinator.onSubmit = onSubmit
+        let items = (0..<field.numberOfItems).compactMap { field.itemObjectValue(at: $0) as? String }
+        if items != history {
+            field.removeAllItems()
+            field.addItems(withObjectValues: history)
+        }
+        if field.stringValue != text {
+            field.stringValue = text
+        }
+    }
+
+    final class Coordinator: NSObject, NSComboBoxDelegate {
+        var text: Binding<String>
+        var onSubmit: () -> Void
+
+        init(text: Binding<String>, onSubmit: @escaping () -> Void) {
+            self.text = text
+            self.onSubmit = onSubmit
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSComboBox else { return }
+            text.wrappedValue = field.stringValue
+        }
+
+        func comboBoxSelectionDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSComboBox,
+                  field.indexOfSelectedItem >= 0,
+                  let value = field.itemObjectValue(at: field.indexOfSelectedItem) as? String else { return }
+            text.wrappedValue = value
+        }
+
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy commandSelector: Selector
+        ) -> Bool {
+            guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+            text.wrappedValue = control.stringValue
+            onSubmit()
+            return true
         }
     }
 }

@@ -7,6 +7,8 @@ final class ModelFilesStore: ObservableObject {
     @Published var sourceSelection = SourceSelection(
         rawValue: UserDefaults.standard.string(forKey: "ModelFiles.sourceSelection") ?? ""
     ) ?? .automatic
+    @Published private(set) var modelHistory =
+        UserDefaults.standard.stringArray(forKey: "ModelFiles.modelHistory") ?? []
     @Published private(set) var snapshot: RepositorySnapshot?
     @Published var selectedPath: String?
     @Published var filter = ""
@@ -74,6 +76,8 @@ final class ModelFilesStore: ObservableObject {
                 self.isLoadingRepository = false
                 UserDefaults.standard.set(snapshot.modelID, forKey: "ModelFiles.lastModelID")
                 UserDefaults.standard.set(requestedSource.rawValue, forKey: "ModelFiles.sourceSelection")
+                self.modelHistory = Self.updatedHistory(self.modelHistory, with: snapshot.modelID)
+                UserDefaults.standard.set(self.modelHistory, forKey: "ModelFiles.modelHistory")
                 let preferred = snapshot.files.first { $0.path == "config.json" && !$0.isBlocked }
                     ?? snapshot.files.first { !$0.isBlocked }
                 self.selectedPath = preferred?.path
@@ -137,5 +141,9 @@ final class ModelFilesStore: ObservableObject {
         guard let snapshot, let file = selectedFile,
               let url = service.sourceURL(for: file, snapshot: snapshot) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    nonisolated static func updatedHistory(_ history: [String], with modelID: String) -> [String] {
+        [modelID] + history.filter { $0.caseInsensitiveCompare(modelID) != .orderedSame }
     }
 }

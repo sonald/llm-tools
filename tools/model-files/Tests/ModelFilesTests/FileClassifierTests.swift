@@ -94,6 +94,16 @@ final class FileClassifierTests: XCTestCase {
         )
     }
 
+    func testModelHistoryKeepsNewestEntryAndRemovesDuplicates() {
+        XCTAssertEqual(
+            ModelFilesStore.updatedHistory(
+                ["meta-llama/Llama-3", "QWEN/Qwen3-4B", "google/gemma-3"],
+                with: "Qwen/Qwen3-4B"
+            ),
+            ["Qwen/Qwen3-4B", "meta-llama/Llama-3", "google/gemma-3"]
+        )
+    }
+
     func testPreparesModelCardMarkdownWithoutDamagingCode() {
         let source = """
         ---
