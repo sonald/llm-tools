@@ -168,50 +168,63 @@ private struct FileReaderView: View {
     let baseURL: URL?
 
     var body: some View {
-        ScrollView {
-            Group {
-                switch mode {
-                case .raw:
-                    if isSafetensors {
-                        VStack(alignment: .leading, spacing: 16) {
-                            ReaderTitle(
-                                "SafeTensors Header 原文",
-                                subtitle: "最多展示前 256 KB；完整 tensor 结构请使用“全部字段”。"
-                            )
-                            RawTextView(data: Data(data.prefix(256 * 1_024)))
+        Group {
+            if mode == .summary && file.category == .templates {
+                summary
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 18)
+                    .frame(
+                        maxWidth: .infinity,
+                        maxHeight: .infinity,
+                        alignment: .topLeading
+                    )
+            } else {
+                ScrollView {
+                    Group {
+                        switch mode {
+                        case .raw:
+                            if isSafetensors {
+                                VStack(alignment: .leading, spacing: 16) {
+                                    ReaderTitle(
+                                        "SafeTensors Header 原文",
+                                        subtitle: "最多展示前 256 KB；完整 tensor 结构请使用“全部字段”。"
+                                    )
+                                    RawTextView(data: Data(data.prefix(256 * 1_024)))
+                                }
+                            } else if data.count > 128 * 1_024 {
+                                LinesView(
+                                    documentID: file.path,
+                                    data: data,
+                                    title: "原文",
+                                    subtitle: "大文件按行分批渲染，避免一次性文本排版阻塞界面。"
+                                )
+                            } else {
+                                RawTextView(data: data)
+                            }
+                        case .fields:
+                            if isSafetensors {
+                                SafetensorsView(data: data, showsTensors: true)
+                            } else if isTokenizerJSON {
+                                TokenizerJSONView(data: data, showsFields: true)
+                            } else if isJSON, let object = jsonObject {
+                                JSONFieldsView(object: object)
+                            } else {
+                                LinesView(
+                                    documentID: file.path,
+                                    data: data,
+                                    title: "全部行",
+                                    subtitle: "纯文本没有字段结构，按行分批展示。"
+                                )
+                            }
+                        case .summary:
+                            summary
                         }
-                    } else if data.count > 128 * 1_024 {
-                        LinesView(
-                            documentID: file.path,
-                            data: data,
-                            title: "原文",
-                            subtitle: "大文件按行分批渲染，避免一次性文本排版阻塞界面。"
-                        )
-                    } else {
-                        RawTextView(data: data)
                     }
-                case .fields:
-                    if isSafetensors {
-                        SafetensorsView(data: data, showsTensors: true)
-                    } else if isTokenizerJSON {
-                        TokenizerJSONView(data: data, showsFields: true)
-                    } else if isJSON, let object = jsonObject {
-                        JSONFieldsView(object: object)
-                    } else {
-                        LinesView(
-                            documentID: file.path,
-                            data: data,
-                            title: "全部行",
-                            subtitle: "纯文本没有字段结构，按行分批展示。"
-                        )
-                    }
-                case .summary:
-                    summary
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 18)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .safeAreaInset(edge: .bottom) {
             if file.category == .weights || file.category == .weightMetadata {
@@ -566,6 +579,7 @@ private struct TokenizerSummaryView: View {
             if let template = object["chat_template"] as? String, !template.isEmpty {
                 DisclosureGroup(isExpanded: $showsPlayground) {
                     TemplatePlaygroundView(template: template, tokenizerConfig: object)
+                        .frame(height: 640)
                         .padding(.top, 12)
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {

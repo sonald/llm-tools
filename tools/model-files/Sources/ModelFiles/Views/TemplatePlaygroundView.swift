@@ -65,7 +65,7 @@ struct TemplatePlaygroundView: View {
                         .frame(minHeight: 260)
                 }
             }
-            .frame(height: 640)
+            .frame(minHeight: 480, maxHeight: .infinity)
             .background(.quaternary.opacity(0.18))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay {
