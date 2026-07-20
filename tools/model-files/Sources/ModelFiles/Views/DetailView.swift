@@ -82,44 +82,31 @@ private struct DetailHeader: View {
     let file: RemoteFile
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 14) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(file.name)
-                        .font(.system(size: 24, weight: .semibold, design: .rounded))
-                    HStack(spacing: 6) {
-                        Text(purpose)
-                        if let size = file.size {
-                            Text("·")
-                            Text(size.formattedByteCount)
-                        }
-                        if let snapshot = store.snapshot {
-                            Text("·")
-                            let branch = snapshot.source == .modelScope ? "master" : "main"
-                            let hash = file.shortHash ?? String(file.revision.prefix(7))
-                            Text("\(snapshot.source.title) · \(branch) · SHA \(hash)")
-                        }
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(file.name)
+                    .font(.system(size: 21, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(purpose)
+                    if let size = file.size {
+                        Text("·")
+                        Text(size.formattedByteCount)
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    if let snapshot = store.snapshot {
+                        Text("·")
+                        let branch = snapshot.source == .modelScope ? "master" : "main"
+                        let hash = file.shortHash ?? String(file.revision.prefix(7))
+                        Text("\(snapshot.source.title) · \(branch) · SHA \(hash)")
+                    }
                 }
-
-                Spacer()
-
-                Button {
-                    store.copySelectedPath()
-                } label: {
-                    Label("复制路径", systemImage: "doc.on.doc")
-                }
-                .help("复制文件路径")
-
-                Button {
-                    store.openSelectedOnSource()
-                } label: {
-                    Label("在源站打开", systemImage: "arrow.up.right.square")
-                }
-                .help("在浏览器中打开当前版本")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             }
+            .layoutPriority(1)
+
+            Spacer(minLength: 8)
 
             Picker("查看方式", selection: $store.detailMode) {
                 ForEach(DetailMode.allCases) { mode in
@@ -128,12 +115,28 @@ private struct DetailHeader: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 310)
+            .frame(width: 240)
             .disabled(file.isBlocked)
+
+            Button {
+                store.copySelectedPath()
+            } label: {
+                Label("复制路径", systemImage: "doc.on.doc")
+                    .labelStyle(.iconOnly)
+            }
+            .help("复制文件路径")
+
+            Button {
+                store.openSelectedOnSource()
+            } label: {
+                Label("在源站打开", systemImage: "arrow.up.right.square")
+                    .labelStyle(.iconOnly)
+            }
+            .help("在浏览器中打开当前版本")
         }
-        .padding(.horizontal, 26)
-        .padding(.vertical, 20)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(.horizontal, 20)
+        .padding(.vertical, 13)
+        .background(.bar)
     }
 
     private var purpose: String {
@@ -197,21 +200,23 @@ private struct FileReaderView: View {
                     summary
                 }
             }
-            .padding(26)
-            .frame(maxWidth: 940, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 7) {
-                Image(systemName: "lock.fill")
-                Text("权重数据区始终不会下载；SafeTensors 只通过 HTTP Range 读取结构 Header。")
-                Spacer()
+            if file.category == .weights || file.category == .weightMetadata {
+                HStack(spacing: 7) {
+                    Image(systemName: "lock.fill")
+                    Text("权重数据区始终不会下载；SafeTensors 只通过 HTTP Range 读取结构 Header。")
+                    Spacer()
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 20)
+                .frame(height: 34)
+                .background(.bar)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 22)
-            .frame(height: 38)
-            .background(.bar)
         }
     }
 
@@ -297,7 +302,7 @@ private struct SafetensorsView: View {
     }
 
     private func content(_ overview: SafetensorsOverview) -> some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 20) {
             ReaderTitle(
                 "SafeTensors 权重结构",
                 subtitle: "只读取了 \(Int64(data.count).formattedByteCount) JSON header；没有请求任何 tensor 数据。"
@@ -363,7 +368,7 @@ private struct SafetensorsView: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, 9)
+                    .padding(.vertical, 6)
                     Divider()
                 }
             }
@@ -400,7 +405,7 @@ private struct TokenizerJSONView: View {
     @State private var isInspecting = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 20) {
             if isInspecting {
                 ProgressView("正在后台解析 tokenizer.json…")
                     .controlSize(.small)
@@ -429,7 +434,7 @@ private struct TokenizerJSONView: View {
     }
 
     private func summary(_ overview: TokenizerOverview) -> some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 18) {
             ReaderTitle(
                 overview.modelType ?? "Tokenizer",
                 subtitle: "大型 tokenizer.json 在后台解析；摘要不会展开完整词表和合并规则。"
@@ -465,7 +470,7 @@ private struct ConfigSummaryView: View {
     let object: [String: Any]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 26) {
+        VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(architecture)
                     .font(.system(size: 25, weight: .semibold, design: .rounded))
@@ -511,7 +516,7 @@ private struct GenerationSummaryView: View {
     let object: [String: Any]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 18) {
             ReaderTitle("生成默认值", subtitle: "推理框架在调用 generate 时使用的仓库默认参数。")
             PropertyGroup(title: "采样", rows: compactRows([
                 ("Do sample", value("do_sample")),
@@ -533,9 +538,10 @@ private struct GenerationSummaryView: View {
 
 private struct TokenizerSummaryView: View {
     let object: [String: Any]
+    @State private var showsPlayground = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 18) {
             ReaderTitle(
                 object["tokenizer_class"] as? String ?? "Tokenizer 配置",
                 subtitle: "特殊 token、最大长度，以及随模型发布的对话格式。"
@@ -549,7 +555,19 @@ private struct TokenizerSummaryView: View {
             ]))
 
             if let template = object["chat_template"] as? String, !template.isEmpty {
-                TemplatePlaygroundView(template: template, tokenizerConfig: object)
+                DisclosureGroup(isExpanded: $showsPlayground) {
+                    TemplatePlaygroundView(template: template, tokenizerConfig: object)
+                        .padding(.top, 12)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label("Chat Template 试验台", systemImage: "curlybraces.square")
+                            .font(.headline)
+                        Text("展开后编辑输入并实时查看渲染结果")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.top, 4)
             }
         }
     }
@@ -562,7 +580,7 @@ private struct WeightIndexSummaryView: View {
         let map = object["weight_map"] as? [String: String] ?? [:]
         let shards = Set(map.values)
         let metadata = object["metadata"] as? [String: Any] ?? [:]
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 18) {
             ReaderTitle("权重分片索引", subtitle: "只读取映射关系，不读取任何权重分片。")
             PropertyGroup(title: "概览", rows: compactRows([
                 ("参数张量", String(map.count)),
@@ -702,19 +720,22 @@ struct TextLine: Identifiable, Sendable, Equatable {
     }
 }
 
-private struct MarkdownReaderView: View {
+struct MarkdownReaderView: View {
     let text: String
 
     var body: some View {
-        if let attributed = try? AttributedString(markdown: text) {
+        if let attributed = Self.parse(text) {
             Text(attributed)
-                .font(.body)
-                .lineSpacing(5)
                 .textSelection(.enabled)
-                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: 920, alignment: .leading)
         } else {
-            Text(text).textSelection(.enabled)
+            Text(text)
+                .textSelection(.enabled)
         }
+    }
+
+    nonisolated static func parse(_ text: String) -> AttributedString? {
+        try? AttributedString(markdown: text, options: .init(interpretedSyntax: .full))
     }
 }
 
@@ -724,7 +745,7 @@ private struct JSONFieldsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ReaderTitle("全部字段", subtitle: "按字段名排序；复杂值以格式化 JSON 展示。")
-                .padding(.bottom, 10)
+                .padding(.bottom, 4)
             if let dictionary = object as? [String: Any] {
                 ForEach(dictionary.keys.sorted(), id: \.self) { key in
                     if let value = dictionary[key] {
@@ -779,7 +800,7 @@ private struct PropertyGroup: View {
                 Text(title).font(.headline)
                 VStack(spacing: 0) {
                     ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                        KeyValueRow(key: row.0, value: row.1, trailingValue: true)
+                        KeyValueRow(key: row.0, value: row.1)
                         if index < rows.count - 1 { Divider() }
                     }
                 }
@@ -791,7 +812,6 @@ private struct PropertyGroup: View {
 private struct KeyValueRow: View {
     let key: String
     let value: String
-    var trailingValue = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 20) {
@@ -801,9 +821,9 @@ private struct KeyValueRow: View {
             Text(value)
                 .font(.system(.body, design: .monospaced))
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: trailingValue ? .trailing : .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, 6)
     }
 }
 

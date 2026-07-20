@@ -93,6 +93,12 @@ final class FileClassifierTests: XCTestCase {
         )
     }
 
+    func testMarkdownReaderPreservesBlockStructure() throws {
+        let parsed = try XCTUnwrap(MarkdownReaderView.parse("# Model\n\n- config\n- tokenizer\n\n```json\n{}\n```"))
+
+        XCTAssertTrue(parsed.runs.contains { $0.presentationIntent != nil })
+    }
+
     private func remoteWeight(_ path: String) -> RemoteFile {
         RemoteFile(
             path: path,

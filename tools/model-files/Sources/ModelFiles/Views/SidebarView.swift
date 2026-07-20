@@ -44,7 +44,7 @@ struct SidebarView: View {
                         if !files.isEmpty {
                             Section(category.title) {
                                 ForEach(files) { file in
-                                    SidebarFileRow(file: file, isSelected: store.selectedPath == file.path)
+                                    SidebarFileRow(file: file)
                                         .tag(file.path)
                                 }
                             }
@@ -58,10 +58,10 @@ struct SidebarView: View {
                             DisclosureGroup(isExpanded: $showWeights) {
                                 ForEach(weights) { file in
                                     if file.supportsMetadataPreview {
-                                        SidebarFileRow(file: file, isSelected: store.selectedPath == file.path)
+                                        SidebarFileRow(file: file)
                                             .tag(file.path)
                                     } else {
-                                        SidebarFileRow(file: file, isSelected: false)
+                                        SidebarFileRow(file: file)
                                             .opacity(0.62)
                                     }
                                 }
@@ -81,14 +81,12 @@ struct SidebarView: View {
                 .tint(.teal)
             }
         }
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.42))
         .searchable(text: $store.filter, placement: .sidebar, prompt: "筛选文件")
     }
 }
 
 private struct SidebarFileRow: View {
     let file: RemoteFile
-    let isSelected: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -112,9 +110,7 @@ private struct SidebarFileRow: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .padding(.horizontal, 5)
-        .padding(.vertical, 3)
-        .background(isSelected ? Color.teal.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        .padding(.vertical, 2)
         .help(file.path)
     }
 

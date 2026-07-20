@@ -37,7 +37,7 @@ final class ModelFilesStore: ObservableObject {
         if let hash = selectedFile?.shortHash ?? (snapshot.revisionLabel.isEmpty ? nil : snapshot.revisionLabel) {
             components.append("SHA \(hash)")
         }
-        return "已选择 " + components.joined(separator: " · ")
+        return components.joined(separator: " · ")
     }
 
     var hasMatchingFiles: Bool {

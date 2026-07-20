@@ -55,16 +55,16 @@ struct TemplatePlaygroundView: View {
 
             HSplitView {
                 inputPane
-                    .frame(minWidth: 300, idealWidth: 330, maxWidth: 390)
+                    .frame(minWidth: 280, idealWidth: 300, maxWidth: 340)
 
                 VSplitView {
                     templatePane
-                        .frame(minHeight: 280)
+                        .frame(minHeight: 260)
                     previewPane
-                        .frame(minHeight: 220)
+                        .frame(minHeight: 160)
                 }
             }
-            .frame(height: 760)
+            .frame(height: 640)
             .background(.quaternary.opacity(0.18))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay {
@@ -106,7 +106,7 @@ struct TemplatePlaygroundView: View {
 
     private var inputPane: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 9) {
                     Text("运行选项").font(.headline)
                     Toggle("add_generation_prompt", isOn: $addGenerationPrompt)
@@ -179,7 +179,7 @@ struct TemplatePlaygroundView: View {
                     }
                 }
             }
-            .padding(16)
+            .padding(14)
         }
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.38))
     }
@@ -379,7 +379,7 @@ private struct MessageInputCard: View {
                 .font(.system(.caption, design: .monospaced))
                 .scrollContentBackground(.hidden)
                 .padding(6)
-                .frame(minHeight: 76)
+                .frame(minHeight: 64)
                 .background(.quaternary.opacity(0.42), in: RoundedRectangle(cornerRadius: 7))
         }
         .padding(10)
