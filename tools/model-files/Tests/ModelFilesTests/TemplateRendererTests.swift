@@ -30,4 +30,25 @@ final class TemplateRendererTests: XCTestCase {
         XCTAssertTrue(result.output.contains(#""name":"search""#))
         XCTAssertTrue(result.output.contains("thinking=false"))
     }
+
+    func testRenderedOutputStructureOnlyReferencesExactSourceRanges() throws {
+        let source = """
+        <|message_system|>tool_declare<|content_xml|>[{"name":"get_weather"}]<|end_message|><|message_user|><|content_text|>  Hello!\n<|end_message|><|message_model|>
+        """
+
+        let items = RenderedOutputInspector.items(in: source)
+        let xml = try XCTUnwrap(items.first { $0.title == "content_xml" })
+        let text = try XCTUnwrap(items.first { $0.title == "content_text" })
+
+        XCTAssertEqual(
+            (source as NSString).substring(with: xml.range),
+            #"<|content_xml|>[{"name":"get_weather"}]"#
+        )
+        XCTAssertEqual(
+            (source as NSString).substring(with: text.range),
+            "<|content_text|>  Hello!\n"
+        )
+        XCTAssertTrue(try XCTUnwrap(RenderedOutputInspector.prettyPrintedJSON(for: xml, in: source))
+            .contains("\n"))
+    }
 }

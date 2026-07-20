@@ -13,6 +13,7 @@ struct TemplatePlaygroundView: View {
     @State private var output = ""
     @State private var renderError: String?
     @State private var isRendering = false
+    @State private var selectedOutputItemID: Int?
 
     init(template: String, tokenizerConfig: [String: Any]) {
         originalTemplate = template
@@ -59,9 +60,9 @@ struct TemplatePlaygroundView: View {
 
                 VSplitView {
                     templatePane
-                        .frame(minHeight: 260)
+                        .frame(minHeight: 220)
                     previewPane
-                        .frame(minHeight: 160)
+                        .frame(minHeight: 260)
                 }
             }
             .frame(height: 640)
@@ -83,6 +84,10 @@ struct TemplatePlaygroundView: View {
             guard !Task.isCancelled else { return }
             output = outcome.output
             renderError = outcome.error
+            let items = RenderedOutputInspector.items(in: outcome.output)
+            selectedOutputItemID = items.first {
+                RenderedOutputInspector.prettyPrintedJSON(for: $0, in: outcome.output) != nil
+            }?.id ?? items.first?.id
             isRendering = false
         }
     }
@@ -197,7 +202,10 @@ struct TemplatePlaygroundView: View {
     }
 
     private var previewPane: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let items = RenderedOutputInspector.items(in: output)
+        let selectedItem = items.first { $0.id == selectedOutputItemID }
+
+        return VStack(alignment: .leading, spacing: 0) {
             HStack {
                 PaneHeader(
                     title: "渲染结果",
@@ -208,7 +216,7 @@ struct TemplatePlaygroundView: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(output, forType: .string)
                 } label: {
-                    Label("复制结果", systemImage: "doc.on.doc")
+                    Label("复制原始输出", systemImage: "doc.on.doc")
                 }
                 .buttonStyle(.borderless)
                 .disabled(output.isEmpty)
@@ -226,17 +234,133 @@ struct TemplatePlaygroundView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
-                ScrollView {
-                    Text(output.isEmpty ? "模板没有产生输出。" : output)
+                if output.isEmpty {
+                    Text("模板没有产生输出。")
                         .font(.system(size: 12.5, design: .monospaced))
-                        .foregroundStyle(output.isEmpty ? .secondary : .primary)
-                        .textSelection(.enabled)
+                        .foregroundStyle(.secondary)
                         .padding(14)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                } else {
+                    HSplitView {
+                        outputStructurePane(items: items, selectedItem: selectedItem)
+                            .frame(minWidth: 190, idealWidth: 220, maxWidth: 280)
+                        rawOutputPane(selectedItem: selectedItem)
+                            .frame(minWidth: 360)
+                    }
                 }
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private func outputStructurePane(
+        items: [RenderedOutputItem],
+        selectedItem: RenderedOutputItem?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("结构索引 · 只读")
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+            Divider()
+
+            if items.isEmpty {
+                Text("未识别可索引的消息边界")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(items) { item in
+                            Button {
+                                selectedOutputItemID = item.id
+                            } label: {
+                                HStack(spacing: 6) {
+                                    if item.level > 0 {
+                                        Image(systemName: "circle.fill")
+                                            .font(.system(size: 5))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Text(item.title)
+                                        .font(item.level == 0 ? .caption.weight(.semibold) : .caption)
+                                        .lineLimit(1)
+                                    if let detail = item.detail {
+                                        Text(detail)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.leading, item.level == 0 ? 8 : 24)
+                                .padding(.trailing, 8)
+                                .frame(height: 25)
+                                .contentShape(Rectangle())
+                                .background(
+                                    item.id == selectedOutputItemID
+                                        ? Color.accentColor.opacity(0.16)
+                                        : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 5)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(5)
+                }
+            }
+
+            if let selectedItem,
+               let json = RenderedOutputInspector.prettyPrintedJSON(for: selectedItem, in: output) {
+                Divider()
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 4) {
+                        Text("内容检查器")
+                            .font(.caption.weight(.semibold))
+                        Text("解析视图，不属于输出")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    Divider()
+                    ScrollView([.horizontal, .vertical]) {
+                        Text(json)
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(9)
+                    }
+                    .frame(minHeight: 80, idealHeight: 130, maxHeight: 170)
+                }
+            }
+
+            Divider()
+            Text("仅引用原文范围；渲染结果未修改")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 9)
+                .frame(height: 26)
+        }
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.28))
+    }
+
+    private func rawOutputPane(selectedItem: RenderedOutputItem?) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text("原始输出 · 权威")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Text("软换行仅用于显示，不属于输出")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            Divider()
+            RenderedOutputTextView(text: output, highlightedRange: selectedItem?.range)
+        }
     }
 
     private func loadBasicPreset() {
