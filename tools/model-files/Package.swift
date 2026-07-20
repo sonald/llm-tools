@@ -4,18 +4,20 @@ import PackageDescription
 
 let package = Package(
     name: "ModelFiles",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v15)],
     products: [
         .executable(name: "ModelFiles", targets: ["ModelFiles"])
     ],
     dependencies: [
-        .package(url: "https://github.com/huggingface/swift-jinja.git", from: "2.4.1")
+        .package(url: "https://github.com/huggingface/swift-jinja.git", from: "2.4.1"),
+        .package(url: "https://github.com/gonzalezreal/textual.git", from: "0.5.0")
     ],
     targets: [
         .executableTarget(
             name: "ModelFiles",
             dependencies: [
-                .product(name: "Jinja", package: "swift-jinja")
+                .product(name: "Jinja", package: "swift-jinja"),
+                .product(name: "Textual", package: "textual")
             ],
             path: "Sources/ModelFiles",
             exclude: ["Resources"]

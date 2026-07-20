@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import ModelFiles
 
@@ -93,10 +94,56 @@ final class FileClassifierTests: XCTestCase {
         )
     }
 
-    func testMarkdownReaderPreservesBlockStructure() throws {
-        let parsed = try XCTUnwrap(MarkdownReaderView.parse("# Model\n\n- config\n- tokenizer\n\n```json\n{}\n```"))
+    func testPreparesModelCardMarkdownWithoutDamagingCode() {
+        let source = """
+        ---
+        license: apache-2.0
+        ---
+        # Model
+        <img src="https://example.com/model.png" style="display: block; width: 30%;">
+        <p align="center"><a href="https://example.com">Docs</a></p>
+        <https://example.com/model-card>
+        ```html
+        <strong>keep source</strong>
+        ```
+        """
 
-        XCTAssertTrue(parsed.runs.contains { $0.presentationIntent != nil })
+        XCTAssertEqual(
+            ModelCardMarkdown.renderable(source),
+            """
+            # Model
+            ![](https://example.com/model.png#model-files-width=30pct)
+            [Docs](https://example.com)
+            <https://example.com/model-card>
+            ```html
+            <strong>keep source</strong>
+            ```
+            """
+        )
+    }
+
+    func testMarkdownImagesResolveOnlyToHTTPS() throws {
+        let baseURL = try XCTUnwrap(URL(string: "https://example.com/repo/"))
+
+        XCTAssertEqual(
+            ModelCardImageLoader.resolvedHTTPSURL(
+                try XCTUnwrap(URL(string: "images/logo.png")),
+                relativeTo: baseURL
+            ),
+            URL(string: "https://example.com/repo/images/logo.png")
+        )
+        XCTAssertNil(
+            ModelCardImageLoader.resolvedHTTPSURL(
+                try XCTUnwrap(URL(string: "http://example.com/logo.png")),
+                relativeTo: baseURL
+            )
+        )
+        XCTAssertNil(
+            ModelCardImageLoader.resolvedHTTPSURL(
+                try XCTUnwrap(URL(string: "file:///etc/passwd")),
+                relativeTo: baseURL
+            )
+        )
     }
 
     private func remoteWeight(_ path: String) -> RemoteFile {

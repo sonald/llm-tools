@@ -166,7 +166,7 @@ struct RepositoryService: Sendable {
         return try await HTTPRangeLoader.fetch(request, expectedCount: Int(length))
     }
 
-    private func contentURL(for file: RemoteFile, snapshot: RepositorySnapshot) throws -> URL {
+    func contentURL(for file: RemoteFile, snapshot: RepositorySnapshot) throws -> URL {
         switch snapshot.source {
         case .huggingFace:
             return try makeURL("https://huggingface.co/\(encodedPath(snapshot.modelID))/resolve/\(encodedPath(file.revision))/\(encodedPath(file.path))")

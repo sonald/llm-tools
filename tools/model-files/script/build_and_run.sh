@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="ModelFiles"
 BUNDLE_ID="com.siancao.modelfiles"
-MIN_SYSTEM_VERSION="13.0"
+MIN_SYSTEM_VERSION="15.0"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_DIR="$DIST_DIR/$APP_NAME.app"

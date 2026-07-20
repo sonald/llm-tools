@@ -61,7 +61,14 @@ struct DetailView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let data = store.selectedData {
-            FileReaderView(file: file, data: data, mode: store.detailMode)
+            FileReaderView(
+                file: file,
+                data: data,
+                mode: store.detailMode,
+                baseURL: store.snapshot.flatMap {
+                    try? RepositoryService().contentURL(for: file, snapshot: $0).deletingLastPathComponent()
+                }
+            )
         } else if let message = store.errorMessage {
             EmptyStateView(
                 title: "无法读取文件",
@@ -110,7 +117,8 @@ private struct DetailHeader: View {
 
             Picker("查看方式", selection: $store.detailMode) {
                 ForEach(DetailMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+                    Text(mode == .summary && file.name.lowercased().hasSuffix(".md") ? "渲染" : mode.title)
+                        .tag(mode)
                 }
             }
             .labelsHidden()
@@ -157,6 +165,7 @@ private struct FileReaderView: View {
     let file: RemoteFile
     let data: Data
     let mode: DetailMode
+    let baseURL: URL?
 
     var body: some View {
         ScrollView {
@@ -247,7 +256,7 @@ private struct FileReaderView: View {
         } else if file.category == .weightMetadata {
             WeightIndexSummaryView(object: jsonDictionary)
         } else if file.category == .documentation && name.hasSuffix(".md") {
-            MarkdownReaderView(text: text)
+            MarkdownReaderView(text: text, baseURL: baseURL)
         } else if let object = jsonObject {
             JSONFieldsView(object: object)
         } else {
@@ -717,25 +726,6 @@ struct TextLine: Identifiable, Sendable, Equatable {
             if result.count == limit { break }
         }
         return result
-    }
-}
-
-struct MarkdownReaderView: View {
-    let text: String
-
-    var body: some View {
-        if let attributed = Self.parse(text) {
-            Text(attributed)
-                .textSelection(.enabled)
-                .frame(maxWidth: 920, alignment: .leading)
-        } else {
-            Text(text)
-                .textSelection(.enabled)
-        }
-    }
-
-    nonisolated static func parse(_ text: String) -> AttributedString? {
-        try? AttributedString(markdown: text, options: .init(interpretedSyntax: .full))
     }
 }
 

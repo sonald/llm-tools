@@ -24,7 +24,7 @@ It provides purpose-built views for:
 
 Files are loaded only when selected. Large text and tokenizer views parse in the background and render incrementally. SafeTensors preview uses HTTP Range requests to read only the JSON header; if a source does not confirm partial responses, the request is cancelled rather than downloading the weight data.
 
-Requires macOS 13 or later and Swift 6.
+Requires macOS 15 or later and Swift 6.
 
 ### Run
 
