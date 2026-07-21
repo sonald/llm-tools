@@ -272,6 +272,13 @@ private struct FileReaderView: View {
             MarkdownReaderView(text: text, baseURL: baseURL)
         } else if let object = jsonObject {
             JSONFieldsView(object: object)
+        } else if data.count > 128 * 1_024 {
+            LinesView(
+                documentID: file.path,
+                data: data,
+                title: "内容",
+                subtitle: "大文件按行分批渲染，避免一次性文本排版阻塞界面。"
+            )
         } else {
             RawTextView(data: data)
         }
