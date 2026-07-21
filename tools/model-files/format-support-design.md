@@ -48,7 +48,7 @@ flowchart LR
 
 ### 目标
 
-1. SafeTensors、GGUF、Jinja 通过同一个加载与页面状态模型打开。
+1. SafeTensors、GGUF、legacy Imatrix、Jinja 通过同一个加载与页面状态模型打开。
 2. 每种格式保留最适合它的主视图和操作。
 3. metadata 展示明确区分文件内嵌、应用推导、仓库信息和运行结果，避免把推导值伪装成文件字段。
 4. 二进制格式只读取展示所需的最少字节；不可信输入有确定的上限与错误。
@@ -68,7 +68,8 @@ flowchart LR
 | 格式 | 首版能力 | 读取策略 | 主要视图 |
 | --- | --- | --- | --- |
 | SafeTensors | header metadata、tensor、dtype、shape、参数数、数据字节数 | 8-byte 长度 + 精确 Header Range | 概览 / Metadata / Tensors |
-| GGUF v1-v3 | 标准 KV、版本、字节序、架构、量化、tensor 目录、shape、参数数 | 1 MiB 分块前缀，最多 32 MiB | 概览 / Metadata / Tensors |
+| GGUF v1-v3 | 标准 KV、版本、字节序、架构、量化、imatrix 来源、tensor 目录、shape、参数数；识别 `general.type=imatrix`；接受 `.gguf` 与真实仓库使用的 `.gguf_file` 后缀 | 1 MiB 分块前缀，最多 32 MiB | 概览 / Metadata / Tensors |
+| Legacy `imatrix*.dat` | tensor 条目、call/value 数、数值摘要、chunk 数、dataset | UTF-8 以外的受限二进制全文，沿用 32 MiB 上限 | 概览 / Entries |
 | Jinja chat template | 源码、基本来源信息、编辑、输入配置、渲染与结果检查 | UTF-8 全文，沿用 32 MiB 上限 | 概览 / 源码 / 试验台 |
 | JSON、Markdown、普通文本 | 保持现有展示 | 受限全文 | 沿用现有阅读模式，后续按需迁移 |
 | PyTorch、ONNX 等权重 | 仍锁定 | 不读取 | 文件身份与安全说明 |
@@ -146,6 +147,13 @@ GGUF：
 - `GGUFOverview` 保留 version、endianness、KV、tensorDataOffset、tensors 和汇总值。
 - GGUF 的 typed value 与嵌套 array 是 parser 内部和详情展示需要的真实语义，不强行转换成字符串字典。
 - 未知 metadata key 保留；未知 tensor type 显示数值，不因此丢弃整份文档。
+- 模型 GGUF 的 `quantize.imatrix.*` 提升到概览；`general.type=imatrix` 时按 `*.in_sum2` / `*.counts` 配对统计条目数，但不读取 tensor 数据。
+
+Legacy Imatrix：
+
+- 按 llama.cpp `imatrix.dat` 的 little-endian 顺序结构解析 entry name、call count、value count 与 float values。
+- values 只保留 min / max / mean，不缓存完整数组；可选 trailer 展示 chunk count 与 dataset。
+- 只识别文件名含 `imatrix` 的 `.dat`，不把任意 `.dat` 猜成该格式。
 
 Jinja：
 
@@ -190,6 +198,12 @@ GGUF parser 只使用 Foundation 和顺序 byte cursor，并设置以下硬限�
 - 沿用 32 MiB 全文上限，严格按 UTF-8 解码。
 - 渲染继续使用现有本地 `TemplateRenderer`，不发起外部请求，不执行模板中提供的任意代码。
 - 原文件不可变；试验台修改只存在于当前 View 生命周期，离开文件后不会误写远端。
+
+### Legacy Imatrix
+
+- 沿用 32 MiB 全文上限；超过限制直接失败，不增加第二套流式加载状态机。
+- entry 最多 100,000 个，名称最多 1,024 bytes，累计 float value 最多 10,000,000 个。
+- 长度、计数、UTF-8、重复名称、截断和非有限 float 都在解析边界验证。
 
 ## 状态与缓存
 
@@ -259,6 +273,7 @@ stateDiagram-v2
 | --- | --- |
 | SafeTensors | 概览 / Metadata / Tensors |
 | GGUF | 概览 / Metadata / Tensors |
+| Legacy Imatrix | 概览 / Entries |
 | Jinja | 概览 / 源码 / 试验台 |
 
 这会替代固定 `DetailMode.allCases`。`InspectionPerspective` 只包含当前已有视图所需的有限 case，不做字符串驱动的动态页面配置。
@@ -270,6 +285,7 @@ stateDiagram-v2
 - 首屏只展示 5–7 个高价值事实。
 - SafeTensors：tensor 数、参数数、数据大小、主要 dtype、Header metadata 数。
 - GGUF：架构、量化、上下文长度、tensor 数、参数数、版本、已读取前缀。
+- Legacy Imatrix：条目数、chunk 数、dataset、文件大小；Entries 展示 call/value 数和 min / max / mean。
 - Jinja：源码字节数、行数、来源文件、当前是否有未保存的临时修改、最近一次渲染状态。
 - 每个事实以来源标记或辅助文案区分 embedded / derived / repository / runtime。
 
@@ -341,14 +357,19 @@ Jinja 使用同一工作台骨架，但右侧内容随任务变化：
 
 ### 新增
 
-只增加两个有明确职责的生产文件：
+首版格式工作台增加两个核心文件：
 
 - `Models/InspectionDocument.swift`：文档 enum、perspective、共享 metadata / tensor 展示模型。
 - `Support/GGUFInspector.swift`：GGUF 顺序解析与安全上限。
 
+Imatrix 真实需求出现后再增加两个有明确职责的文件：
+
+- `Support/IMatrixInspector.swift`：legacy `.dat` 顺序解析与安全上限。
+- `Views/IMatrixWorkspaceView.swift`：概览与原生 Entries 表格；不扩展通用工作台协议。
+
 UI 不拆成一组“一格式一 View”文件作为首要目标。先在现有 `DetailView` / `TemplatePlaygroundView` 中形成清楚的私有子视图；只有单文件规模或独立测试确实需要时再拆分。
 
-测试预计新增 `GGUFInspectorTests.swift`，并扩展现有 service、SafeTensors 和分类测试。不新增通用 parser 测试框架。
+测试新增 `GGUFInspectorTests.swift`、`IMatrixInspectorTests.swift`，并扩展现有 SafeTensors 和分类测试。不新增通用 parser 测试框架。
 
 ## 测试策略
 
@@ -358,21 +379,23 @@ UI 不拆成一组“一格式一 View”文件作为首要目标。先在现有
 
 1. SafeTensors 只请求 8 bytes 和精确 Header，返回 typed document。
 2. GGUF 请求不重叠、每段不超过 1 MiB、累计不超过 32 MiB，完成后停止。
-3. 两种 Range 路径遇到非 `206` 立即失败，不触发完整下载。
-4. Jinja 在限制内读取全文，非法 UTF-8 和超限返回格式化错误。
-5. 选择切换取消旧任务，旧结果不能进入当前文档。
+3. Legacy Imatrix 只在 32 MiB 限制内读取全文并返回 typed document。
+4. 两种 Range 路径遇到非 `206` 立即失败，不触发完整下载。
+5. Jinja 在限制内读取全文，非法 UTF-8 和超限返回格式化错误。
+6. 选择切换取消旧任务，旧结果不能进入当前文档。
 
 ### Parser 级测试
 
 - SafeTensors：无效根对象、无效 shape / offset、溢出和 metadata。
 - GGUF：v1-v3、大小端、scalar、string、array、未知 key / tensor type、截断、超限和溢出。
+- Legacy Imatrix：有效 entries 与可选 trailer、截断、非法计数、重复名称和非有限 float。
 - Jinja：继续覆盖现有 renderer、preset、tools、variables 与错误诊断；不增加没有 parser 支撑的语义测试。
 
 ### UI 与人工验收
 
 自动测试不能代替以下真实界面检查：
 
-- 三种格式切换后 perspective、主画布和右侧检查器内容正确更新。
+- 四种格式切换后 perspective、主画布和右侧检查器内容正确更新。
 - 窗口缩窄、暗色模式、长 key、长 tensor name、长 Jinja 模板下布局可用。
 - 键盘连续搜索、表格选择、焦点进入 / 返回右侧检查器正常。
 - Jinja 连续输入不会丢字符，切换 perspective 后临时编辑状态符合设计。
@@ -466,6 +489,8 @@ ONNX、PyTorch checkpoint、SentencePiece 等分别涉及 protobuf、反序列�
 ## 参考
 
 - [GGUF 官方规范](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md)
+- [llama.cpp Imatrix 写入实现](https://github.com/ggml-org/llama.cpp/blob/master/tools/imatrix/imatrix.cpp)
+- [llama.cpp Imatrix 读取实现](https://github.com/ggml-org/llama.cpp/blob/master/common/imatrix-loader.cpp)
 - [Hugging Face GGUF 说明](https://huggingface.co/docs/hub/gguf)
 - [Hugging Face `@huggingface/gguf` 实现](https://github.com/huggingface/huggingface.js/tree/main/packages/gguf)
 - [SafeTensors 格式说明](https://github.com/huggingface/safetensors)

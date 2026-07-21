@@ -132,6 +132,7 @@ private struct SidebarFileRow: View {
         if file.name == "tokenizer_config.json" { return "含内嵌 Chat Template（如有）" }
         if file.structuredInspectionFormat == .safetensors { return "只读取 JSON Header" }
         if file.structuredInspectionFormat == .gguf { return "只读取 metadata 前缀" }
+        if file.structuredInspectionFormat == .imatrix { return "legacy importance matrix" }
         if file.isBlocked { return "不可预览" }
         return file.path == file.name ? nil : file.path
     }

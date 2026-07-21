@@ -3,12 +3,14 @@ import Foundation
 enum StructuredInspectionFormat: Sendable, Equatable {
     case safetensors
     case gguf
+    case imatrix
     case jinja
 
     var title: String {
         switch self {
         case .safetensors: "SafeTensors"
         case .gguf: "GGUF"
+        case .imatrix: "Imatrix"
         case .jinja: "Jinja"
         }
     }
@@ -17,6 +19,7 @@ enum StructuredInspectionFormat: Sendable, Equatable {
         switch self {
         case .safetensors: "正在读取 SafeTensors Header…"
         case .gguf: "正在读取 GGUF metadata 前缀…"
+        case .imatrix: "正在读取 Imatrix 数据…"
         case .jinja: "正在读取 Jinja 源码…"
         }
     }
@@ -26,6 +29,7 @@ enum InspectionPerspective: String, Identifiable, Sendable {
     case overview
     case metadata
     case tensors
+    case entries
     case source
     case playground
     case fields
@@ -38,6 +42,7 @@ enum InspectionPerspective: String, Identifiable, Sendable {
         case .overview: "概览"
         case .metadata: "Metadata"
         case .tensors: "Tensors"
+        case .entries: "Entries"
         case .source: "源码"
         case .playground: "试验台"
         case .fields: "全部字段"
@@ -93,6 +98,7 @@ struct JinjaDocument: Sendable, Equatable {
 enum InspectionDocument: Sendable {
     case safetensors(SafetensorsOverview, headerByteCount: Int)
     case gguf(GGUFOverview, downloadedByteCount: Int)
+    case imatrix(IMatrixOverview)
     case jinja(JinjaDocument)
     case generic(Data)
 
@@ -100,6 +106,8 @@ enum InspectionDocument: Sendable {
         switch self {
         case .safetensors, .gguf:
             [.overview, .metadata, .tensors]
+        case .imatrix:
+            [.overview, .entries]
         case .jinja:
             [.overview, .source, .playground]
         case .generic:
@@ -110,7 +118,8 @@ enum InspectionDocument: Sendable {
     var formatTitle: String? {
         switch self {
         case .safetensors: "SafeTensors"
-        case let .gguf(overview, _): "GGUF v\(overview.version)"
+        case let .gguf(overview, _): overview.isIMatrix ? "GGUF Imatrix" : "GGUF v\(overview.version)"
+        case .imatrix: "Imatrix DAT"
         case .jinja: "Jinja"
         case .generic: nil
         }
@@ -122,6 +131,8 @@ enum InspectionDocument: Sendable {
             "只读取了 \(Int64(byteCount).formattedByteCount) JSON Header；没有请求 tensor 数据。"
         case let .gguf(_, byteCount):
             "只读取了 \(Int64(byteCount).formattedByteCount) GGUF 文件前缀；最后一个 Range 可能包含少量首个 tensor 数据。"
+        case let .imatrix(overview):
+            "读取了完整的 \(Int64(overview.byteCount).formattedByteCount) legacy imatrix 文件；只解析，不执行。"
         case .jinja, .generic:
             nil
         }
@@ -132,7 +143,11 @@ extension RemoteFile {
     var structuredInspectionFormat: StructuredInspectionFormat? {
         let lowercasedName = name.lowercased()
         if lowercasedName.hasSuffix(".safetensors") { return .safetensors }
-        if lowercasedName.hasSuffix(".gguf") { return .gguf }
+        if FileClassifier.isGGUFFileName(lowercasedName) { return .gguf }
+        if lowercasedName.contains("imatrix"),
+           lowercasedName.hasSuffix(".dat") || lowercasedName.contains(".dat.at_") {
+            return .imatrix
+        }
         if category == .templates { return .jinja }
         return nil
     }

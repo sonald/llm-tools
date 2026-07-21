@@ -11,6 +11,7 @@ struct RepositoryService: Sendable {
         case invalidSafetensorsHeader
         case safetensorsHeaderTooLarge(UInt64)
         case invalidGGUF(String)
+        case invalidIMatrix(String)
         case ggufMetadataTooLarge
         case missingFileSize
         case invalidUTF8
@@ -35,6 +36,8 @@ struct RepositoryService: Sendable {
                 "SafeTensors header 为 \(size) 字节，超过安全上限。"
             case let .invalidGGUF(message):
                 "GGUF 无效：\(message)"
+            case let .invalidIMatrix(message):
+                "Imatrix 无效：\(message)"
             case .ggufMetadataTooLarge:
                 "GGUF metadata 与 tensor 目录超过 32 MB 安全上限。"
             case .missingFileSize:
@@ -133,6 +136,13 @@ struct RepositoryService: Sendable {
         case .gguf:
             let (overview, downloadedByteCount) = try await loadGGUF(file, from: snapshot)
             return .gguf(overview, downloadedByteCount: downloadedByteCount)
+        case .imatrix:
+            let data = try await loadReadableFile(file, from: snapshot)
+            let inspection = IMatrixInspector.inspect(data)
+            guard let overview = inspection.overview else {
+                throw ServiceError.invalidIMatrix(inspection.error ?? "无法解析 legacy imatrix 文件。")
+            }
+            return .imatrix(overview)
         case .jinja:
             let data = try await loadReadableFile(file, from: snapshot)
             guard let source = String(data: data, encoding: .utf8) else {

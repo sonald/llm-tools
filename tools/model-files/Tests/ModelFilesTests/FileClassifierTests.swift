@@ -14,15 +14,37 @@ final class FileClassifierTests: XCTestCase {
         XCTAssertEqual(FileClassifier.category(for: "pytorch_model.bin"), .weights)
     }
 
-    func testSafeTensorsAndGGUFWeightsSupportStructuredInspection() {
+    func testSafeTensorsGGUFAndIMatrixSupportStructuredInspection() {
         let safetensors = remoteWeight("model.safetensors")
         let gguf = remoteWeight("model.gguf")
+        let disguisedGGUF = RemoteFile(
+            path: "imatrix_unsloth.gguf_file",
+            size: 5_150_000,
+            isLFS: true,
+            revision: "main",
+            contentHash: nil,
+            category: FileClassifier.category(for: "imatrix_unsloth.gguf_file")
+        )
+        let imatrix = RemoteFile(
+            path: "imatrix_unsloth.dat",
+            size: 1_000,
+            isLFS: true,
+            revision: "main",
+            contentHash: nil,
+            category: FileClassifier.category(for: "imatrix_unsloth.dat")
+        )
         let pytorch = remoteWeight("pytorch_model.bin")
 
         XCTAssertEqual(safetensors.structuredInspectionFormat, .safetensors)
         XCTAssertFalse(safetensors.isBlocked)
         XCTAssertEqual(gguf.structuredInspectionFormat, .gguf)
         XCTAssertFalse(gguf.isBlocked)
+        XCTAssertEqual(disguisedGGUF.category, .weights)
+        XCTAssertEqual(disguisedGGUF.structuredInspectionFormat, .gguf)
+        XCTAssertFalse(disguisedGGUF.isBlocked)
+        XCTAssertEqual(imatrix.category, .weightMetadata)
+        XCTAssertEqual(imatrix.structuredInspectionFormat, .imatrix)
+        XCTAssertFalse(imatrix.isBlocked)
         XCTAssertNil(pytorch.structuredInspectionFormat)
         XCTAssertTrue(pytorch.isBlocked)
     }

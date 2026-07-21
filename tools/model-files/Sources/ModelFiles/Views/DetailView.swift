@@ -176,13 +176,15 @@ private struct DetailHeader: View {
         case .configuration: "模型配置"
         case .tokenizer: "分词器资源"
         case .templates: "对话模板"
-        case .weightMetadata: "权重分片索引"
+        case .weightMetadata:
+            file.structuredInspectionFormat == .imatrix ? "Importance Matrix" : "权重分片索引"
         case .documentation: "模型文档"
         case .other: "仓库文件"
         case .weights:
             switch file.structuredInspectionFormat {
             case .safetensors: "SafeTensors 权重结构"
             case .gguf: "GGUF 模型结构"
+            case .imatrix: "Importance Matrix"
             default: "模型权重（禁止加载）"
             }
         }
@@ -217,25 +219,19 @@ private struct InspectionWorkspaceView: View {
                 )
             case let .gguf(overview, downloadedByteCount):
                 WeightWorkspaceView(
-                    title: overview.modelName ?? "GGUF 模型结构",
-                    subtitle: "GGUF v\(overview.version) · \(overview.isLittleEndian ? "little-endian" : "big-endian") · 只解析 metadata 与 tensor 目录。",
-                    facts: [
-                        overview.architecture.map { InspectionField(key: "架构", type: "string", value: $0, origin: .embedded) },
-                        overview.dominantDataType.map { InspectionField(key: "主要数据类型", type: "dtype", value: $0, origin: .derived) },
-                        overview.contextLength.map { InspectionField(key: "上下文长度", type: "count", value: $0.formatted(), origin: .embedded) },
-                        InspectionField(key: "Tensor 数量", type: "count", value: overview.tensors.count.formatted(), origin: .derived),
-                        InspectionField(key: "参数总数", type: "count", value: overview.parameterCount.formatted(), origin: .derived),
-                        InspectionField(key: "Metadata 数量", type: "count", value: overview.metadata.count.formatted(), origin: .derived),
-                        InspectionField(key: "数据区对齐", type: "bytes", value: Int64(overview.alignment).formattedByteCount, origin: .embedded),
-                        InspectionField(key: "Tensor 数据起点", type: "offset", value: overview.tensorDataOffset.formatted(), origin: .derived),
-                        InspectionField(key: "已读取前缀", type: "bytes", value: Int64(downloadedByteCount).formattedByteCount, origin: .runtime),
-                    ].compactMap { $0 },
+                    title: overview.isIMatrix ? "GGUF Imatrix" : overview.modelName ?? "GGUF 模型结构",
+                    subtitle: overview.isIMatrix
+                        ? "GGUF v\(overview.version) · importance matrix · 只解析 metadata 与 tensor 目录。"
+                        : "GGUF v\(overview.version) · \(overview.isLittleEndian ? "little-endian" : "big-endian") · 只解析 metadata 与 tensor 目录。",
+                    facts: ggufFacts(overview, downloadedByteCount: downloadedByteCount),
                     metadata: overview.metadata.map {
                         InspectionField(key: $0.key, type: $0.type, value: $0.value, origin: .embedded)
                     },
                     tensors: overview.tensors,
                     perspective: $store.perspective
                 )
+            case let .imatrix(overview):
+                IMatrixWorkspaceView(overview: overview, perspective: store.perspective)
             case let .jinja(document):
                 JinjaWorkspaceView(document: document, perspective: $store.perspective)
                     .id(file.path)
@@ -268,6 +264,51 @@ private struct InspectionWorkspaceView: View {
         inspection.safetyNotice ?? (file.category == .weightMetadata
             ? "只读取权重分片索引；不会请求任何权重文件。"
             : nil)
+    }
+
+    private func ggufFacts(_ overview: GGUFOverview, downloadedByteCount: Int) -> [InspectionField] {
+        var facts: [InspectionField] = [
+            InspectionField(key: "Tensor 数量", type: "count", value: overview.tensors.count.formatted(), origin: .derived),
+            InspectionField(key: "参数总数", type: "count", value: overview.parameterCount.formatted(), origin: .derived),
+            InspectionField(key: "Metadata 数量", type: "count", value: overview.metadata.count.formatted(), origin: .derived),
+            InspectionField(key: "数据区对齐", type: "bytes", value: Int64(overview.alignment).formattedByteCount, origin: .embedded),
+            InspectionField(key: "Tensor 数据起点", type: "offset", value: overview.tensorDataOffset.formatted(), origin: .derived),
+            InspectionField(key: "已读取前缀", type: "bytes", value: Int64(downloadedByteCount).formattedByteCount, origin: .runtime),
+        ]
+
+        if overview.isIMatrix {
+            if let count = overview.imatrixEntryCount {
+                facts.insert(InspectionField(key: "Imatrix 条目", type: "count", value: count.formatted(), origin: .derived), at: 0)
+            }
+            appendMetadataFact("imatrix.datasets", title: "数据集", from: overview, to: &facts)
+            appendMetadataFact("imatrix.chunk_count", title: "Chunk 数", from: overview, to: &facts)
+            appendMetadataFact("imatrix.chunk_size", title: "Chunk 大小", from: overview, to: &facts)
+        } else {
+            if let architecture = overview.architecture {
+                facts.insert(InspectionField(key: "架构", type: "string", value: architecture, origin: .embedded), at: 0)
+            }
+            if let dataType = overview.dominantDataType {
+                facts.insert(InspectionField(key: "主要数据类型", type: "dtype", value: dataType, origin: .derived), at: min(1, facts.count))
+            }
+            if let contextLength = overview.contextLength {
+                facts.insert(InspectionField(key: "上下文长度", type: "count", value: contextLength.formatted(), origin: .embedded), at: min(2, facts.count))
+            }
+            appendMetadataFact("quantize.imatrix.file", title: "量化 Imatrix", from: overview, to: &facts)
+            appendMetadataFact("quantize.imatrix.dataset", title: "Imatrix 数据集", from: overview, to: &facts)
+            appendMetadataFact("quantize.imatrix.entries_count", title: "Imatrix 条目", from: overview, to: &facts)
+            appendMetadataFact("quantize.imatrix.chunks_count", title: "Imatrix Chunks", from: overview, to: &facts)
+        }
+        return facts
+    }
+
+    private func appendMetadataFact(
+        _ key: String,
+        title: String,
+        from overview: GGUFOverview,
+        to facts: inout [InspectionField]
+    ) {
+        guard let entry = overview.entry(key) else { return }
+        facts.append(InspectionField(key: title, type: entry.type, value: entry.value, origin: .embedded))
     }
 }
 

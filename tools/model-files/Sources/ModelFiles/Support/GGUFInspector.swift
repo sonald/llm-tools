@@ -21,6 +21,24 @@ struct GGUFOverview: Sendable, Equatable {
 
     var modelName: String? { entry("general.name")?.stringValue }
     var architecture: String? { entry("general.architecture")?.stringValue }
+    var isIMatrix: Bool { entry("general.type")?.stringValue == "imatrix" }
+
+    var imatrixEntryCount: Int? {
+        guard isIMatrix else { return nil }
+        let sumSuffix = ".in_sum2"
+        let countSuffix = ".counts"
+        let sums = Set(tensors.compactMap { tensor in
+            tensor.name.hasSuffix(sumSuffix)
+                ? String(tensor.name.dropLast(sumSuffix.count))
+                : nil
+        })
+        let counts = Set(tensors.compactMap { tensor in
+            tensor.name.hasSuffix(countSuffix)
+                ? String(tensor.name.dropLast(countSuffix.count))
+                : nil
+        })
+        return sums.intersection(counts).count
+    }
 
     var contextLength: UInt64? {
         if let architecture,
@@ -42,7 +60,7 @@ struct GGUFOverview: Sendable, Equatable {
         }?.key
     }
 
-    private func entry(_ key: String) -> GGUFMetadataEntry? {
+    func entry(_ key: String) -> GGUFMetadataEntry? {
         metadata.first { $0.key == key }
     }
 }

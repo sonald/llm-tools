@@ -62,6 +62,19 @@ final class GGUFInspectorTests: XCTestCase {
         XCTAssertFalse(overview.isLittleEndian)
     }
 
+    func testRecognizesGGUFIMatrixTensorPairs() {
+        var data = header(version: 3, tensorCount: 2, metadataCount: 1, littleEndian: true)
+        appendMetadataString("general.type", "imatrix", to: &data)
+        appendTensor("blk.0.weight.in_sum2", shape: [4], offset: 0, to: &data)
+        appendTensor("blk.0.weight.counts", shape: [1], offset: 32, to: &data)
+
+        guard case let .complete(overview) = GGUFInspector.inspect(data) else {
+            return XCTFail("Expected complete GGUF imatrix")
+        }
+        XCTAssertTrue(overview.isIMatrix)
+        XCTAssertEqual(overview.imatrixEntryCount, 1)
+    }
+
     private func makeV3() -> Data {
         var data = header(version: 3, tensorCount: 1, metadataCount: 5, littleEndian: true)
         appendMetadataString("general.architecture", "llama", to: &data)
@@ -109,6 +122,16 @@ final class GGUFInspectorTests: XCTestCase {
         appendString(key, to: &data, version: 3, littleEndian: true)
         append(4, bytes: 4, to: &data, littleEndian: true)
         append(UInt64(value), bytes: 4, to: &data, littleEndian: true)
+    }
+
+    private func appendTensor(_ name: String, shape: [UInt64], offset: UInt64, to data: inout Data) {
+        appendString(name, to: &data, version: 3, littleEndian: true)
+        append(UInt64(shape.count), bytes: 4, to: &data, littleEndian: true)
+        for dimension in shape {
+            append(dimension, bytes: 8, to: &data, littleEndian: true)
+        }
+        append(0, bytes: 4, to: &data, littleEndian: true)
+        append(offset, bytes: 8, to: &data, littleEndian: true)
     }
 
     private func appendString(

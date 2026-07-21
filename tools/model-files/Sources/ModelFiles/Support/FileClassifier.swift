@@ -2,13 +2,26 @@ import Foundation
 
 enum FileClassifier {
     private static let blockedExtensions: Set<String> = [
-        "safetensors", "bin", "pt", "pth", "ckpt", "gguf", "onnx",
+        "safetensors", "bin", "pt", "pth", "ckpt", "onnx",
         "h5", "msgpack", "tflite", "pb"
     ]
+
+    static func isGGUFFileName(_ name: String) -> Bool {
+        let lowercasedName = name.lowercased()
+        return lowercasedName.hasSuffix(".gguf") || lowercasedName.hasSuffix(".gguf_file")
+    }
 
     static func category(for path: String) -> FileCategory {
         let name = URL(fileURLWithPath: path).lastPathComponent.lowercased()
         let lowerPath = path.lowercased()
+
+        if name.contains("imatrix"), name.hasSuffix(".dat") || name.contains(".dat.at_") {
+            return .weightMetadata
+        }
+
+        if isGGUFFileName(name) {
+            return .weights
+        }
 
         if name.hasSuffix(".index.json") &&
             (name.contains("safetensors") || name.contains("pytorch_model")) {
