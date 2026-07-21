@@ -10,6 +10,10 @@ struct RepositoryService: Sendable {
         case fileTooLarge(Int64)
         case invalidSafetensorsHeader
         case safetensorsHeaderTooLarge(UInt64)
+        case invalidGGUF(String)
+        case ggufMetadataTooLarge
+        case missingFileSize
+        case invalidUTF8
 
         var errorDescription: String? {
             switch self {
@@ -29,6 +33,14 @@ struct RepositoryService: Sendable {
                 "SafeTensors header 无效。"
             case let .safetensorsHeaderTooLarge(size):
                 "SafeTensors header 为 \(size) 字节，超过安全上限。"
+            case let .invalidGGUF(message):
+                "GGUF 无效：\(message)"
+            case .ggufMetadataTooLarge:
+                "GGUF metadata 与 tensor 目录超过 32 MB 安全上限。"
+            case .missingFileSize:
+                "源站未提供文件大小，无法安全读取 GGUF 前缀。"
+            case .invalidUTF8:
+                "文件不是有效的 UTF-8 文本。"
             }
         }
     }
@@ -40,6 +52,7 @@ struct RepositoryService: Sendable {
 
     private let session: URLSession
     private let maximumReadableSize: Int64 = 32 * 1024 * 1024
+    private let ggufChunkSize: UInt64 = 1 * 1_024 * 1_024
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -108,11 +121,34 @@ struct RepositoryService: Sendable {
         return trimmed
     }
 
-    func loadFile(_ file: RemoteFile, from snapshot: RepositorySnapshot) async throws -> Data {
-        if file.supportsMetadataPreview {
-            return try await loadSafetensorsHeader(file, from: snapshot)
+    func inspectFile(_ file: RemoteFile, from snapshot: RepositorySnapshot) async throws -> InspectionDocument {
+        switch file.structuredInspectionFormat {
+        case .safetensors:
+            let header = try await loadSafetensorsHeader(file, from: snapshot)
+            let inspection = SafetensorsInspector.inspect(header)
+            guard let overview = inspection.overview else {
+                throw ServiceError.invalidSafetensorsHeader
+            }
+            return .safetensors(overview, headerByteCount: header.count)
+        case .gguf:
+            let (overview, downloadedByteCount) = try await loadGGUF(file, from: snapshot)
+            return .gguf(overview, downloadedByteCount: downloadedByteCount)
+        case .jinja:
+            let data = try await loadReadableFile(file, from: snapshot)
+            guard let source = String(data: data, encoding: .utf8) else {
+                throw ServiceError.invalidUTF8
+            }
+            return .jinja(JinjaDocument(source: source))
+        case nil:
+            guard !file.isBlocked else { throw ServiceError.blockedWeight }
+            return .generic(try await loadReadableFile(file, from: snapshot))
         }
-        guard !file.isBlocked else { throw ServiceError.blockedWeight }
+    }
+
+    private func loadReadableFile(
+        _ file: RemoteFile,
+        from snapshot: RepositorySnapshot
+    ) async throws -> Data {
         if let size = file.size, size > maximumReadableSize {
             throw ServiceError.fileTooLarge(size)
         }
@@ -128,6 +164,39 @@ struct RepositoryService: Sendable {
             throw ServiceError.fileTooLarge(Int64(data.count))
         }
         return data
+    }
+
+    private func loadGGUF(
+        _ file: RemoteFile,
+        from snapshot: RepositorySnapshot
+    ) async throws -> (GGUFOverview, Int) {
+        guard let fileSize = file.size, fileSize > 0 else {
+            throw ServiceError.missingFileSize
+        }
+        let url = try contentURL(for: file, snapshot: snapshot)
+        let budget = min(UInt64(fileSize), UInt64(maximumReadableSize))
+        var data = Data()
+        var start: UInt64 = 0
+
+        while start < budget {
+            try Task.checkCancellation()
+            let end = min(start + ggufChunkSize, budget) - 1
+            data.append(try await fetchRange(start...end, url: url))
+
+            switch GGUFInspector.inspect(data) {
+            case let .complete(overview):
+                return (overview, data.count)
+            case .needsMoreData:
+                start = end + 1
+            case let .invalid(message):
+                throw ServiceError.invalidGGUF(message)
+            }
+        }
+
+        if UInt64(fileSize) <= budget {
+            throw ServiceError.invalidGGUF("文件在 metadata 与 tensor 目录完成前结束。")
+        }
+        throw ServiceError.ggufMetadataTooLarge
     }
 
     private func loadSafetensorsHeader(
@@ -162,7 +231,7 @@ struct RepositoryService: Sendable {
         request.setValue("bytes=\(range.lowerBound)-\(range.upperBound)", forHTTPHeaderField: "Range")
         request.setValue("ModelFiles/0.1 (macOS)", forHTTPHeaderField: "User-Agent")
         let length = range.upperBound - range.lowerBound + 1
-        guard length <= UInt64(Int.max) else { throw ServiceError.invalidSafetensorsHeader }
+        guard length <= UInt64(Int.max) else { throw ServiceError.invalidResponse }
         return try await HTTPRangeLoader.fetch(request, expectedCount: Int(length))
     }
 

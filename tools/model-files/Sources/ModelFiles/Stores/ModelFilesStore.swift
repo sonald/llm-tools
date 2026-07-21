@@ -12,13 +12,13 @@ final class ModelFilesStore: ObservableObject {
     @Published private(set) var snapshot: RepositorySnapshot?
     @Published var selectedPath: String?
     @Published var filter = ""
-    @Published var detailMode: DetailMode = .summary
+    @Published var perspective: InspectionPerspective = .overview
     @Published private(set) var isLoadingRepository = false
     @Published private(set) var loadingPath: String?
     @Published private(set) var errorMessage: String?
 
     private let service = RepositoryService()
-    private var contents: [String: Data] = [:]
+    private var contents: [String: InspectionDocument] = [:]
     private var repositoryTask: Task<Void, Never>?
     private var fileTask: Task<Void, Never>?
 
@@ -27,9 +27,13 @@ final class ModelFilesStore: ObservableObject {
         return snapshot?.files.first { $0.path == selectedPath }
     }
 
-    var selectedData: Data? {
+    var selectedInspection: InspectionDocument? {
         guard let selectedPath else { return nil }
         return contents[selectedPath]
+    }
+
+    var availablePerspectives: [InspectionPerspective] {
+        selectedInspection?.perspectives ?? [.overview]
     }
 
     var statusText: String? {
@@ -81,7 +85,7 @@ final class ModelFilesStore: ObservableObject {
                 let preferred = snapshot.files.first { $0.path == "config.json" && !$0.isBlocked }
                     ?? snapshot.files.first { !$0.isBlocked }
                 self.selectedPath = preferred?.path
-                self.detailMode = .summary
+                self.perspective = .overview
                 self.loadSelectedFile()
             } catch is CancellationError {
                 return
@@ -96,7 +100,7 @@ final class ModelFilesStore: ObservableObject {
     func select(path: String?) {
         guard selectedPath != path else { return }
         selectedPath = path
-        detailMode = .summary
+        perspective = .overview
         errorMessage = nil
         loadSelectedFile()
     }
@@ -117,9 +121,9 @@ final class ModelFilesStore: ObservableObject {
         fileTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let data = try await service.loadFile(file, from: snapshot)
+                let inspection = try await service.inspectFile(file, from: snapshot)
                 try Task.checkCancellation()
-                self.contents[file.path] = data
+                self.contents[file.path] = inspection
                 self.loadingPath = nil
             } catch is CancellationError {
                 return

@@ -43,9 +43,8 @@ struct DetailView: View {
         } else if store.loadingPath == file.path {
             VStack(spacing: 12) {
                 ProgressView()
-                Text(file.supportsMetadataPreview
-                    ? "正在读取 \(file.name) 的结构 Header…"
-                    : "正在后台下载 \(file.name)…")
+                Text(file.structuredInspectionFormat?.loadingDescription
+                    ?? "正在后台读取 \(file.name)…")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 5) {
@@ -60,11 +59,11 @@ struct DetailView: View {
                 .foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let data = store.selectedData {
-            FileReaderView(
+        } else if let inspection = store.selectedInspection {
+            InspectionWorkspaceView(
+                store: store,
                 file: file,
-                data: data,
-                mode: store.detailMode,
+                inspection: inspection,
                 baseURL: store.snapshot.flatMap {
                     try? RepositoryService().contentURL(for: file, snapshot: $0).deletingLastPathComponent()
                 }
@@ -115,16 +114,27 @@ private struct DetailHeader: View {
 
             Spacer(minLength: 8)
 
-            Picker("查看方式", selection: $store.detailMode) {
-                ForEach(DetailMode.allCases) { mode in
-                    Text(mode == .summary && file.name.lowercased().hasSuffix(".md") ? "渲染" : mode.title)
-                        .tag(mode)
+            if let formatTitle = store.selectedInspection?.formatTitle
+                ?? file.structuredInspectionFormat?.title {
+                Text(formatTitle)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.quaternary, in: Capsule())
+            }
+
+            Picker("查看方式", selection: $store.perspective) {
+                ForEach(store.availablePerspectives) { perspective in
+                    Text(perspective == .overview && file.name.lowercased().hasSuffix(".md")
+                        ? "渲染"
+                        : perspective.title)
+                        .tag(perspective)
                 }
             }
             .labelsHidden()
             .pickerStyle(.segmented)
             .frame(width: 240)
-            .disabled(file.isBlocked)
+            .disabled(file.isBlocked || store.selectedInspection == nil)
 
             Button {
                 store.copySelectedPath()
@@ -145,6 +155,20 @@ private struct DetailHeader: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 13)
         .background(.bar)
+        .background(alignment: .topLeading) {
+            HStack(spacing: 0) {
+                ForEach(Array(store.availablePerspectives.prefix(3).enumerated()), id: \.offset) { index, perspective in
+                    Button("") { store.perspective = perspective }
+                        .keyboardShortcut(
+                            KeyEquivalent(Character(String(index + 1))),
+                            modifiers: .command
+                        )
+                        .frame(width: 0, height: 0)
+                        .opacity(0)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
     }
 
     private var purpose: String {
@@ -156,81 +180,79 @@ private struct DetailHeader: View {
         case .documentation: "模型文档"
         case .other: "仓库文件"
         case .weights:
-            file.supportsMetadataPreview ? "SafeTensors 权重结构（仅 Header）" : "模型权重（禁止加载）"
+            switch file.structuredInspectionFormat {
+            case .safetensors: "SafeTensors 权重结构"
+            case .gguf: "GGUF 模型结构"
+            default: "模型权重（禁止加载）"
+            }
         }
     }
 }
 
-private struct FileReaderView: View {
+private struct InspectionWorkspaceView: View {
+    @ObservedObject var store: ModelFilesStore
     let file: RemoteFile
-    let data: Data
-    let mode: DetailMode
+    let inspection: InspectionDocument
     let baseURL: URL?
 
     var body: some View {
         Group {
-            if mode == .summary && file.category == .templates {
-                summary
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 18)
-                    .frame(
-                        maxWidth: .infinity,
-                        maxHeight: .infinity,
-                        alignment: .topLeading
-                    )
-            } else {
-                ScrollView {
-                    Group {
-                        switch mode {
-                        case .raw:
-                            if isSafetensors {
-                                VStack(alignment: .leading, spacing: 16) {
-                                    ReaderTitle(
-                                        "SafeTensors Header 原文",
-                                        subtitle: "最多展示前 256 KB；完整 tensor 结构请使用“全部字段”。"
-                                    )
-                                    RawTextView(data: Data(data.prefix(256 * 1_024)))
-                                }
-                            } else if data.count > 128 * 1_024 {
-                                LinesView(
-                                    documentID: file.path,
-                                    data: data,
-                                    title: "原文",
-                                    subtitle: "大文件按行分批渲染，避免一次性文本排版阻塞界面。"
-                                )
-                            } else {
-                                RawTextView(data: data)
-                            }
-                        case .fields:
-                            if isSafetensors {
-                                SafetensorsView(data: data, showsTensors: true)
-                            } else if isTokenizerJSON {
-                                TokenizerJSONView(data: data, showsFields: true)
-                            } else if isJSON, let object = jsonObject {
-                                JSONFieldsView(object: object)
-                            } else {
-                                LinesView(
-                                    documentID: file.path,
-                                    data: data,
-                                    title: "全部行",
-                                    subtitle: "纯文本没有字段结构，按行分批展示。"
-                                )
-                            }
-                        case .summary:
-                            summary
-                        }
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 18)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            switch inspection {
+            case let .safetensors(overview, headerByteCount):
+                WeightWorkspaceView(
+                    title: "SafeTensors 权重结构",
+                    subtitle: "Header 描述 tensor 目录；权重数据区未读取。",
+                    facts: [
+                        InspectionField(key: "Tensor 数量", type: "count", value: overview.tensors.count.formatted(), origin: .derived),
+                        InspectionField(key: "参数总数", type: "count", value: overview.parameterCount.formatted(), origin: .derived),
+                        InspectionField(key: "权重数据大小", type: "bytes", value: formattedByteCount(overview.byteCount), origin: .derived),
+                        InspectionField(key: "主要数据类型", type: "dtype", value: dtypeSummary(overview.dtypeCounts), origin: .derived),
+                        InspectionField(key: "Header 大小", type: "bytes", value: Int64(headerByteCount).formattedByteCount, origin: .runtime),
+                    ],
+                    metadata: overview.metadata.sorted(by: { $0.key < $1.key }).map {
+                        InspectionField(key: $0.key, type: "string", value: $0.value, origin: .embedded)
+                    },
+                    tensors: overview.tensors,
+                    perspective: $store.perspective
+                )
+            case let .gguf(overview, downloadedByteCount):
+                WeightWorkspaceView(
+                    title: overview.modelName ?? "GGUF 模型结构",
+                    subtitle: "GGUF v\(overview.version) · \(overview.isLittleEndian ? "little-endian" : "big-endian") · 只解析 metadata 与 tensor 目录。",
+                    facts: [
+                        overview.architecture.map { InspectionField(key: "架构", type: "string", value: $0, origin: .embedded) },
+                        overview.dominantDataType.map { InspectionField(key: "主要数据类型", type: "dtype", value: $0, origin: .derived) },
+                        overview.contextLength.map { InspectionField(key: "上下文长度", type: "count", value: $0.formatted(), origin: .embedded) },
+                        InspectionField(key: "Tensor 数量", type: "count", value: overview.tensors.count.formatted(), origin: .derived),
+                        InspectionField(key: "参数总数", type: "count", value: overview.parameterCount.formatted(), origin: .derived),
+                        InspectionField(key: "Metadata 数量", type: "count", value: overview.metadata.count.formatted(), origin: .derived),
+                        InspectionField(key: "数据区对齐", type: "bytes", value: Int64(overview.alignment).formattedByteCount, origin: .embedded),
+                        InspectionField(key: "Tensor 数据起点", type: "offset", value: overview.tensorDataOffset.formatted(), origin: .derived),
+                        InspectionField(key: "已读取前缀", type: "bytes", value: Int64(downloadedByteCount).formattedByteCount, origin: .runtime),
+                    ].compactMap { $0 },
+                    metadata: overview.metadata.map {
+                        InspectionField(key: $0.key, type: $0.type, value: $0.value, origin: .embedded)
+                    },
+                    tensors: overview.tensors,
+                    perspective: $store.perspective
+                )
+            case let .jinja(document):
+                JinjaWorkspaceView(document: document, perspective: $store.perspective)
+                    .id(file.path)
+            case let .generic(data):
+                FileReaderView(
+                    file: file,
+                    data: data,
+                    perspective: store.perspective,
+                    baseURL: baseURL
+                )
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if file.category == .weights || file.category == .weightMetadata {
+            if let notice = safetyNotice {
                 HStack(spacing: 7) {
                     Image(systemName: "lock.fill")
-                    Text("权重数据区始终不会下载；SafeTensors 只通过 HTTP Range 读取结构 Header。")
+                    Text(notice)
                     Spacer()
                 }
                 .font(.caption)
@@ -242,19 +264,70 @@ private struct FileReaderView: View {
         }
     }
 
+    private var safetyNotice: String? {
+        inspection.safetyNotice ?? (file.category == .weightMetadata
+            ? "只读取权重分片索引；不会请求任何权重文件。"
+            : nil)
+    }
+}
+
+private struct FileReaderView: View {
+    let file: RemoteFile
+    let data: Data
+    let perspective: InspectionPerspective
+    let baseURL: URL?
+
+    var body: some View {
+        Group {
+            ScrollView {
+                Group {
+                    switch perspective {
+                    case .raw:
+                        if data.count > 128 * 1_024 {
+                                LinesView(
+                                    documentID: file.path,
+                                    data: data,
+                                    title: "原文",
+                                    subtitle: "大文件按行分批渲染，避免一次性文本排版阻塞界面。"
+                                )
+                        } else {
+                            RawTextView(data: data)
+                        }
+                    case .fields:
+                        if isTokenizerJSON {
+                                TokenizerJSONView(data: data, showsFields: true)
+                        } else if isJSON, let object = jsonObject {
+                            JSONFieldsView(object: object)
+                        } else {
+                            LinesView(
+                                documentID: file.path,
+                                data: data,
+                                title: "全部行",
+                                subtitle: "纯文本没有字段结构，按行分批展示。"
+                            )
+                        }
+                    case .overview:
+                        summary
+                    default:
+                        summary
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
     @ViewBuilder
     private var summary: some View {
         let name = file.name.lowercased()
-        if isSafetensors {
-            SafetensorsView(data: data, showsTensors: false)
-        } else if name == "config.json" || name == "configuration.json" {
+        if name == "config.json" || name == "configuration.json" {
             ConfigSummaryView(object: jsonDictionary)
         } else if name == "generation_config.json" {
             GenerationSummaryView(object: jsonDictionary)
         } else if name == "tokenizer_config.json" {
             TokenizerSummaryView(object: jsonDictionary)
-        } else if file.category == .templates {
-            TemplatePlaygroundView(template: text, tokenizerConfig: [:])
         } else if name == "vocab.json" {
             VocabView(object: jsonDictionary)
         } else if name == "tokenizer.json" {
@@ -287,141 +360,325 @@ private struct FileReaderView: View {
     private var text: String { String(decoding: data, as: UTF8.self) }
     private var isJSON: Bool { file.name.lowercased().hasSuffix(".json") }
     private var isTokenizerJSON: Bool { file.name.lowercased() == "tokenizer.json" }
-    private var isSafetensors: Bool { file.name.lowercased().hasSuffix(".safetensors") }
     private var jsonObject: Any? { try? JSONSerialization.jsonObject(with: data) }
     private var jsonDictionary: [String: Any] { jsonObject as? [String: Any] ?? [:] }
 }
 
-private struct SafetensorsView: View {
-    let data: Data
-    let showsTensors: Bool
+private struct WeightWorkspaceView: View {
+    let title: String
+    let subtitle: String
+    let facts: [InspectionField]
+    let metadata: [InspectionField]
+    let tensors: [TensorDescriptor]
+    @Binding var perspective: InspectionPerspective
 
-    @State private var overview: SafetensorsOverview?
-    @State private var error: String?
-    @State private var isInspecting = true
     @State private var query = ""
-    @State private var visibleLimit = 300
+    @State private var selectedMetadataKey: String?
+    @State private var selectedTensorName: String?
+    @FocusState private var queryIsFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            if isInspecting {
-                ProgressView("正在后台解析 SafeTensors header…")
-                    .controlSize(.small)
-            } else if let error {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-            } else if let overview {
-                content(overview)
+        Group {
+            switch perspective {
+            case .metadata:
+                HSplitView {
+                    metadataTable.frame(minWidth: 520)
+                    metadataInspector
+                        .frame(minWidth: 260, idealWidth: 310, maxWidth: 390)
+                }
+            case .tensors:
+                HSplitView {
+                    tensorTable.frame(minWidth: 520)
+                    tensorInspector
+                        .frame(minWidth: 260, idealWidth: 310, maxWidth: 390)
+                }
+            default:
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 22) {
+                        ReaderTitle(title, subtitle: subtitle)
+                        InspectionFactsView(fields: facts)
+                        if !metadata.isEmpty {
+                            Button("查看全部 \(metadata.count.formatted()) 条 Metadata") {
+                                perspective = .metadata
+                            }
+                        }
+                        Button("查看全部 \(tensors.count.formatted()) 个 Tensors") {
+                            perspective = .tensors
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
-        .task(id: data.count) {
-            isInspecting = true
-            let inspection = await Task.detached(priority: .userInitiated) {
-                SafetensorsInspector.inspect(data)
-            }.value
-            guard !Task.isCancelled else { return }
-            overview = inspection.overview
-            error = inspection.error
-            isInspecting = false
+        .background(alignment: .topLeading) {
+            Button("") { queryIsFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
         }
-        .onChange(of: query) { _ in
-            visibleLimit = 300
+        .onChange(of: perspective) { query = "" }
+    }
+
+    private var filteredMetadata: [InspectionField] {
+        guard !query.isEmpty else { return metadata }
+        return metadata.filter {
+            $0.key.localizedCaseInsensitiveContains(query)
+                || $0.value.localizedCaseInsensitiveContains(query)
         }
     }
 
-    private func content(_ overview: SafetensorsOverview) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
-            ReaderTitle(
-                "SafeTensors 权重结构",
-                subtitle: "只读取了 \(Int64(data.count).formattedByteCount) JSON header；没有请求任何 tensor 数据。"
+    private var filteredTensors: [TensorDescriptor] {
+        guard !query.isEmpty else { return tensors }
+        return tensors.filter {
+            $0.name.localizedCaseInsensitiveContains(query)
+                || $0.dataType.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var metadataTable: some View {
+        VStack(spacing: 0) {
+            tableSearch(
+                title: "Metadata",
+                count: filteredMetadata.count,
+                prompt: "搜索 key 或值"
             )
-
-            PropertyGroup(title: "概览", rows: [
-                ("张量数量", overview.tensors.count.formatted()),
-                ("参数总数", overview.parameterCount.formatted()),
-                ("权重数据大小", byteCount(overview.byteCount)),
-                ("数据类型", dtypeSummary(overview.dtypeCounts)),
-            ])
-
-            if !overview.metadata.isEmpty {
-                PropertyGroup(
-                    title: "Metadata",
-                    rows: overview.metadata.sorted(by: { $0.key < $1.key })
-                )
-            }
-
-            if showsTensors {
-                tensorList(overview.tensors)
-            } else {
-                Text("切换到“全部字段”可搜索 tensor 名称，并按需分批加载结构列表。")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            Divider()
+            Table(filteredMetadata, selection: $selectedMetadataKey) {
+                TableColumn("字段", value: \.key)
+                TableColumn("类型", value: \.type)
+                TableColumn("值") { field in
+                    Text(field.value)
+                        .font(.system(.body, design: .monospaced))
+                        .lineLimit(1)
+                }
+                TableColumn("来源") { field in
+                    Text(field.origin.title).foregroundStyle(.secondary)
+                }
             }
         }
     }
 
-    private func tensorList(_ tensors: [SafetensorInfo]) -> some View {
-        let filtered = tensors.filter {
-            query.isEmpty
-                || $0.name.localizedCaseInsensitiveContains(query)
-                || $0.dtype.localizedCaseInsensitiveContains(query)
-        }
-        let visible = Array(filtered.prefix(visibleLimit))
-
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("Tensor 结构").font(.headline)
-                Spacer()
-                Text("\(filtered.count.formatted()) 项")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+    @ViewBuilder
+    private var metadataInspector: some View {
+        if let field = metadata.first(where: { $0.id == selectedMetadataKey }) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("字段详情").font(.headline)
+                    PropertyGroup(title: "", rows: [
+                        ("Key", field.key),
+                        ("类型", field.type),
+                        ("来源", field.origin.title),
+                    ])
+                    Divider()
+                    Text("完整值").font(.headline)
+                    Text(field.value)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(16)
             }
-            TextField("搜索 tensor 名称或 dtype", text: $query)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 430)
+        } else {
+            EmptyStateView(
+                title: "选择 Metadata",
+                systemImage: "list.bullet.rectangle",
+                message: "选择一行查看完整值、类型和来源。"
+            )
+        }
+    }
 
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(visible) { tensor in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(tensor.name)
+    private var tensorTable: some View {
+        VStack(spacing: 0) {
+            tableSearch(
+                title: "Tensors",
+                count: filteredTensors.count,
+                prompt: "搜索名称或 dtype"
+            )
+            Divider()
+            Table(filteredTensors, selection: $selectedTensorName) {
+                TableColumn("名称", value: \.name)
+                TableColumn("Shape") { tensor in
+                    Text(tensor.shapeText).font(.system(.body, design: .monospaced))
+                }
+                TableColumn("类型", value: \.dataType)
+                TableColumn("参数") { tensor in
+                    Text(tensor.parameterCount.formatted()).monospacedDigit()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tensorInspector: some View {
+        if let tensor = tensors.first(where: { $0.id == selectedTensorName }) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Tensor 详情").font(.headline)
+                    Text(tensor.name)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                    PropertyGroup(title: "", rows: compactRows([
+                        ("Shape", tensor.shapeText),
+                        ("类型", tensor.dataType),
+                        ("参数", tensor.parameterCount.formatted()),
+                        ("数据大小", tensor.byteCount.map(formattedByteCount)),
+                        ("数据 offset", tensor.offset.map { $0.formatted() }),
+                    ]))
+                    Text("这里只展示目录信息，不读取 tensor 数据。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(16)
+            }
+        } else {
+            EmptyStateView(
+                title: "选择 Tensor",
+                systemImage: "square.stack.3d.up",
+                message: "选择一行查看 shape、类型和 offset。"
+            )
+        }
+    }
+
+    private func tableSearch(title: String, count: Int, prompt: String) -> some View {
+        HStack(spacing: 12) {
+            Text(title).font(.headline)
+            Text("\(count.formatted()) 项")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Spacer()
+            TextField(prompt, text: $query)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 280)
+                .focused($queryIsFocused)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 48)
+    }
+}
+
+private struct JinjaWorkspaceView: View {
+    let document: JinjaDocument
+    @Binding var perspective: InspectionPerspective
+    @State private var source: String
+
+    init(document: JinjaDocument, perspective: Binding<InspectionPerspective>) {
+        self.document = document
+        _perspective = perspective
+        _source = State(initialValue: document.source)
+    }
+
+    var body: some View {
+        switch perspective {
+        case .source:
+            HSplitView {
+                VStack(spacing: 0) {
+                    sourceHeader
+                    Divider()
+                    JinjaTextEditor(text: $source)
+                }
+                .frame(minWidth: 560)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("源码详情").font(.headline)
+                        PropertyGroup(title: "", rows: [
+                            ("格式", "Jinja"),
+                            ("UTF-8 大小", Int64(source.utf8.count).formattedByteCount),
+                            ("行数", lineCount.formatted()),
+                            ("状态", isModified ? "临时修改" : "仓库原文"),
+                        ])
+                        Text("修改只保留在当前文件工作台，不会写回仓库。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(16)
+                }
+                .frame(minWidth: 260, idealWidth: 310, maxWidth: 390)
+            }
+        case .playground:
+            TemplatePlaygroundView(
+                template: $source,
+                originalTemplate: document.source,
+                tokenizerConfig: [:]
+            )
+            .padding(14)
+        default:
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    ReaderTitle(
+                        "Jinja Chat Template",
+                        subtitle: "在源码和试验台之间切换时，临时修改会保留。"
+                    )
+                    InspectionFactsView(fields: [
+                        InspectionField(key: "UTF-8 大小", type: "bytes", value: Int64(source.utf8.count).formattedByteCount, origin: isModified ? .runtime : .repository),
+                        InspectionField(key: "行数", type: "count", value: lineCount.formatted(), origin: .derived),
+                        InspectionField(key: "来源", type: "source", value: "仓库文件", origin: .repository),
+                        InspectionField(key: "当前状态", type: "state", value: isModified ? "临时修改" : "未修改", origin: .runtime),
+                    ])
+                    HStack {
+                        Button("查看源码") { perspective = .source }
+                        Button("打开试验台") { perspective = .playground }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var sourceHeader: some View {
+        HStack {
+            Text("Jinja 源码").font(.headline)
+            if isModified {
+                Text("临时修改")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+            Spacer()
+            Button("恢复仓库原文") { source = document.source }
+                .disabled(!isModified)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 44)
+    }
+
+    private var lineCount: Int {
+        source.isEmpty ? 0 : source.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).count
+    }
+
+    private var isModified: Bool { source != document.source }
+}
+
+private struct InspectionFactsView: View {
+    let fields: [InspectionField]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("概览").font(.headline)
+            VStack(spacing: 0) {
+                ForEach(Array(fields.enumerated()), id: \.element.id) { index, field in
+                    HStack(alignment: .firstTextBaseline, spacing: 18) {
+                        Text(field.key)
+                            .foregroundStyle(.secondary)
+                            .frame(minWidth: 150, maxWidth: 260, alignment: .leading)
+                        Text(field.value)
                             .font(.system(.body, design: .monospaced))
                             .textSelection(.enabled)
-                        HStack(spacing: 8) {
-                            Text(tensor.dtype)
-                            Text(shape(tensor.shape))
-                            Spacer()
-                            Text("\(tensor.parameterCount.formatted()) params")
-                            Text(byteCount(tensor.byteCount))
-                        }
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(field.origin.title)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
                     }
                     .padding(.vertical, 6)
-                    Divider()
-                }
-            }
-
-            if visible.count < filtered.count {
-                Button("再显示 \(min(300, filtered.count - visible.count).formatted()) 项") {
-                    visibleLimit += 300
+                    if index < fields.count - 1 { Divider() }
                 }
             }
         }
-    }
-
-    private func shape(_ dimensions: [Int64]) -> String {
-        "[" + dimensions.map(String.init).joined(separator: ", ") + "]"
-    }
-
-    private func dtypeSummary(_ counts: [String: Int]) -> String {
-        counts.sorted(by: { $0.key < $1.key })
-            .map { "\($0.key) × \($0.value.formatted())" }
-            .joined(separator: " · ")
-    }
-
-    private func byteCount(_ value: UInt64) -> String {
-        Int64(min(value, UInt64(Int64.max))).formattedByteCount
     }
 }
 
@@ -585,7 +842,7 @@ private struct TokenizerSummaryView: View {
 
             if let template = object["chat_template"] as? String, !template.isEmpty {
                 DisclosureGroup(isExpanded: $showsPlayground) {
-                    TemplatePlaygroundView(template: template, tokenizerConfig: object)
+                    EmbeddedTemplatePlaygroundView(template: template, tokenizerConfig: object)
                         .frame(height: 640)
                         .padding(.top, 12)
                 } label: {
@@ -721,7 +978,7 @@ private struct LinesView: View {
             lines = parsed
             isParsing = false
         }
-        .onChange(of: query) { _ in
+        .onChange(of: query) {
             visibleLimit = 1_000
         }
     }
@@ -859,4 +1116,14 @@ private enum JSONFormatter {
 
 private func compactRows(_ rows: [(String, String?)]) -> [(String, String)] {
     rows.compactMap { key, value in value.map { (key, $0) } }
+}
+
+private func formattedByteCount(_ value: UInt64) -> String {
+    Int64(min(value, UInt64(Int64.max))).formattedByteCount
+}
+
+private func dtypeSummary(_ counts: [String: Int]) -> String {
+    counts.sorted(by: { $0.key < $1.key })
+        .map { "\($0.key) × \($0.value.formatted())" }
+        .joined(separator: " · ")
 }

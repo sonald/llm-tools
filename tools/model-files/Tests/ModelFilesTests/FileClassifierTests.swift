@@ -14,14 +14,17 @@ final class FileClassifierTests: XCTestCase {
         XCTAssertEqual(FileClassifier.category(for: "pytorch_model.bin"), .weights)
     }
 
-    func testOnlySafetensorsWeightsSupportHeaderPreview() {
+    func testSafeTensorsAndGGUFWeightsSupportStructuredInspection() {
         let safetensors = remoteWeight("model.safetensors")
         let gguf = remoteWeight("model.gguf")
+        let pytorch = remoteWeight("pytorch_model.bin")
 
-        XCTAssertTrue(safetensors.supportsMetadataPreview)
+        XCTAssertEqual(safetensors.structuredInspectionFormat, .safetensors)
         XCTAssertFalse(safetensors.isBlocked)
-        XCTAssertFalse(gguf.supportsMetadataPreview)
-        XCTAssertTrue(gguf.isBlocked)
+        XCTAssertEqual(gguf.structuredInspectionFormat, .gguf)
+        XCTAssertFalse(gguf.isBlocked)
+        XCTAssertNil(pytorch.structuredInspectionFormat)
+        XCTAssertTrue(pytorch.isBlocked)
     }
 
     func testClassifiesFilesByIntent() {

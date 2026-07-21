@@ -34,6 +34,26 @@ final class SafetensorsInspectorTests: XCTestCase {
         XCTAssertEqual(result.overview?.metadata, ["format": "pt"])
     }
 
+    func testRejectsMalformedTensorInsteadOfSilentlyDroppingIt() throws {
+        let header = try JSONSerialization.data(withJSONObject: [
+            "valid.weight": [
+                "dtype": "F32",
+                "shape": [4],
+                "data_offsets": [0, 16],
+            ],
+            "broken.weight": [
+                "dtype": "F32",
+                "shape": [-1],
+                "data_offsets": [16, 20],
+            ],
+        ])
+
+        let result = SafetensorsInspector.inspect(header)
+
+        XCTAssertNil(result.overview)
+        XCTAssertNotNil(result.error)
+    }
+
     func testHighlightsJinjaSyntaxByIntent() {
         let source = #"{# note #} {% if name %}Hello {{ "world" }}{% endif %}"#
         let kinds = Set(JinjaSyntaxHighlighter.highlights(in: source).map(\.kind))

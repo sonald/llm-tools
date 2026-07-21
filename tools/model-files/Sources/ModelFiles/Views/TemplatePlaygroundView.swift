@@ -4,7 +4,7 @@ import SwiftUI
 struct TemplatePlaygroundView: View {
     private let originalTemplate: String
 
-    @State private var template: String
+    @Binding private var template: String
     @State private var messages: [TemplateMessage]
     @State private var includeTools = false
     @State private var tools: [TemplateTool]
@@ -15,13 +15,17 @@ struct TemplatePlaygroundView: View {
     @State private var isRendering = false
     @State private var selectedOutputItemID: Int?
 
-    init(template: String, tokenizerConfig: [String: Any]) {
-        originalTemplate = template
-        _template = State(initialValue: template)
+    init(
+        template: Binding<String>,
+        originalTemplate: String,
+        tokenizerConfig: [String: Any]
+    ) {
+        self.originalTemplate = originalTemplate
+        _template = template
         _messages = State(initialValue: Self.basicMessages)
         _tools = State(initialValue: [Self.weatherTool])
         _variables = State(initialValue: Self.initialVariables(
-            template: template,
+            template: originalTemplate,
             tokenizerConfig: tokenizerConfig
         ))
     }
@@ -55,15 +59,16 @@ struct TemplatePlaygroundView: View {
             }
 
             HSplitView {
-                inputPane
-                    .frame(minWidth: 280, idealWidth: 300, maxWidth: 340)
-
                 VSplitView {
                     templatePane
                         .frame(minHeight: 220)
                     previewPane
                         .frame(minHeight: 260)
                 }
+                .frame(minWidth: 560)
+
+                inputPane
+                    .frame(minWidth: 280, idealWidth: 310, maxWidth: 360)
             }
             .frame(minHeight: 480, maxHeight: .infinity)
             .background(.quaternary.opacity(0.18))
@@ -451,6 +456,26 @@ struct TemplatePlaygroundView: View {
             result.append(TemplateVariable(name: "documents", kind: .json, value: "[]"))
         }
         return result
+    }
+}
+
+struct EmbeddedTemplatePlaygroundView: View {
+    private let originalTemplate: String
+    private let tokenizerConfig: [String: Any]
+    @State private var template: String
+
+    init(template: String, tokenizerConfig: [String: Any]) {
+        originalTemplate = template
+        self.tokenizerConfig = tokenizerConfig
+        _template = State(initialValue: template)
+    }
+
+    var body: some View {
+        TemplatePlaygroundView(
+            template: $template,
+            originalTemplate: originalTemplate,
+            tokenizerConfig: tokenizerConfig
+        )
     }
 }
 

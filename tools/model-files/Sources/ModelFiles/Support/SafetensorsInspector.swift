@@ -1,17 +1,7 @@
 import Foundation
 
-struct SafetensorInfo: Identifiable, Sendable, Equatable {
-    let name: String
-    let dtype: String
-    let shape: [Int64]
-    let parameterCount: UInt64
-    let byteCount: UInt64
-
-    var id: String { name }
-}
-
 struct SafetensorsOverview: Sendable, Equatable {
-    let tensors: [SafetensorInfo]
+    let tensors: [TensorDescriptor]
     let metadata: [String: String]
     let dtypeCounts: [String: Int]
     let parameterCount: UInt64
@@ -38,39 +28,71 @@ enum SafetensorsInspector {
             guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 return SafetensorsInspection(overview: nil, error: "SafeTensors header 根节点不是对象。")
             }
-            let metadata = root["__metadata__"] as? [String: String] ?? [:]
-            let tensors = root.compactMap { name, value -> SafetensorInfo? in
-                guard name != "__metadata__",
-                      let entry = value as? [String: Any],
+            let metadata: [String: String]
+            if let rawMetadata = root["__metadata__"] {
+                guard let parsedMetadata = rawMetadata as? [String: String] else {
+                    return SafetensorsInspection(
+                        overview: nil,
+                        error: "SafeTensors __metadata__ 必须是字符串字典。"
+                    )
+                }
+                metadata = parsedMetadata
+            } else {
+                metadata = [:]
+            }
+            var tensors: [TensorDescriptor] = []
+            for (name, value) in root where name != "__metadata__" {
+                guard let entry = value as? [String: Any],
                       let dtype = entry["dtype"] as? String,
                       let rawShape = entry["shape"] as? [NSNumber],
                       let offsets = entry["data_offsets"] as? [NSNumber],
-                      offsets.count == 2 else { return nil }
-                let shape = rawShape.map(\.int64Value)
-                let parameters = shape.reduce(UInt64(1)) { partial, dimension in
-                    guard dimension >= 0 else { return 0 }
-                    let result = partial.multipliedReportingOverflow(by: UInt64(dimension))
-                    return result.overflow ? 0 : result.partialValue
+                      offsets.count == 2,
+                      rawShape.allSatisfy({ $0.int64Value >= 0 }),
+                      offsets.allSatisfy({ $0.int64Value >= 0 }) else {
+                    return SafetensorsInspection(
+                        overview: nil,
+                        error: "SafeTensors tensor \(name) 的结构无效。"
+                    )
                 }
-                let start = offsets[0].uint64Value
-                let end = offsets[1].uint64Value
-                return SafetensorInfo(
+
+                let shape = rawShape.map { UInt64($0.int64Value) }
+                guard let parameters = checkedProduct(shape) else {
+                    return SafetensorsInspection(
+                        overview: nil,
+                        error: "SafeTensors tensor \(name) 的 shape 溢出。"
+                    )
+                }
+                let start = UInt64(offsets[0].int64Value)
+                let end = UInt64(offsets[1].int64Value)
+                guard end >= start else {
+                    return SafetensorsInspection(
+                        overview: nil,
+                        error: "SafeTensors tensor \(name) 的 data_offsets 无效。"
+                    )
+                }
+                tensors.append(TensorDescriptor(
                     name: name,
-                    dtype: dtype,
+                    dataType: dtype,
                     shape: shape,
                     parameterCount: parameters,
-                    byteCount: end >= start ? end - start : 0
-                )
+                    byteCount: end - start,
+                    offset: start
+                ))
             }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            tensors.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+
+            guard let parameterCount = checkedSum(tensors.map(\.parameterCount)),
+                  let byteCount = checkedSum(tensors.compactMap(\.byteCount)) else {
+                return SafetensorsInspection(overview: nil, error: "SafeTensors 汇总值溢出。")
+            }
 
             return SafetensorsInspection(
                 overview: SafetensorsOverview(
                     tensors: tensors,
                     metadata: metadata,
-                    dtypeCounts: Dictionary(grouping: tensors, by: \.dtype).mapValues(\.count),
-                    parameterCount: tensors.reduce(0) { saturatingAdd($0, $1.parameterCount) },
-                    byteCount: tensors.reduce(0) { saturatingAdd($0, $1.byteCount) }
+                    dtypeCounts: Dictionary(grouping: tensors, by: \.dataType).mapValues(\.count),
+                    parameterCount: parameterCount,
+                    byteCount: byteCount
                 ),
                 error: nil
             )
@@ -79,8 +101,23 @@ enum SafetensorsInspector {
         }
     }
 
-    private static func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
-        let result = lhs.addingReportingOverflow(rhs)
-        return result.overflow ? .max : result.partialValue
+    private static func checkedProduct(_ values: [UInt64]) -> UInt64? {
+        var result: UInt64 = 1
+        for value in values {
+            let next = result.multipliedReportingOverflow(by: value)
+            guard !next.overflow else { return nil }
+            result = next.partialValue
+        }
+        return result
+    }
+
+    private static func checkedSum(_ values: [UInt64]) -> UInt64? {
+        var result: UInt64 = 0
+        for value in values {
+            let next = result.addingReportingOverflow(value)
+            guard !next.overflow else { return nil }
+            result = next.partialValue
+        }
+        return result
     }
 }

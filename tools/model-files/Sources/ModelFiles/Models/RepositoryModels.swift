@@ -62,8 +62,7 @@ struct RemoteFile: Identifiable, Hashable, Sendable {
 
     var id: String { path }
     var name: String { URL(fileURLWithPath: path).lastPathComponent }
-    var supportsMetadataPreview: Bool { name.lowercased().hasSuffix(".safetensors") }
-    var isBlocked: Bool { category == .weights && !supportsMetadataPreview }
+    var isBlocked: Bool { category == .weights && structuredInspectionFormat == nil }
 
     var shortHash: String? {
         guard let contentHash, !contentHash.isEmpty else { return nil }
@@ -77,20 +76,4 @@ struct RepositorySnapshot: Sendable {
     let revision: String
     let revisionLabel: String
     let files: [RemoteFile]
-}
-
-enum DetailMode: String, CaseIterable, Identifiable {
-    case summary
-    case fields
-    case raw
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .summary: "摘要"
-        case .fields: "全部字段"
-        case .raw: "原文"
-        }
-    }
 }

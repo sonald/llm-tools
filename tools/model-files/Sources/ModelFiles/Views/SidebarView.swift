@@ -53,11 +53,11 @@ struct SidebarView: View {
 
                     let weights = store.files(in: .weights)
                     if !weights.isEmpty {
-                        let previewableCount = weights.count(where: \.supportsMetadataPreview)
+                        let previewableCount = weights.count { !$0.isBlocked }
                         Section {
                             DisclosureGroup(isExpanded: $showWeights) {
                                 ForEach(weights) { file in
-                                    if file.supportsMetadataPreview {
+                                    if !file.isBlocked {
                                         SidebarFileRow(file: file)
                                             .tag(file.path)
                                     } else {
@@ -115,7 +115,7 @@ private struct SidebarFileRow: View {
     }
 
     private var icon: String {
-        if file.supportsMetadataPreview { return "list.bullet.rectangle" }
+        if file.category == .weights && !file.isBlocked { return "list.bullet.rectangle" }
         if file.isBlocked { return "lock.fill" }
         return switch file.category {
         case .configuration: "slider.horizontal.3"
@@ -130,7 +130,8 @@ private struct SidebarFileRow: View {
 
     private var note: String? {
         if file.name == "tokenizer_config.json" { return "含内嵌 Chat Template（如有）" }
-        if file.supportsMetadataPreview { return "只读取结构 Header" }
+        if file.structuredInspectionFormat == .safetensors { return "只读取 JSON Header" }
+        if file.structuredInspectionFormat == .gguf { return "只读取 metadata 前缀" }
         if file.isBlocked { return "不可预览" }
         return file.path == file.name ? nil : file.path
     }
