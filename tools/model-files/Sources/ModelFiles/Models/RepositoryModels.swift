@@ -1,31 +1,54 @@
 import Foundation
 
-enum SourceSelection: String, CaseIterable, Identifiable, Sendable {
-    case automatic
-    case modelScope
-    case huggingFace
+struct RepositoryHistoryEntry: Codable, Hashable, Sendable {
+    let input: String
+}
 
-    var id: Self { self }
+struct SSHLocation: Hashable, Sendable {
+    let user: String?
+    let host: String
+    let port: Int?
+    let rootPath: String
 
-    var title: String {
-        switch self {
-        case .automatic: "自动"
-        case .modelScope: "ModelScope"
-        case .huggingFace: "Hugging Face"
-        }
+    var canonicalInput: String {
+        var components = URLComponents()
+        components.scheme = "ssh"
+        components.user = user
+        components.host = host
+        components.port = port
+        components.path = rootPath
+        return components.string ?? "ssh://\(host)\(rootPath)"
     }
 }
 
-enum RepositorySource: String, Sendable {
-    case modelScope
-    case huggingFace
+enum RepositoryLocation: Hashable, Sendable {
+    case modelScope(modelID: String)
+    case huggingFace(modelID: String)
+    case local(root: URL)
+    case ssh(SSHLocation)
 
     var title: String {
         switch self {
         case .modelScope: "ModelScope"
         case .huggingFace: "Hugging Face"
+        case .local: "本地"
+        case let .ssh(location): "SSH \(location.host)"
         }
     }
+
+    var canonicalInput: String {
+        switch self {
+        case let .modelScope(modelID), let .huggingFace(modelID): modelID
+        case let .local(root): root.path
+        case let .ssh(location): location.canonicalInput
+        }
+    }
+
+}
+
+enum RepositoryVersion: Equatable, Sendable {
+    case immutable(label: String)
+    case live
 }
 
 enum FileCategory: String, CaseIterable, Identifiable, Sendable {
@@ -52,11 +75,10 @@ enum FileCategory: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-struct RemoteFile: Identifiable, Hashable, Sendable {
+struct RepositoryFile: Identifiable, Hashable, Sendable {
     let path: String
     let size: Int64?
-    let isLFS: Bool
-    let revision: String
+    let revision: String?
     let contentHash: String?
     let category: FileCategory
 
@@ -68,12 +90,22 @@ struct RemoteFile: Identifiable, Hashable, Sendable {
         guard let contentHash, !contentHash.isEmpty else { return nil }
         return String(contentHash.prefix(7))
     }
+
+    static func displayOrder(_ lhs: Self, _ rhs: Self) -> Bool {
+        let categories = FileCategory.allCases
+        let left = categories.firstIndex(of: lhs.category) ?? categories.endIndex
+        let right = categories.firstIndex(of: rhs.category) ?? categories.endIndex
+        guard left == right else { return left < right }
+        let leftPriority = FileClassifier.sortPriority(for: lhs.path)
+        let rightPriority = FileClassifier.sortPriority(for: rhs.path)
+        return leftPriority == rightPriority
+            ? lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
+            : leftPriority < rightPriority
+    }
 }
 
 struct RepositorySnapshot: Sendable {
-    let modelID: String
-    let source: RepositorySource
-    let revision: String
-    let revisionLabel: String
-    let files: [RemoteFile]
+    let location: RepositoryLocation
+    let version: RepositoryVersion
+    let files: [RepositoryFile]
 }

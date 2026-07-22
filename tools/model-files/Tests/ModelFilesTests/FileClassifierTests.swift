@@ -17,18 +17,16 @@ final class FileClassifierTests: XCTestCase {
     func testSafeTensorsGGUFAndIMatrixSupportStructuredInspection() {
         let safetensors = remoteWeight("model.safetensors")
         let gguf = remoteWeight("model.gguf")
-        let disguisedGGUF = RemoteFile(
+        let disguisedGGUF = RepositoryFile(
             path: "imatrix_unsloth.gguf_file",
             size: 5_150_000,
-            isLFS: true,
             revision: "main",
             contentHash: nil,
             category: FileClassifier.category(for: "imatrix_unsloth.gguf_file")
         )
-        let imatrix = RemoteFile(
+        let imatrix = RepositoryFile(
             path: "imatrix_unsloth.dat",
             size: 1_000,
-            isLFS: true,
             revision: "main",
             contentHash: nil,
             category: FileClassifier.category(for: "imatrix_unsloth.dat")
@@ -120,12 +118,50 @@ final class FileClassifierTests: XCTestCase {
     }
 
     func testModelHistoryKeepsNewestEntryAndRemovesDuplicates() {
+        let history = [
+            RepositoryHistoryEntry(input: "meta-llama/Llama-3"),
+            RepositoryHistoryEntry(input: "QWEN/Qwen3-4B"),
+            RepositoryHistoryEntry(input: "google/gemma-3"),
+        ]
         XCTAssertEqual(
             ModelFilesStore.updatedHistory(
-                ["meta-llama/Llama-3", "QWEN/Qwen3-4B", "google/gemma-3"],
-                with: "Qwen/Qwen3-4B"
+                history,
+                with: RepositoryHistoryEntry(input: "Qwen/Qwen3-4B")
             ),
-            ["Qwen/Qwen3-4B", "meta-llama/Llama-3", "google/gemma-3"]
+            [
+                RepositoryHistoryEntry(input: "Qwen/Qwen3-4B"),
+                RepositoryHistoryEntry(input: "meta-llama/Llama-3"),
+                RepositoryHistoryEntry(input: "google/gemma-3"),
+            ]
+        )
+
+        XCTAssertEqual(
+            ModelFilesStore.updatedHistory(
+                [RepositoryHistoryEntry(input: "/Models/Qwen")],
+                with: RepositoryHistoryEntry(input: "/models/qwen")
+            ).count,
+            2
+        )
+    }
+
+    func testMigratesLegacyRepositoryHistories() throws {
+        let suiteName = "ModelFilesTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(["Qwen/Qwen3-4B"], forKey: "ModelFiles.modelHistory")
+
+        XCTAssertEqual(
+            ModelFilesStore.loadHistory(from: defaults),
+            [RepositoryHistoryEntry(input: "Qwen/Qwen3-4B")]
+        )
+
+        defaults.set(
+            Data(#"[{"input":"ssh://gpu/models/Qwen","selection":"ssh"}]"#.utf8),
+            forKey: "ModelFiles.repositoryHistory.v2"
+        )
+        XCTAssertEqual(
+            ModelFilesStore.loadHistory(from: defaults),
+            [RepositoryHistoryEntry(input: "ssh://gpu/models/Qwen")]
         )
     }
 
@@ -181,11 +217,10 @@ final class FileClassifierTests: XCTestCase {
         )
     }
 
-    private func remoteWeight(_ path: String) -> RemoteFile {
-        RemoteFile(
+    private func remoteWeight(_ path: String) -> RepositoryFile {
+        RepositoryFile(
             path: path,
             size: 1_000,
-            isLFS: true,
             revision: "main",
             contentHash: nil,
             category: .weights

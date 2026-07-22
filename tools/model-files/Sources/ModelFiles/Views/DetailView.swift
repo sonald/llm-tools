@@ -14,12 +14,12 @@ struct DetailView: View {
                 }
             } else if let message = store.errorMessage {
                 EmptyStateView(
-                    title: "无法打开模型",
+                    title: "无法打开位置",
                     systemImage: "exclamationmark.triangle",
                     message: message,
                     actionTitle: "重试"
                 ) {
-                    store.openModel()
+                    store.openRepository()
                 }
             } else {
                 EmptyStateView(
@@ -33,7 +33,7 @@ struct DetailView: View {
     }
 
     @ViewBuilder
-    private func detailBody(file: RemoteFile) -> some View {
+    private func detailBody(file: RepositoryFile) -> some View {
         if file.isBlocked {
             EmptyStateView(
                 title: "权重文件已锁定",
@@ -52,7 +52,7 @@ struct DetailView: View {
                         Text(size.formattedByteCount)
                         Text("·")
                     }
-                    Text(store.snapshot?.source.title ?? "源站")
+                    Text(store.snapshot?.location.title ?? "来源")
                     Text("· 可切换到其他文件取消")
                 }
                 .font(.caption)
@@ -64,9 +64,7 @@ struct DetailView: View {
                 store: store,
                 file: file,
                 inspection: inspection,
-                baseURL: store.snapshot.flatMap {
-                    try? RepositoryService().contentURL(for: file, snapshot: $0).deletingLastPathComponent()
-                }
+                baseURL: store.snapshot.flatMap { RepositoryService().markdownBaseURL(for: file, in: $0) }
             )
         } else if let message = store.errorMessage {
             EmptyStateView(
@@ -78,14 +76,14 @@ struct DetailView: View {
                 store.loadSelectedFile()
             }
         } else {
-            EmptyStateView(title: "没有内容", systemImage: "doc", message: "源站未返回可显示的内容。")
+            EmptyStateView(title: "没有内容", systemImage: "doc", message: "来源未返回可显示的内容。")
         }
     }
 }
 
 private struct DetailHeader: View {
     @ObservedObject var store: ModelFilesStore
-    let file: RemoteFile
+    let file: RepositoryFile
 
     var body: some View {
         HStack(spacing: 14) {
@@ -101,9 +99,13 @@ private struct DetailHeader: View {
                     }
                     if let snapshot = store.snapshot {
                         Text("·")
-                        let branch = snapshot.source == .modelScope ? "master" : "main"
-                        let hash = file.shortHash ?? String(file.revision.prefix(7))
-                        Text("\(snapshot.source.title) · \(branch) · SHA \(hash)")
+                        switch snapshot.version {
+                        case let .immutable(label):
+                            let branch = if case .modelScope = snapshot.location { "master" } else { "main" }
+                            Text("\(snapshot.location.title) · \(branch) · SHA \(file.shortHash ?? label)")
+                        case .live:
+                            Text("\(snapshot.location.title) · 实时目录")
+                        }
                     }
                 }
                 .font(.caption)
@@ -144,13 +146,21 @@ private struct DetailHeader: View {
             }
             .help("复制文件路径")
 
-            Button {
-                store.openSelectedOnSource()
-            } label: {
-                Label("在源站打开", systemImage: "arrow.up.right.square")
+            if let snapshot = store.snapshot,
+               case .ssh = snapshot.location {
+                EmptyView()
+            } else {
+                Button {
+                    store.openSelectedExternally()
+                } label: {
+                    Label(
+                        isLocal ? "在 Finder 中显示" : "在源站打开",
+                        systemImage: isLocal ? "folder" : "arrow.up.right.square"
+                    )
                     .labelStyle(.iconOnly)
+                }
+                .help(isLocal ? "在 Finder 中显示当前文件" : "在浏览器中打开当前版本")
             }
-            .help("在浏览器中打开当前版本")
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 13)
@@ -179,7 +189,7 @@ private struct DetailHeader: View {
         case .weightMetadata:
             file.structuredInspectionFormat == .imatrix ? "Importance Matrix" : "权重分片索引"
         case .documentation: "模型文档"
-        case .other: "仓库文件"
+        case .other: "模型文件"
         case .weights:
             switch file.structuredInspectionFormat {
             case .safetensors: "SafeTensors 权重结构"
@@ -189,11 +199,17 @@ private struct DetailHeader: View {
             }
         }
     }
+
+    private var isLocal: Bool {
+        guard let snapshot = store.snapshot else { return false }
+        if case .local = snapshot.location { return true }
+        return false
+    }
 }
 
 private struct InspectionWorkspaceView: View {
     @ObservedObject var store: ModelFilesStore
-    let file: RemoteFile
+    let file: RepositoryFile
     let inspection: InspectionDocument
     let baseURL: URL?
 
@@ -313,7 +329,7 @@ private struct InspectionWorkspaceView: View {
 }
 
 private struct FileReaderView: View {
-    let file: RemoteFile
+    let file: RepositoryFile
     let data: Data
     let perspective: InspectionPerspective
     let baseURL: URL?
@@ -629,9 +645,9 @@ private struct JinjaWorkspaceView: View {
                             ("格式", "Jinja"),
                             ("UTF-8 大小", Int64(source.utf8.count).formattedByteCount),
                             ("行数", lineCount.formatted()),
-                            ("状态", isModified ? "临时修改" : "仓库原文"),
+                            ("状态", isModified ? "临时修改" : "来源原文"),
                         ])
-                        Text("修改只保留在当前文件工作台，不会写回仓库。")
+                        Text("修改只保留在当前文件工作台，不会写回来源。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -656,7 +672,7 @@ private struct JinjaWorkspaceView: View {
                     InspectionFactsView(fields: [
                         InspectionField(key: "UTF-8 大小", type: "bytes", value: Int64(source.utf8.count).formattedByteCount, origin: isModified ? .runtime : .repository),
                         InspectionField(key: "行数", type: "count", value: lineCount.formatted(), origin: .derived),
-                        InspectionField(key: "来源", type: "source", value: "仓库文件", origin: .repository),
+                        InspectionField(key: "来源", type: "source", value: "模型文件", origin: .repository),
                         InspectionField(key: "当前状态", type: "state", value: isModified ? "临时修改" : "未修改", origin: .runtime),
                     ])
                     HStack {
@@ -681,7 +697,7 @@ private struct JinjaWorkspaceView: View {
                     .foregroundStyle(.orange)
             }
             Spacer()
-            Button("恢复仓库原文") { source = document.source }
+            Button("恢复来源原文") { source = document.source }
                 .disabled(!isModified)
         }
         .padding(.horizontal, 14)
@@ -844,7 +860,7 @@ private struct GenerationSummaryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            ReaderTitle("生成默认值", subtitle: "推理框架在调用 generate 时使用的仓库默认参数。")
+            ReaderTitle("生成默认值", subtitle: "推理框架在调用 generate 时使用的模型目录默认参数。")
             PropertyGroup(title: "采样", rows: compactRows([
                 ("Do sample", value("do_sample")),
                 ("Temperature", value("temperature")),

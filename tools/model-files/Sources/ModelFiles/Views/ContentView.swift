@@ -22,25 +22,24 @@ struct ContentView: View {
                     .fixedSize()
 
                 ModelHistoryField(
-                    text: $store.modelID,
-                    history: store.modelHistory,
-                    onSubmit: store.openModel
+                    text: $store.repositoryInput,
+                    history: store.repositoryHistory,
+                    placeholder: inputPlaceholder,
+                    onSubmit: store.openRepository
                 )
-                    .frame(width: 320)
-                    .help("可粘贴 Hugging Face 或 ModelScope 仓库 URL")
+                    .frame(width: 460)
+                    .help("输入模型 ID、仓库 URL、本地绝对路径或 ssh:// 地址")
 
-                Picker("来源", selection: $store.sourceSelection) {
-                    ForEach(SourceSelection.allCases) { source in
-                        Text(source.title).tag(source)
-                    }
+                Button {
+                    store.chooseLocalDirectory()
+                } label: {
+                    Label("选择文件夹", systemImage: "folder")
+                        .labelStyle(.iconOnly)
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .frame(width: 132)
-                .help("选择模型来源")
+                .help("选择本地模型目录")
 
                 Button("打开") {
-                    store.openModel()
+                    store.openRepository()
                 }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(store.isLoadingRepository)
@@ -64,65 +63,102 @@ struct ContentView: View {
             }
         }
         .task {
-            if store.snapshot == nil && !store.isLoadingRepository {
-                store.openModel()
+            if store.shouldOpenOnLaunch && store.snapshot == nil && !store.isLoadingRepository {
+                store.openRepository()
             }
         }
     }
+
+    private let inputPlaceholder = "模型 ID、仓库 URL、本地路径或 ssh:// 地址…"
 }
 
 private struct ModelHistoryField: NSViewRepresentable {
     @Binding var text: String
-    let history: [String]
+    let history: [RepositoryHistoryEntry]
+    let placeholder: String
     let onSubmit: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, onSubmit: onSubmit)
+        Coordinator(text: $text, history: history, onSubmit: onSubmit)
     }
 
     func makeNSView(context: Context) -> NSComboBox {
         let field = NSComboBox()
-        field.placeholderString = "组织/模型或仓库 URL"
+        field.placeholderString = placeholder
         field.completes = true
         field.numberOfVisibleItems = 10
         field.stringValue = text
-        field.addItems(withObjectValues: history)
+        field.addItems(withObjectValues: history.map(\.input))
         field.delegate = context.coordinator
         return field
     }
 
     func updateNSView(_ field: NSComboBox, context: Context) {
         context.coordinator.text = $text
+        context.coordinator.history = history
         context.coordinator.onSubmit = onSubmit
+        field.placeholderString = placeholder
         let items = (0..<field.numberOfItems).compactMap { field.itemObjectValue(at: $0) as? String }
-        if items != history {
+        let inputs = history.map(\.input)
+        if items != inputs {
             field.removeAllItems()
-            field.addItems(withObjectValues: history)
+            field.addItems(withObjectValues: inputs)
         }
         if field.stringValue != text {
             field.stringValue = text
         }
     }
 
+    @MainActor
     final class Coordinator: NSObject, NSComboBoxDelegate {
         var text: Binding<String>
+        var history: [RepositoryHistoryEntry]
         var onSubmit: () -> Void
+        private var guidancePopover: NSPopover?
 
-        init(text: Binding<String>, onSubmit: @escaping () -> Void) {
+        init(
+            text: Binding<String>,
+            history: [RepositoryHistoryEntry],
+            onSubmit: @escaping () -> Void
+        ) {
             self.text = text
+            self.history = history
             self.onSubmit = onSubmit
         }
 
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSComboBox else { return }
             text.wrappedValue = field.stringValue
+            showGuidance(for: field)
+        }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            guard let field = notification.object as? NSComboBox else { return }
+            showGuidance(for: field)
+        }
+
+        private func showGuidance(for field: NSComboBox) {
+            guard guidancePopover?.isShown != true else { return }
+            let popover = NSPopover()
+            popover.behavior = .transient
+            popover.animates = false
+            popover.contentSize = NSSize(width: 460, height: 116)
+            popover.contentViewController = NSHostingController(rootView: RepositoryInputGuidanceView())
+            popover.show(relativeTo: field.bounds, of: field, preferredEdge: .minY)
+            guidancePopover = popover
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            guidancePopover?.close()
         }
 
         func comboBoxSelectionDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSComboBox,
                   field.indexOfSelectedItem >= 0,
-                  let value = field.itemObjectValue(at: field.indexOfSelectedItem) as? String else { return }
-            text.wrappedValue = value
+                  history.indices.contains(field.indexOfSelectedItem) else { return }
+            let entry = history[field.indexOfSelectedItem]
+            text.wrappedValue = entry.input
+            guidancePopover?.close()
         }
 
         func control(
@@ -132,8 +168,40 @@ private struct ModelHistoryField: NSViewRepresentable {
         ) -> Bool {
             guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
             text.wrappedValue = control.stringValue
+            guidancePopover?.close()
             onSubmit()
             return true
         }
+    }
+}
+
+private struct RepositoryInputGuidanceView: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            row(icon: "shippingbox", title: "模型仓库", example: "Qwen/Qwen3-4B 或仓库 URL")
+            Divider()
+            row(icon: "folder", title: "本地目录", example: "/Users/name/models/Qwen3-4B")
+            Divider()
+            row(icon: "network", title: "SSH 目录", example: "ssh://user@host/absolute/path")
+        }
+        .padding(.vertical, 5)
+        .frame(width: 460)
+    }
+
+    private func row(icon: String, title: String, example: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(title)
+                .fontWeight(.medium)
+            Text("— \(example)")
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .font(.callout)
+        .padding(.horizontal, 12)
+        .frame(height: 34)
     }
 }

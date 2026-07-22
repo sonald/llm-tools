@@ -21,7 +21,7 @@ struct SidebarView: View {
                 EmptyStateView(
                     title: "尚未打开模型",
                     systemImage: "shippingbox",
-                    message: "输入模型 ID 后打开仓库。"
+                    message: "输入模型 ID、本地目录或 SSH 地址后打开。"
                 )
                 Spacer()
             } else if !store.filter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -86,7 +86,7 @@ struct SidebarView: View {
 }
 
 private struct SidebarFileRow: View {
-    let file: RemoteFile
+    let file: RepositoryFile
 
     var body: some View {
         HStack(spacing: 8) {

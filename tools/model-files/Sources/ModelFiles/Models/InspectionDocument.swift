@@ -62,7 +62,7 @@ struct InspectionField: Identifiable, Sendable, Equatable {
             switch self {
             case .embedded: "文件内嵌"
             case .derived: "应用推导"
-            case .repository: "仓库信息"
+            case .repository: "来源信息"
             case .runtime: "运行结果"
             }
         }
@@ -139,7 +139,7 @@ enum InspectionDocument: Sendable {
     }
 }
 
-extension RemoteFile {
+extension RepositoryFile {
     var structuredInspectionFormat: StructuredInspectionFormat? {
         let lowercasedName = name.lowercased()
         if lowercasedName.hasSuffix(".safetensors") { return .safetensors }
