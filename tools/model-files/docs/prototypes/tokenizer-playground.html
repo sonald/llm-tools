@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ModelFiles · Tokenizer Playground Prototype</title>
+  <!-- Three variants of the tokenizer playground, switchable via ?variant=A|B|C, inside the existing file-detail context. -->
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #e9eaec;
+      --window: #f8f8f9;
+      --sidebar: #f0f0f2;
+      --panel: #ffffff;
+      --panel-2: #f5f6f8;
+      --text: #202124;
+      --muted: #6c7078;
+      --faint: #9499a3;
+      --line: #d7d9de;
+      --line-strong: #c7cad0;
+      --accent: #3478f6;
+      --accent-soft: #e8f0ff;
+      --success: #268a4b;
+      --warning: #a76513;
+      --danger: #c23b36;
+      --radius: 10px;
+      --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      font-family: var(--sans);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { width: 100%; min-width: 1060px; height: 100%; margin: 0; overflow: hidden; }
+    body { background: radial-gradient(circle at 50% -30%, #fff 0, var(--bg) 58%); color: var(--text); }
+    button, input, textarea, select { font: inherit; }
+    button { color: inherit; }
+
+    .window {
+      width: calc(100vw - 44px);
+      height: calc(100vh - 44px);
+      margin: 22px;
+      overflow: hidden;
+      border: 1px solid #bfc2c8;
+      border-radius: 14px;
+      background: var(--window);
+      box-shadow: 0 24px 80px rgb(30 35 45 / 20%), 0 2px 8px rgb(30 35 45 / 12%);
+      display: grid;
+      grid-template-rows: 52px minmax(0, 1fr);
+    }
+
+    .titlebar {
+      display: grid;
+      grid-template-columns: 265px minmax(450px, 1fr) auto;
+      align-items: center;
+      gap: 14px;
+      padding: 0 15px;
+      border-bottom: 1px solid var(--line-strong);
+      background: rgb(247 247 248 / 92%);
+      backdrop-filter: blur(20px);
+    }
+    .traffic { display: flex; align-items: center; gap: 8px; }
+    .traffic i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+    .traffic i:nth-child(1) { background: #ff5f57; }
+    .traffic i:nth-child(2) { background: #febc2e; }
+    .traffic i:nth-child(3) { background: #28c840; }
+    .app-name { margin-left: 9px; font-size: 13px; font-weight: 650; }
+    .repo-field {
+      height: 30px;
+      max-width: 610px;
+      justify-self: center;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 11px;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: #fff;
+      font-size: 12px;
+      color: #383b41;
+      box-shadow: inset 0 1px 1px rgb(20 25 30 / 4%);
+    }
+    .repo-field .repo-icon { color: var(--muted); }
+    .repo-field .branch { margin-left: auto; color: var(--faint); }
+    .title-status { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #31a35b; box-shadow: 0 0 0 3px #e3f4e8; }
+
+    .app-body { min-height: 0; display: grid; grid-template-columns: 266px minmax(0, 1fr); }
+    .sidebar { min-height: 0; overflow: auto; background: var(--sidebar); border-right: 1px solid var(--line-strong); padding: 12px 10px 78px; }
+    .search {
+      width: 100%; height: 28px; border: 1px solid var(--line); border-radius: 7px; padding: 0 9px 0 28px;
+      background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' fill='none' stroke='%23858a93' stroke-width='1.5'%3E%3Ccircle cx='6' cy='6' r='4'/%3E%3Cpath d='m9 9 4 4'/%3E%3C/svg%3E") no-repeat 8px 7px;
+      font-size: 12px; outline: none;
+    }
+    .side-group { margin-top: 15px; }
+    .side-label { padding: 0 8px 5px; color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+    .file { height: 31px; display: flex; align-items: center; gap: 8px; padding: 0 9px; border-radius: 6px; font-size: 12px; color: #373a40; }
+    .file.selected { color: white; background: #5a85d6; }
+    .file-icon { width: 16px; text-align: center; opacity: .85; }
+    .file .size { margin-left: auto; font-size: 10px; opacity: .65; }
+    .detail { min-width: 0; min-height: 0; display: grid; grid-template-rows: 74px minmax(0, 1fr); background: var(--panel); }
+    .detail-header { display: flex; align-items: center; gap: 14px; padding: 0 20px; border-bottom: 1px solid var(--line); background: #fafafa; }
+    .file-heading { min-width: 245px; }
+    .file-heading h1 { font-size: 18px; margin: 0 0 5px; letter-spacing: -.015em; }
+    .file-heading p { margin: 0; color: var(--muted); font-size: 10.5px; }
+    .format-pill { padding: 4px 8px; border-radius: 99px; background: #eceef2; font-size: 10px; font-weight: 700; }
+    .perspectives { margin-left: auto; display: inline-flex; padding: 2px; border: 1px solid var(--line-strong); border-radius: 7px; background: #f1f2f4; }
+    .perspectives button { min-width: 64px; height: 24px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; }
+    .perspectives button.active { color: var(--text); background: #fff; box-shadow: 0 1px 3px rgb(30 35 40 / 18%); font-weight: 600; }
+    .toolbar-icon { width: 28px; height: 28px; border: 1px solid var(--line); border-radius: 7px; background: #fff; cursor: pointer; }
+
+    .prototype-shell { min-height: 0; display: grid; grid-template-rows: 38px minmax(0, 1fr); }
+    .proto-banner { display: flex; align-items: center; gap: 9px; padding: 0 16px; border-bottom: 1px solid #e2d6bc; background: #fff8e8; color: #70511d; font-size: 11px; }
+    .proto-banner strong { font-weight: 700; }
+    .proto-banner .source { margin-left: auto; color: #8f7446; }
+    .variant-root { min-height: 0; overflow: hidden; }
+
+    .panel { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); box-shadow: 0 1px 2px rgb(20 25 30 / 4%); }
+    .panel-head { min-height: 39px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+    .panel-head h2 { margin: 0; font-size: 12px; font-weight: 700; }
+    .panel-head .sub { color: var(--muted); font-size: 10px; }
+    .panel-head .right { margin-left: auto; }
+    .segmented { display: inline-flex; gap: 2px; padding: 2px; border-radius: 7px; background: #eceef2; }
+    .segmented button { height: 24px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 10.5px; cursor: pointer; }
+    .segmented button.active { background: white; color: var(--text); box-shadow: 0 1px 3px rgb(20 25 30 / 16%); font-weight: 600; }
+    .ghost-button, .primary-button, .icon-button {
+      height: 28px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 7px; background: #fff; font-size: 11px; cursor: pointer;
+    }
+    .primary-button { border-color: #2d68cc; color: white; background: var(--accent); }
+    .icon-button { width: 28px; padding: 0; }
+    .subtle { color: var(--muted); font-size: 10.5px; }
+    .mono { font-family: var(--mono); }
+
+    textarea.text-input {
+      width: 100%; height: 100%; min-height: 130px; resize: none; border: 0; outline: none; padding: 14px; background: transparent;
+      color: #25272b; font: 12.5px/1.65 var(--mono);
+    }
+    .messages { min-height: 0; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 7px; }
+    .message-row { display: grid; grid-template-columns: 82px minmax(0, 1fr) 25px; align-items: start; gap: 7px; }
+    .message-row select, .message-row textarea { border: 1px solid var(--line); border-radius: 6px; background: #fff; font-size: 11px; }
+    .message-row select { height: 28px; padding: 0 5px; }
+    .message-row textarea { min-height: 45px; resize: vertical; padding: 7px 8px; outline: none; line-height: 1.35; }
+    .message-row button { height: 28px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 16px; }
+    .message-actions { display: flex; padding: 0 10px 10px; }
+
+    .stat-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .stat { min-height: 62px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+    .stat span { display: block; color: var(--muted); font-size: 9.5px; margin-bottom: 4px; }
+    .stat strong { font-size: 18px; line-height: 1; font-weight: 650; }
+    .token-canvas { padding: 13px; font: 13px/1.8 var(--mono); overflow: auto; word-break: break-word; }
+    .token-chip { border-radius: 3px; padding: 1px 0; transition: opacity .12s, box-shadow .12s, filter .12s; cursor: default; }
+    .token-chip.dimmed { opacity: .24; }
+    .token-chip.focused { box-shadow: 0 0 0 2px rgb(25 28 32 / 42%); filter: saturate(1.25); }
+    .ids { padding: 12px; overflow: auto; font: 11.5px/1.75 var(--mono); word-break: break-all; }
+    .token-id { border-radius: 3px; padding: 1px 2px; cursor: default; }
+    .token-id.focused { color: #fff; background: #333842; }
+    .empty-result { color: var(--faint); font: 12px var(--sans); }
+    .check-row { display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: var(--muted); }
+
+    /* A — paired workbench */
+    .variant-a { height: 100%; min-height: 0; padding: 14px; background: #f5f5f6; display: grid; grid-template-columns: minmax(360px, .92fr) minmax(420px, 1.08fr); gap: 12px; }
+    .a-left { min-height: 0; display: grid; grid-template-rows: minmax(250px, 1fr) 140px; gap: 12px; }
+    .a-right { min-height: 0; display: grid; grid-template-rows: auto minmax(190px, 1fr) minmax(120px, .58fr); gap: 12px; }
+    .input-panel { min-height: 0; display: grid; grid-template-rows: 40px minmax(0, 1fr) auto; }
+    .rendered { min-height: 0; display: grid; grid-template-rows: 38px minmax(0, 1fr); }
+    .rendered pre { margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; font: 10.5px/1.5 var(--mono); color: #4e535c; }
+    .result-panel, .ids-panel { min-height: 0; display: grid; grid-template-rows: 39px minmax(0, 1fr); }
+
+    /* B — conversation-first canvas */
+    .variant-b { height: 100%; min-height: 0; background: #f3f1ed; display: grid; grid-template-columns: minmax(520px, 1fr) 285px; }
+    .b-main { min-height: 0; display: grid; grid-template-rows: 70px minmax(0, 1fr) 126px; border-right: 1px solid var(--line-strong); }
+    .b-title { display: flex; align-items: center; gap: 12px; padding: 0 22px; background: #fcfbf8; border-bottom: 1px solid #ddd9d1; }
+    .b-title h2 { margin: 0; font-size: 17px; letter-spacing: -.02em; }
+    .b-title p { margin: 3px 0 0; color: var(--muted); font-size: 10.5px; }
+    .b-title .segmented { margin-left: auto; }
+    .chat-canvas { min-height: 0; overflow: auto; padding: 22px max(24px, calc((100% - 700px) / 2)); }
+    .chat-card { max-width: 680px; margin: 0 auto 12px; border: 1px solid #d8d5ce; border-radius: 12px; background: #fff; overflow: hidden; box-shadow: 0 2px 8px rgb(70 60 45 / 5%); }
+    .chat-card .role { display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid #ece9e2; color: #766f63; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+    .chat-card textarea { width: 100%; min-height: 54px; border: 0; outline: 0; resize: vertical; padding: 11px 12px; font-size: 12px; line-height: 1.45; }
+    .filmstrip { min-width: 0; padding: 12px 18px 18px; border-top: 1px solid #d8d4cc; background: #fcfbf8; overflow: hidden; }
+    .filmstrip-head { display: flex; align-items: center; margin-bottom: 9px; font-size: 10px; color: var(--muted); }
+    .filmstrip-head strong { color: var(--text); font-size: 11px; }
+    .filmstrip-head span { margin-left: auto; }
+    .token-strip { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 6px; }
+    .film-token { flex: 0 0 auto; min-width: 46px; max-width: 120px; height: 58px; border-radius: 7px; padding: 7px 8px; cursor: default; }
+    .film-token .piece { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: 11px var(--mono); }
+    .film-token .id { display: block; margin-top: 13px; color: rgb(20 22 25 / 58%); font: 9.5px var(--mono); }
+    .b-rail { min-height: 0; overflow: auto; padding: 16px 14px 74px; background: #f8f7f4; }
+    .rail-title { font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 4px 2px 9px; }
+    .rail-count { padding: 15px; border-radius: 10px; color: white; background: #2e3440; }
+    .rail-count span { font-size: 10px; color: #c9ced7; }
+    .rail-count strong { display: block; margin-top: 6px; font-size: 32px; line-height: 1; }
+    .rail-list { margin-top: 12px; border: 1px solid #ddd9d2; border-radius: 9px; background: #fff; overflow: hidden; }
+    .rail-row { display: flex; padding: 9px 10px; border-bottom: 1px solid #ece9e3; font-size: 10.5px; }
+    .rail-row:last-child { border-bottom: 0; }
+    .rail-row span { color: var(--muted); }
+    .rail-row strong { margin-left: auto; font-family: var(--mono); font-weight: 500; }
+
+    /* C — forensic table */
+    .variant-c { height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(300px, .8fr) minmax(430px, 1.15fr) 270px; background: #f5f6f7; }
+    .c-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: 45px minmax(0, 1fr); border-right: 1px solid var(--line-strong); background: #fff; }
+    .c-pane:last-child { border-right: 0; }
+    .c-head { display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--line); background: #f9fafb; }
+    .c-head strong { font-size: 11px; }
+    .c-head span { color: var(--muted); font-size: 9.5px; }
+    .c-head .right { margin-left: auto; }
+    .c-source { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) 130px; }
+    .source-meta { padding: 10px 12px; border-bottom: 1px solid var(--line); background: #f3f6fb; color: #4d5b72; font-size: 9.5px; line-height: 1.55; }
+    .source-meta strong { color: #283a59; }
+    .c-source textarea { width: 100%; height: 100%; border: 0; outline: none; resize: none; padding: 13px; font: 11.5px/1.65 var(--mono); }
+    .render-peek { border-top: 1px solid var(--line); min-height: 0; overflow: auto; padding: 10px 12px; background: #fbfbfc; }
+    .render-peek label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 9px; font-weight: 700; text-transform: uppercase; }
+    .render-peek pre { margin: 0; white-space: pre-wrap; font: 9.5px/1.4 var(--mono); color: #5b5f68; }
+    .token-table-wrap { min-height: 0; overflow: auto; }
+    table.token-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 10.5px; }
+    .token-table thead { position: sticky; top: 0; z-index: 1; background: #f1f3f5; }
+    .token-table th { height: 28px; padding: 0 8px; color: var(--muted); border-bottom: 1px solid var(--line-strong); text-align: left; font-size: 9px; font-weight: 700; }
+    .token-table td { height: 29px; padding: 0 8px; border-bottom: 1px solid #eceef1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--mono); }
+    .token-table tr:hover td, .token-table tr.focused td { background: #e9f1ff; }
+    .token-table .swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 6px; }
+    .diagnostics { min-height: 0; overflow: auto; padding: 12px 12px 74px; background: #f7f8fa; }
+    .diag-card { margin-bottom: 10px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .diag-card h3 { margin: 0 0 9px; font-size: 10px; }
+    .big-number { font-size: 28px; font-weight: 680; letter-spacing: -.03em; }
+    .meter { height: 6px; margin-top: 8px; border-radius: 99px; background: #e7e9ed; overflow: hidden; }
+    .meter i { display: block; width: 64%; height: 100%; background: var(--accent); border-radius: inherit; }
+    .legend { display: flex; flex-direction: column; gap: 7px; font-size: 9.5px; color: var(--muted); }
+    .legend div { display: flex; align-items: center; gap: 7px; }
+    .legend i { width: 8px; height: 8px; border-radius: 2px; }
+
+    .switcher {
+      position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%); z-index: 20;
+      display: grid; grid-template-columns: 34px minmax(220px, auto) 34px; align-items: center;
+      min-height: 40px; padding: 3px; border: 1px solid rgb(255 255 255 / 22%); border-radius: 13px;
+      color: white; background: rgb(30 33 39 / 94%); box-shadow: 0 12px 28px rgb(20 22 26 / 30%); backdrop-filter: blur(18px);
+    }
+    .switcher button { height: 32px; border: 0; border-radius: 9px; color: white; background: transparent; cursor: pointer; font-size: 18px; }
+    .switcher button:hover { background: rgb(255 255 255 / 11%); }
+    .variant-label { padding: 0 13px; text-align: center; font-size: 11px; }
+    .variant-label strong { font-weight: 700; }
+    .variant-label span { margin-left: 7px; color: #aeb5c1; }
+
+    @media (max-height: 760px) {
+      .window { height: calc(100vh - 20px); margin-top: 10px; margin-bottom: 10px; }
+      .a-left { grid-template-rows: minmax(220px, 1fr) 110px; }
+      .proto-banner { font-size: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="window" aria-label="ModelFiles Tokenizer Playground UI prototype">
+    <header class="titlebar">
+      <div class="traffic" aria-hidden="true"><i></i><i></i><i></i><span class="app-name">Model Files</span></div>
+      <div class="repo-field"><span class="repo-icon">◫</span><strong>Qwen/Qwen3-4B</strong><span class="branch">Hugging Face · main</span></div>
+      <div class="title-status"><i class="status-dot"></i>SHA c1598a1 · 34 files</div>
+    </header>
+
+    <div class="app-body">
+      <aside class="sidebar">
+        <input class="search" aria-label="筛选文件" placeholder="筛选文件">
+        <div class="side-group">
+          <div class="side-label">Configuration</div>
+          <div class="file"><span class="file-icon">⚙</span>config.json<span class="size">681 B</span></div>
+          <div class="file"><span class="file-icon">⚙</span>generation_config.json<span class="size">244 B</span></div>
+        </div>
+        <div class="side-group">
+          <div class="side-label">Tokenizer</div>
+          <div class="file selected"><span class="file-icon">Aa</span>tokenizer.json<span class="size">11.4 MB</span></div>
+          <div class="file"><span class="file-icon">Aa</span>tokenizer_config.json<span class="size">7.2 KB</span></div>
+          <div class="file"><span class="file-icon">≡</span>vocab.json<span class="size">2.8 MB</span></div>
+          <div class="file"><span class="file-icon">⇄</span>merges.txt<span class="size">1.7 MB</span></div>
+        </div>
+        <div class="side-group">
+          <div class="side-label">Templates</div>
+          <div class="file"><span class="file-icon">⌘</span>chat_template.jinja<span class="size">4.1 KB</span></div>
+        </div>
+        <div class="side-group">
+          <div class="side-label">Weights</div>
+          <div class="file"><span class="file-icon">▣</span>model-00001-of-00003.safetensors<span class="size">4.9 GB</span></div>
+        </div>
+      </aside>
+
+      <section class="detail">
+        <header class="detail-header">
+          <div class="file-heading"><h1>tokenizer.json</h1><p>分词器资源 · 11.4 MB · Hugging Face · main · SHA c1598a1</p></div>
+          <span class="format-pill">BPE · 151,669 vocab</span>
+          <div class="perspectives" aria-label="查看方式"><button>概览</button><button>全部字段</button><button>原文</button><button class="active">试验台</button></div>
+          <button class="toolbar-icon" title="复制路径">⧉</button>
+        </header>
+
+        <div class="prototype-shell">
+          <div class="proto-banner"><strong>PROTOTYPE</strong><span>布局与交互验证；token ID 由模拟器生成，不代表 Qwen3 的真实结果。</span><span class="source">来源：当前仓库的 tokenizer.json + tokenizer_config.json</span></div>
+          <div class="variant-root" id="variantRoot"></div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <nav class="switcher" aria-label="原型方案切换">
+    <button id="prevVariant" aria-label="上一个方案">‹</button>
+    <div class="variant-label" id="variantLabel"></div>
+    <button id="nextVariant" aria-label="下一个方案">›</button>
+  </nav>
+
+  <script>
+    const variants = [
+      { key: "A", name: "对照工作台" },
+      { key: "B", name: "对话优先" },
+      { key: "C", name: "Token 取证台" },
+    ];
+    const palette = ["#bee3f8", "#fde68a", "#bfdbfe", "#bbf7d0", "#fed7aa", "#a5f3fc", "#ddd6fe", "#fecdd3", "#d9f99d", "#bae6fd"];
+    const state = {
+      variant: new URLSearchParams(location.search).get("variant")?.toUpperCase() || "A",
+      mode: "chat",
+      rawText: "ModelFiles 让 tokenizer 的行为变得可见。 👩‍💻\nWhitespace matters.",
+      messages: [
+        { role: "system", content: "You are a concise assistant." },
+        { role: "user", content: "解释一下：分词为什么会影响上下文长度？" },
+      ],
+      showWhitespace: false,
+      hover: null,
+    };
+    if (!variants.some(v => v.key === state.variant)) state.variant = "A";
+
+    function escapeHTML(value) {
+      return String(value).replace(/[&<>"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]));
+    }
+
+    function renderInput() {
+      if (state.mode === "raw") return state.rawText;
+      const body = state.messages.map(message => `<|im_start|>${message.role}\n${message.content}<|im_end|>`).join("\n");
+      return `${body}\n<|im_start|>assistant\n`;
+    }
+
+    function tokenize(text) {
+      if (!text) return [];
+      const base = text.match(/\s+|[\p{Script=Han}]|[A-Za-z]+(?:'[A-Za-z]+)?|\d+|[^\s]/gu) || [];
+      const pieces = [];
+      base.forEach(part => {
+        if (/^[A-Za-z]{8,}$/.test(part)) {
+          const first = part.slice(0, 4);
+          pieces.push(first, ...part.slice(4).match(/.{1,4}/g).map(chunk => `##${chunk}`));
+        } else {
+          pieces.push(part);
+        }
+      });
+      return pieces.map((text, index) => ({ index, text, id: tokenID(text, index), color: palette[index % palette.length] }));
+    }
+
+    function tokenID(text, index) {
+      let hash = 2166136261;
+      for (const char of text) hash = Math.imul(hash ^ char.codePointAt(0), 16777619);
+      return Math.abs((hash + index * 131) % 151669);
+    }
+
+    function visiblePiece(text) {
+      if (!state.showWhitespace) return text;
+      return text.replaceAll(" ", "·").replaceAll("\t", "→").replaceAll("\r", "\\r").replaceAll("\n", "\\n\n");
+    }
+
+    function stats(tokens, text) {
+      const bytes = new TextEncoder().encode(text).length;
+      return { count: tokens.length, chars: [...text].length, bytes, ratio: tokens.length ? (bytes / tokens.length).toFixed(1) : "0" };
+    }
+
+    function modeControl() {
+      return `<div class="segmented mode-control"><button data-mode="raw" class="${state.mode === "raw" ? "active" : ""}">原始文本</button><button data-mode="chat" class="${state.mode === "chat" ? "active" : ""}">Chat 对话</button></div>`;
+    }
+
+    function messagesEditor() {
+      return `<div class="messages">${state.messages.map((message, index) => `
+        <div class="message-row" data-message="${index}">
+          <select aria-label="消息角色" data-role="${index}">
+            ${["system", "user", "assistant", "tool"].map(role => `<option ${message.role === role ? "selected" : ""}>${role}</option>`).join("")}
+          </select>
+          <textarea aria-label="消息内容" data-message-input="${index}">${escapeHTML(message.content)}</textarea>
+          <button data-delete-message="${index}" aria-label="删除消息">×</button>
+        </div>`).join("")}</div>
+        <div class="message-actions"><button class="ghost-button" data-add-message>＋ 添加消息</button></div>`;
+    }
+
+    function chatCards() {
+      return state.messages.map((message, index) => `
+        <article class="chat-card">
+          <div class="role"><span>${escapeHTML(message.role)}</span><button data-delete-message="${index}" style="margin-left:auto;border:0;background:transparent;color:#999;cursor:pointer">删除</button></div>
+          <textarea data-message-input="${index}" aria-label="${escapeHTML(message.role)} 消息">${escapeHTML(message.content)}</textarea>
+        </article>`).join("");
+    }
+
+    function tokenSpans(tokens) {
+      if (!tokens.length) return `<span class="empty-result">输入内容后显示 token。</span>`;
+      return tokens.map(token => `<span class="token-chip" data-token="${token.index}" style="background:${token.color}">${escapeHTML(visiblePiece(token.text))}</span>`).join("");
+    }
+
+    function tokenIDs(tokens) {
+      if (!tokens.length) return `<span class="empty-result">暂无 token ID。</span>`;
+      return tokens.map(token => `<span class="token-id" data-token="${token.index}">${token.id}</span>${token.index < tokens.length - 1 ? ", " : ""}`).join("");
+    }
+
+    function whitespaceToggle() {
+      return `<label class="check-row"><input type="checkbox" data-whitespace ${state.showWhitespace ? "checked" : ""}>显示空白符</label>`;
+    }
+
+    function renderA(tokens, metric, text) {
+      return `<div class="variant-a">
+        <div class="a-left">
+          <section class="panel input-panel">
+            <div class="panel-head"><h2>输入</h2><span class="sub">实时编码</span><div class="right">${modeControl()}</div></div>
+            ${state.mode === "chat" ? messagesEditor() : `<textarea class="text-input" data-raw aria-label="原始文本">${escapeHTML(state.rawText)}</textarea>`}
+            ${state.mode === "raw" ? `<div style="padding:0 10px 10px;display:flex;justify-content:flex-end"><button class="ghost-button" data-clear>清空</button></div>` : ""}
+          </section>
+          <section class="panel rendered">
+            <div class="panel-head"><h2>送入 tokenizer 的文本</h2><span class="sub">chat_template 渲染结果 · ${metric.bytes} bytes</span></div>
+            <pre>${escapeHTML(text)}</pre>
+          </section>
+        </div>
+        <div class="a-right">
+          <div class="stat-row">
+            <div class="stat"><span>Token count</span><strong>${metric.count}</strong></div>
+            <div class="stat"><span>Unicode 字符</span><strong>${metric.chars}</strong></div>
+            <div class="stat"><span>Bytes / token</span><strong>${metric.ratio}</strong></div>
+          </div>
+          <section class="panel result-panel">
+            <div class="panel-head"><h2>分词结果</h2><span class="sub">hover 片段联动 token ID</span><div class="right">${whitespaceToggle()}</div></div>
+            <div class="token-canvas">${tokenSpans(tokens)}</div>
+          </section>
+          <section class="panel ids-panel">
+            <div class="panel-head"><h2>Token IDs</h2><span class="sub">${metric.count} items</span><button class="ghost-button right" data-copy>复制</button></div>
+            <div class="ids">${tokenIDs(tokens)}</div>
+          </section>
+        </div>
+      </div>`;
+    }
+
+    function renderB(tokens, metric) {
+      return `<div class="variant-b">
+        <div class="b-main">
+          <header class="b-title"><div><h2>Chat Token 预演</h2><p>先编辑真实对话，再观察模板和 token 成本。</p></div>${modeControl()}</header>
+          <div class="chat-canvas">
+            ${state.mode === "chat" ? chatCards() + `<div style="max-width:680px;margin:0 auto"><button class="ghost-button" data-add-message>＋ 添加消息</button></div>` : `<div class="chat-card" style="height:100%"><textarea data-raw aria-label="原始文本" style="height:100%;min-height:300px;font-family:var(--mono)">${escapeHTML(state.rawText)}</textarea></div>`}
+          </div>
+          <section class="filmstrip">
+            <div class="filmstrip-head"><strong>Token 胶片</strong><span>hover 查看对应片段 · 横向滚动</span></div>
+            <div class="token-strip">${tokens.map(token => `<div class="film-token" data-token="${token.index}" style="background:${token.color}"><span class="piece">${escapeHTML(visiblePiece(token.text))}</span><span class="id">#${token.index} · ${token.id}</span></div>`).join("")}</div>
+          </section>
+        </div>
+        <aside class="b-rail">
+          <div class="rail-title">本次编码</div>
+          <div class="rail-count"><span>Token count</span><strong>${metric.count}</strong></div>
+          <div class="rail-list">
+            <div class="rail-row"><span>输入模式</span><strong>${state.mode === "chat" ? "Chat" : "Raw"}</strong></div>
+            <div class="rail-row"><span>模板</span><strong>${state.mode === "chat" ? "chat_template" : "—"}</strong></div>
+            <div class="rail-row"><span>字符</span><strong>${metric.chars}</strong></div>
+            <div class="rail-row"><span>UTF-8 bytes</span><strong>${metric.bytes}</strong></div>
+            <div class="rail-row"><span>Bytes / token</span><strong>${metric.ratio}</strong></div>
+          </div>
+          <div class="rail-title" style="margin-top:18px">显示</div>
+          <div class="rail-list"><div class="rail-row">${whitespaceToggle()}</div><div class="rail-row"><span>特殊 token</span><strong>显示</strong></div></div>
+          <div class="rail-title" style="margin-top:18px">来源</div>
+          <div class="rail-list"><div class="rail-row"><span>模型</span><strong>Qwen3-4B</strong></div><div class="rail-row"><span>类型</span><strong>BPE</strong></div><div class="rail-row"><span>词表</span><strong>151,669</strong></div></div>
+        </aside>
+      </div>`;
+    }
+
+    function tokenBytes(text) {
+      return [...new TextEncoder().encode(text)].map(byte => byte.toString(16).padStart(2, "0")).join(" ");
+    }
+
+    function renderC(tokens, metric, text) {
+      return `<div class="variant-c">
+        <section class="c-pane c-source">
+          <div class="c-head"><strong>输入源</strong><span>${state.mode === "chat" ? "Chat Template" : "Raw Text"}</span><div class="right">${modeControl()}</div></div>
+          <div class="source-meta"><strong>编码路径</strong><br>tokenizer_config.json → chat_template → tokenizer.json</div>
+          <textarea data-source aria-label="送入 tokenizer 的文本">${escapeHTML(text)}</textarea>
+          <div class="render-peek"><label>解析说明</label><pre>本列可直接编辑最终文本。生产版应保留“消息 → 模板输出 → token”来源链，并标记手工覆盖状态。</pre></div>
+        </section>
+        <section class="c-pane">
+          <div class="c-head"><strong>Token 表</strong><span>${metric.count} rows</span><div class="right">${whitespaceToggle()}</div></div>
+          <div class="token-table-wrap"><table class="token-table">
+            <thead><tr><th style="width:48px">#</th><th style="width:88px">ID</th><th style="width:34%">Piece</th><th>UTF-8 bytes</th></tr></thead>
+            <tbody>${tokens.map(token => `<tr data-token="${token.index}"><td><i class="swatch" style="background:${token.color}"></i>${token.index}</td><td>${token.id}</td><td>${escapeHTML(visiblePiece(token.text))}</td><td>${tokenBytes(token.text)}</td></tr>`).join("")}</tbody>
+          </table></div>
+        </section>
+        <aside class="c-pane"><div class="c-head"><strong>诊断</strong><span>只读</span></div><div class="diagnostics">
+          <div class="diag-card"><h3>Token count</h3><div class="big-number">${metric.count}</div><div class="subtle">${metric.chars} 字符 · ${metric.bytes} bytes</div><div class="meter"><i style="width:${Math.min(100, metric.count / Math.max(1, metric.chars) * 100)}%"></i></div></div>
+          <div class="diag-card"><h3>Tokenizer 来源</h3><div class="legend"><div><i style="background:#65a30d"></i>tokenizer.json 已加载</div><div><i style="background:#65a30d"></i>tokenizer_config.json 已加载</div><div><i style="background:#65a30d"></i>chat_template 可用</div></div></div>
+          <div class="diag-card"><h3>片段类型</h3><div class="legend"><div><i style="background:#bee3f8"></i>普通文本</div><div><i style="background:#fde68a"></i>空白 / 分隔符</div><div><i style="background:#ddd6fe"></i>特殊 token</div></div></div>
+          <div class="diag-card"><h3>原型结论候选</h3><div class="subtle" style="line-height:1.55">逐 token 表适合查 bytes、ID 和异常切分，但不适合作为所有用户的默认首页。</div></div>
+        </div></aside>
+      </div>`;
+    }
+
+    function render() {
+      const text = renderInput();
+      const tokens = tokenize(text);
+      const metric = stats(tokens, text);
+      const root = document.getElementById("variantRoot");
+      root.innerHTML = state.variant === "A" ? renderA(tokens, metric, text) : state.variant === "B" ? renderB(tokens, metric) : renderC(tokens, metric, text);
+      const current = variants.find(item => item.key === state.variant);
+      document.getElementById("variantLabel").innerHTML = `<strong>${current.key} — ${current.name}</strong><span>?variant=${current.key}</span>`;
+      bindEvents(tokens);
+    }
+
+    function bindEvents(tokens) {
+      document.querySelectorAll("[data-mode]").forEach(button => button.addEventListener("click", () => { state.mode = button.dataset.mode; render(); }));
+      document.querySelectorAll("[data-raw]").forEach(input => input.addEventListener("input", event => { state.rawText = event.target.value; renderPreservingFocus(event.target, "[data-raw]"); }));
+      document.querySelectorAll("[data-source]").forEach(input => input.addEventListener("input", event => { state.mode = "raw"; state.rawText = event.target.value; renderPreservingFocus(event.target, "[data-source]"); }));
+      document.querySelectorAll("[data-message-input]").forEach(input => input.addEventListener("input", event => {
+        state.messages[Number(input.dataset.messageInput)].content = event.target.value;
+        renderPreservingFocus(event.target, `[data-message-input=\"${input.dataset.messageInput}\"]`);
+      }));
+      document.querySelectorAll("[data-role]").forEach(select => select.addEventListener("change", () => { state.messages[Number(select.dataset.role)].role = select.value; render(); }));
+      document.querySelectorAll("[data-add-message]").forEach(button => button.addEventListener("click", () => { state.messages.push({ role: state.messages.at(-1)?.role === "user" ? "assistant" : "user", content: "" }); render(); }));
+      document.querySelectorAll("[data-delete-message]").forEach(button => button.addEventListener("click", () => { state.messages.splice(Number(button.dataset.deleteMessage), 1); render(); }));
+      document.querySelectorAll("[data-whitespace]").forEach(input => input.addEventListener("change", () => { state.showWhitespace = input.checked; render(); }));
+      document.querySelectorAll("[data-clear]").forEach(button => button.addEventListener("click", () => { state.rawText = ""; render(); }));
+      document.querySelectorAll("[data-copy]").forEach(button => button.addEventListener("click", async () => {
+        await navigator.clipboard?.writeText(tokens.map(token => token.id).join(", "));
+        button.textContent = "已复制"; setTimeout(() => button.textContent = "复制", 900);
+      }));
+      document.querySelectorAll("[data-token]").forEach(element => {
+        element.addEventListener("mouseenter", () => focusToken(Number(element.dataset.token)));
+        element.addEventListener("mouseleave", () => focusToken(null));
+      });
+    }
+
+    function renderPreservingFocus(element, selector) {
+      const start = element.selectionStart;
+      const end = element.selectionEnd;
+      render();
+      const replacement = document.querySelector(selector);
+      if (replacement) { replacement.focus(); replacement.setSelectionRange?.(start, end); }
+    }
+
+    function focusToken(index) {
+      state.hover = index;
+      document.querySelectorAll("[data-token]").forEach(element => {
+        const matches = Number(element.dataset.token) === index;
+        element.classList.toggle("focused", index !== null && matches);
+        element.classList.toggle("dimmed", index !== null && !matches && element.classList.contains("token-chip"));
+      });
+    }
+
+    function moveVariant(delta) {
+      const current = variants.findIndex(item => item.key === state.variant);
+      state.variant = variants[(current + delta + variants.length) % variants.length].key;
+      const url = new URL(location.href); url.searchParams.set("variant", state.variant); history.replaceState({}, "", url);
+      render();
+    }
+
+    document.getElementById("prevVariant").addEventListener("click", () => moveVariant(-1));
+    document.getElementById("nextVariant").addEventListener("click", () => moveVariant(1));
+    document.addEventListener("keydown", event => {
+      const target = event.target;
+      if (target.matches("input, textarea, select, [contenteditable]")) return;
+      if (event.key === "ArrowLeft") moveVariant(-1);
+      if (event.key === "ArrowRight") moveVariant(1);
+    });
+    render();
+  </script>
+</body>
+</html>

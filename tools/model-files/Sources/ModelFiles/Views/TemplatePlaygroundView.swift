@@ -115,83 +115,13 @@ struct TemplatePlaygroundView: View {
     }
 
     private var inputPane: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 9) {
-                    Text("运行选项").font(.headline)
-                    Toggle("add_generation_prompt", isOn: $addGenerationPrompt)
-                        .font(.system(.callout, design: .monospaced))
-                }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("Messages").font(.headline)
-                        Spacer()
-                        Button {
-                            messages.append(TemplateMessage(role: "user", content: ""))
-                        } label: {
-                            Label("添加", systemImage: "plus")
-                        }
-                    }
-
-                    ForEach($messages) { $message in
-                        MessageInputCard(message: $message) {
-                            messages.removeAll { $0.id == message.id }
-                        }
-                    }
-                }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Toggle(isOn: $includeTools) {
-                        Text("Tools").font(.headline)
-                    }
-                    if includeTools {
-                        ForEach($tools) { $tool in
-                            ToolInputCard(tool: $tool) {
-                                tools.removeAll { $0.id == tool.id }
-                            }
-                        }
-                        Button {
-                            tools.append(Self.emptyTool)
-                        } label: {
-                            Label("添加 Tool", systemImage: "plus")
-                        }
-                    }
-                }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("其他变量").font(.headline)
-                        Spacer()
-                        Button {
-                            variables.append(TemplateVariable(
-                                name: "custom_arg",
-                                kind: .string
-                            ))
-                        } label: {
-                            Label("添加", systemImage: "plus")
-                        }
-                    }
-                    Text("用于特殊 token 和任意 template kwargs。对象与数组使用 JSON。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    ForEach($variables) { $variable in
-                        VariableInputRow(variable: $variable) {
-                            variables.removeAll { $0.id == variable.id }
-                        }
-                    }
-                }
-            }
-            .padding(14)
-        }
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.38))
+        TemplateRequestEditor(
+            messages: $messages,
+            includeTools: $includeTools,
+            tools: $tools,
+            variables: $variables,
+            addGenerationPrompt: $addGenerationPrompt
+        )
     }
 
     private var templatePane: some View {
@@ -456,6 +386,176 @@ struct TemplatePlaygroundView: View {
             result.append(TemplateVariable(name: "documents", kind: .json, value: "[]"))
         }
         return result
+    }
+}
+
+struct TemplateRequestEditor: View {
+    @Binding var messages: [TemplateMessage]
+    @Binding var includeTools: Bool
+    @Binding var tools: [TemplateTool]
+    @Binding var variables: [TemplateVariable]
+    @Binding var addGenerationPrompt: Bool
+    var compact = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: compact ? 10 : 16) {
+                if compact {
+                    compactMessages
+                    advancedOptions
+                } else {
+                    detailedEditor
+                }
+            }
+            .padding(compact ? 10 : 14)
+        }
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.30))
+    }
+
+    private var compactMessages: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach($messages) { $message in
+                HStack(alignment: .top, spacing: 7) {
+                    Picker("消息角色", selection: $message.role) {
+                        ForEach(["system", "user", "assistant", "tool"], id: \.self) {
+                            Text($0).tag($0)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 82)
+
+                    TextEditor(text: $message.content)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .padding(5)
+                        .frame(minHeight: 48, idealHeight: 58)
+                        .background(.background, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6).stroke(.separator.opacity(0.65))
+                        }
+                        .accessibilityLabel("\(message.role) 消息")
+
+                    Button {
+                        messages.removeAll { $0.id == message.id }
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("删除消息")
+                    .accessibilityLabel("删除消息")
+                }
+            }
+
+            Button {
+                messages.append(TemplateMessage(role: nextMessageRole, content: ""))
+            } label: {
+                Label("添加消息", systemImage: "plus")
+            }
+            .controlSize(.small)
+        }
+    }
+
+    private var advancedOptions: some View {
+        DisclosureGroup("高级选项") {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle("add_generation_prompt", isOn: $addGenerationPrompt)
+                    .font(.system(.caption, design: .monospaced))
+                toolEditor
+                variableEditor
+            }
+            .padding(.top, 8)
+        }
+        .font(.caption.weight(.semibold))
+    }
+
+    private var detailedEditor: some View {
+        Group {
+            VStack(alignment: .leading, spacing: 9) {
+                Text("运行选项").font(.headline)
+                Toggle("add_generation_prompt", isOn: $addGenerationPrompt)
+                    .font(.system(.callout, design: .monospaced))
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Messages").font(.headline)
+                    Spacer()
+                    Button {
+                        messages.append(TemplateMessage(role: "user", content: ""))
+                    } label: {
+                        Label("添加", systemImage: "plus")
+                    }
+                }
+                ForEach($messages) { $message in
+                    MessageInputCard(message: $message) {
+                        messages.removeAll { $0.id == message.id }
+                    }
+                }
+            }
+            Divider()
+            toolEditor
+            Divider()
+            variableEditor
+        }
+    }
+
+    private var toolEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: $includeTools) {
+                Text("Tools").font(compact ? .caption.weight(.semibold) : .headline)
+            }
+            if includeTools {
+                ForEach($tools) { $tool in
+                    ToolInputCard(tool: $tool) {
+                        tools.removeAll { $0.id == tool.id }
+                    }
+                }
+                Button {
+                    tools.append(Self.emptyTool)
+                } label: {
+                    Label("添加 Tool", systemImage: "plus")
+                }
+            }
+        }
+    }
+
+    private var variableEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("其他变量").font(compact ? .caption.weight(.semibold) : .headline)
+                Spacer()
+                Button {
+                    variables.append(TemplateVariable(name: "custom_arg", kind: .string))
+                } label: {
+                    Label("添加", systemImage: "plus")
+                }
+            }
+            Text("用于特殊 token 和任意 template kwargs。对象与数组使用 JSON。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ForEach($variables) { $variable in
+                VariableInputRow(variable: $variable) {
+                    variables.removeAll { $0.id == variable.id }
+                }
+            }
+        }
+    }
+
+    private var nextMessageRole: String {
+        messages.last?.role == "user" ? "assistant" : "user"
+    }
+
+    private static var emptyTool: TemplateTool {
+        TemplateTool(
+            name: "new_tool",
+            description: "",
+            parametersJSON: """
+            {
+              "type": "object",
+              "properties": {}
+            }
+            """
+        )
     }
 }
 

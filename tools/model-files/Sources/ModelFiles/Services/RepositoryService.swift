@@ -266,6 +266,17 @@ struct RepositoryService: Sendable {
         }
     }
 
+    func loadTokenizerBundle(
+        for file: RepositoryFile,
+        from snapshot: RepositorySnapshot
+    ) async throws -> TokenizerBundle {
+        try await TokenizerBundleLoader().load(
+            file: file,
+            from: snapshot,
+            access: access(for: snapshot.location)
+        )
+    }
+
     func browserURL(for file: RepositoryFile, in snapshot: RepositorySnapshot) -> URL? {
         guard let access = try? hubAccess(for: snapshot.location) else { return nil }
         return access.browserURL(for: file)

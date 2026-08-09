@@ -10,15 +10,38 @@ final class ModelFilesStore: ObservableObject {
     @Published private(set) var snapshot: RepositorySnapshot?
     @Published var selectedPath: String?
     @Published var filter = ""
-    @Published var perspective: InspectionPerspective = .overview
+    @Published var perspective: InspectionPerspective = .overview {
+        didSet {
+            if perspective == .playground {
+                prepareTokenizerPlaygroundIfNeeded()
+            }
+        }
+    }
     @Published private(set) var isLoadingRepository = false
     @Published private(set) var loadingPath: String?
     @Published private(set) var errorMessage: String?
+    @Published private(set) var tokenizerPhase: TokenizerPlaygroundPhase = .idle
+    @Published private(set) var tokenizationResult: TokenizationResult?
+    @Published private(set) var tokenizerChatTemplate: String?
+    @Published private(set) var tokenizerConfigData: Data?
 
-    private let service = RepositoryService()
+    private let service: RepositoryService
     private var contents: [String: InspectionDocument] = [:]
     private var repositoryTask: Task<Void, Never>?
     private var fileTask: Task<Void, Never>?
+    private var tokenizerLoadTask: Task<Void, Never>?
+    private var tokenizerEncodeTask: Task<Void, Never>?
+    private var tokenizerRuntime: TokenizerRuntime?
+    private var tokenizerIdentity: TokenizerSessionIdentity?
+    private var tokenizerLoadGeneration = 0
+    private var tokenizerEncodeGeneration = 0
+    private var pendingTokenizerInput: String?
+
+    static let maximumTokenizerInputByteCount = 64 * 1_024
+
+    init(service: RepositoryService = RepositoryService()) {
+        self.service = service
+    }
 
     var selectedFile: RepositoryFile? {
         guard let selectedPath else { return nil }
@@ -31,7 +54,11 @@ final class ModelFilesStore: ObservableObject {
     }
 
     var availablePerspectives: [InspectionPerspective] {
-        selectedInspection?.perspectives ?? [.overview]
+        guard let inspection = selectedInspection else { return [.overview] }
+        if selectedFile?.name.lowercased() == "tokenizer.json" {
+            return inspection.perspectives + [.playground]
+        }
+        return inspection.perspectives
     }
 
     var shouldOpenOnLaunch: Bool { !RepositoryService.isDirectoryInput(repositoryInput) }
@@ -71,6 +98,7 @@ final class ModelFilesStore: ObservableObject {
         selectedPath = nil
         loadingPath = nil
         contents.removeAll()
+        resetTokenizerPlayground()
 
         let requestedInput = repositoryInput
         repositoryTask = Task { [weak self] in
@@ -116,7 +144,154 @@ final class ModelFilesStore: ObservableObject {
         selectedPath = path
         perspective = .overview
         errorMessage = nil
+        resetTokenizerPlayground()
         loadSelectedFile()
+    }
+
+    func tokenize(_ input: String) {
+        pendingTokenizerInput = input
+        tokenizerEncodeTask?.cancel()
+        tokenizerEncodeGeneration += 1
+        let generation = tokenizerEncodeGeneration
+
+        guard input.utf8.count <= Self.maximumTokenizerInputByteCount else {
+            tokenizationResult = nil
+            tokenizerPhase = .inputTooLarge(limit: Self.maximumTokenizerInputByteCount)
+            return
+        }
+        guard let runtime = tokenizerRuntime else {
+            tokenizationResult = nil
+            prepareTokenizerPlaygroundIfNeeded()
+            return
+        }
+        guard !input.isEmpty else {
+            tokenizationResult = TokenizationResult(
+                input: "",
+                tokenIDs: [],
+                tokenPieces: [],
+                decodedText: "",
+                segments: [],
+                sourceMapping: .exact
+            )
+            tokenizerPhase = .ready
+            return
+        }
+
+        tokenizationResult = nil
+        tokenizerPhase = .tokenizing
+        tokenizerEncodeTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(225))
+                try Task.checkCancellation()
+                let result = await runtime.tokenize(input)
+                try Task.checkCancellation()
+                guard let self,
+                      generation == self.tokenizerEncodeGeneration,
+                      input == self.pendingTokenizerInput else { return }
+                self.tokenizationResult = result
+                self.tokenizerPhase = .ready
+            } catch is CancellationError {
+                return
+            } catch {
+                return
+            }
+        }
+    }
+
+    func retryTokenizerPlayground() {
+        tokenizerRuntime = nil
+        tokenizerIdentity = nil
+        prepareTokenizerPlaygroundIfNeeded()
+    }
+
+    func clearTokenizationResult() {
+        tokenizerEncodeTask?.cancel()
+        tokenizerEncodeGeneration += 1
+        pendingTokenizerInput = nil
+        tokenizationResult = nil
+        if tokenizerRuntime != nil {
+            tokenizerPhase = .ready
+        }
+    }
+
+    private func prepareTokenizerPlaygroundIfNeeded() {
+        guard perspective == .playground,
+              let snapshot,
+              let file = selectedFile,
+              file.name.lowercased() == "tokenizer.json" else { return }
+        let identity = TokenizerSessionIdentity(snapshot: snapshot, file: file)
+        if tokenizerRuntime != nil, tokenizerIdentity == identity {
+            if let pendingTokenizerInput { tokenize(pendingTokenizerInput) }
+            return
+        }
+
+        tokenizerLoadTask?.cancel()
+        tokenizerEncodeTask?.cancel()
+        tokenizerLoadGeneration += 1
+        let generation = tokenizerLoadGeneration
+        tokenizerRuntime = nil
+        tokenizerIdentity = nil
+        tokenizationResult = nil
+        tokenizerChatTemplate = nil
+        tokenizerConfigData = nil
+        tokenizerPhase = .loading
+
+        tokenizerLoadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let bundle = try await service.loadTokenizerBundle(for: file, from: snapshot)
+                try Task.checkCancellation()
+                let runtime = try await Task.detached(priority: .userInitiated) {
+                    try TokenizerRuntime(bundle: bundle)
+                }.value
+                try Task.checkCancellation()
+                guard generation == self.tokenizerLoadGeneration,
+                      self.selectedPath == file.path else { return }
+                self.tokenizerRuntime = runtime
+                self.tokenizerIdentity = identity
+                self.tokenizerConfigData = bundle.tokenizerConfigData
+                self.tokenizerChatTemplate = try Self.chatTemplate(from: bundle)
+                self.tokenizerPhase = .ready
+                if let input = self.pendingTokenizerInput {
+                    self.tokenize(input)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard generation == self.tokenizerLoadGeneration else { return }
+                self.tokenizerRuntime = nil
+                self.tokenizerIdentity = nil
+                self.tokenizerPhase = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func resetTokenizerPlayground() {
+        tokenizerLoadTask?.cancel()
+        tokenizerEncodeTask?.cancel()
+        tokenizerLoadGeneration += 1
+        tokenizerEncodeGeneration += 1
+        tokenizerRuntime = nil
+        tokenizerIdentity = nil
+        pendingTokenizerInput = nil
+        tokenizationResult = nil
+        tokenizerChatTemplate = nil
+        tokenizerConfigData = nil
+        tokenizerPhase = .idle
+    }
+
+    nonisolated private static func chatTemplate(from bundle: TokenizerBundle) throws -> String? {
+        if let data = bundle.chatTemplateData {
+            guard let source = String(data: data, encoding: .utf8) else {
+                throw RepositoryService.ServiceError.invalidUTF8
+            }
+            if !source.isEmpty { return source }
+        }
+        guard let data = bundle.tokenizerConfigData,
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let source = object["chat_template"] as? String,
+              !source.isEmpty else { return nil }
+        return source
     }
 
     func loadSelectedFile() {

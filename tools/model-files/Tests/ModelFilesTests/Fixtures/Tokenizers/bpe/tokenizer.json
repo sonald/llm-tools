@@ -1,0 +1,55 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    { "id": 0, "content": "<bos>" },
+    { "id": 1, "content": "<pad>" },
+    { "id": 2, "content": "<eos>" },
+    { "id": 3, "content": "<unk>" }
+  ],
+  "model": {
+    "type": "BPE",
+    "vocab": {
+      "<bos>": 0,
+      "<pad>": 1,
+      "<eos>": 2,
+      "<unk>": 3,
+      "o": 4,
+      "f": 5,
+      "of": 6,
+      "off": 7,
+      "l": 8,
+      "i": 9,
+      "n": 10,
+      "e": 11,
+      "li": 12,
+      "lin": 13,
+      "line": 14,
+      "offline": 15,
+      "p": 16,
+      "a": 17,
+      "t": 18,
+      "h": 19,
+      "pa": 20,
+      "pat": 21,
+      "path": 22
+    },
+    "merges": [
+      "o f",
+      "of f",
+      "l i",
+      "li n",
+      "lin e",
+      "off line",
+      "p a",
+      "pa t",
+      "pat h"
+    ],
+    "continuing_subword_prefix": "",
+    "end_of_word_suffix": "",
+    "unk_token": "<unk>"
+  },
+  "normalizer": { "type": "Lowercase" },
+  "pre_tokenizer": { "type": "Whitespace" }
+}

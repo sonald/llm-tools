@@ -135,7 +135,7 @@ private struct DetailHeader: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 240)
+            .frame(width: store.availablePerspectives.count >= 4 ? 320 : 240)
             .disabled(file.isBlocked || store.selectedInspection == nil)
 
             Button {
@@ -167,7 +167,7 @@ private struct DetailHeader: View {
         .background(.bar)
         .background(alignment: .topLeading) {
             HStack(spacing: 0) {
-                ForEach(Array(store.availablePerspectives.prefix(3).enumerated()), id: \.offset) { index, perspective in
+                ForEach(Array(store.availablePerspectives.prefix(4).enumerated()), id: \.offset) { index, perspective in
                     Button("") { store.perspective = perspective }
                         .keyboardShortcut(
                             KeyEquivalent(Character(String(index + 1))),
@@ -252,12 +252,17 @@ private struct InspectionWorkspaceView: View {
                 JinjaWorkspaceView(document: document, perspective: $store.perspective)
                     .id(file.path)
             case let .generic(data):
-                FileReaderView(
-                    file: file,
-                    data: data,
-                    perspective: store.perspective,
-                    baseURL: baseURL
-                )
+                if file.name.lowercased() == "tokenizer.json", store.perspective == .playground {
+                    TokenizerPlaygroundView(store: store, file: file)
+                        .id(file.path)
+                } else {
+                    FileReaderView(
+                        file: file,
+                        data: data,
+                        perspective: store.perspective,
+                        baseURL: baseURL
+                    )
+                }
             }
         }
         .safeAreaInset(edge: .bottom) {

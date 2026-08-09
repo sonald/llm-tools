@@ -8,7 +8,7 @@ struct ModelFilesApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .frame(minWidth: 1_050, minHeight: 700)
+                .frame(minWidth: 900, minHeight: 600)
         }
         .defaultSize(width: 1_440, height: 1_024)
         .windowStyle(.hiddenTitleBar)

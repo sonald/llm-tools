@@ -1,0 +1,5 @@
+{
+  "tokenizer_class": "GPT2Tokenizer",
+  "unk_token": "<unk>",
+  "clean_up_tokenization_spaces": false
+}

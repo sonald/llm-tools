@@ -18,9 +18,9 @@ stop_running() {
 
 build_and_stage() {
   cd "$ROOT_DIR"
-  swift build -c debug
+  swift build -c debug --disable-sandbox
   local bin_dir
-  bin_dir="$(swift build -c debug --show-bin-path)"
+  bin_dir="$(swift build -c debug --disable-sandbox --show-bin-path)"
 
   rm -rf "$APP_DIR"
   mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"

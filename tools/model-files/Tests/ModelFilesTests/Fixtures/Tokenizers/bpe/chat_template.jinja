@@ -1,0 +1,5 @@
+{%- for message in messages -%}
+{{- message.content -}}
+{%- if not loop.last %} {% endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt %} path{% endif -%}
