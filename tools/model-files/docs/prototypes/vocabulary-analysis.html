@@ -1,0 +1,718 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ModelFiles · 词表研究原型</title>
+  <!-- PROTOTYPE — Three variants for tokenizer vocabulary analysis inside the existing tokenizer.json detail, switchable via ?variant=A|B|C. Throwaway UI; frozen Qwen3 statistics. -->
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #e7e8eb;
+      --window: #f7f7f8;
+      --sidebar: #f0f0f2;
+      --panel: #fff;
+      --panel-alt: #f6f7f9;
+      --text: #202124;
+      --muted: #676c75;
+      --faint: #9196a0;
+      --line: #d8dae0;
+      --line-strong: #c7cad1;
+      --accent: #3578f6;
+      --accent-soft: #e8f0ff;
+      --amber: #9a6418;
+      --amber-soft: #fff7e7;
+      --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      font-family: var(--sans);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { width: 100%; min-width: 760px; height: 100%; margin: 0; overflow: hidden; }
+    body { color: var(--text); background: var(--bg); }
+    button, input, select { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .mono { font-family: var(--mono); }
+    .muted { color: var(--muted); }
+    .window {
+      width: calc(100vw - 36px);
+      height: calc(100vh - 36px);
+      margin: 18px;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: 50px minmax(0, 1fr);
+      border: 1px solid #bdc0c7;
+      border-radius: 14px;
+      background: var(--window);
+      box-shadow: 0 22px 72px rgb(27 31 39 / 20%), 0 2px 8px rgb(27 31 39 / 10%);
+    }
+
+    .titlebar {
+      display: grid;
+      grid-template-columns: 220px minmax(320px, 560px) 1fr;
+      align-items: center;
+      gap: 14px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--line-strong);
+      background: #f7f7f8;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; font-size: 13px; font-weight: 650; }
+    .traffic { display: flex; gap: 7px; }
+    .traffic i { display: block; width: 11px; height: 11px; border-radius: 50%; }
+    .traffic i:nth-child(1) { background: #ff5f57; }
+    .traffic i:nth-child(2) { background: #febc2e; }
+    .traffic i:nth-child(3) { background: #28c840; }
+    .repo {
+      height: 29px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: #fff;
+      color: #3e4249;
+      font-size: 11px;
+    }
+    .repo span:last-child { margin-left: auto; color: var(--faint); }
+    .status { justify-self: end; display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10.5px; }
+    .status i { width: 7px; height: 7px; border-radius: 50%; background: #35a25d; box-shadow: 0 0 0 3px #e1f2e6; }
+
+    .app-body { min-height: 0; display: grid; grid-template-columns: 232px minmax(0, 1fr); }
+    .sidebar { min-height: 0; overflow: auto; padding: 12px 10px 76px; border-right: 1px solid var(--line-strong); background: var(--sidebar); }
+    .search {
+      width: 100%;
+      height: 28px;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      outline: none;
+      background: #fff;
+      font-size: 11px;
+    }
+    .side-label { margin: 15px 8px 5px; color: var(--muted); font-size: 9.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    .file { height: 31px; display: flex; align-items: center; gap: 8px; padding: 0 9px; border-radius: 6px; color: #393c42; font-size: 11.5px; }
+    .file.selected { color: #fff; background: #5b84d1; }
+    .file .size { margin-left: auto; font-size: 9.5px; opacity: .68; }
+
+    .detail { min-width: 0; min-height: 0; display: grid; grid-template-rows: 72px 35px minmax(0, 1fr); background: var(--panel); }
+    .detail-header { display: flex; align-items: center; gap: 13px; padding: 0 20px; border-bottom: 1px solid var(--line); background: #fbfbfc; }
+    .file-heading { min-width: 205px; }
+    .file-heading h1 { margin: 0 0 5px; font-size: 18px; letter-spacing: -.02em; }
+    .file-heading p { margin: 0; color: var(--muted); font-size: 10px; }
+    .format-pill { padding: 4px 8px; border-radius: 999px; background: #eceef2; font-size: 9.5px; font-weight: 700; }
+    .perspectives { margin-left: auto; display: inline-flex; padding: 2px; border: 1px solid var(--line-strong); border-radius: 7px; background: #f0f1f3; }
+    .perspectives button { min-width: 58px; height: 24px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 10px; }
+    .perspectives .active { color: var(--text); background: #fff; box-shadow: 0 1px 3px rgb(26 30 36 / 16%); font-weight: 650; }
+    .prototype-banner { display: flex; align-items: center; gap: 8px; padding: 0 15px; border-bottom: 1px solid #e4d5b7; background: var(--amber-soft); color: #74501c; font-size: 10px; }
+    .prototype-banner strong { letter-spacing: .04em; }
+    .prototype-banner span:last-child { margin-left: auto; color: #907447; }
+
+    .variants { min-height: 0; overflow: hidden; background: #f5f6f7; }
+    .variant { display: none; height: 100%; min-height: 0; }
+    .variant.active { display: block; }
+    .panel { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: 0 1px 2px rgb(24 28 34 / 4%); }
+    .panel-head { min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+    .panel-head h3 { margin: 0; font-size: 11.5px; }
+    .panel-head small { color: var(--muted); font-size: 9.5px; }
+    .right { margin-left: auto; }
+    .eyebrow { margin: 0 0 6px; color: var(--muted); font-size: 9.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+    .page-title { margin: 0; font-size: 22px; letter-spacing: -.025em; }
+    .subtitle { max-width: 760px; margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .scope { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+    .scope span { padding: 5px 8px; border-radius: 999px; background: #eceef2; color: var(--muted); font-size: 9.5px; }
+    .scope .current { color: #245bae; background: var(--accent-soft); font-weight: 650; }
+
+    .metrics { display: grid; grid-template-columns: repeat(7, minmax(76px, 1fr)); gap: 7px; }
+    .metric { min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-alt); }
+    .metric span { display: block; margin-bottom: 4px; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+    .metric strong { font-size: 16px; font-weight: 650; }
+
+    .property-rows { padding: 2px 12px; }
+    .property { display: grid; grid-template-columns: 150px 1fr; gap: 18px; padding: 8px 0; border-bottom: 1px solid #eceef1; font-size: 10.5px; }
+    .property:last-child { border: 0; }
+    .property span:first-child { color: var(--muted); }
+    .property span:last-child { font-family: var(--mono); }
+
+    .chart { height: 190px; display: grid; grid-template-columns: repeat(8, minmax(46px, 1fr)); gap: 8px; align-items: end; padding: 14px 12px 10px; }
+    .bar-button { min-width: 0; height: 100%; display: grid; grid-template-rows: 18px minmax(70px, 1fr) 17px 16px; align-items: end; padding: 0; border: 0; border-radius: 7px; outline-offset: 2px; background: transparent; cursor: pointer; }
+    .bar-button:hover .bar-fill, .bar-button.selected .bar-fill { background: var(--accent); }
+    .bar-button.selected { background: var(--accent-soft); }
+    .bar-value { align-self: center; color: var(--muted); font-size: 8.5px; }
+    .bar-track { width: 58%; height: 100%; justify-self: center; display: flex; align-items: end; border-radius: 5px 5px 2px 2px; background: #eef0f3; overflow: hidden; }
+    .bar-fill { width: 100%; min-height: 3px; height: var(--height); border-radius: 5px 5px 2px 2px; background: #87aaf0; transition: height .18s, background .12s; }
+    .bar-label { align-self: center; font: 9px var(--mono); }
+    .bar-percent { align-self: start; color: var(--faint); font-size: 8.5px; }
+    .chart-note { min-height: 46px; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; line-height: 1.4; }
+    .chart-note strong { color: var(--text); }
+
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th { height: 31px; padding: 0 9px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 8.5px; font-weight: 700; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
+    td { height: 34px; padding: 0 9px; border-bottom: 1px solid #eceef1; font-size: 10px; }
+    tbody tr[data-token-index] { cursor: pointer; }
+    tbody tr[data-token-index]:hover, tbody tr[data-token-index].selected { background: var(--accent-soft); }
+    .piece { overflow: hidden; font-family: var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+    .number { text-align: right; font-variant-numeric: tabular-nums; }
+    .token-detail { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; margin: 10px 12px 12px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-alt); }
+    .token-detail .raw { margin-top: 5px; overflow: hidden; font: 10px/1.45 var(--mono); overflow-wrap: anywhere; }
+    .token-detail .meta { margin-top: 6px; color: var(--muted); font-size: 9.5px; }
+    .small-button { height: 26px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 6px; background: #fff; font-size: 9.5px; cursor: pointer; }
+    .small-button.active { border-color: #8aaef2; color: #2459ae; background: var(--accent-soft); }
+
+    /* A: append research to the existing overview. */
+    .a-scroll { height: 100%; overflow: auto; padding: 18px 20px 90px; }
+    .a-inner { max-width: 1020px; margin: 0 auto; }
+    .a-top { display: flex; align-items: end; gap: 16px; margin-bottom: 14px; }
+    .a-structure { margin-bottom: 14px; }
+    .a-research { padding: 13px; }
+    .a-research-head { display: flex; align-items: start; gap: 12px; margin-bottom: 12px; }
+    .a-research-head h2 { margin: 0 0 4px; font-size: 14px; }
+    .a-research-head p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .a-grid { display: grid; grid-template-columns: minmax(430px, 1fr) minmax(310px, .78fr); gap: 10px; margin-top: 10px; }
+    .definition { padding: 12px; }
+    .definition h3 { margin: 0 0 6px; font-size: 11.5px; }
+    .definition p { margin: 0 0 9px; color: var(--muted); font-size: 10px; line-height: 1.55; }
+    .definition code { font-family: var(--mono); color: #3b4d72; }
+
+    /* B: distribution buckets become the navigation. */
+    .b-shell { height: 100%; min-height: 0; display: grid; grid-template-rows: 68px minmax(0, 1fr); }
+    .b-heading { display: flex; align-items: center; gap: 12px; padding: 0 17px; border-bottom: 1px solid var(--line); background: #fff; }
+    .b-heading h2 { margin: 0 0 4px; font-size: 17px; }
+    .b-heading p { margin: 0; color: var(--muted); font-size: 9.5px; }
+    .b-metrics { margin-left: auto; display: flex; gap: 5px; }
+    .b-metrics span { min-width: 65px; padding: 6px 8px; border-radius: 7px; background: var(--panel-alt); font-size: 8.5px; color: var(--muted); }
+    .b-metrics strong { display: block; margin-top: 2px; color: var(--text); font-size: 12px; }
+    .b-layout { min-height: 0; display: grid; grid-template-columns: 210px minmax(300px, 1fr) 270px; }
+    .bucket-nav { min-height: 0; overflow: auto; padding: 10px; border-right: 1px solid var(--line); background: #f8f8f9; }
+    .bucket-nav h3 { margin: 3px 6px 8px; font-size: 10px; }
+    .bucket { width: 100%; display: grid; grid-template-columns: 46px 1fr auto; align-items: center; gap: 7px; padding: 8px 7px; border: 0; border-radius: 7px; background: transparent; text-align: left; cursor: pointer; }
+    .bucket:hover, .bucket.active { background: var(--accent-soft); }
+    .bucket .range { font: 10px var(--mono); }
+    .bucket .rail { height: 5px; border-radius: 999px; background: #e1e4e9; overflow: hidden; }
+    .bucket .rail i { display: block; width: var(--width); height: 100%; border-radius: inherit; background: #7da3ed; }
+    .bucket .count { color: var(--muted); font-size: 8.5px; font-variant-numeric: tabular-nums; }
+    .bucket-help { margin: 9px 6px 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
+    .b-results { min-width: 0; min-height: 0; display: grid; grid-template-rows: 48px minmax(0, 1fr); border-right: 1px solid var(--line); background: #fff; }
+    .results-head { display: flex; align-items: center; gap: 9px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+    .results-head h3 { margin: 0; font-size: 11px; }
+    .results-head p { margin: 3px 0 0; color: var(--muted); font-size: 8.5px; }
+    .results-head input { width: 150px; height: 26px; margin-left: auto; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; outline: none; font-size: 9.5px; }
+    .results-body { min-height: 0; overflow: auto; }
+    .prototype-limit { margin: 12px; padding: 10px; border: 1px dashed var(--line-strong); border-radius: 8px; color: var(--muted); font-size: 9.5px; line-height: 1.5; }
+    .b-inspector { min-height: 0; overflow: auto; padding: 14px; background: #fafafa; }
+    .b-inspector h3 { margin: 0 0 4px; font-size: 12px; }
+    .b-inspector .label { margin: 14px 0 5px; color: var(--muted); font-size: 8.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+    .inspect-raw { max-height: 160px; overflow: auto; padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: #fff; font: 9.5px/1.5 var(--mono); overflow-wrap: anywhere; }
+    .inspect-grid { display: grid; grid-template-columns: 1fr auto; gap: 7px; color: var(--muted); font-size: 9.5px; }
+    .inspect-grid strong { color: var(--text); font-weight: 550; }
+
+    /* C: longest-token ranking first, distribution reduced to context. */
+    .c-shell { height: 100%; min-height: 0; display: grid; grid-template-rows: 66px minmax(0, 1fr); }
+    .c-heading { display: flex; align-items: center; gap: 10px; padding: 0 17px; border-bottom: 1px solid var(--line); background: #fff; }
+    .c-heading h2 { margin: 0 0 4px; font-size: 17px; }
+    .c-heading p { margin: 0; color: var(--muted); font-size: 9.5px; }
+    .c-controls { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+    .segmented { display: inline-flex; padding: 2px; border-radius: 7px; background: #eceef2; }
+    .segmented button { height: 23px; padding: 0 9px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 9px; cursor: pointer; }
+    .segmented .active { color: var(--text); background: #fff; box-shadow: 0 1px 3px rgb(25 29 35 / 15%); }
+    .heuristic { display: flex; align-items: center; gap: 5px; font-size: 9px; color: var(--muted); }
+    .c-layout { min-height: 0; display: grid; grid-template-columns: minmax(430px, 1fr) 260px; }
+    .ranking { min-height: 0; overflow: auto; padding: 12px 14px 90px; }
+    .rank-row { width: 100%; display: grid; grid-template-columns: 26px minmax(160px, 1fr) 82px 54px; align-items: center; gap: 10px; padding: 8px; border: 0; border-bottom: 1px solid #eceef1; background: transparent; text-align: left; cursor: pointer; }
+    .rank-row:hover, .rank-row.selected { border-radius: 7px; background: var(--accent-soft); }
+    .rank { color: var(--faint); font-size: 9px; text-align: right; }
+    .rank-piece { overflow: hidden; font: 10px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+    .length-rail { height: 7px; border-radius: 999px; background: #e7e9ed; overflow: hidden; }
+    .length-rail i { display: block; width: var(--width); height: 100%; border-radius: inherit; background: #6f9aeb; }
+    .rank-meta { color: var(--muted); font-size: 8.5px; text-align: right; }
+    .c-aside { min-height: 0; overflow: auto; padding: 14px; border-left: 1px solid var(--line); background: #fafafa; }
+    .c-aside h3 { margin: 0 0 10px; font-size: 11px; }
+    .percentile { display: grid; grid-template-columns: 52px 1fr 34px; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 9px; }
+    .percentile span:first-child { color: var(--muted); }
+    .percentile .line { height: 4px; border-radius: 999px; background: #e1e4e9; }
+    .percentile .line i { display: block; width: var(--width); height: 100%; border-radius: inherit; background: #7ba1eb; }
+    .percentile strong { text-align: right; font-weight: 600; }
+    .mini-chart { height: 72px; display: flex; align-items: end; gap: 4px; margin: 14px 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .mini-chart i { flex: 1; height: var(--height); min-height: 2px; border-radius: 3px 3px 1px 1px; background: #88aaec; }
+    .heuristic-note { padding: 9px; border: 1px solid #e2d2ae; border-radius: 8px; background: var(--amber-soft); color: #74501c; font-size: 9px; line-height: 1.45; }
+
+    .switcher {
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px;
+      transform: translateX(-50%);
+      border: 1px solid #bfc2c9;
+      border-radius: 10px;
+      background: rgb(250 250 251 / 94%);
+      box-shadow: 0 8px 28px rgb(24 28 34 / 20%);
+      backdrop-filter: blur(18px);
+    }
+    .switcher button { height: 28px; min-width: 29px; padding: 0 9px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; }
+    .switcher button:hover { background: #eceef2; }
+    .switcher .active { color: #fff; background: #33363c; }
+    .switcher .nav { padding: 0 6px; font-size: 14px; }
+
+    @media (max-width: 1120px) {
+      .metrics { grid-template-columns: repeat(4, 1fr); }
+      .a-grid { grid-template-columns: 1fr; }
+      .b-layout { grid-template-columns: 180px minmax(280px, 1fr) 220px; }
+      .b-metrics span:nth-child(2) { display: none; }
+      .c-layout { grid-template-columns: minmax(360px, 1fr) 220px; }
+    }
+    @media (max-width: 960px) {
+      .window { width: calc(100vw - 20px); height: calc(100vh - 20px); margin: 10px; }
+      .app-body { grid-template-columns: 205px minmax(0, 1fr); }
+      .titlebar { grid-template-columns: 155px 1fr auto; }
+      .detail-header { padding: 0 12px; }
+      .file-heading { min-width: 145px; }
+      .format-pill, .prototype-banner span:last-child { display: none; }
+      .perspectives button { min-width: 44px; }
+      .a-scroll { padding: 14px 14px 90px; }
+      .b-metrics { display: none; }
+      .b-layout { grid-template-columns: 150px minmax(280px, 1fr); }
+      .b-inspector { display: none; }
+      .c-shell { grid-template-rows: 90px minmax(0, 1fr); }
+      .c-heading { align-content: center; align-items: flex-start; flex-wrap: wrap; padding: 8px 12px; }
+      .c-controls { margin-left: 0; }
+      .c-layout { grid-template-columns: minmax(0, 1fr); }
+      .c-aside { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="window">
+    <header class="titlebar">
+      <div class="brand">
+        <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>ModelFiles</span>
+      </div>
+      <div class="repo"><span>Qwen3-0.6B</span><span>main · local</span></div>
+      <div class="status"><i></i><span>Repository ready</span></div>
+    </header>
+
+    <div class="app-body">
+      <aside class="sidebar" aria-label="模型文件">
+        <input class="search" aria-label="筛选文件" placeholder="筛选文件">
+        <div class="side-label">Tokenizer</div>
+        <div class="file selected"><span>tokenizer.json</span><span class="size">11.4 MB</span></div>
+        <div class="file"><span>tokenizer_config.json</span><span class="size">9 KB</span></div>
+        <div class="file"><span>vocab.json</span><span class="size">2.7 MB</span></div>
+        <div class="file"><span>merges.txt</span><span class="size">1.6 MB</span></div>
+        <div class="side-label">Model</div>
+        <div class="file"><span>config.json</span><span class="size">2 KB</span></div>
+        <div class="file"><span>model.safetensors</span><span class="size">1.2 GB</span></div>
+        <div class="file"><span>generation_config.json</span><span class="size">239 B</span></div>
+        <div class="side-label">Documentation</div>
+        <div class="file"><span>README.md</span><span class="size">7 KB</span></div>
+      </aside>
+
+      <section class="detail">
+        <header class="detail-header">
+          <div class="file-heading">
+            <h1>tokenizer.json</h1>
+            <p>11.4 MB · JSON · Qwen3-0.6B</p>
+          </div>
+          <span class="format-pill">TOKENIZER</span>
+          <nav class="perspectives" aria-label="文件视图">
+            <button class="active">概览</button>
+            <button>字段</button>
+            <button>原始</button>
+            <button>试验台</button>
+          </nav>
+        </header>
+        <div class="prototype-banner">
+          <strong>PROTOTYPE</strong>
+          <span id="prototypeQuestion">问题：词表研究应该留在概览，还是升级成独立工作区？</span>
+          <span>冻结的 Qwen3 真实统计 · 不加载权重</span>
+        </div>
+
+        <div class="variants">
+          <section class="variant variant-a active" data-variant="A" aria-label="方案 A 概览加深">
+            <div class="a-scroll">
+              <div class="a-inner">
+                <div class="a-top">
+                  <div>
+                    <p class="eyebrow">方案 A · 概览加深（推荐）</p>
+                    <h2 class="page-title">BPE Tokenizer</h2>
+                    <p class="subtitle">大型 tokenizer.json 在后台解析；摘要不展开完整词表和合并规则。</p>
+                  </div>
+                </div>
+
+                <section class="panel a-structure">
+                  <div class="panel-head"><h3>结构</h3><small>沿用现有概览</small></div>
+                  <div class="property-rows">
+                    <div class="property"><span>格式版本</span><span>1.0</span></div>
+                    <div class="property"><span>模型类型</span><span>BPE</span></div>
+                    <div class="property"><span>词表项 / 合并规则</span><span>151,643 / 151,387</span></div>
+                    <div class="property"><span>新增 Token</span><span>26（单独统计）</span></div>
+                  </div>
+                </section>
+
+                <section class="panel a-research">
+                  <div class="a-research-head">
+                    <div>
+                      <h2>词表长度</h2>
+                      <p>基础词表 151,643 项；长度按原始 Token Piece 的 Unicode 标量计数。</p>
+                    </div>
+                    <div class="scope"><span class="current">Base vocab</span><span>Added / special · 26</span></div>
+                  </div>
+                  <div class="metrics">
+                    <div class="metric"><span>平均</span><strong>6.44</strong></div>
+                    <div class="metric"><span>中位数</span><strong>6</strong></div>
+                    <div class="metric"><span>P90</span><strong>10</strong></div>
+                    <div class="metric"><span>P95</span><strong>12</strong></div>
+                    <div class="metric"><span>P99</span><strong>18</strong></div>
+                    <div class="metric"><span>最长</span><strong>128</strong></div>
+                    <div class="metric"><span>词表项</span><strong>151,643</strong></div>
+                  </div>
+
+                  <div class="a-grid">
+                    <section class="panel">
+                      <div class="panel-head"><h3>长度分布</h3><small>点击柱查看区间</small></div>
+                      <div class="chart" data-chart></div>
+                      <div class="chart-note" data-chart-note><strong>5–8</strong><span>69,203 项，占基础词表 45.64%。</span></div>
+                    </section>
+                    <aside class="panel definition">
+                      <h3>为什么使用 Unicode 标量？</h3>
+                      <p>它稳定描述 tokenizer 文件中的原始 piece，不会把 ByteLevel 标记先解码成文本后再改变口径。</p>
+                      <p>例如 <code>Ġ × 128</code> 是 128 个标量、256 个 UTF-8 bytes；经 Qwen ByteLevel 解码后可读为 128 个空格。</p>
+                      <p><strong>注意：</strong>“最长”揭示词表构成和异常值，不等于 tokenizer 质量。</p>
+                    </aside>
+                  </div>
+
+                  <section class="panel" style="margin-top:10px">
+                    <div class="panel-head">
+                      <h3>最长 Token</h3>
+                      <small>默认 Top 5 · 长度降序</small>
+                      <button class="small-button right" id="showMoreA">展开 Top 9</button>
+                    </div>
+                    <table>
+                      <thead><tr><th style="width:42px">#</th><th style="width:64px">ID</th><th>可读 Piece</th><th class="number" style="width:66px">标量</th><th class="number" style="width:72px">Raw bytes</th></tr></thead>
+                      <tbody data-token-table="A"></tbody>
+                    </table>
+                    <div class="token-detail" data-token-detail="A"></div>
+                  </section>
+                </section>
+              </div>
+            </div>
+          </section>
+
+          <section class="variant variant-b" data-variant="B" aria-label="方案 B 分布钻取台">
+            <div class="b-shell">
+              <header class="b-heading">
+                <div>
+                  <p class="eyebrow">方案 B · 分布钻取台</p>
+                  <h2>从长尾区间追到具体 Token</h2>
+                  <p>分布桶成为导航；Added Token 仍与基础词表分开。</p>
+                </div>
+                <div class="b-metrics">
+                  <span>Base vocab<strong>151,643</strong></span>
+                  <span>平均<strong>6.44</strong></span>
+                  <span>P99<strong>18</strong></span>
+                  <span>最大<strong>128</strong></span>
+                </div>
+              </header>
+              <div class="b-layout">
+                <nav class="bucket-nav" aria-label="长度区间">
+                  <h3>长度区间</h3>
+                  <div data-buckets></div>
+                  <p class="bucket-help">点击区间筛选。原型只携带已核验的最长样例，不模拟 151,643 条完整数据。</p>
+                </nav>
+                <section class="b-results">
+                  <header class="results-head">
+                    <div><h3 data-bin-title>65+ · 121 项</h3><p data-bin-subtitle>当前区间按长度降序</p></div>
+                    <input id="bucketSearch" aria-label="在当前区间搜索" placeholder="在当前区间搜索">
+                  </header>
+                  <div class="results-body">
+                    <table>
+                      <thead><tr><th style="width:62px">ID</th><th>Piece</th><th class="number" style="width:54px">长度</th></tr></thead>
+                      <tbody data-token-table="B"></tbody>
+                    </table>
+                    <div class="prototype-limit" data-bin-empty hidden></div>
+                  </div>
+                </section>
+                <aside class="b-inspector">
+                  <p class="eyebrow">Token 详情</p>
+                  <div data-token-detail="B"></div>
+                </aside>
+              </div>
+            </div>
+          </section>
+
+          <section class="variant variant-c" data-variant="C" aria-label="方案 C 最长榜优先">
+            <div class="c-shell">
+              <header class="c-heading">
+                <div>
+                  <p class="eyebrow">方案 C · 最长榜优先</p>
+                  <h2>最长 Token 排行</h2>
+                  <p>先看极端值；分布只保留为解释上下文。</p>
+                </div>
+                <div class="c-controls">
+                  <div class="segmented" aria-label="Token 显示方式">
+                    <button class="active" data-display-mode="readable">可读</button>
+                    <button data-display-mode="raw">Raw</button>
+                  </div>
+                  <label class="heuristic"><input id="excludeNoise" type="checkbox"> 排除纯空白 / 重复分隔符（启发式）</label>
+                </div>
+              </header>
+              <div class="c-layout">
+                <section class="ranking">
+                  <div data-ranking></div>
+                  <div class="token-detail" data-token-detail="C"></div>
+                </section>
+                <aside class="c-aside">
+                  <p class="eyebrow">分布摘要</p>
+                  <h3>大部分 Token 并不长</h3>
+                  <div class="percentile"><span>最长</span><span class="line"><i style="--width:100%"></i></span><strong>128</strong></div>
+                  <div class="percentile"><span>P99</span><span class="line"><i style="--width:14%"></i></span><strong>18</strong></div>
+                  <div class="percentile"><span>P95</span><span class="line"><i style="--width:9%"></i></span><strong>12</strong></div>
+                  <div class="percentile"><span>P90</span><span class="line"><i style="--width:8%"></i></span><strong>10</strong></div>
+                  <div class="percentile"><span>中位数</span><span class="line"><i style="--width:5%"></i></span><strong>6</strong></div>
+                  <div class="mini-chart" aria-label="长度分布迷你图">
+                    <i style="--height:1%"></i><i style="--height:7%"></i><i style="--height:63%"></i><i style="--height:100%"></i>
+                    <i style="--height:46%"></i><i style="--height:3%"></i><i style="--height:1%"></i><i style="--height:1%"></i>
+                  </div>
+                  <div class="heuristic-note">排行榜会被长空白和重复标点占据。“排除”只是用来验证用户是否需要第二张词形榜；首版不应把它固化成分类系统。</div>
+                </aside>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <nav class="switcher" aria-label="原型方案切换">
+    <button class="nav" id="prevVariant" aria-label="上一个方案">‹</button>
+    <button class="active" data-switch="A">A · 概览</button>
+    <button data-switch="B">B · 钻取</button>
+    <button data-switch="C">C · 最长榜</button>
+    <button class="nav" id="nextVariant" aria-label="下一个方案">›</button>
+  </nav>
+
+  <script>
+    const bins = [
+      { label: '1', count: 256, percent: '0.17%', height: 1 },
+      { label: '2', count: 5073, percent: '3.35%', height: 7 },
+      { label: '3–4', count: 43565, percent: '28.73%', height: 63 },
+      { label: '5–8', count: 69203, percent: '45.64%', height: 100 },
+      { label: '9–16', count: 31628, percent: '20.86%', height: 46 },
+      { label: '17–32', count: 1678, percent: '1.11%', height: 3 },
+      { label: '33–64', count: 119, percent: '0.08%', height: 1 },
+      { label: '65+', count: 121, percent: '0.08%', height: 1 }
+    ];
+
+    const tokens = [
+      { id: 56940, raw: 'Ġ'.repeat(128), readable: '空格 × 128', length: 128, kind: 'noise' },
+      { id: 89180, raw: '//' + '-'.repeat(112), readable: '// + 连字符 × 112', length: 114, kind: 'noise' },
+      { id: 66207, raw: 'Ġ' + '-'.repeat(112), readable: '空格 + 连字符 × 112', length: 113, kind: 'noise' },
+      { id: 56342, raw: '//' + '-'.repeat(96), readable: '// + 连字符 × 96', length: 98, kind: 'noise' },
+      { id: 86544, raw: '/' + '*'.repeat(96), readable: '/ + 星号 × 96', length: 97, kind: 'noise' },
+      { id: 62470, raw: '.translatesAutoresizingMaskIntoConstraints', readable: '.translatesAutoresizingMaskIntoConstraints', length: 42, kind: 'word' },
+      { id: 72203, raw: '.DataGridViewColumnHeadersHeightSizeMode', readable: '.DataGridViewColumnHeadersHeightSizeMode', length: 40, kind: 'word' },
+      { id: 60107, raw: 'latesAutoresizingMaskIntoConstraints', readable: 'latesAutoresizingMaskIntoConstraints', length: 36, kind: 'word' },
+      { id: 72805, raw: 'ĠdequeueReusableCellWithIdentifier', readable: '空格 + dequeueReusableCellWithIdentifier', length: 34, kind: 'word' }
+    ];
+
+    const utf8Length = value => new TextEncoder().encode(value).length;
+    const scalarLength = value => Array.from(value).length;
+    console.assert(bins.reduce((sum, bin) => sum + bin.count, 0) === 151643, 'Distribution total mismatch');
+    tokens.forEach(token => console.assert(scalarLength(token.raw) === token.length, 'Token length mismatch', token.id));
+
+    const formatCount = value => value.toLocaleString('en-US');
+    const escapeHTML = value => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+    const displayRaw = token => token.raw.length > 70 ? token.raw.slice(0, 66) + '…' : token.raw;
+    const variantOrder = ['A', 'B', 'C'];
+    let currentVariant = 'A';
+    let selectedTokens = { A: tokens[0], B: tokens[0], C: tokens[0] };
+    let selectedBin = '65+';
+    let cDisplayMode = 'readable';
+    let showAllA = false;
+
+    function renderCharts() {
+      document.querySelectorAll('[data-chart]').forEach(chart => {
+        chart.innerHTML = bins.map(bin =>
+          '<button class="bar-button' + (bin.label === '5–8' ? ' selected' : '') + '" data-chart-bin="' + bin.label + '" aria-label="长度 ' + bin.label + '，' + formatCount(bin.count) + ' 项">' +
+            '<span class="bar-value">' + formatCount(bin.count) + '</span>' +
+            '<span class="bar-track"><span class="bar-fill" style="--height:' + bin.height + '%"></span></span>' +
+            '<span class="bar-label">' + bin.label + '</span>' +
+            '<span class="bar-percent">' + bin.percent + '</span>' +
+          '</button>'
+        ).join('');
+      });
+    }
+
+    function renderBuckets() {
+      const root = document.querySelector('[data-buckets]');
+      root.innerHTML = bins.map(bin =>
+        '<button class="bucket' + (bin.label === selectedBin ? ' active' : '') + '" data-bucket="' + bin.label + '">' +
+          '<span class="range">' + bin.label + '</span>' +
+          '<span class="rail"><i style="--width:' + Math.max(2, bin.height) + '%"></i></span>' +
+          '<span class="count">' + formatCount(bin.count) + '</span>' +
+        '</button>'
+      ).join('');
+    }
+
+    function detailHTML(token, compact) {
+      if (!token) return '<p class="muted">选择一个 Token 查看详情。</p>';
+      const raw = escapeHTML(token.raw);
+      const body =
+        '<div><strong class="mono">ID ' + token.id + '</strong>' +
+        '<div class="raw">' + raw + '</div>' +
+        '<div class="meta">' + escapeHTML(token.readable) + ' · ' + token.length + ' 标量 · ' + utf8Length(token.raw) + ' raw bytes</div></div>' +
+        '<button class="small-button" data-copy-token="' + token.id + '">复制 Raw</button>';
+      return compact ? body : '<div class="label">Raw Piece</div><div class="inspect-raw">' + raw + '</div>' +
+        '<div class="label">可读形式</div><p class="muted" style="font-size:10px;line-height:1.5">' + escapeHTML(token.readable) + '</p>' +
+        '<div class="label">度量</div><div class="inspect-grid"><span>Token ID</span><strong>' + token.id + '</strong><span>Unicode 标量</span><strong>' + token.length + '</strong><span>Raw UTF-8</span><strong>' + utf8Length(token.raw) + ' bytes</strong></div>' +
+        '<button class="small-button" style="margin-top:14px" data-copy-token="' + token.id + '">复制 Raw</button>';
+    }
+
+    function renderATable() {
+      const visible = tokens.slice(0, showAllA ? 9 : 5);
+      const body = document.querySelector('[data-token-table="A"]');
+      body.innerHTML = visible.map((token, index) =>
+        '<tr tabindex="0" role="button" data-token-index="' + tokens.indexOf(token) + '"' + (selectedTokens.A.id === token.id ? ' class="selected"' : '') + '>' +
+          '<td class="number">' + (index + 1) + '</td><td class="mono">' + token.id + '</td>' +
+          '<td class="piece" title="' + escapeHTML(token.raw) + '">' + escapeHTML(token.readable) + '</td>' +
+          '<td class="number">' + token.length + '</td><td class="number">' + utf8Length(token.raw) + '</td></tr>'
+      ).join('');
+      document.querySelector('[data-token-detail="A"]').innerHTML = detailHTML(selectedTokens.A, true);
+      document.getElementById('showMoreA').textContent = showAllA ? '收起到 Top 5' : '展开 Top 9';
+    }
+
+    function bucketTokens() {
+      if (selectedBin === '65+') return tokens.filter(token => token.length >= 65);
+      if (selectedBin === '33–64') return tokens.filter(token => token.length >= 33 && token.length <= 64);
+      return [];
+    }
+
+    function renderBResults() {
+      const bin = bins.find(item => item.label === selectedBin);
+      const query = document.getElementById('bucketSearch').value.trim().toLowerCase();
+      const visible = bucketTokens().filter(token => !query || token.raw.toLowerCase().includes(query) || token.readable.toLowerCase().includes(query) || String(token.id).includes(query));
+      if (!visible.some(token => selectedTokens.B && token.id === selectedTokens.B.id)) selectedTokens.B = visible[0] || null;
+      document.querySelector('[data-bin-title]').textContent = selectedBin + ' · ' + formatCount(bin.count) + ' 项';
+      document.querySelector('[data-bin-subtitle]').textContent = visible.length ? '原型显示 ' + visible.length + ' 个已核验样例' : '完整数据未打包进抛弃式原型';
+      const body = document.querySelector('[data-token-table="B"]');
+      body.innerHTML = visible.map(token =>
+        '<tr tabindex="0" role="button" data-token-index="' + tokens.indexOf(token) + '"' + (selectedTokens.B && selectedTokens.B.id === token.id ? ' class="selected"' : '') + '>' +
+          '<td class="mono">' + token.id + '</td><td class="piece" title="' + escapeHTML(token.raw) + '">' + escapeHTML(token.readable) + '</td><td class="number">' + token.length + '</td></tr>'
+      ).join('');
+      const empty = document.querySelector('[data-bin-empty]');
+      empty.hidden = visible.length > 0;
+      empty.textContent = query ? '当前已核验样例中没有匹配项。' : selectedBin + ' 区间包含 ' + formatCount(bin.count) + ' 项；原型不伪造未扫描的 Token 列表。生产版需要分页或虚拟列表后才能支持这个方案。';
+      document.querySelector('[data-token-detail="B"]').innerHTML = detailHTML(selectedTokens.B, false);
+    }
+
+    function renderRanking() {
+      const excludeNoise = document.getElementById('excludeNoise').checked;
+      const visible = tokens.filter(token => !excludeNoise || token.kind !== 'noise');
+      const root = document.querySelector('[data-ranking]');
+      root.innerHTML = visible.map((token, index) => {
+        const label = cDisplayMode === 'raw' ? displayRaw(token) : token.readable;
+        return '<button class="rank-row' + (selectedTokens.C.id === token.id ? ' selected' : '') + '" data-token-index="' + tokens.indexOf(token) + '">' +
+          '<span class="rank">' + (index + 1) + '</span><span class="rank-piece" title="' + escapeHTML(token.raw) + '">' + escapeHTML(label) + '</span>' +
+          '<span class="length-rail"><i style="--width:' + Math.round(token.length / 128 * 100) + '%"></i></span>' +
+          '<span class="rank-meta">' + token.length + ' · #' + token.id + '</span></button>';
+      }).join('');
+      if (!visible.some(token => token.id === selectedTokens.C.id)) selectedTokens.C = visible[0];
+      document.querySelector('[data-token-detail="C"]').innerHTML = detailHTML(selectedTokens.C, true);
+    }
+
+    function renderDetails() {
+      renderATable();
+      renderBResults();
+      renderRanking();
+    }
+
+    function setVariant(value) {
+      const variant = variantOrder.includes(value) ? value : 'A';
+      currentVariant = variant;
+      document.querySelectorAll('[data-variant]').forEach(node => node.classList.toggle('active', node.dataset.variant === variant));
+      document.querySelectorAll('[data-switch]').forEach(node => {
+        const active = node.dataset.switch === variant;
+        node.classList.toggle('active', active);
+        node.setAttribute('aria-current', active ? 'true' : 'false');
+      });
+      const url = new URL(window.location.href);
+      url.searchParams.set('variant', variant);
+      history.replaceState({}, '', url);
+      document.title = 'ModelFiles · 词表研究原型 ' + variant;
+    }
+
+    document.addEventListener('click', event => {
+      const switchButton = event.target.closest('[data-switch]');
+      if (switchButton) setVariant(switchButton.dataset.switch);
+
+      const chartButton = event.target.closest('[data-chart-bin]');
+      if (chartButton) {
+        const bin = bins.find(item => item.label === chartButton.dataset.chartBin);
+        document.querySelectorAll('[data-chart-bin]').forEach(node => node.classList.toggle('selected', node === chartButton));
+        const note = chartButton.closest('.panel').querySelector('[data-chart-note]');
+        note.innerHTML = '<strong>' + bin.label + '</strong><span>' + formatCount(bin.count) + ' 项，占基础词表 ' + bin.percent + '。</span>';
+      }
+
+      const bucket = event.target.closest('[data-bucket]');
+      if (bucket) {
+        selectedBin = bucket.dataset.bucket;
+        renderBuckets();
+        renderBResults();
+      }
+
+      const tokenRow = event.target.closest('[data-token-index]');
+      if (tokenRow) {
+        const token = tokens[Number(tokenRow.dataset.tokenIndex)];
+        const variant = tokenRow.closest('[data-variant]').dataset.variant;
+        selectedTokens[variant] = token;
+        renderDetails();
+      }
+
+      const mode = event.target.closest('[data-display-mode]');
+      if (mode) {
+        cDisplayMode = mode.dataset.displayMode;
+        document.querySelectorAll('[data-display-mode]').forEach(node => node.classList.toggle('active', node === mode));
+        renderRanking();
+      }
+
+      const copy = event.target.closest('[data-copy-token]');
+      if (copy) {
+        const token = tokens.find(item => item.id === Number(copy.dataset.copyToken));
+        navigator.clipboard?.writeText(token.raw).catch(() => {});
+        copy.textContent = '已复制';
+        setTimeout(() => { copy.textContent = '复制 Raw'; }, 900);
+      }
+    });
+
+    document.getElementById('showMoreA').addEventListener('click', () => {
+      showAllA = !showAllA;
+      renderATable();
+    });
+    document.getElementById('bucketSearch').addEventListener('input', renderBResults);
+    document.getElementById('excludeNoise').addEventListener('change', renderRanking);
+    document.getElementById('prevVariant').addEventListener('click', () => setVariant(variantOrder[(variantOrder.indexOf(currentVariant) + 2) % 3]));
+    document.getElementById('nextVariant').addEventListener('click', () => setVariant(variantOrder[(variantOrder.indexOf(currentVariant) + 1) % 3]));
+    document.addEventListener('keydown', event => {
+      const tokenRow = event.target.closest?.('[data-token-index]');
+      if (tokenRow && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        tokenRow.click();
+        return;
+      }
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+      if (event.key === 'ArrowLeft') document.getElementById('prevVariant').click();
+      if (event.key === 'ArrowRight') document.getElementById('nextVariant').click();
+    });
+
+    renderCharts();
+    renderBuckets();
+    renderDetails();
+    setVariant(new URLSearchParams(window.location.search).get('variant') || 'A');
+  </script>
+</body>
+</html>

@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 
 struct TokenizerFieldInfo: Identifiable, Sendable, Equatable {
@@ -13,7 +14,31 @@ struct TokenizerOverview: Sendable, Equatable {
     let vocabCount: Int?
     let mergeCount: Int?
     let addedTokenCount: Int?
+    let vocabularyAnalysis: TokenizerVocabularyAnalysis?
     let fields: [TokenizerFieldInfo]
+}
+
+struct TokenizerLengthBucket: Sendable, Equatable {
+    let label: String
+    let count: Int
+}
+
+struct TokenizerVocabularyEntry: Sendable, Equatable {
+    let tokenID: Int
+    let token: String
+    let scalarLength: Int
+}
+
+struct TokenizerVocabularyAnalysis: Sendable, Equatable {
+    let tokenCount: Int
+    let averageScalarLength: Double
+    let p50ScalarLength: Int
+    let p90ScalarLength: Int
+    let p95ScalarLength: Int
+    let p99ScalarLength: Int
+    let maximumScalarLength: Int
+    let buckets: [TokenizerLengthBucket]
+    let longestTokens: [TokenizerVocabularyEntry]
 }
 
 struct TokenizerInspection: Sendable {
@@ -28,12 +53,14 @@ enum TokenizerInspector {
                 return TokenizerInspection(overview: nil, error: "tokenizer.json 根节点不是对象。")
             }
             let model = root["model"] as? [String: Any]
+            let vocabulary = model?["vocab"]
             let overview = TokenizerOverview(
                 version: root["version"] as? String,
                 modelType: model?["type"] as? String,
-                vocabCount: (model?["vocab"] as? [String: Any])?.count,
+                vocabCount: collectionCount(vocabulary),
                 mergeCount: (model?["merges"] as? [Any])?.count,
                 addedTokenCount: (root["added_tokens"] as? [Any])?.count,
+                vocabularyAnalysis: vocabularyEntries(from: vocabulary).flatMap(analyzeVocabulary),
                 fields: root.keys.sorted().map {
                     TokenizerFieldInfo(name: $0, detail: describe(root[$0]))
                 }
@@ -41,6 +68,142 @@ enum TokenizerInspector {
             return TokenizerInspection(overview: overview, error: nil)
         } catch {
             return TokenizerInspection(overview: nil, error: error.localizedDescription)
+        }
+    }
+
+    private static func collectionCount(_ value: Any?) -> Int? {
+        if let value = value as? [String: Any] { return value.count }
+        if let value = value as? [Any] { return value.count }
+        return nil
+    }
+
+    private static func vocabularyEntries(from value: Any?) -> [(id: Int, token: String)]? {
+        if let vocabulary = value as? [String: Any] {
+            var entries: [(id: Int, token: String)] = []
+            entries.reserveCapacity(vocabulary.count)
+            var seenIDs: Set<Int> = []
+            seenIDs.reserveCapacity(vocabulary.count)
+            for (token, rawID) in vocabulary {
+                guard let id = integerID(rawID), seenIDs.insert(id).inserted else { return nil }
+                entries.append((id, token))
+            }
+            return entries
+        }
+
+        if let vocabulary = value as? [Any] {
+            var entries: [(id: Int, token: String)] = []
+            entries.reserveCapacity(vocabulary.count)
+            for (id, rawEntry) in vocabulary.enumerated() {
+                guard let pair = rawEntry as? [Any],
+                      pair.count >= 2,
+                      let token = pair[0] as? String,
+                      let score = pair[1] as? NSNumber,
+                      CFGetTypeID(score) != CFBooleanGetTypeID() else {
+                    return nil
+                }
+                entries.append((id, token))
+            }
+            return entries
+        }
+
+        return nil
+    }
+
+    private static func integerID(_ value: Any) -> Int? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              let id = Int(number.stringValue),
+              id >= 0 else {
+            return nil
+        }
+        return id
+    }
+
+    private static func analyzeVocabulary(
+        _ entries: [(id: Int, token: String)]
+    ) -> TokenizerVocabularyAnalysis? {
+        guard !entries.isEmpty else { return nil }
+
+        var lengths: [Int] = []
+        lengths.reserveCapacity(entries.count)
+        var totalLength: Int64 = 0
+        var bucketCounts = Array(repeating: 0, count: 9)
+        var longestTokens: [TokenizerVocabularyEntry] = []
+        longestTokens.reserveCapacity(min(entries.count, 50))
+
+        for entry in entries {
+            let length = entry.token.unicodeScalars.count
+            lengths.append(length)
+            totalLength += Int64(length)
+            bucketCounts[bucketIndex(for: length)] += 1
+            insert(
+                TokenizerVocabularyEntry(tokenID: entry.id, token: entry.token, scalarLength: length),
+                into: &longestTokens
+            )
+        }
+
+        let sortedLengths = lengths.sorted()
+        let labels = ["0", "1", "2", "3–4", "5–8", "9–16", "17–32", "33–64", "65+"]
+        var buckets = zip(labels, bucketCounts).map {
+            TokenizerLengthBucket(label: $0.0, count: $0.1)
+        }
+        if bucketCounts[0] == 0 {
+            buckets.removeFirst()
+        }
+
+        return TokenizerVocabularyAnalysis(
+            tokenCount: entries.count,
+            averageScalarLength: Double(totalLength) / Double(entries.count),
+            p50ScalarLength: percentile(0.50, in: sortedLengths),
+            p90ScalarLength: percentile(0.90, in: sortedLengths),
+            p95ScalarLength: percentile(0.95, in: sortedLengths),
+            p99ScalarLength: percentile(0.99, in: sortedLengths),
+            maximumScalarLength: sortedLengths[sortedLengths.count - 1],
+            buckets: buckets,
+            longestTokens: longestTokens
+        )
+    }
+
+    private static func percentile(_ percentile: Double, in sortedLengths: [Int]) -> Int {
+        let rank = Int((Double(sortedLengths.count) * percentile).rounded(.up))
+        return sortedLengths[min(sortedLengths.count - 1, max(0, rank - 1))]
+    }
+
+    private static func bucketIndex(for length: Int) -> Int {
+        switch length {
+        case 0: 0
+        case 1: 1
+        case 2: 2
+        case 3...4: 3
+        case 5...8: 4
+        case 9...16: 5
+        case 17...32: 6
+        case 33...64: 7
+        default: 8
+        }
+    }
+
+    private static func insert(
+        _ entry: TokenizerVocabularyEntry,
+        into longestTokens: inout [TokenizerVocabularyEntry]
+    ) {
+        let insertionIndex = longestTokens.firstIndex { existing in
+            if entry.scalarLength != existing.scalarLength {
+                return entry.scalarLength > existing.scalarLength
+            }
+            if entry.tokenID != existing.tokenID {
+                return entry.tokenID < existing.tokenID
+            }
+            return entry.token < existing.token
+        }
+
+        if let insertionIndex {
+            longestTokens.insert(entry, at: insertionIndex)
+            if longestTokens.count > 50 {
+                longestTokens.removeLast()
+            }
+        } else if longestTokens.count < 50 {
+            longestTokens.append(entry)
         }
     }
 

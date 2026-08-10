@@ -794,6 +794,18 @@ private struct TokenizerJSONView: View {
                 ("合并规则", overview.mergeCount.map { $0.formatted() }),
                 ("新增 Token", overview.addedTokenCount.map { $0.formatted() }),
             ]))
+            if let analysis = overview.vocabularyAnalysis {
+                TokenizerVocabularyAnalysisView(
+                    analysis: analysis,
+                    addedTokenCount: overview.addedTokenCount
+                )
+            } else if let vocabCount = overview.vocabCount {
+                Text(vocabCount == 0
+                    ? "model.vocab 为空，没有可分析的 Token。"
+                    : "当前 model.vocab 结构无法进行词表长度分析。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
             Text("需要逐项查看时，优先使用仓库中的 vocab.json 和 merges.txt；它们有分页阅读器。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -811,6 +823,320 @@ private struct TokenizerJSONView: View {
                 Divider()
             }
         }
+    }
+}
+
+private struct TokenizerVocabularyAnalysisView: View {
+    let analysis: TokenizerVocabularyAnalysis
+    let addedTokenCount: Int?
+
+    @State private var showsTop50 = false
+    @State private var selectedBucketLabel: String?
+    @State private var selectedTokenID: Int?
+
+    private var selectedBucket: TokenizerLengthBucket {
+        if let selectedBucketLabel,
+           let bucket = analysis.buckets.first(where: { $0.label == selectedBucketLabel }) {
+            return bucket
+        }
+        return analysis.buckets.max(by: { $0.count < $1.count })!
+    }
+
+    private var selectedToken: TokenizerVocabularyEntry? {
+        if let selectedTokenID,
+           let token = analysis.longestTokens.first(where: { $0.tokenID == selectedTokenID }) {
+            return token
+        }
+        return analysis.longestTokens.first
+    }
+
+    private var visibleTokens: [TokenizerVocabularyEntry] {
+        Array(analysis.longestTokens.prefix(showsTop50 ? 50 : 20))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("词表长度")
+                        .font(.headline)
+                    Text("基础词表 \(analysis.tokenCount.formatted()) 项；按原始 Token Piece 的 Unicode 标量计数。")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                scopePill("Base vocab", emphasized: true)
+                if let addedTokenCount {
+                    scopePill("Added Token · \(addedTokenCount.formatted())", emphasized: false)
+                }
+            }
+
+            metrics
+
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 12) {
+                    distribution
+                        .frame(minWidth: 430, maxWidth: .infinity)
+                    lengthDefinition
+                        .frame(width: 280)
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    distribution
+                    lengthDefinition
+                }
+            }
+
+            longestTokens
+        }
+    }
+
+    private var metrics: some View {
+        let values = [
+            ("平均", analysis.averageScalarLength.formatted(.number.precision(.fractionLength(2)))),
+            ("P50", analysis.p50ScalarLength.formatted()),
+            ("P90", analysis.p90ScalarLength.formatted()),
+            ("P95", analysis.p95ScalarLength.formatted()),
+            ("P99", analysis.p99ScalarLength.formatted()),
+            ("最长", analysis.maximumScalarLength.formatted()),
+        ]
+        return LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 108), spacing: 8)],
+            alignment: .leading,
+            spacing: 8
+        ) {
+            ForEach(Array(values.enumerated()), id: \.offset) { _, value in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(value.0)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(value.1)
+                        .font(.title3.weight(.semibold).monospacedDigit())
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+    }
+
+    private var distribution: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("长度分布")
+                .font(.subheadline.weight(.semibold))
+            HStack(alignment: .bottom, spacing: 6) {
+                ForEach(analysis.buckets, id: \.label) { bucket in
+                    Button {
+                        selectedBucketLabel = bucket.label
+                    } label: {
+                        VStack(spacing: 4) {
+                            Text(bucket.count.formatted())
+                                .font(.caption2.monospaced())
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(bucket.label == selectedBucket.label ? Color.accentColor : Color.accentColor.opacity(0.48))
+                                .frame(height: barHeight(for: bucket))
+                            Text(bucket.label)
+                                .font(.caption2.monospaced())
+                            Text(percentageText(for: bucket))
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(
+                        "长度 \(bucket.label)，\(bucket.count.formatted()) 个 Token，占 \(percentageText(for: bucket))"
+                    )
+                    .accessibilityAddTraits(
+                        bucket.label == selectedBucket.label ? .isSelected : []
+                    )
+                }
+            }
+            .frame(height: 158)
+            Text("长度 \(selectedBucket.label)：\(selectedBucket.count.formatted()) 项，占基础词表 \(percentageText(for: selectedBucket))。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var lengthDefinition: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("统计口径")
+                .font(.subheadline.weight(.semibold))
+            Text("统计 tokenizer.json 中 model.vocab 的原始 Piece，不先解码 ByteLevel，也不做 Unicode 归一化。")
+            Text("Added Token 单独计数，不进入本分布。最长 Token 用于理解词表构成，不代表 tokenizer 质量。")
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var longestTokens: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("最长 Token")
+                    .font(.subheadline.weight(.semibold))
+                Text("长度降序，ID 升序")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if analysis.longestTokens.count > 20 {
+                    Button(showsTop50 ? "收起到 Top 20" : "展开 Top \(analysis.longestTokens.count)") {
+                        showsTop50.toggle()
+                    }
+                    .controlSize(.small)
+                }
+            }
+            .padding(12)
+
+            Divider()
+            tokenHeader
+            Divider()
+
+            ForEach(Array(visibleTokens.enumerated()), id: \.element.tokenID) { index, entry in
+                Button {
+                    selectedTokenID = entry.tokenID
+                } label: {
+                    tokenRow(index: index, entry: entry)
+                }
+                .buttonStyle(.plain)
+                .background(
+                    entry.tokenID == selectedToken?.tokenID
+                        ? Color.accentColor.opacity(0.12)
+                        : Color.clear
+                )
+                .contextMenu {
+                    Button("复制 Token Piece") {
+                        copy(entry.token)
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(
+                    "第 \(index + 1) 名，Token ID \(entry.tokenID)，\(visible(entry.token))，\(entry.scalarLength) 个 Unicode 标量"
+                )
+                .accessibilityAddTraits(
+                    entry.tokenID == selectedToken?.tokenID ? .isSelected : []
+                )
+                Divider()
+            }
+
+            if let selectedToken {
+                tokenDetail(selectedToken)
+            }
+        }
+        .background(.quaternary.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var tokenHeader: some View {
+        HStack(spacing: 8) {
+            Text("#").frame(width: 34, alignment: .trailing)
+            Text("ID").frame(width: 72, alignment: .leading)
+            Text("Token Piece").frame(maxWidth: .infinity, alignment: .leading)
+            Text("标量").frame(width: 54, alignment: .trailing)
+            Text("UTF-8 bytes").frame(width: 70, alignment: .trailing)
+        }
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .frame(height: 28)
+    }
+
+    private func tokenRow(index: Int, entry: TokenizerVocabularyEntry) -> some View {
+        HStack(spacing: 8) {
+            Text((index + 1).formatted()).frame(width: 34, alignment: .trailing)
+            Text(entry.tokenID.formatted()).frame(width: 72, alignment: .leading)
+            Text(visible(entry.token))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(entry.token)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(entry.scalarLength.formatted()).frame(width: 54, alignment: .trailing)
+            Text(entry.token.utf8.count.formatted()).frame(width: 70, alignment: .trailing)
+        }
+        .font(.system(.caption, design: .monospaced))
+        .padding(.horizontal, 12)
+        .frame(minHeight: 31)
+        .contentShape(Rectangle())
+    }
+
+    private func tokenDetail(_ entry: TokenizerVocabularyEntry) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("Token #\(entry.tokenID)")
+                    .font(.subheadline.weight(.semibold).monospaced())
+                Spacer()
+                Button("复制 Raw") {
+                    copy(entry.token)
+                }
+                .controlSize(.small)
+            }
+            Text(entry.token.isEmpty ? "（空字符串）" : entry.token)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .lineLimit(4)
+                .truncationMode(.middle)
+            Text("\(visible(entry.token)) · \(entry.scalarLength) 标量 · \(entry.token.utf8.count) UTF-8 bytes")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+    }
+
+    private func scopePill(_ text: String, emphasized: Bool) -> some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(emphasized ? Color.accentColor : Color.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                emphasized ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.10),
+                in: Capsule()
+            )
+    }
+
+    private func barHeight(for bucket: TokenizerLengthBucket) -> CGFloat {
+        let maximum = analysis.buckets.map(\.count).max() ?? 1
+        return max(3, CGFloat(bucket.count) / CGFloat(max(1, maximum)) * 92)
+    }
+
+    private func percentageText(for bucket: TokenizerLengthBucket) -> String {
+        String(format: "%.2f%%", Double(bucket.count) / Double(analysis.tokenCount) * 100)
+    }
+
+    private func visible(_ token: String) -> String {
+        guard !token.isEmpty else { return "空 Token" }
+        let scalars = Array(token.unicodeScalars)
+        if scalars.count > 8, scalars.allSatisfy({ $0 == scalars[0] }) {
+            return "\(visible(scalars[0])) × \(scalars.count)"
+        }
+        return scalars.map(visible).joined()
+    }
+
+    private func visible(_ scalar: Unicode.Scalar) -> String {
+        switch scalar.value {
+        case 0x09: "Tab"
+        case 0x0A: "换行"
+        case 0x0D: "回车"
+        case 0x20: "空格"
+        default:
+            CharacterSet.controlCharacters.contains(scalar)
+                ? "\\u{\(String(scalar.value, radix: 16, uppercase: true))}"
+                : String(scalar)
+        }
+    }
+
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }
 
