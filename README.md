@@ -7,6 +7,7 @@ A collection of small tools for inspecting language models and handling data aro
 | Tool | Purpose | Status |
 | --- | --- | --- |
 | [`ModelFiles`](tools/model-files/) | Browse model configuration, tokenizer, template, and SafeTensors structure files in a native macOS app | Usable app |
+| [`Model Files Web`](tools/model-files-web/) | Inspect bounded public Hugging Face model metadata and tokenizers in a pure web app | Release candidate |
 | [`analysis`](src/tools/analysis/) | Inspect Hugging Face LLM/VLM hidden states, attention patterns, logits, and prediction confidence | Prototype |
 | [`qrcode2txt`](crates/qrcode2txt/) | Decode QR codes from image files, stdin, or the system clipboard | Usable CLI |
 
@@ -25,6 +26,8 @@ It provides purpose-built views for:
 Files are loaded only when selected. Large text and tokenizer views parse in the background and render incrementally. SafeTensors preview uses HTTP Range requests to read only the JSON header; if a source does not confirm partial responses, the request is cancelled rather than downloading the weight data.
 
 Requires macOS 15 or later and Swift 6.
+
+The pure-browser companion is under [`tools/model-files-web/`](tools/model-files-web/). It supports public read-only Hugging Face repositories, SafeTensors headers, a 24-byte GGUF basic summary, and Raw tokenizer inspection without loading model weights. See its README for the exact support and privacy boundaries.
 
 ### Run
 
@@ -86,7 +89,8 @@ Python dependencies are declared in [`pyproject.toml`](pyproject.toml).
 ```text
 .
 ├── tools/
-│   └── model-files/      # Native macOS model-file inspector
+│   ├── model-files/      # Native macOS model-file inspector
+│   └── model-files-web/  # Pure Web public model-file inspector
 ├── crates/
 │   └── qrcode2txt/       # Rust QR-code decoder CLI
 ├── src/tools/
