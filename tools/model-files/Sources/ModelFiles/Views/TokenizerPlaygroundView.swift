@@ -1,6 +1,21 @@
 import AppKit
 import SwiftUI
 
+func visibleTokenizerText(_ text: String, showWhitespace: Bool) -> String {
+    guard showWhitespace else {
+        return text
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+    }
+    return text
+        .replacingOccurrences(of: " ", with: "·")
+        .replacingOccurrences(of: "\t", with: "→")
+        .replacingOccurrences(of: "\r\n", with: "↵")
+        .replacingOccurrences(of: "\r", with: "↵")
+        .replacingOccurrences(of: "\n", with: "↵")
+}
+
 struct TokenizerPlaygroundView: View {
     private enum InputMode: String, CaseIterable, Identifiable {
         case raw
@@ -427,12 +442,7 @@ struct TokenizerPlaygroundView: View {
     }
 
     private func visible(_ text: String) -> String {
-        guard showWhitespace else { return text }
-        return text
-            .replacingOccurrences(of: " ", with: "·")
-            .replacingOccurrences(of: "\t", with: "→")
-            .replacingOccurrences(of: "\r", with: "↵")
-            .replacingOccurrences(of: "\n", with: "↵\n")
+        visibleTokenizerText(text, showWhitespace: showWhitespace)
     }
 
     private func segmentColor(_ index: Int) -> Color {

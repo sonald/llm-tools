@@ -138,6 +138,12 @@ final class TokenizerRuntimeTests: XCTestCase {
         ])
     }
 
+    func testVisibleTokenizerTextKeepsLineBreakTokensSingleLine() {
+        XCTAssertEqual(visibleTokenizerText("\n", showWhitespace: false), " ")
+        XCTAssertEqual(visibleTokenizerText("\r\n", showWhitespace: true), "↵")
+        XCTAssertEqual(visibleTokenizerText(" a\tb ", showWhitespace: true), "·a→b·")
+    }
+
     private func fixtureBundle(named name: String) throws -> TokenizerBundle {
         let directory = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

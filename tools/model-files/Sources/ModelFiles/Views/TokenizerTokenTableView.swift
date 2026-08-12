@@ -133,12 +133,7 @@ struct TokenizerTokenTableView: View {
     }
 
     private func visible(_ text: String) -> String {
-        guard showWhitespace else { return text }
-        return text
-            .replacingOccurrences(of: " ", with: "·")
-            .replacingOccurrences(of: "\t", with: "→")
-            .replacingOccurrences(of: "\r", with: "↵")
-            .replacingOccurrences(of: "\n", with: "↵\n")
+        visibleTokenizerText(text, showWhitespace: showWhitespace)
     }
 
     private func segmentColor(_ index: Int) -> Color {
