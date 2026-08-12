@@ -17,7 +17,7 @@ struct TokenizerBundleLoader: Sendable {
         var errorDescription: String? {
             switch self {
             case let .invalidSelection(path):
-                "只能为 tokenizer.json 打开分词试验台：\(path)"
+                "只能为 tokenizer.json 或 SentencePiece .model 打开分词试验台：\(path)"
             case let .missingSize(path):
                 "来源没有提供 \(path) 的大小，无法在安全上限内读取。"
             case let .fileTooLarge(path, size, limit):
@@ -41,7 +41,7 @@ struct TokenizerBundleLoader: Sendable {
         from snapshot: RepositorySnapshot,
         access: any RepositoryAccess
     ) async throws -> TokenizerBundle {
-        guard file.name.lowercased() == "tokenizer.json" else {
+        guard file.isTokenizerPlaygroundEntryPoint else {
             throw LoaderError.invalidSelection(file.path)
         }
 

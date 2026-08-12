@@ -55,7 +55,9 @@ final class ModelFilesStore: ObservableObject {
 
     var availablePerspectives: [InspectionPerspective] {
         guard let inspection = selectedInspection else { return [.overview] }
-        if selectedFile?.name.lowercased() == "tokenizer.json" {
+        if selectedFile?.isSentencePieceModel == true { return [.playground] }
+        if selectedFile?.isTokenizerPlaygroundEntryPoint == true,
+           !inspection.perspectives.contains(.playground) {
             return inspection.perspectives + [.playground]
         }
         return inspection.perspectives
@@ -117,7 +119,7 @@ final class ModelFilesStore: ObservableObject {
                 let preferred = snapshot.files.first { $0.path == "config.json" && !$0.isBlocked }
                     ?? snapshot.files.first { !$0.isBlocked }
                 self.selectedPath = preferred?.path
-                self.perspective = .overview
+                self.perspective = preferred?.isSentencePieceModel == true ? .playground : .overview
                 self.loadSelectedFile()
             } catch is CancellationError {
                 return
@@ -142,9 +144,9 @@ final class ModelFilesStore: ObservableObject {
     func select(path: String?) {
         guard selectedPath != path else { return }
         selectedPath = path
-        perspective = .overview
         errorMessage = nil
         resetTokenizerPlayground()
+        perspective = selectedFile?.isSentencePieceModel == true ? .playground : .overview
         loadSelectedFile()
     }
 
@@ -183,7 +185,7 @@ final class ModelFilesStore: ObservableObject {
             do {
                 try await Task.sleep(for: .milliseconds(225))
                 try Task.checkCancellation()
-                let result = await runtime.tokenize(input)
+                let result = try await runtime.tokenize(input)
                 try Task.checkCancellation()
                 guard let self,
                       generation == self.tokenizerEncodeGeneration,
@@ -193,7 +195,8 @@ final class ModelFilesStore: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                return
+                guard let self, generation == self.tokenizerEncodeGeneration else { return }
+                self.tokenizerPhase = .failed(error.localizedDescription)
             }
         }
     }
@@ -218,7 +221,7 @@ final class ModelFilesStore: ObservableObject {
         guard perspective == .playground,
               let snapshot,
               let file = selectedFile,
-              file.name.lowercased() == "tokenizer.json" else { return }
+              file.isTokenizerPlaygroundEntryPoint else { return }
         let identity = TokenizerSessionIdentity(snapshot: snapshot, file: file)
         if tokenizerRuntime != nil, tokenizerIdentity == identity {
             if let pendingTokenizerInput { tokenize(pendingTokenizerInput) }

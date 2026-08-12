@@ -10,7 +10,7 @@ ModelFiles 是一款原生 macOS 模型文件查看器，面向 Hugging Face / M
 - **分词渲染** 彩色 Token 片段展示渲染后文本中的分词边界；可显示空白字符，并切换到 Token 表查看 Token ID、原始 Piece 与解码结果。参考的https://tiktokenizer.vercel.app/。
 - **看清 chat template 的真实开销。** 编辑 `system` / `user` / `assistant` 消息，渲染当前 Jinja chat template，检查实际送入 tokenizer 的文本，并对照 Token 数、Unicode 字符数和每 Token 字节数。
 - **明确区分 exact 与 decoded。** 并列查看原始 Token、解码 Token，以及 exact 映射和仅 decoded 映射的区别，便于排查 byte fallback 等场景。
-- 支持加载和查看 `tokenizer.json`、`tokenizer_config.json`、`chat_template.jinja`
+- 支持加载和查看 `tokenizer.json`、SentencePiece `.model`、`tokenizer_config.json`、`chat_template.jinja`
 - 支持 Jinja chat template 渲染与验证
 - 支持展示 imatrix 元数据（如可用）
 - 保持轻量化数据读取：不会读取模型权重文件

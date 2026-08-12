@@ -252,7 +252,7 @@ private struct InspectionWorkspaceView: View {
                 JinjaWorkspaceView(document: document, perspective: $store.perspective)
                     .id(file.path)
             case let .generic(data):
-                if file.name.lowercased() == "tokenizer.json", store.perspective == .playground {
+                if file.isTokenizerPlaygroundEntryPoint, store.perspective == .playground {
                     TokenizerPlaygroundView(store: store, file: file)
                         .id(file.path)
                 } else {

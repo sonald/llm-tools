@@ -55,6 +55,24 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         XCTAssertNil(store.tokenizationResult)
     }
 
+    func testSentencePieceModelOpensDirectlyInPlayground() async throws {
+        let model = Data("invalid".utf8)
+        let files = [file("tokenizer.model", data: model, category: .tokenizer)]
+        let access = StoreTokenizerAccess(data: ["tokenizer.model": model], files: files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/sentencepiece-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+
+        XCTAssertEqual(store.perspective, .playground)
+        XCTAssertEqual(store.availablePerspectives, [.playground])
+        try await waitUntil {
+            if case .failed = store.tokenizerPhase { return true }
+            return false
+        }
+    }
+
     private func fixtureData(
         includesOtherFile: Bool = false
     ) throws -> (data: [String: Data], files: [RepositoryFile]) {

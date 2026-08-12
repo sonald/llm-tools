@@ -6,7 +6,7 @@ final class TokenizerRuntimeTests: XCTestCase {
     func testStrictlyLoadsOfflineBPEAndReturnsStableIDs() async throws {
         let runtime = try TokenizerRuntime(bundle: try fixtureBundle(named: "bpe"))
 
-        let result = await runtime.tokenize("offline path")
+        let result = try await runtime.tokenize("offline path")
 
         XCTAssertEqual(result.input, "offline path")
         XCTAssertEqual(result.tokenIDs, [15, 22])
@@ -19,7 +19,7 @@ final class TokenizerRuntimeTests: XCTestCase {
     func testStrictlyLoadsWordPieceAndPreservesSubwordIDs() async throws {
         let runtime = try TokenizerRuntime(bundle: try fixtureBundle(named: "wordpiece"))
 
-        let result = await runtime.tokenize("Hello worlds 中文")
+        let result = try await runtime.tokenize("Hello worlds 中文")
 
         XCTAssertEqual(result.tokenIDs, [3, 4, 5, 6, 7])
         XCTAssertEqual(result.tokenPieces, ["hello", "world", "##s", "中", "文"])
@@ -30,7 +30,7 @@ final class TokenizerRuntimeTests: XCTestCase {
     func testStrictlyLoadsUnigramAndUsesMetaspaceDecoder() async throws {
         let runtime = try TokenizerRuntime(bundle: try fixtureBundle(named: "unigram"))
 
-        let result = await runtime.tokenize("hello world")
+        let result = try await runtime.tokenize("hello world")
 
         XCTAssertEqual(result.tokenIDs, [2, 3])
         XCTAssertEqual(result.tokenPieces, ["▁hello", "▁world"])
@@ -42,7 +42,7 @@ final class TokenizerRuntimeTests: XCTestCase {
     func testByteFallbackGroupsOneEmojiWithoutDroppingItsFourIDs() async throws {
         let runtime = try TokenizerRuntime(bundle: try fixtureBundle(named: "byte-fallback"))
 
-        let result = await runtime.tokenize("😀x")
+        let result = try await runtime.tokenize("😀x")
 
         XCTAssertEqual(result.tokenIDs, [1, 2, 3, 4, 5])
         XCTAssertEqual(result.tokenPieces, ["<0xF0>", "<0x9F>", "<0x98>", "<0x80>", "x"])
@@ -67,7 +67,7 @@ final class TokenizerRuntimeTests: XCTestCase {
         XCTAssertNil(rendered.error)
 
         let runtime = try TokenizerRuntime(bundle: try fixtureBundle(named: "bpe"))
-        let result = await runtime.tokenize(rendered.output)
+        let result = try await runtime.tokenize(rendered.output)
 
         XCTAssertEqual(result.input, rendered.output)
         XCTAssertEqual(result.tokenIDs, [15])
@@ -106,8 +106,29 @@ final class TokenizerRuntimeTests: XCTestCase {
         }
     }
 
-    func testSegmenterGroupsPartialUnicodeBytesWithoutLosingIDs() {
-        let segments = TokenizerRuntime.makeSegments(
+    func testInvalidSentencePieceModelReportsItsStage() throws {
+        let bundle = TokenizerBundle(
+            file: RepositoryFile(
+                path: "tokenizer.model",
+                size: 7,
+                revision: "fixture",
+                contentHash: "fixture",
+                category: .tokenizer
+            ),
+            tokenizerData: Data("invalid".utf8),
+            tokenizerConfigData: nil,
+            chatTemplateData: nil
+        )
+
+        XCTAssertThrowsError(try TokenizerRuntime(bundle: bundle)) { error in
+            guard case TokenizerRuntime.RuntimeError.invalidSentencePieceModel = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testSegmenterGroupsPartialUnicodeBytesWithoutLosingIDs() throws {
+        let segments = try TokenizerRuntime.makeSegments(
             tokenIDs: [10, 11, 12],
             decodedText: "😀!",
             decode: { ids in
@@ -126,8 +147,8 @@ final class TokenizerRuntimeTests: XCTestCase {
         ])
     }
 
-    func testSegmenterFallsBackToOneAuthoritativeDecodedGroup() {
-        let segments = TokenizerRuntime.makeSegments(
+    func testSegmenterFallsBackToOneAuthoritativeDecodedGroup() throws {
+        let segments = try TokenizerRuntime.makeSegments(
             tokenIDs: [1, 2],
             decodedText: "hello world",
             decode: { ids in ids == [1] ? "hello" : "world" }

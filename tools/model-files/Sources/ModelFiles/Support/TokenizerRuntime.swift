@@ -1,10 +1,12 @@
 import Foundation
 import Hub
+import SentencepieceTokenizer
 import Tokenizers
 
 actor TokenizerRuntime {
     enum RuntimeError: LocalizedError {
         case invalidTokenizerData(String)
+        case invalidSentencePieceModel(String)
         case invalidTokenizerConfig(String)
         case unsupported(String)
 
@@ -12,6 +14,8 @@ actor TokenizerRuntime {
             switch self {
             case let .invalidTokenizerData(message):
                 "tokenizer.json 无效：\(message)"
+            case let .invalidSentencePieceModel(message):
+                "SentencePiece model 无效：\(message)"
             case let .invalidTokenizerConfig(message):
                 "tokenizer_config.json 无效：\(message)"
             case let .unsupported(message):
@@ -20,9 +24,27 @@ actor TokenizerRuntime {
         }
     }
 
-    private let tokenizer: any Tokenizer
+    private enum Backend {
+        case huggingFace(any Tokenizer)
+        case sentencePiece(SentencepieceTokenizer)
+    }
+
+    private let backend: Backend
 
     init(bundle: TokenizerBundle) throws {
+        if bundle.file.isSentencePieceModel {
+            let modelURL = FileManager.default.temporaryDirectory
+                .appending(path: "ModelFiles-\(UUID().uuidString).model")
+            defer { try? FileManager.default.removeItem(at: modelURL) }
+            do {
+                try bundle.tokenizerData.write(to: modelURL, options: .atomic)
+                backend = .sentencePiece(try SentencepieceTokenizer(modelPath: modelURL.path, tokenOffset: 0))
+            } catch {
+                throw RuntimeError.invalidSentencePieceModel(error.localizedDescription)
+            }
+            return
+        }
+
         let tokenizerData: Config
         do {
             tokenizerData = try JSONDecoder().decode(Config.self, from: bundle.tokenizerData)
@@ -40,24 +62,37 @@ actor TokenizerRuntime {
         }
 
         do {
-            tokenizer = try AutoTokenizer.from(
+            backend = .huggingFace(try AutoTokenizer.from(
                 tokenizerConfig: tokenizerConfig,
                 tokenizerData: tokenizerData,
                 strict: true
-            )
+            ))
         } catch {
             throw RuntimeError.unsupported(error.localizedDescription)
         }
     }
 
-    func tokenize(_ input: String) -> TokenizationResult {
-        let tokenIDs = tokenizer.encode(text: input, addSpecialTokens: false)
-        let tokenPieces = tokenizer.convertIdsToTokens(tokenIDs)
-        let decodedText = tokenizer.decode(tokens: tokenIDs, skipSpecialTokens: false)
-        let segments = Self.makeSegments(
+    func tokenize(_ input: String) throws -> TokenizationResult {
+        let tokenIDs: [Int]
+        let tokenPieces: [String?]
+        let decodedText: String
+        let decode: ([Int]) throws -> String
+        switch backend {
+        case let .huggingFace(tokenizer):
+            tokenIDs = tokenizer.encode(text: input, addSpecialTokens: false)
+            tokenPieces = tokenizer.convertIdsToTokens(tokenIDs)
+            decodedText = tokenizer.decode(tokens: tokenIDs, skipSpecialTokens: false)
+            decode = { tokenizer.decode(tokens: $0, skipSpecialTokens: false) }
+        case let .sentencePiece(tokenizer):
+            tokenIDs = try tokenizer.encode(input)
+            tokenPieces = try tokenIDs.map { try tokenizer.idToToken($0) }
+            decodedText = try tokenizer.decode(tokenIDs)
+            decode = tokenizer.decode
+        }
+        let segments = try Self.makeSegments(
             tokenIDs: tokenIDs,
             decodedText: decodedText,
-            decode: { tokenizer.decode(tokens: $0, skipSpecialTokens: false) }
+            decode: decode
         )
         let reconstructed = segments.map(\.text).joined()
         return TokenizationResult(
@@ -73,18 +108,18 @@ actor TokenizerRuntime {
     nonisolated static func makeSegments(
         tokenIDs: [Int],
         decodedText: String,
-        decode: ([Int]) -> String
-    ) -> [TokenSegment] {
+        decode: ([Int]) throws -> String
+    ) throws -> [TokenSegment] {
         guard !tokenIDs.isEmpty else { return [] }
 
         var segments: [TokenSegment] = []
         var start = 0
         while start < tokenIDs.count {
             var end = start + 1
-            var text = decode(Array(tokenIDs[start..<end]))
+            var text = try decode(Array(tokenIDs[start..<end]))
             while end < tokenIDs.count && (text.isEmpty || text.contains("\u{FFFD}")) {
                 end += 1
-                text = decode(Array(tokenIDs[start..<end]))
+                text = try decode(Array(tokenIDs[start..<end]))
             }
             segments.append(TokenSegment(
                 tokenRange: start..<end,

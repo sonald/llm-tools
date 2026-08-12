@@ -140,6 +140,14 @@ enum InspectionDocument: Sendable {
 }
 
 extension RepositoryFile {
+    var isSentencePieceModel: Bool {
+        name.lowercased().hasSuffix(".model")
+    }
+
+    var isTokenizerPlaygroundEntryPoint: Bool {
+        name.lowercased() == "tokenizer.json" || isSentencePieceModel
+    }
+
     var structuredInspectionFormat: StructuredInspectionFormat? {
         let lowercasedName = name.lowercased()
         if lowercasedName.hasSuffix(".safetensors") { return .safetensors }

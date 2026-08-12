@@ -10,7 +10,7 @@ ModelFiles is a native macOS inspector for Hugging Face / ModelScope model artif
 - **Make tokenization visible.** Color-coded token segments show boundaries in the rendered input; optionally reveal whitespace and switch to a token table with IDs, raw pieces, and decoded output. inspired by https://tiktokenizer.vercel.app/.
 - **Understand chat-template overhead.** Edit `system` / `user` / `assistant` messages, render the active Jinja chat template, inspect the exact string sent to the tokenizer, and compare token count, Unicode characters, and bytes per token.
 - **Keep exactness explicit.** Inspect raw tokens, decoded tokens, and the distinction between exact mappings and decoded-only mappings, including byte-fallback cases.
-- Load and inspect tokenizer bundles (`tokenizer.json`, `tokenizer_config.json`, `chat_template.jinja`)
+- Load and inspect tokenizer bundles (`tokenizer.json`, SentencePiece `.model`, `tokenizer_config.json`, `chat_template.jinja`)
 - Render and validate Jinja chat templates
 - Show imatrix metadata when available
 - Keep data flow lightweight: no model weights are read

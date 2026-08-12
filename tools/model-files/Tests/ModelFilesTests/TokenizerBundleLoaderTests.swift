@@ -84,6 +84,28 @@ final class TokenizerBundleLoaderTests: XCTestCase {
         XCTAssertEqual(paths, ["tokenizer.json"])
     }
 
+    func testLoadsSentencePieceModelWithSameDirectoryConfig() async throws {
+        let files = [
+            file("nested/tokenizer.model", size: 5),
+            file("nested/tokenizer_config.json", size: 6),
+        ]
+        let access = RecordingTokenizerAccess(data: [
+            "nested/tokenizer.model": Data("model".utf8),
+            "nested/tokenizer_config.json": Data("config".utf8),
+        ])
+
+        let bundle = try await TokenizerBundleLoader().load(
+            file: files[0],
+            from: RepositorySnapshot(location: access.location, version: .live, files: files),
+            access: access
+        )
+
+        XCTAssertEqual(bundle.tokenizerData, Data("model".utf8))
+        XCTAssertEqual(bundle.tokenizerConfigData, Data("config".utf8))
+        let paths = await access.paths()
+        XCTAssertEqual(paths, ["nested/tokenizer.model", "nested/tokenizer_config.json"])
+    }
+
     func testRejectsMissingSizeAndDeclaredBundleOverflowBeforeReading() async throws {
         let access = RecordingTokenizerAccess(data: [:])
         let missing = file("tokenizer.json", size: nil)

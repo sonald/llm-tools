@@ -235,6 +235,7 @@ struct RepositoryService: Sendable {
     }
 
     func inspectFile(_ file: RepositoryFile, from snapshot: RepositorySnapshot) async throws -> InspectionDocument {
+        if file.isSentencePieceModel { return .generic(Data()) }
         let access = try access(for: snapshot.location)
         switch file.structuredInspectionFormat {
         case .safetensors:

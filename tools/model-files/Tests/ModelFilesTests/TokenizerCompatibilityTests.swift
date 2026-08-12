@@ -9,7 +9,7 @@ final class TokenizerCompatibilityTests: XCTestCase {
         for kibibytes in [8, 64, 256] {
             let input = String(repeating: "offline ", count: kibibytes * 128)
             let start = ContinuousClock.now
-            let result = await runtime.tokenize(input)
+            let result = try await runtime.tokenize(input)
             let elapsed = start.duration(to: .now)
 
             XCTAssertEqual(input.utf8.count, kibibytes * 1_024)
@@ -49,7 +49,7 @@ final class TokenizerCompatibilityTests: XCTestCase {
         for kibibytes in [8, 64, 256] {
             let input = String(repeating: "Hello世", count: kibibytes * 128)
             let start = ContinuousClock.now
-            let result = await runtime.tokenize(input)
+            let result = try await runtime.tokenize(input)
             let elapsed = start.duration(to: .now)
 
             XCTAssertEqual(input.utf8.count, kibibytes * 1_024)
@@ -59,6 +59,36 @@ final class TokenizerCompatibilityTests: XCTestCase {
                 "REAL_TOKENIZER_BENCHMARK input=\(kibibytes)KiB tokens=\(result.tokenCount) elapsed=\(elapsed)"
             )
         }
+    }
+
+    func testRealSentencePieceTokenizerWhenDirectoryIsProvided() async throws {
+        guard let path = ProcessInfo.processInfo.environment["MODELFILES_REAL_SENTENCEPIECE_DIR"] else {
+            throw XCTSkip("Set MODELFILES_REAL_SENTENCEPIECE_DIR for a real tokenizer.model check.")
+        }
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        let tokenizerData = try Data(contentsOf: directory.appending(path: "tokenizer.model"))
+        let configURL = directory.appending(path: "tokenizer_config.json")
+        let bundle = TokenizerBundle(
+            file: RepositoryFile(
+                path: "tokenizer.model",
+                size: Int64(tokenizerData.count),
+                revision: "real-sentencepiece",
+                contentHash: nil,
+                category: .tokenizer
+            ),
+            tokenizerData: tokenizerData,
+            tokenizerConfigData: try? Data(contentsOf: configURL),
+            chatTemplateData: nil
+        )
+
+        let runtime = try TokenizerRuntime(bundle: bundle)
+        let result = try await runtime.tokenize("你好，Baichuan2! Hello.")
+
+        XCTAssertFalse(result.tokenIDs.isEmpty)
+        XCTAssertEqual(result.decodedText, result.input)
+        XCTAssertEqual(result.segments.flatMap(\.tokenIDs), result.tokenIDs)
+        XCTAssertEqual(result.sourceMapping, .exact)
+        print("REAL_SENTENCEPIECE token_ids=\(result.tokenIDs) pieces=\(result.tokenPieces)")
     }
 
     private func fixtureBundle() throws -> TokenizerBundle {

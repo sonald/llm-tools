@@ -1,5 +1,5 @@
 {
-  "originHash" : "2f9dd6a158d35b4bd498ea82e8a253c9936decc0d4dd28fba1f5c182a998ac14",
+  "originHash" : "9eac8f9db8374212f264fb67863c8bf30dc50485f736f3a55bc485ccc93e1e43",
   "pins" : [
     {
       "identity" : "eventsource",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "a3a85a85214caf642abaa96ae664e4c772a59f6e",
         "version" : "1.4.1"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser.git",
+      "state" : {
+        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "version" : "1.8.2"
       }
     },
     {
@@ -80,6 +89,15 @@
       "state" : {
         "revision" : "0b18836bd8b0162e7e17a995a3fbee20ed8f3b2b",
         "version" : "2.101.3"
+      }
+    },
+    {
+      "identity" : "swift-sentencepiece",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jkrukowski/swift-sentencepiece.git",
+      "state" : {
+        "revision" : "36a8b2b45733f6adb3092100f16e4c7d38a10a7c",
+        "version" : "0.0.6"
       }
     },
     {
