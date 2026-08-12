@@ -1,0 +1,251 @@
+import type { Page, Route } from '@playwright/test'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+
+export const fixtureModelId = 'fixture/model'
+export const fixtureRevision = '0123456789abcdef0123456789abcdef01234567'
+
+export type RequestRecord = {
+  path: string
+  range: string | null
+  responseBytes: number
+  status: number
+}
+
+type FixtureOptions = {
+  manifestDelayMs?: number
+  manifestFailures?: number
+  rangeBehavior?: 'valid' | 'http200'
+  includeBoundaryFiles?: boolean
+}
+
+const tokenizer = JSON.stringify({
+  version: '1.0',
+  truncation: null,
+  padding: null,
+  added_tokens: [
+    { id: 0, content: '[UNK]', special: true },
+    { id: 1, content: '[CLS]', special: true },
+    { id: 2, content: '[SEP]', special: true },
+  ],
+  normalizer: {
+    type: 'BertNormalizer',
+    clean_text: true,
+    handle_chinese_chars: true,
+    strip_accents: null,
+    lowercase: true,
+  },
+  pre_tokenizer: { type: 'BertPreTokenizer' },
+  post_processor: null,
+  decoder: { type: 'WordPiece', prefix: '##', cleanup: true },
+  model: {
+    type: 'WordPiece',
+    unk_token: '[UNK]',
+    continuing_subword_prefix: '##',
+    max_input_chars_per_word: 100,
+    vocab: {
+      '[UNK]': 0,
+      '[CLS]': 1,
+      '[SEP]': 2,
+      hello: 3,
+      world: 4,
+      '##s': 5,
+    },
+  },
+})
+
+const tokenizerConfig = JSON.stringify({
+  tokenizer_class: 'BertTokenizer',
+  unk_token: '[UNK]',
+  model_max_length: 128,
+  chat_template: 'embedded={{ messages | length }}',
+})
+
+const chatTemplate = `{%- for message in messages -%}
+{{ message.role }}={{ message.content if message.content is string else message.content | tojson }};
+{%- endfor -%}
+{%- if tools %}tools={{ tools | tojson }};{%- endif -%}
+thinking={{ enable_thinking }};mode={{ mode }}
+{%- if add_generation_prompt %};assistant={% endif -%}`
+
+const files = new Map<string, Uint8Array>([
+  ['config.json', bytes(JSON.stringify({
+    model_type: 'fixture', architectures: ['FixtureModel'], hidden_size: 8, num_hidden_layers: 2, vocab_size: 1005,
+  }))],
+  ['generation_config.json', bytes(JSON.stringify({ max_new_tokens: 64, do_sample: false, temperature: 1 }))],
+  ['tokenizer.json', bytes(tokenizer)],
+  ['tokenizer_config.json', bytes(tokenizerConfig)],
+  ['chat_template.jinja', bytes(chatTemplate)],
+  ['vocab.json', bytes(JSON.stringify(Object.fromEntries(Array.from({ length: 10_005 }, (_, index) => [`token-${index}`, index]))))],
+  ['merges.txt', bytes(Array.from({ length: 100_002 }, (_, index) => `token-${index} token-${index + 1}`).join('\n'))],
+  ['metadata.json', bytes(JSON.stringify({ format: 'fixture', nested: { ok: true } }))],
+  ['model.safetensors.index.json', bytes(JSON.stringify({
+    metadata: { total_size: 12 },
+    weight_map: { 'layer.0': 'model-00001-of-00002.safetensors', 'layer.1': 'model-00002-of-00002.safetensors' },
+  }))],
+  ['README.md', bytes(`# Fixture Model
+
+| Capability | Result |
+| --- | --- |
+| Markdown | PASS |
+
+[Config](config.json)
+
+<script>window.__markdownExecuted = true</script>
+
+![Third-party image](https://example.com/tracker.png)
+
+[Unsafe](javascript:alert(1))`)],
+  ['imatrix-fixture.dat', imatrixFixture()],
+  ['model.safetensors', safeTensorsFixture()],
+  ['model.gguf', ggufFixture()],
+])
+
+export async function installFixtureRoutes(page: Page, options: FixtureOptions = {}): Promise<RequestRecord[]> {
+  const requests: RequestRecord[] = []
+  let manifestFailures = options.manifestFailures ?? 0
+  await page.route('https://**', route => route.abort('blockedbyclient'))
+  await page.route('https://huggingface.co/**', async route => {
+    const url = new URL(route.request().url())
+    if (url.pathname.startsWith('/api/models/')) {
+      if (options.manifestDelayMs !== undefined) await delay(options.manifestDelayMs)
+      if (manifestFailures > 0) {
+        manifestFailures -= 1
+        await route.fulfill({ status: 503, body: 'retry fixture' })
+        return
+      }
+      const modelId = decodeURIComponent(url.pathname.slice('/api/models/'.length))
+      await route.fulfill({ json: manifest(modelId, options.includeBoundaryFiles ?? false) })
+      return
+    }
+    await fulfillFile(route, requests, options.rangeBehavior ?? 'valid')
+  })
+  return requests
+}
+
+function manifest(modelId: string, includeBoundaryFiles: boolean) {
+  return {
+    id: modelId,
+    sha: modelId === fixtureModelId ? fixtureRevision : 'f'.repeat(40),
+    siblings: [
+      ...[...files].map(([rfilename, body]) => ({ rfilename, size: body.byteLength, blobId: rfilename })),
+      ...(includeBoundaryFiles ? [
+        { rfilename: 'oversized.json', size: 32 * 1024 * 1024 + 1, blobId: 'oversized' },
+        { rfilename: 'pytorch_model.bin', size: 1, blobId: 'locked' },
+      ] : []),
+    ],
+  }
+}
+
+export async function writeFixtureDirectory(directory: string): Promise<void> {
+  await mkdir(directory, { recursive: true })
+  await Promise.all([...files].map(([path, body]) => writeFile(join(directory, path), body)))
+}
+
+async function fulfillFile(
+  route: Route,
+  requests: RequestRecord[],
+  rangeBehavior: NonNullable<FixtureOptions['rangeBehavior']>,
+) {
+  const url = new URL(route.request().url())
+  const match = url.pathname.match(/^\/[^/]+\/[^/]+\/resolve\/[0-9a-f]{40}\/(.+)$/)
+  const path = match === null ? '' : decodeURIComponent(match[1])
+  const body = files.get(path)
+  if (body === undefined) {
+    await route.fulfill({ status: 404, body: 'missing fixture' })
+    return
+  }
+  const range = route.request().headers().range ?? null
+  if (range === null) {
+    requests.push({ path, range, responseBytes: body.byteLength, status: 200 })
+    await route.fulfill({ status: 200, body: Buffer.from(body) })
+    return
+  }
+  if (rangeBehavior === 'http200') {
+    requests.push({ path, range, responseBytes: body.byteLength, status: 200 })
+    await route.fulfill({ status: 200, body: Buffer.from(body) })
+    return
+  }
+  const rangeMatch = range.match(/^bytes=(\d+)-(\d+)$/)
+  if (rangeMatch === null) throw new Error(`Unexpected Range: ${range}`)
+  const start = Number(rangeMatch[1])
+  const end = Number(rangeMatch[2])
+  const slice = body.slice(start, end + 1)
+  requests.push({ path, range, responseBytes: slice.byteLength, status: 206 })
+  await route.fulfill({
+    status: 206,
+    body: Buffer.from(slice),
+    headers: {
+      'Access-Control-Expose-Headers': 'Content-Range',
+      'Content-Length': String(slice.byteLength),
+      'Content-Range': `bytes ${start}-${end}/${body.byteLength}`,
+    },
+  })
+}
+
+function safeTensorsFixture(): Uint8Array {
+  const tensors = Object.fromEntries(Array.from({ length: 105 }, (_, index) => [
+    `layer.${String(index).padStart(3, '0')}`,
+    { dtype: 'F32', shape: [0], data_offsets: [0, 0] },
+  ]))
+  const rawHeader = bytes(JSON.stringify({
+    __metadata__: { format: 'pt' },
+    ...tensors,
+    weight: { dtype: 'F32', shape: [2], data_offsets: [0, 8] },
+  }))
+  const header = new Uint8Array(Math.ceil(rawHeader.byteLength / 8) * 8).fill(0x20)
+  header.set(rawHeader)
+  const file = new Uint8Array(8 + header.byteLength + 8)
+  new DataView(file.buffer).setBigUint64(0, BigInt(header.byteLength), true)
+  file.set(header, 8)
+  return file
+}
+
+function ggufFixture(): Uint8Array {
+  const file = new Uint8Array(24)
+  file.set(bytes('GGUF'))
+  const view = new DataView(file.buffer)
+  view.setUint32(4, 3, true)
+  view.setBigUint64(8, 1n, true)
+  view.setBigUint64(16, 0n, true)
+  return file
+}
+
+function imatrixFixture(): Uint8Array {
+  const output: number[] = []
+  appendInt32(output, 2)
+  appendImatrixEntry(output, 'blk.0.ffn.weight', 4, [0.5, 1.5])
+  appendImatrixEntry(output, 'blk.0.attn.weight', 8, [1, 2, 3])
+  appendInt32(output, 12)
+  const dataset = bytes('calibration.txt')
+  appendInt32(output, dataset.length)
+  output.push(...dataset)
+  return Uint8Array.from(output)
+}
+
+function appendImatrixEntry(output: number[], name: string, calls: number, values: number[]) {
+  const encoded = bytes(name)
+  appendInt32(output, encoded.length)
+  output.push(...encoded)
+  appendInt32(output, calls)
+  appendInt32(output, values.length)
+  for (const value of values) {
+    const data = new Uint8Array(4)
+    new DataView(data.buffer).setFloat32(0, value, true)
+    output.push(...data)
+  }
+}
+
+function appendInt32(output: number[], value: number) {
+  const data = new Uint8Array(4)
+  new DataView(data.buffer).setInt32(0, value, true)
+  output.push(...data)
+}
+
+function bytes(value: string): Uint8Array {
+  return new TextEncoder().encode(value)
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, milliseconds))
+}

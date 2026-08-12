@@ -1,0 +1,87 @@
+name: Model Files Web
+
+on:
+  pull_request:
+    paths:
+      - tools/model-files-web/**
+      - .github/workflows/model-files-web.yml
+  push:
+    branches:
+      - '**'
+    tags:
+      - model-files-web-v*
+    paths:
+      - tools/model-files-web/**
+      - .github/workflows/model-files-web.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: tools/model-files-web
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tools/model-files-web/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: npm run check
+      - run: npm run test:e2e
+      - name: Write artifact checksums
+        run: cd dist && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: model-files-web-${{ github.sha }}
+          path: tools/model-files-web/dist
+          if-no-files-found: error
+
+  pages-artifact:
+    if: startsWith(github.ref, 'refs/tags/model-files-web-v')
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tools/model-files-web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Write artifact checksums
+        run: cd dist && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: tools/model-files-web/dist
+
+  deploy:
+    if: startsWith(github.ref, 'refs/tags/model-files-web-v')
+    needs: pages-artifact
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy immutable tag artifact
+        id: deployment
+        uses: actions/deploy-pages@v4
