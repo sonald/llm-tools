@@ -26,6 +26,7 @@ build_and_stage() {
   mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
   cp "$bin_dir/$APP_NAME" "$MACOS_DIR/$APP_NAME"
   cp "$ROOT_DIR/Sources/ModelFiles/Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
+  cp -R "$bin_dir/textual_Textual.bundle" "$RESOURCES_DIR/textual_Textual.bundle"
 
   cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -81,6 +82,7 @@ case "$MODE" in
   verify)
     build_and_stage
     test -x "$MACOS_DIR/$APP_NAME"
+    test -f "$RESOURCES_DIR/textual_Textual.bundle/prism-bundle.js"
     /usr/bin/plutil -lint "$CONTENTS_DIR/Info.plist"
     echo "Verified $APP_DIR"
     ;;

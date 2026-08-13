@@ -54,6 +54,55 @@ final class FileClassifierTests: XCTestCase {
         XCTAssertEqual(FileClassifier.category(for: "README.md"), .documentation)
     }
 
+    func testRoutesPythonAndPDFFilesToPurposeBuiltReaders() {
+        XCTAssertEqual(FileClassifier.syntaxLanguage(for: "scripts/modeling.py"), "python")
+        XCTAssertEqual(FileClassifier.syntaxLanguage(for: "SCRIPTS/MODELING.PY"), "python")
+        XCTAssertEqual(FileClassifier.syntaxLanguage(for: "scripts/train.sh"), "bash")
+        XCTAssertEqual(FileClassifier.syntaxLanguage(for: "web/view.tsx"), "tsx")
+        XCTAssertEqual(FileClassifier.syntaxLanguage(for: "config/settings.yaml"), "yaml")
+        XCTAssertNil(FileClassifier.syntaxLanguage(for: "notes.txt"))
+        XCTAssertEqual(FileClassifier.category(for: "papers/architecture.pdf"), .documentation)
+
+        let pdf = RepositoryFile(
+            path: "papers/architecture.pdf",
+            size: 1_024,
+            revision: nil,
+            contentHash: nil,
+            category: FileClassifier.category(for: "papers/architecture.pdf")
+        )
+        XCTAssertEqual(pdf.structuredInspectionFormat, .pdf)
+
+        let templatePDF = RepositoryFile(
+            path: "templates/architecture.pdf",
+            size: 1_024,
+            revision: nil,
+            contentHash: nil,
+            category: FileClassifier.category(for: "templates/architecture.pdf")
+        )
+        XCTAssertEqual(templatePDF.category, .documentation)
+        XCTAssertEqual(templatePDF.structuredInspectionFormat, .pdf)
+
+        let templatePython = RepositoryFile(
+            path: "templates/chat_template.py",
+            size: 1_024,
+            revision: nil,
+            contentHash: nil,
+            category: FileClassifier.category(for: "templates/chat_template.py")
+        )
+        XCTAssertEqual(templatePython.category, .templates)
+        XCTAssertNil(templatePython.structuredInspectionFormat)
+        XCTAssertEqual(FileClassifier.syntaxLanguage(for: templatePython.path), "python")
+    }
+
+    func testCodeFenceCannotBeClosedBySourceBackticks() {
+        let source = "print(\"```\")\n"
+        let markdown = fencedCodeMarkdown(source, language: "python")
+
+        XCTAssertTrue(markdown.hasPrefix("````python\n"))
+        XCTAssertTrue(markdown.contains(source))
+        XCTAssertTrue(markdown.hasSuffix("````"))
+    }
+
     func testUsesReaderFriendlyOrderingWithinCategories() {
         XCTAssertLessThan(
             FileClassifier.sortPriority(for: "tokenizer_config.json"),

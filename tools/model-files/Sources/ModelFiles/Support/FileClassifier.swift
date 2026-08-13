@@ -11,6 +11,23 @@ enum FileClassifier {
         return lowercasedName.hasSuffix(".gguf") || lowercasedName.hasSuffix(".gguf_file")
     }
 
+    static func syntaxLanguage(for path: String) -> String? {
+        let languages = [
+            "py": "python", "pyw": "python",
+            "js": "javascript", "mjs": "javascript", "cjs": "javascript",
+            "ts": "typescript", "jsx": "jsx", "tsx": "tsx",
+            "sh": "bash", "bash": "bash", "zsh": "bash",
+            "swift": "swift", "rs": "rust", "go": "go",
+            "c": "c", "h": "c", "cc": "cpp", "cpp": "cpp", "cxx": "cpp", "hpp": "cpp",
+            "java": "java", "kt": "kotlin", "kts": "kotlin",
+            "rb": "ruby", "php": "php", "lua": "lua",
+            "yaml": "yaml", "yml": "yaml", "toml": "toml", "sql": "sql",
+            "css": "css", "scss": "scss", "sass": "sass", "less": "less",
+            "html": "markup", "htm": "markup", "xml": "markup", "svg": "markup",
+        ]
+        return languages[URL(fileURLWithPath: path).pathExtension.lowercased()]
+    }
+
     static func category(for path: String) -> FileCategory {
         let name = URL(fileURLWithPath: path).lastPathComponent.lowercased()
         let lowerPath = path.lowercased()
@@ -43,6 +60,10 @@ enum FileClassifier {
             name == "merges.txt" || name == "special_tokens_map.json" ||
             name.hasPrefix("added_tokens") || name.hasSuffix(".model") {
             return .tokenizer
+        }
+
+        if name.hasSuffix(".pdf") {
+            return .documentation
         }
 
         if name.contains("template") || name.hasSuffix(".jinja") ||

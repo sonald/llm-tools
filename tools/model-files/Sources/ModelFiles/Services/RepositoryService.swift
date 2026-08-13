@@ -1,4 +1,5 @@
 import Foundation
+import PDFKit
 
 protocol RepositoryAccess: Sendable {
     var location: RepositoryLocation { get }
@@ -28,9 +29,11 @@ struct RepositoryService: Sendable {
         case safetensorsHeaderTooLarge(UInt64)
         case invalidGGUF(String)
         case invalidIMatrix(String)
+        case invalidPDF
         case ggufMetadataTooLarge
         case missingFileSize
         case invalidUTF8
+        case unsupportedBinary
         case shortRead(expected: Int, actual: Int)
 
         var errorDescription: String? {
@@ -75,12 +78,16 @@ struct RepositoryService: Sendable {
                 "GGUF 无效：\(message)"
             case let .invalidIMatrix(message):
                 "Imatrix 无效：\(message)"
+            case .invalidPDF:
+                "PDF 文件无效或无法由系统 PDFKit 打开。"
             case .ggufMetadataTooLarge:
                 "GGUF metadata 与 tensor 目录超过 32 MB 安全上限。"
             case .missingFileSize:
                 "来源未提供文件大小，无法安全读取 GGUF 前缀。"
             case .invalidUTF8:
                 "文件不是有效的 UTF-8 文本。"
+            case .unsupportedBinary:
+                "该文件没有专用阅读器，且内容不是可安全显示的 UTF-8 文本。"
             case let .shortRead(expected, actual):
                 "读取不完整：需要 \(expected) 字节，只收到 \(actual) 字节。"
             }
@@ -261,9 +268,17 @@ struct RepositoryService: Sendable {
                 throw ServiceError.invalidUTF8
             }
             return .jinja(JinjaDocument(source: source))
+        case .pdf:
+            let data = try await loadReadableFile(file, access: access)
+            guard PDFDocument(data: data) != nil else { throw ServiceError.invalidPDF }
+            return .pdf(data)
         case nil:
             guard !file.isBlocked else { throw ServiceError.blockedWeight }
-            return .generic(try await loadReadableFile(file, access: access))
+            let data = try await loadReadableFile(file, access: access)
+            guard String(data: data, encoding: .utf8) != nil, !data.contains(0) else {
+                throw ServiceError.unsupportedBinary
+            }
+            return .generic(data)
         }
     }
 

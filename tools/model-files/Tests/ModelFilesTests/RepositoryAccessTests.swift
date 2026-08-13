@@ -267,6 +267,84 @@ final class RepositoryAccessTests: XCTestCase {
         XCTAssertEqual(finalRanges.count, 2)
     }
 
+    func testServiceRoutesPDFAndRejectsUnknownBinary() async throws {
+        let pdfData = Data("""
+        %PDF-1.1
+        1 0 obj
+        << /Type /Catalog /Pages 2 0 R >>
+        endobj
+        2 0 obj
+        << /Type /Pages /Kids [3 0 R] /Count 1 >>
+        endobj
+        3 0 obj
+        << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>
+        endobj
+        trailer
+        << /Root 1 0 R >>
+        %%EOF
+        """.utf8)
+        let pdfAccess = RecordingRepositoryAccess(data: pdfData)
+        let pdfService = RepositoryService(makeAccess: { _ in pdfAccess })
+        let pdf = RepositoryFile(
+            path: "paper.pdf",
+            size: Int64(pdfData.count),
+            revision: nil,
+            contentHash: nil,
+            category: FileClassifier.category(for: "paper.pdf")
+        )
+        let pdfSnapshot = RepositorySnapshot(location: pdfAccess.location, version: .live, files: [pdf])
+
+        guard case let .pdf(loadedData) = try await pdfService.inspectFile(pdf, from: pdfSnapshot) else {
+            return XCTFail("Expected PDF inspection")
+        }
+        XCTAssertEqual(loadedData, pdfData)
+        let pdfRanges = await pdfAccess.requestedRanges()
+        XCTAssertEqual(pdfRanges, [nil])
+
+        let binaryAccess = RecordingRepositoryAccess(data: Data([0xFF, 0x00, 0xFE]))
+        let binaryService = RepositoryService(makeAccess: { _ in binaryAccess })
+        let binary = RepositoryFile(
+            path: "unknown.data",
+            size: 3,
+            revision: nil,
+            contentHash: nil,
+            category: .other
+        )
+        let binarySnapshot = RepositorySnapshot(
+            location: binaryAccess.location,
+            version: .live,
+            files: [binary]
+        )
+
+        do {
+            _ = try await binaryService.inspectFile(binary, from: binarySnapshot)
+            XCTFail("Expected unknown binary data to be rejected")
+        } catch let error as RepositoryService.ServiceError {
+            guard case .unsupportedBinary = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+    }
+
+    func testServiceKeepsSentencePieceInspectionLightweight() async throws {
+        let data = Data([0x0A, 0x01, 0xFF, 0x00])
+        let access = RecordingRepositoryAccess(data: data)
+        let service = RepositoryService(makeAccess: { _ in access })
+        let file = RepositoryFile(
+            path: "tokenizer.model",
+            size: Int64(data.count),
+            revision: nil,
+            contentHash: nil,
+            category: .tokenizer
+        )
+        let snapshot = RepositorySnapshot(location: access.location, version: .live, files: [file])
+
+        guard case let .generic(loadedData) = try await service.inspectFile(file, from: snapshot) else {
+            return XCTFail("Expected SentencePiece data to remain available")
+        }
+        XCTAssertTrue(loadedData.isEmpty)
+        let ranges = await access.requestedRanges()
+        XCTAssertTrue(ranges.isEmpty)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appending(path: "ModelFilesTests-\(UUID().uuidString)", directoryHint: .isDirectory)

@@ -127,9 +127,11 @@ private struct DetailHeader: View {
 
             Picker("查看方式", selection: $store.perspective) {
                 ForEach(store.availablePerspectives) { perspective in
-                    Text(perspective == .overview && file.name.lowercased().hasSuffix(".md")
-                        ? "渲染"
-                        : perspective.title)
+                    Text(perspective == .overview && file.structuredInspectionFormat == .pdf
+                        ? "预览"
+                        : perspective == .overview && file.name.lowercased().hasSuffix(".md")
+                            ? "渲染"
+                            : perspective.title)
                         .tag(perspective)
                 }
             }
@@ -251,6 +253,8 @@ private struct InspectionWorkspaceView: View {
             case let .jinja(document):
                 JinjaWorkspaceView(document: document, perspective: $store.perspective)
                     .id(file.path)
+            case let .pdf(data):
+                PDFReaderView(data: data)
             case let .generic(data):
                 if file.isTokenizerPlaygroundEntryPoint, store.perspective == .playground {
                     TokenizerPlaygroundView(store: store, file: file)
@@ -405,6 +409,8 @@ private struct FileReaderView: View {
             WeightIndexSummaryView(object: jsonDictionary)
         } else if file.category == .documentation && name.hasSuffix(".md") {
             MarkdownReaderView(text: text, baseURL: baseURL)
+        } else if let language = FileClassifier.syntaxLanguage(for: file.path), data.count <= 128 * 1_024 {
+            CodeReaderView(source: text, language: language)
         } else if let object = jsonObject {
             JSONFieldsView(object: object)
         } else if data.count > 128 * 1_024 {

@@ -5,6 +5,7 @@ enum StructuredInspectionFormat: Sendable, Equatable {
     case gguf
     case imatrix
     case jinja
+    case pdf
 
     var title: String {
         switch self {
@@ -12,6 +13,7 @@ enum StructuredInspectionFormat: Sendable, Equatable {
         case .gguf: "GGUF"
         case .imatrix: "Imatrix"
         case .jinja: "Jinja"
+        case .pdf: "PDF"
         }
     }
 
@@ -21,6 +23,7 @@ enum StructuredInspectionFormat: Sendable, Equatable {
         case .gguf: "正在读取 GGUF metadata 前缀…"
         case .imatrix: "正在读取 Imatrix 数据…"
         case .jinja: "正在读取 Jinja 源码…"
+        case .pdf: "正在读取 PDF 文档…"
         }
     }
 }
@@ -100,6 +103,7 @@ enum InspectionDocument: Sendable {
     case gguf(GGUFOverview, downloadedByteCount: Int)
     case imatrix(IMatrixOverview)
     case jinja(JinjaDocument)
+    case pdf(Data)
     case generic(Data)
 
     var perspectives: [InspectionPerspective] {
@@ -110,6 +114,8 @@ enum InspectionDocument: Sendable {
             [.overview, .entries]
         case .jinja:
             [.overview, .source, .playground]
+        case .pdf:
+            [.overview]
         case .generic:
             [.overview, .fields, .raw]
         }
@@ -121,6 +127,7 @@ enum InspectionDocument: Sendable {
         case let .gguf(overview, _): overview.isIMatrix ? "GGUF Imatrix" : "GGUF v\(overview.version)"
         case .imatrix: "Imatrix DAT"
         case .jinja: "Jinja"
+        case .pdf: "PDF"
         case .generic: nil
         }
     }
@@ -133,6 +140,8 @@ enum InspectionDocument: Sendable {
             "只读取了 \(Int64(byteCount).formattedByteCount) GGUF 文件前缀；最后一个 Range 可能包含少量首个 tensor 数据。"
         case let .imatrix(overview):
             "读取了完整的 \(Int64(overview.byteCount).formattedByteCount) legacy imatrix 文件；只解析，不执行。"
+        case let .pdf(data):
+            "读取了完整的 \(Int64(data.count).formattedByteCount) PDF，使用系统 PDFKit 本地预览。"
         case .jinja, .generic:
             nil
         }
@@ -156,6 +165,8 @@ extension RepositoryFile {
            lowercasedName.hasSuffix(".dat") || lowercasedName.contains(".dat.at_") {
             return .imatrix
         }
+        if lowercasedName.hasSuffix(".pdf") { return .pdf }
+        if FileClassifier.syntaxLanguage(for: lowercasedName) != nil { return nil }
         if category == .templates { return .jinja }
         return nil
     }
