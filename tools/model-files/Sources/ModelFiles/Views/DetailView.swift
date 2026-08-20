@@ -1,6 +1,36 @@
 import AppKit
 import SwiftUI
 
+enum ConsistencyBadgeState: Equatable {
+    case checking
+    case warnings(Int)
+    case insufficient
+    case consistent
+
+    var title: String {
+        switch self {
+        case .checking: "检查中"
+        case let .warnings(count): "\(count) 项警告"
+        case .insufficient: "材料不足"
+        case .consistent: "一致"
+        }
+    }
+}
+
+func consistencyBadgeState(report: RepositoryConsistencyReport?) -> ConsistencyBadgeState {
+    guard let report else { return .checking }
+    let warningCount = report.findings.count { $0.severity == .warning }
+    if warningCount > 0 { return .warnings(warningCount) }
+
+    let core: Set<ConsistencyMaterialKind> = [
+        .config, .tokenizer, .tokenizerConfig, .chatTemplates,
+    ]
+    let checked = Set(report.coverage.compactMap { coverage in
+        coverage.status == .checked ? coverage.material : nil
+    })
+    return core.isSubset(of: checked) ? .consistent : .insufficient
+}
+
 struct DetailView: View {
     @ObservedObject var store: ModelFilesStore
 
@@ -84,6 +114,7 @@ struct DetailView: View {
 private struct DetailHeader: View {
     @ObservedObject var store: ModelFilesStore
     let file: RepositoryFile
+    @State private var showsConsistencyReport = false
 
     var body: some View {
         HStack(spacing: 14) {
@@ -115,6 +146,28 @@ private struct DetailHeader: View {
             .layoutPriority(1)
 
             Spacer(minLength: 8)
+
+            if store.snapshot != nil {
+                let badge = consistencyBadgeState(report: store.consistencyReport)
+                Button {
+                    showsConsistencyReport.toggle()
+                } label: {
+                    Label(badge.title, systemImage: badgeSystemImage(badge))
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(badgeColor(badge).opacity(0.14), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("查看仓库一致性报告")
+                .popover(isPresented: $showsConsistencyReport) {
+                    ScrollView {
+                        ConsistencyReportView(report: store.consistencyReport)
+                            .padding(16)
+                    }
+                    .frame(width: 540, height: 560)
+                }
+            }
 
             if let formatTitle = store.selectedInspection?.formatTitle
                 ?? file.structuredInspectionFormat?.title {
@@ -207,6 +260,23 @@ private struct DetailHeader: View {
         if case .local = snapshot.location { return true }
         return false
     }
+
+    private func badgeSystemImage(_ badge: ConsistencyBadgeState) -> String {
+        switch badge {
+        case .checking: "clock"
+        case .warnings: "exclamationmark.triangle.fill"
+        case .insufficient: "questionmark.circle"
+        case .consistent: "checkmark.circle.fill"
+        }
+    }
+
+    private func badgeColor(_ badge: ConsistencyBadgeState) -> Color {
+        switch badge {
+        case .checking, .insufficient: .gray
+        case .warnings: .orange
+        case .consistent: .green
+        }
+    }
 }
 
 private struct InspectionWorkspaceView: View {
@@ -264,7 +334,8 @@ private struct InspectionWorkspaceView: View {
                         file: file,
                         data: data,
                         perspective: store.perspective,
-                        baseURL: baseURL
+                        baseURL: baseURL,
+                        consistencyReport: store.consistencyReport
                     )
                 }
             }
@@ -342,6 +413,7 @@ private struct FileReaderView: View {
     let data: Data
     let perspective: InspectionPerspective
     let baseURL: URL?
+    let consistencyReport: RepositoryConsistencyReport?
 
     var body: some View {
         Group {
@@ -389,7 +461,7 @@ private struct FileReaderView: View {
     private var summary: some View {
         let name = file.name.lowercased()
         if name == "config.json" || name == "configuration.json" {
-            ConfigSummaryView(object: jsonDictionary)
+            ConfigSummaryView(object: jsonDictionary, consistencyReport: consistencyReport)
         } else if name == "generation_config.json" {
             GenerationSummaryView(object: jsonDictionary)
         } else if name == "tokenizer_config.json" {
@@ -1264,11 +1336,185 @@ private struct TokenizerVocabularyAnalysisView: View {
     }
 }
 
+private struct ConsistencyReportView: View {
+    let report: RepositoryConsistencyReport?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("一致性")
+                    .font(.headline)
+                Spacer()
+                Text(consistencyBadgeState(report: report).title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            if let report {
+                if consistencyBadgeState(report: report) == .insufficient {
+                    Label("核心材料不足；以下 coverage 显示缺失、跳过或失败项。", systemImage: "questionmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !report.identityFields.isEmpty {
+                    sectionTitle("身份")
+                    VStack(spacing: 6) {
+                        ForEach(report.identityFields) { field in
+                            fieldRow(field)
+                        }
+                    }
+                }
+
+                sectionTitle("发现")
+                if report.findings.isEmpty {
+                    Text("未发现可报告的不一致。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(spacing: 10) {
+                        ForEach(report.findings) { finding in
+                            findingView(finding)
+                        }
+                    }
+                }
+
+                sectionTitle("Coverage")
+                VStack(spacing: 6) {
+                    ForEach(report.coverage) { coverage in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: coverageIcon(coverage.status))
+                                .foregroundStyle(coverageColor(coverage.status))
+                                .frame(width: 16)
+                            Text(materialTitle(coverage.material))
+                            Spacer()
+                            Text(coverageTitle(coverage.status))
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        .font(.caption)
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("正在检查仓库材料…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+    }
+
+    private func fieldRow(_ field: InspectionField) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(field.key)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(field.value)
+                .textSelection(.enabled)
+            Text(field.origin.title)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .font(.caption)
+    }
+
+    private func findingView(_ finding: ConsistencyFinding) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(
+                finding.title,
+                systemImage: finding.severity == .warning
+                    ? "exclamationmark.triangle.fill"
+                    : "info.circle"
+            )
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(finding.severity == .warning ? Color.orange : Color.blue)
+            Text(finding.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                findingField(finding.left)
+                Image(systemName: "arrow.right")
+                    .foregroundStyle(.tertiary)
+                findingField(finding.right)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func findingField(_ field: InspectionField) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(field.key)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(field.value)
+                .fontWeight(.medium)
+                .textSelection(.enabled)
+            Text(field.origin.title)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .font(.caption)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func materialTitle(_ material: ConsistencyMaterialKind) -> String {
+        switch material {
+        case .config: "config"
+        case .generationConfig: "generation_config"
+        case .tokenizerConfig: "tokenizer_config"
+        case .tokenizer: "tokenizer"
+        case .adapterConfig: "adapter_config"
+        case .processorConfig: "processor_config"
+        case .chatTemplates: "chat template"
+        case .gguf: "GGUF"
+        }
+    }
+
+    private func coverageTitle(_ status: ConsistencyCoverageStatus) -> String {
+        switch status {
+        case .checked: "已检查"
+        case .missing: "缺失"
+        case let .skipped(reason): "跳过：\(reason)"
+        case let .failed(message): "失败：\(message)"
+        }
+    }
+
+    private func coverageIcon(_ status: ConsistencyCoverageStatus) -> String {
+        switch status {
+        case .checked: "checkmark.circle.fill"
+        case .missing: "minus.circle"
+        case .skipped: "forward.circle"
+        case .failed: "xmark.octagon.fill"
+        }
+    }
+
+    private func coverageColor(_ status: ConsistencyCoverageStatus) -> Color {
+        switch status {
+        case .checked: .green
+        case .missing, .skipped: .gray
+        case .failed: .red
+        }
+    }
+}
+
 private struct ConfigSummaryView: View {
     let object: [String: Any]
+    let consistencyReport: RepositoryConsistencyReport?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
+            ConsistencyReportView(report: consistencyReport)
+
             VStack(alignment: .leading, spacing: 6) {
                 Text(architecture)
                     .font(.system(size: 25, weight: .semibold, design: .rounded))

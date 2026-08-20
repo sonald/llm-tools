@@ -694,6 +694,9 @@ final class ModelFilesStore: ObservableObject {
                 try Task.checkCancellation()
                 self.contents[file.path] = inspection
                 self.loadingPath = nil
+                if case .gguf = inspection {
+                    self.startConsistencyTask(for: snapshot)
+                }
             } catch is CancellationError {
                 return
             } catch {
