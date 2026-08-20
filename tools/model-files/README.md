@@ -1,20 +1,24 @@
 # ModelFiles (Native macOS)
 
-ModelFiles is a native macOS inspector for Hugging Face / ModelScope model artifacts. Its centerpiece is a visual tokenizer playground: inspect vocabulary structure, render real chat templates, and see exactly how text becomes tokens.
+ModelFiles is a native macOS inspector for Hugging Face / ModelScope model artifacts. Open a repository, read the files that describe it, then diagnose tokenizer and chat-template behavior without loading weights or running inference.
 
 ## Highlights
 
-- Inspect local directories and remote repositories (Hugging Face / ModelScope)
-- Open `.gguf` and SafeTensors files for lightweight metadata inspection
-- **Visualize tokenizer vocabulary at a glance.** Inspect tokenizer type, vocabulary and merge counts, added tokens, length percentiles, a length-distribution chart, and the longest token pieces with their Unicode-scalar and UTF-8-byte lengths.
-- **Make tokenization visible.** Color-coded token segments show boundaries in the rendered input; optionally reveal whitespace and switch to a token table with IDs, raw pieces, and decoded output. inspired by https://tiktokenizer.vercel.app/.
-- **Understand chat-template overhead.** Edit `system` / `user` / `assistant` messages, render the active Jinja chat template, inspect the exact string sent to the tokenizer, and compare token count, Unicode characters, and bytes per token.
-- **Keep exactness explicit.** Inspect raw tokens, decoded tokens, and the distinction between exact mappings and decoded-only mappings, including byte-fallback cases.
-- Load and inspect tokenizer bundles (`tokenizer.json`, SentencePiece `.model`, `tokenizer_config.json`, `chat_template.jinja`)
-- Render and validate Jinja chat templates
-- Show imatrix metadata when available
-- Keep data flow lightweight: no model weights are read
-- Built on macOS SwiftUI / Swift package architecture for AppKit + SwiftUI hybrid window handling
+- Open a local folder, Hugging Face / ModelScope repository, or SSH directory
+- Inspect SafeTensors headers, GGUF metadata prefixes, legacy imatrix files, Jinja templates, Markdown, source files, and PDFs
+- Load tokenizer bundles: `tokenizer.json`, SentencePiece `.model`, `tokenizer_config.json`, `chat_template.jinja`
+- Visualize vocabulary structure: type, vocab/merge counts, added tokens, length percentiles, a distribution chart, and the longest pieces by Unicode scalar and UTF-8 byte length
+- Search `tokenizer.json` vocabulary on demand by ID or piece; the overview keeps only a short special-token summary and the longest 50 tokens
+- Tokenize raw text or chat messages, or paste Token IDs and decode them back
+- Color-coded segments, Token table, and ID list share one selected token; the table marks special tokens and chat roles
+- Render the active Jinja chat template, switch among jinja / config / named sources, and split total / content / template-overhead counts
+- Keep Exact vs decoded-only mappings explicit, including byte-fallback cases
+- Recover missing `tokenizer_class` with an explicit in-session override; the override is never written back
+- Compare two tokenizers on the same input: another file in the current snapshot, or a tokenizer bundle from another repository
+- Check repository consistency across `config`, tokenizer, adapter/processor configs, chat templates, and already-opened GGUF metadata
+- Stay read-only: no weights, no tensor payloads, no inference
+
+Tokenizer visualization is inspired by [tiktokenizer](https://tiktokenizer.vercel.app/).
 
 ## Screenshots
 
@@ -28,8 +32,13 @@ The overview turns a large `tokenizer.json` into actionable structure: BPE vocab
 
 Enter source text or chat messages, inspect the authoritative encoded text, then follow its color-coded token segments through to the complete Token ID list.
 
-### Compact window behavior (UI constraints validation)
-![Compact window mode](docs/model-files-compact.png)
+## Limits
+
+- Readable files and tokenizer bundles: 32 MiB
+- Playground / Token ID input: 64 KiB UTF-8
+- Vocabulary search and comparison diffs show at most 1,000 matches
+- GGUF consistency uses metadata from files already opened in the current session
+- SentencePiece `.model` files encode and decode, but have no `tokenizer.json` vocabulary index
 
 ## Repository structure
 
@@ -37,11 +46,10 @@ Enter source text or chat messages, inspect the authoritative encoded text, then
 tools/model-files/
 ├── Sources/ModelFiles/        # SwiftUI app source
 ├── Tests/ModelFilesTests/     # Unit tests and fixtures
-├── docs/                     # Design notes and acceptance docs
-├── script/                   # Build/run helper scripts
-├── Prototypes/               # Early HTML prototypes
-├── dist/                     # Local build artifact output
-└── Package.swift             # SwiftPM package manifest
+├── docs/                      # Design notes, acceptance, screenshots
+├── script/                    # Build/run helper scripts
+├── dist/                      # Local build artifact output
+└── Package.swift              # SwiftPM package manifest
 ```
 
 ## Requirements
@@ -66,14 +74,12 @@ cd tools/model-files
 ## Basic workflow
 
 1. Launch the app.
-2. Choose repository source:
-   - local folder
-   - Hugging Face / ModelScope repository
-   - SSH source (if configured)
-3. Confirm tokenizer bundle detection in the sidebar.
-4. Open the tokenizer overview to inspect vocabulary structure, length distribution, and long-token details.
-5. Switch to chat mode and tokenize sample messages with the active template.
-6. Inspect the rendered prompt, colored segments, Token IDs, and exact versus decoded output.
+2. Open a local folder, Hugging Face / ModelScope repository, or SSH directory.
+3. Use the header badge for a consistency summary; open Config for the full report.
+4. Open `tokenizer.json` or a SentencePiece `.model` to enter the playground.
+5. Encode raw text, render chat messages, or paste Token IDs to decode.
+6. Optionally compare another tokenizer in the same snapshot, or load a second repository's tokenizer bundle.
+7. Open README, code, PDF, GGUF, or imatrix files as needed. Weight files stay locked.
 
 ## Test
 
@@ -85,9 +91,12 @@ SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache" \
 swift test --disable-sandbox
 ```
 
+Real-model tests stay skipped unless `MODELFILES_REAL_TOKENIZER_DIR` or `MODELFILES_REAL_SENTENCEPIECE_DIR` points at a complete same-directory tokenizer bundle.
+
 ## Acceptance evidence
 
-The implementation and behavior were validated via real app launches and acceptance checks under `tools/model-files/docs/tokenizer-playground-acceptance.md`.
+- Tokenizer playground: [`docs/tokenizer-playground-acceptance.md`](docs/tokenizer-playground-acceptance.md)
+- Diagnostic inspector (token IDs, consistency, comparison): [`docs/diagnostic-inspector-acceptance.md`](docs/diagnostic-inspector-acceptance.md)
 
 ## License
 

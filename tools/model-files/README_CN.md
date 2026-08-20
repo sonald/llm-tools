@@ -1,20 +1,24 @@
 # ModelFiles（原生 macOS）
 
-ModelFiles 是一款原生 macOS 模型文件查看器，面向 Hugging Face / ModelScope 模型产物。它的核心是可视化 tokenizer 试玩台：看清词表结构、真实 chat template 的渲染结果，以及一段文本究竟如何变成 Token。
+ModelFiles 是一款原生 macOS 模型文件查看器，面向 Hugging Face / ModelScope 模型产物。打开仓库，读描述它的文件，再诊断 tokenizer 和 chat template 的行为；不读权重，也不跑推理。
 
 ## 主要特性
 
-- 支持本地目录与远端仓库（Hugging Face / ModelScope）加载
-- 支持 `.gguf`、SafeTensors 等文件的轻量元数据查看
-- **词表结构可视化。** 一眼查看 tokenizer 类型、词表和合并规则数量、新增 Token、长度分位数、长度分布图，以及最长 Token Piece 的 Unicode 标量数和 UTF-8 字节数。
-- **分词渲染** 彩色 Token 片段展示渲染后文本中的分词边界；可显示空白字符，并切换到 Token 表查看 Token ID、原始 Piece 与解码结果。参考的https://tiktokenizer.vercel.app/。
-- **看清 chat template 的真实开销。** 编辑 `system` / `user` / `assistant` 消息，渲染当前 Jinja chat template，检查实际送入 tokenizer 的文本，并对照 Token 数、Unicode 字符数和每 Token 字节数。
-- **明确区分 exact 与 decoded。** 并列查看原始 Token、解码 Token，以及 exact 映射和仅 decoded 映射的区别，便于排查 byte fallback 等场景。
-- 支持加载和查看 `tokenizer.json`、SentencePiece `.model`、`tokenizer_config.json`、`chat_template.jinja`
-- 支持 Jinja chat template 渲染与验证
-- 支持展示 imatrix 元数据（如可用）
-- 保持轻量化数据读取：不会读取模型权重文件
-- SwiftUI + AppKit 混合窗口，使用 macOS Swift Package 组织
+- 打开本地目录、Hugging Face / ModelScope 仓库，或 SSH 目录
+- 查看 SafeTensors Header、GGUF metadata 前缀、legacy imatrix、Jinja 模板、Markdown、源码和 PDF
+- 加载 tokenizer bundle：`tokenizer.json`、SentencePiece `.model`、`tokenizer_config.json`、`chat_template.jinja`
+- 词表结构可视化：类型、词表和合并规则数量、新增 Token、长度分位数、分布图，以及按 Unicode 标量和 UTF-8 字节统计的最长 Piece
+- 按需搜索 `tokenizer.json` 词表（ID 或 Piece）；概览只保留 special token 摘要和最长 50 条
+- 对原始文本或聊天消息分词，也可粘贴 Token ID 反解
+- 彩色片段、Token 表和 ID 列表共享同一选中 Token；表中标记 special token 和 chat 角色
+- 渲染当前 Jinja chat template，在 jinja / config / named 来源间切换，并拆出总计 / 正文 / 模板开销
+- 明确区分 Exact 与 decoded-only 映射，包括 byte fallback
+- 缺少 `tokenizer_class` 时可显式指定后重试；覆盖只存在于当前会话，不写回文件
+- 用同一输入对照两个 tokenizer：当前快照中的另一文件，或另一个仓库的 tokenizer bundle
+- 检查仓库一致性：`config`、tokenizer、adapter/processor 配置、chat template，以及已经打开过的 GGUF metadata
+- 只读：不读权重、不读 tensor 数据、不跑推理
+
+分词可视化参考 [tiktokenizer](https://tiktokenizer.vercel.app/)。
 
 ## 功能截图
 
@@ -28,8 +32,13 @@ ModelFiles 是一款原生 macOS 模型文件查看器，面向 Hugging Face / M
 
 输入原始文本或聊天消息后，可以先检查实际送入 tokenizer 的完整文本，再从彩色 Token 片段一路追踪到完整 Token ID 列表。
 
-### 紧凑窗口模式
-![紧凑窗口](docs/model-files-compact.png)
+## 上限
+
+- 可读文件和 tokenizer bundle：32 MiB
+- 试验台 / Token ID 输入：64 KiB UTF-8
+- 词表搜索和对照差集最多显示 1,000 条
+- GGUF 一致性只用当前会话里已经打开过的 metadata
+- SentencePiece `.model` 可以编码和解码，但没有 `tokenizer.json` 词表索引
 
 ## 目录结构
 
@@ -37,11 +46,10 @@ ModelFiles 是一款原生 macOS 模型文件查看器，面向 Hugging Face / M
 tools/model-files/
 ├── Sources/ModelFiles/        # SwiftUI App 源码
 ├── Tests/ModelFilesTests/     # 单元测试与测试数据
-├── docs/                     # 设计文档与验收记录
-├── script/                   # 构建/运行脚本
-├── Prototypes/               # 早期 HTML 原型
-├── dist/                     # 本地构建产物目录
-└── Package.swift             # SwiftPM 包描述
+├── docs/                      # 设计文档、验收记录、截图
+├── script/                    # 构建/运行脚本
+├── dist/                      # 本地构建产物目录
+└── Package.swift              # SwiftPM 包描述
 ```
 
 ## 环境要求
@@ -66,11 +74,12 @@ cd tools/model-files
 ## 使用流程
 
 1. 启动应用。
-2. 选择仓库源：本地目录、Hugging Face / ModelScope 或 SSH 源。
-3. 在侧栏确认 tokenizer bundle 命中。
-4. 打开 tokenizer 概览，查看词表结构、长度分布和长 Token 详情。
-5. 切到 chat 分页，用当前 template 对测试消息分词。
-6. 查看渲染后的 prompt、彩色片段、Token ID，以及 exact 与 decoded 的关系。
+2. 打开本地目录、Hugging Face / ModelScope 仓库，或 SSH 目录。
+3. 看标题栏一致性徽章；打开 Config 查看完整报告。
+4. 打开 `tokenizer.json` 或 SentencePiece `.model` 进入试验台。
+5. 编码原始文本、渲染聊天消息，或粘贴 Token ID 反解。
+6. 可选：对照当前快照中的另一个 tokenizer，或加载另一仓库的 tokenizer bundle。
+7. 需要时打开 README、源码、PDF、GGUF 或 imatrix。权重文件保持锁定。
 
 ## 测试
 
@@ -82,9 +91,12 @@ SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache" \
 swift test --disable-sandbox
 ```
 
+真实模型测试默认跳过；只有设置 `MODELFILES_REAL_TOKENIZER_DIR` 或 `MODELFILES_REAL_SENTENCEPIECE_DIR` 指向完整同目录 tokenizer bundle 时才会执行。
+
 ## 验收与证据
 
-真实 App 验收记录见：`tools/model-files/docs/tokenizer-playground-acceptance.md`。
+- Tokenizer 试验台：[`docs/tokenizer-playground-acceptance.md`](docs/tokenizer-playground-acceptance.md)
+- 诊断工作台（Token ID、一致性、对照）：[`docs/diagnostic-inspector-acceptance.md`](docs/diagnostic-inspector-acceptance.md)
 
 ## 许可证
 
