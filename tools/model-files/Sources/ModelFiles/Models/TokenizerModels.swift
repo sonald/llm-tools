@@ -31,12 +31,34 @@ struct TokenFlags: Sendable, Equatable {
     let specialName: String?
 }
 
-enum TokenRole: String, Sendable, Equatable {
+enum TokenRole: Sendable, Equatable {
     case system
     case user
     case assistant
     case tool
     case template
+    case custom(String)
+
+    init(_ role: String) {
+        self = switch role {
+        case "system": .system
+        case "user": .user
+        case "assistant": .assistant
+        case "tool": .tool
+        default: .custom(role)
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .system: "system"
+        case .user: "user"
+        case .assistant: "assistant"
+        case .tool: "tool"
+        case .template: "template"
+        case let .custom(role): role
+        }
+    }
 }
 
 struct TokenOverhead: Sendable, Equatable {
@@ -87,7 +109,7 @@ struct TokenizationResult: Sendable, Equatable {
         segments.first { $0.tokenRange.contains(tokenIndex) }
     }
 
-    func with(overhead: TokenOverhead?) -> TokenizationResult {
+    func with(overhead: TokenOverhead?, roles: [TokenRole]? = nil) -> TokenizationResult {
         TokenizationResult(
             direction: direction,
             input: input,

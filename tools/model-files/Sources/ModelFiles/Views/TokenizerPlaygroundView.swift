@@ -324,20 +324,39 @@ struct TokenizerPlaygroundView: View {
             stateView(title: "等待加载 tokenizer", systemImage: "hourglass")
         case .ready:
             if let result = store.tokenizationResult, !result.tokenIDs.isEmpty {
-                if resultMode == .segments {
-                    ScrollView {
-                        TokenizerWrapLayout(spacing: 3) {
-                            ForEach(Array(result.segments.enumerated()), id: \.element.id) { index, segment in
-                                let selected = selectedTokenIndex.map(segment.tokenRange.contains) == true
-                                Button {
-                                    selectedTokenIndex = toggleTokenSelection(
-                                        selectedTokenIndex,
-                                        clicked: segment.tokenRange.lowerBound
-                                    )
-                                } label: {
-                                    Text(visible(segment.text))
-                                        .font(.system(size: 12.5, design: .monospaced))
-                                        .padding(.horizontal, 3)
+                VStack(spacing: 0) {
+                    if inputMode == .chat, result.sourceMapping == .decodedOnly {
+                        Text("当前映射是 Decoded only，不能按原文划分角色")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color(nsColor: .controlBackgroundColor))
+                            .overlay(alignment: .bottom) { Divider() }
+                    }
+                    if resultMode == .segments {
+                        ScrollView {
+                            TokenizerWrapLayout(spacing: 3) {
+                                ForEach(Array(result.segments.enumerated()), id: \.element.id) { index, segment in
+                                    let selected = selectedTokenIndex.map(segment.tokenRange.contains) == true
+                                    let role = segmentRole(segment, result: result)
+                                    Button {
+                                        selectedTokenIndex = toggleTokenSelection(
+                                            selectedTokenIndex,
+                                            clicked: segment.tokenRange.lowerBound
+                                        )
+                                    } label: {
+                                        HStack(spacing: 2) {
+                                            if let role {
+                                                RoundedRectangle(cornerRadius: 1)
+                                                    .fill(roleColor(role))
+                                                    .frame(width: 3, height: 14)
+                                            }
+                                            Text(visible(segment.text))
+                                                .font(.system(size: 12.5, design: .monospaced))
+                                                .padding(.horizontal, 3)
+                                        }
                                         .padding(.vertical, 2)
                                         .background(segmentColor(index), in: RoundedRectangle(cornerRadius: 3))
                                         .overlay {
@@ -348,23 +367,24 @@ struct TokenizerPlaygroundView: View {
                                         }
                                         .opacity(selectedTokenIndex == nil || selected ? 1 : 0.28)
                                         .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel(
+                                        "Token \(segment.tokenRange.lowerBound) 到 \(segment.tokenRange.upperBound - 1)，ID \(segment.tokenIDs.map(String.init).joined(separator: ", "))，文本 \(visible(segment.text))，角色 \(role?.title ?? "无")"
+                                    )
+                                    .accessibilityAddTraits(selected ? .isSelected : [])
                                 }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(
-                                    "Token \(segment.tokenRange.lowerBound) 到 \(segment.tokenRange.upperBound - 1)，ID \(segment.tokenIDs.map(String.init).joined(separator: ", "))，文本 \(visible(segment.text))"
-                                )
-                                .accessibilityAddTraits(selected ? .isSelected : [])
                             }
+                            .padding(13)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .padding(13)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        TokenizerTokenTableView(
+                            result: result,
+                            showWhitespace: showWhitespace,
+                            selectedTokenIndex: $selectedTokenIndex
+                        )
                     }
-                } else {
-                    TokenizerTokenTableView(
-                        result: result,
-                        showWhitespace: showWhitespace,
-                        selectedTokenIndex: $selectedTokenIndex
-                    )
                 }
             } else {
                 stateView(title: "输入内容后显示 token。", systemImage: "text.word.spacing")
@@ -550,6 +570,31 @@ struct TokenizerPlaygroundView: View {
 
     private func visible(_ text: String) -> String {
         visibleTokenizerText(text, showWhitespace: showWhitespace)
+    }
+
+    private func segmentRole(_ segment: TokenSegment, result: TokenizationResult) -> TokenRole? {
+        guard let roles = result.roles,
+              roles.count == result.tokenIDs.count,
+              let tokenIndex = segment.tokenRange.first,
+              roles.indices.contains(tokenIndex) else {
+            return nil
+        }
+        let role = roles[tokenIndex]
+        return segment.tokenRange.allSatisfy { roles[$0] == role } ? role : nil
+    }
+
+    private func roleColor(_ role: TokenRole) -> Color {
+        let colors: [Color] = [.cyan, .yellow, .blue, .green, .orange, .mint, .purple, .pink, .indigo, .teal]
+        let index = switch role {
+        case .system: 6
+        case .user: 2
+        case .assistant: 3
+        case .tool: 4
+        case .template: 9
+        case let .custom(name):
+            name.unicodeScalars.reduce(0) { ($0 + Int($1.value)) % colors.count }
+        }
+        return colors[index]
     }
 
     private func segmentColor(_ index: Int) -> Color {

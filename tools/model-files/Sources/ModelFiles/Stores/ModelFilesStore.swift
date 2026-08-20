@@ -207,7 +207,14 @@ final class ModelFilesStore: ObservableObject {
                     ) { candidate in
                         candidate == contentProbe ? probeResult.tokenCount : result.tokenCount
                     }
-                    publishedResult = result.with(overhead: overhead)
+                    publishedResult = result.with(
+                        overhead: overhead,
+                        roles: TokenAttributor.roles(
+                            rendered: input,
+                            messages: attribution.messages,
+                            result: result
+                        )
+                    )
                 } else {
                     publishedResult = result
                 }

@@ -38,6 +38,7 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         XCTAssertEqual(store.tokenizationResult?.tokenIDs, [22])
         XCTAssertEqual(store.tokenizationResult?.input, "path")
         XCTAssertNil(store.tokenizationResult?.overhead)
+        XCTAssertNil(store.tokenizationResult?.roles)
     }
 
     func testChatEncodePublishesApproximateOverheadWithoutReplacingMainResult() async throws {
@@ -72,6 +73,8 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         XCTAssertEqual(store.tokenizationResult?.overhead?.contentProbe, "path")
         XCTAssertEqual(store.tokenizationResult?.overhead?.templateCount, 0)
         XCTAssertTrue(store.tokenizationResult?.overhead?.isApproximate == true)
+        XCTAssertEqual(store.tokenizationResult?.roles, [.user])
+        XCTAssertEqual(store.tokenizationResult?.roles?.count, store.tokenizationResult?.tokenIDs.count)
     }
 
     func testChatAttributionSeedSurvivesRuntimeLoading() async throws {

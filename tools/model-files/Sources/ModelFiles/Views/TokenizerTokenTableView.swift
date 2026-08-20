@@ -8,6 +8,7 @@ struct TokenizerTokenTableView: View {
         let piece: String?
         let decoded: String
         let mapping: TokenizerSourceMapping
+        let role: TokenRole?
         let specialName: String?
         let colorIndex: Int
 
@@ -33,6 +34,12 @@ struct TokenizerTokenTableView: View {
             result.flags.count == result.tokenIDs.count,
             "TokenizationResult.flags must match tokenIDs."
         )
+        if let roles = result.roles {
+            precondition(
+                roles.count == result.tokenIDs.count,
+                "TokenizationResult.roles must match tokenIDs."
+            )
+        }
         var built: [Row] = []
         built.reserveCapacity(result.tokenIDs.count)
         var segmentIndex = 0
@@ -48,6 +55,7 @@ struct TokenizerTokenTableView: View {
                 piece: result.tokenPieces[index],
                 decoded: segment.text,
                 mapping: result.sourceMapping,
+                role: result.roles?[index],
                 specialName: result.flags[index].isSpecial ? result.flags[index].specialName : nil,
                 colorIndex: segmentIndex
             ))
@@ -69,7 +77,7 @@ struct TokenizerTokenTableView: View {
                         }
                     }
                 }
-                .frame(width: max(754, proxy.size.width), height: proxy.size.height)
+                .frame(width: max(850, proxy.size.width), height: proxy.size.height)
             }
         }
         .textSelection(.enabled)
@@ -82,6 +90,7 @@ struct TokenizerTokenTableView: View {
             headerCell("ID", width: 86)
             headerCell("Token Piece", width: 152)
             headerCell("Decoded", width: 220)
+            headerCell("Role", width: 96)
             headerCell("Special", width: 112)
             headerCell("Mapping", width: 112)
             Spacer(minLength: 0)
@@ -115,6 +124,7 @@ struct TokenizerTokenTableView: View {
                 cell(row.tokenID.formatted(), width: 86)
                 cell(visible(row.piece ?? "—"), width: 152)
                 cell(visible(row.decoded), width: 220)
+                cell(row.role?.title ?? "—", width: 96)
                 cell(row.specialName ?? "—", width: 112)
                 cell(row.mapping.title, width: 112)
                 Spacer(minLength: 0)
@@ -135,7 +145,7 @@ struct TokenizerTokenTableView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-            "Token \(row.index)，ID \(row.tokenID)，Piece \(visible(row.piece ?? "无"))，Decoded \(visible(row.decoded))，Special \(row.specialName ?? "无")，\(row.mapping.title)"
+            "Token \(row.index)，ID \(row.tokenID)，Piece \(visible(row.piece ?? "无"))，Decoded \(visible(row.decoded))，Role \(row.role?.title ?? "无")，Special \(row.specialName ?? "无")，\(row.mapping.title)"
         )
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
