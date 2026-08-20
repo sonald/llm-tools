@@ -72,6 +72,35 @@ struct TokenOverhead: Sendable, Equatable {
 
 struct ChatAttributionSeed: Sendable, Equatable {
     let messages: [TemplateMessage]
+    let includeTools: Bool
+    let tools: [TemplateTool]
+    let variables: [TemplateVariable]
+    let addGenerationPrompt: Bool
+
+    init(
+        messages: [TemplateMessage],
+        includeTools: Bool = false,
+        tools: [TemplateTool] = [],
+        variables: [TemplateVariable] = [],
+        addGenerationPrompt: Bool = true
+    ) {
+        self.messages = messages
+        self.includeTools = includeTools
+        self.tools = tools
+        self.variables = variables
+        self.addGenerationPrompt = addGenerationPrompt
+    }
+
+    func renderRequest(template: String) -> TemplateRenderRequest {
+        TemplateRenderRequest(
+            template: template,
+            messages: messages,
+            includeTools: includeTools,
+            tools: tools,
+            variables: variables,
+            addGenerationPrompt: addGenerationPrompt
+        )
+    }
 }
 
 struct TokenizerEncodeRequest: Sendable, Equatable {
@@ -100,6 +129,47 @@ struct TokenizerComparisonSession: Sendable, Equatable {
     let phase: TokenizerComparisonPhase
     let left: TokenizationResult?
     let right: TokenizationResult?
+    let rightCatalog: ChatTemplateCatalog?
+
+    init(
+        source: ComparisonSource,
+        rightIdentity: TokenizerSessionIdentity?,
+        phase: TokenizerComparisonPhase,
+        left: TokenizationResult?,
+        right: TokenizationResult?,
+        rightCatalog: ChatTemplateCatalog? = nil
+    ) {
+        self.source = source
+        self.rightIdentity = rightIdentity
+        self.phase = phase
+        self.left = left
+        self.right = right
+        self.rightCatalog = rightCatalog
+    }
+}
+
+struct TokenizerComparisonSummary: Sendable, Equatable {
+    let countDelta: Int
+    let idsMatch: Bool
+    let firstDifference: Int?
+    let leftID: Int?
+    let rightID: Int?
+
+    init(leftIDs: [Int], rightIDs: [Int]) {
+        countDelta = rightIDs.count - leftIDs.count
+        let commonCount = min(leftIDs.count, rightIDs.count)
+        firstDifference = (0..<commonCount).first(where: { leftIDs[$0] != rightIDs[$0] })
+            ?? (leftIDs.count == rightIDs.count ? nil : commonCount)
+        if let firstDifference {
+            leftID = leftIDs.indices.contains(firstDifference) ? leftIDs[firstDifference] : nil
+            rightID = rightIDs.indices.contains(firstDifference) ? rightIDs[firstDifference] : nil
+        } else {
+            leftID = nil
+            rightID = nil
+        }
+        idsMatch = leftIDs == rightIDs
+    }
+
 }
 
 struct TokenSegment: Identifiable, Sendable, Equatable {

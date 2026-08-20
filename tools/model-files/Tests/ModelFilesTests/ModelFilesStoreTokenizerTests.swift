@@ -4,6 +4,29 @@ import XCTest
 
 @MainActor
 final class ModelFilesStoreTokenizerTests: XCTestCase {
+    func testComparisonSummaryCoversEqualDifferencePrefixAndEmptySides() {
+        let equal = TokenizerComparisonSummary(leftIDs: [1, 2], rightIDs: [1, 2])
+        XCTAssertEqual(equal.countDelta, 0)
+        XCTAssertTrue(equal.idsMatch)
+        XCTAssertNil(equal.firstDifference)
+
+        let difference = TokenizerComparisonSummary(leftIDs: [1, 2, 3], rightIDs: [1, 4, 3, 5])
+        XCTAssertEqual(difference.countDelta, 1)
+        XCTAssertFalse(difference.idsMatch)
+        XCTAssertEqual(difference.firstDifference, 1)
+        XCTAssertEqual(difference.leftID, 2)
+        XCTAssertEqual(difference.rightID, 4)
+
+        let prefix = TokenizerComparisonSummary(leftIDs: [1, 2], rightIDs: [1, 2, 3])
+        XCTAssertEqual(prefix.firstDifference, 2)
+        XCTAssertNil(prefix.leftID)
+        XCTAssertEqual(prefix.rightID, 3)
+
+        let empty = TokenizerComparisonSummary(leftIDs: [], rightIDs: [7])
+        XCTAssertEqual(empty.countDelta, 1)
+        XCTAssertEqual(empty.firstDifference, 0)
+    }
+
     func testPlaygroundInputModesKeepRawChatAndAlwaysExposeTokenIDs() {
         XCTAssertEqual(
             TokenizerPlaygroundView.InputMode.allCases.map(\.rawValue),
@@ -421,6 +444,70 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         XCTAssertNil(store.comparison)
     }
 
+    func testComparisonChatRendersRightCatalogAndComputesRightOverhead() async throws {
+        var fixture = try comparisonFixtureData()
+        fixture.data["chat_template.jinja"] = Data("ROOT {{ messages[0].content }}".utf8)
+        var alternateConfig = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: XCTUnwrap(fixture.data["alternate/tokenizer_config.json"]))
+                as? [String: Any]
+        )
+        alternateConfig["chat_template"] = [
+            "default": "ALT {{ messages[0].content }}",
+            "verbose": "VERBOSE {{ messages[0].content }} verbose verbose verbose verbose",
+        ]
+        let updatedAlternateConfig = try JSONSerialization.data(
+            withJSONObject: alternateConfig
+        )
+        fixture.data["alternate/tokenizer_config.json"] = updatedAlternateConfig
+        fixture.files = fixture.files.map { file in
+            guard file.path == "alternate/tokenizer_config.json" else { return file }
+            return RepositoryFile(
+                path: file.path,
+                size: Int64(updatedAlternateConfig.count),
+                revision: "alternate-updated",
+                contentHash: "alternate-template-updated",
+                category: file.category
+            )
+        }
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+
+        let seed = ChatAttributionSeed(
+            messages: [TemplateMessage(role: "user", content: "hello")],
+            addGenerationPrompt: false
+        )
+        store.tokenize(TokenizerEncodeRequest(text: "ROOT hello", chatAttribution: seed))
+        try await waitUntil { store.tokenizationResult?.overhead != nil }
+        store.setComparisonSource(.snapshotPath("alternate/tokenizer.json"))
+        try await waitUntil { store.comparison?.phase == .ready && store.comparison?.right != nil }
+
+        XCTAssertEqual(store.comparison?.right?.input, "ALT hello")
+        XCTAssertNotEqual(store.comparison?.left?.input, store.comparison?.right?.input)
+        XCTAssertEqual(store.comparison?.right?.overhead?.contentProbe, "hello")
+        XCTAssertEqual(
+            store.comparison?.right?.overhead?.totalCount,
+            store.comparison?.right?.tokenCount
+        )
+        let leftInput = store.comparison?.left?.input
+        let leftCount = store.comparison?.left?.tokenCount
+        let defaultRightCount = store.comparison?.right?.tokenCount
+
+        store.selectComparisonChatTemplate(id: "tokenizerConfig:verbose")
+        try await waitUntil {
+            store.comparison?.phase == .ready
+                && store.comparison?.right?.input.hasPrefix("VERBOSE hello") == true
+        }
+        XCTAssertEqual(store.comparison?.left?.input, leftInput)
+        XCTAssertEqual(store.comparison?.left?.tokenCount, leftCount)
+        XCTAssertNotEqual(store.comparison?.right?.tokenCount, defaultRightCount)
+    }
+
     func testComparisonFailureDoesNotReplaceMainResult() async throws {
         let fixture = try comparisonFixtureData()
         let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
@@ -449,6 +536,47 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
 
         store.select(path: "tokenizer_config.json")
         XCTAssertNil(store.comparison)
+    }
+
+    func testComparisonMissingChatTemplateRecoversWhenMainInputBecomesRaw() async throws {
+        var fixture = try comparisonFixtureData()
+        var alternateConfig = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: XCTUnwrap(fixture.data["alternate/tokenizer_config.json"]))
+                as? [String: Any]
+        )
+        alternateConfig.removeValue(forKey: "chat_template")
+        fixture.data["alternate/tokenizer_config.json"] = try JSONSerialization.data(
+            withJSONObject: alternateConfig
+        )
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+        let seed = ChatAttributionSeed(
+            messages: [TemplateMessage(role: "user", content: "hello")],
+            addGenerationPrompt: false
+        )
+        store.tokenize(TokenizerEncodeRequest(text: "ROOT hello", chatAttribution: seed))
+        try await waitUntil { store.tokenizationResult?.overhead != nil }
+        let selectedPath = store.selectedPath
+
+        store.setComparisonSource(.snapshotPath("alternate/tokenizer.json"))
+        try await waitUntil {
+            if case .failed = store.comparison?.phase { return true }
+            return false
+        }
+        store.tokenize("offline")
+        try await waitUntil {
+            store.comparison?.phase == .ready
+                && store.comparison?.right?.input == "offline"
+        }
+
+        XCTAssertEqual(store.selectedPath, selectedPath)
+        XCTAssertEqual(store.comparison?.right?.input, "offline")
     }
 
     func testComparisonLatestTargetWinsWhenOldLoadIsCancelled() async throws {

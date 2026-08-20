@@ -283,38 +283,86 @@ struct TokenizerPlaygroundView: View {
             metrics
                 .frame(height: inputMode == .chat ? 105 : 63)
 
-            TokenizerPanel {
-                TokenizerPanelHeader(title: "分词结果", detail: resultStatus) {
-                    HStack(spacing: 10) {
-                        Picker("结果视图", selection: $resultMode) {
-                            ForEach(ResultMode.allCases) { mode in
-                                Text(mode.title).tag(mode)
-                            }
+            if let comparison = store.comparison {
+                TokenizerPanel {
+                    TokenizerPanelHeader(title: "对照", detail: resultStatus) {
+                        comparisonControl
+                    }
+                    TokenizerComparisonView(
+                        session: comparison,
+                        showWhitespace: showWhitespace,
+                        selectChatTemplate: { id in
+                            store.selectComparisonChatTemplate(id: id)
                         }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .frame(width: 128)
-                        Toggle("显示空白符", isOn: $showWhitespace)
-                            .toggleStyle(.checkbox)
-                            .font(.caption)
+                    )
+                }
+                .frame(maxHeight: .infinity)
+            } else {
+                TokenizerPanel {
+                    TokenizerPanelHeader(title: "分词结果", detail: resultStatus) {
+                        HStack(spacing: 10) {
+                            comparisonControl
+                            Picker("结果视图", selection: $resultMode) {
+                                ForEach(ResultMode.allCases) { mode in
+                                    Text(mode.title).tag(mode)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(width: 128)
+                            Toggle("显示空白符", isOn: $showWhitespace)
+                                .toggleStyle(.checkbox)
+                                .font(.caption)
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                        .layoutPriority(1)
+                    }
+                    resultBody
+                }
+                .frame(maxHeight: .infinity)
+
+                TokenizerPanel {
+                    TokenizerPanelHeader(
+                        title: "Token IDs",
+                        detail: "\(store.tokenizationResult?.tokenCount.formatted() ?? "0") items"
+                    ) {
+                        Button("复制") { copyTokenIDs() }
+                            .controlSize(.small)
+                            .disabled(store.tokenizationResult?.tokenIDs.isEmpty != false)
+                    }
+                    idsBody
+                }
+                .frame(minHeight: 164, idealHeight: 198, maxHeight: 250)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var comparisonControl: some View {
+        if store.comparison != nil {
+            HStack(spacing: 8) {
+                Toggle("显示空白符", isOn: $showWhitespace)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                Button("关闭对照") { store.setComparisonSource(nil) }
+                    .controlSize(.small)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(1)
+        } else if let files = store.snapshot?.files
+            .filter({ !$0.isBlocked && $0.isTokenizerPlaygroundEntryPoint })
+            .sorted(by: RepositoryFile.displayOrder),
+                  !files.isEmpty {
+            Menu("对照") {
+                ForEach(files) { file in
+                    Button(file.path) {
+                        store.setComparisonSource(.snapshotPath(file.path))
                     }
                 }
-                resultBody
             }
-            .frame(maxHeight: .infinity)
-
-            TokenizerPanel {
-                TokenizerPanelHeader(
-                    title: "Token IDs",
-                    detail: "\(store.tokenizationResult?.tokenCount.formatted() ?? "0") items"
-                ) {
-                    Button("复制") { copyTokenIDs() }
-                        .controlSize(.small)
-                        .disabled(store.tokenizationResult?.tokenIDs.isEmpty != false)
-                }
-                idsBody
-            }
-            .frame(minHeight: 164, idealHeight: 198, maxHeight: 250)
+            .controlSize(.small)
+            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(1)
         }
     }
 
@@ -592,7 +640,13 @@ struct TokenizerPlaygroundView: View {
             if outcome.error == nil {
                 store.tokenize(TokenizerEncodeRequest(
                     text: outcome.output,
-                    chatAttribution: ChatAttributionSeed(messages: request.messages)
+                    chatAttribution: ChatAttributionSeed(
+                        messages: request.messages,
+                        includeTools: request.includeTools,
+                        tools: request.tools,
+                        variables: request.variables,
+                        addGenerationPrompt: request.addGenerationPrompt
+                    )
                 ))
             } else {
                 store.clearTokenizationResult()

@@ -378,6 +378,10 @@ final class ModelFilesStore: ObservableObject {
             guard let self else { return }
             do {
                 let bundle = try await service.loadTokenizerBundle(for: file, from: snapshot)
+                let catalog = try ChatTemplateCatalog.parse(
+                    configData: bundle.tokenizerConfigData,
+                    chatTemplateData: bundle.chatTemplateData
+                )
                 try Task.checkCancellation()
                 let runtime = try await Task.detached(priority: .userInitiated) {
                     try TokenizerRuntime(bundle: bundle)
@@ -391,20 +395,40 @@ final class ModelFilesStore: ObservableObject {
                         rightIdentity: identity,
                         phase: .ready,
                         left: nil,
-                        right: nil
+                        right: nil,
+                        rightCatalog: catalog
                     )
                     return
                 }
-                let right = try await self.comparisonResult(for: left, runtime: runtime)
-                try Task.checkCancellation()
-                guard generation == self.comparisonGeneration else { return }
-                self.comparison = TokenizerComparisonSession(
-                    source: source,
-                    rightIdentity: identity,
-                    phase: .ready,
-                    left: left,
-                    right: right
-                )
+                do {
+                    let right = try await self.comparisonResult(
+                        for: left,
+                        runtime: runtime,
+                        catalog: catalog
+                    )
+                    try Task.checkCancellation()
+                    guard generation == self.comparisonGeneration else { return }
+                    self.comparison = TokenizerComparisonSession(
+                        source: source,
+                        rightIdentity: identity,
+                        phase: .ready,
+                        left: left,
+                        right: right,
+                        rightCatalog: catalog
+                    )
+                } catch is CancellationError {
+                    return
+                } catch {
+                    guard generation == self.comparisonGeneration else { return }
+                    self.comparison = TokenizerComparisonSession(
+                        source: source,
+                        rightIdentity: identity,
+                        phase: .failed(error.localizedDescription),
+                        left: left,
+                        right: nil,
+                        rightCatalog: catalog
+                    )
+                }
             } catch is CancellationError {
                 return
             } catch {
@@ -419,6 +443,19 @@ final class ModelFilesStore: ObservableObject {
                 )
             }
         }
+    }
+
+    func selectComparisonChatTemplate(id: String?) {
+        guard let session = comparison, let catalog = session.rightCatalog else { return }
+        comparison = TokenizerComparisonSession(
+            source: session.source,
+            rightIdentity: session.rightIdentity,
+            phase: .loading,
+            left: session.left,
+            right: nil,
+            rightCatalog: catalog.selecting(id)
+        )
+        updateComparison(with: session.left)
     }
 
     func clearTokenizationResult() {
@@ -439,7 +476,8 @@ final class ModelFilesStore: ObservableObject {
                 rightIdentity: session.rightIdentity,
                 phase: session.phase,
                 left: left,
-                right: nil
+                right: nil,
+                rightCatalog: session.rightCatalog
             )
             return
         }
@@ -453,7 +491,8 @@ final class ModelFilesStore: ObservableObject {
                 rightIdentity: identity,
                 phase: .ready,
                 left: nil,
-                right: nil
+                right: nil,
+                rightCatalog: session.rightCatalog
             )
             return
         }
@@ -463,12 +502,17 @@ final class ModelFilesStore: ObservableObject {
             rightIdentity: identity,
             phase: .loading,
             left: left,
-            right: nil
+            right: nil,
+            rightCatalog: session.rightCatalog
         )
         comparisonTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let right = try await self.comparisonResult(for: left, runtime: runtime)
+                let right = try await self.comparisonResult(
+                    for: left,
+                    runtime: runtime,
+                    catalog: session.rightCatalog
+                )
                 try Task.checkCancellation()
                 guard generation == self.comparisonGeneration else { return }
                 self.comparison = TokenizerComparisonSession(
@@ -476,7 +520,8 @@ final class ModelFilesStore: ObservableObject {
                     rightIdentity: identity,
                     phase: .ready,
                     left: left,
-                    right: right
+                    right: right,
+                    rightCatalog: session.rightCatalog
                 )
             } catch is CancellationError {
                 return
@@ -487,7 +532,8 @@ final class ModelFilesStore: ObservableObject {
                     rightIdentity: identity,
                     phase: .failed(error.localizedDescription),
                     left: left,
-                    right: nil
+                    right: nil,
+                    rightCatalog: session.rightCatalog
                 )
             }
         }
@@ -500,11 +546,55 @@ final class ModelFilesStore: ObservableObject {
 
     private func comparisonResult(
         for left: TokenizationResult,
-        runtime: TokenizerRuntime
+        runtime: TokenizerRuntime,
+        catalog: ChatTemplateCatalog?
     ) async throws -> TokenizationResult {
         switch left.direction {
-        case .encode: try await runtime.tokenize(left.input)
-        case .decode: try await runtime.decode(left.tokenIDs)
+        case .encode:
+            guard let seed = pendingTokenizerRequest?.chatAttribution else {
+                return try await runtime.tokenize(left.input)
+            }
+            guard let template = catalog?.activeEntry?.body else {
+                throw ComparisonError.missingTemplate
+            }
+            let renderRequest = seed.renderRequest(template: template)
+            let outcome = await Task.detached(priority: .userInitiated) {
+                TemplateRenderer.render(renderRequest)
+            }.value
+            try Task.checkCancellation()
+            guard outcome.error == nil else {
+                throw ComparisonError.renderFailed(outcome.error ?? "模板渲染失败。")
+            }
+            let result = try await runtime.tokenize(outcome.output)
+            let contentProbe = TokenAttributor.contentProbe(messages: seed.messages)
+            let probe = try await runtime.tokenize(contentProbe)
+            let overhead = TokenAttributor.overhead(
+                rendered: outcome.output,
+                messages: seed.messages
+            ) { candidate in
+                candidate == contentProbe ? probe.tokenCount : result.tokenCount
+            }
+            return result.with(
+                overhead: overhead,
+                roles: TokenAttributor.roles(
+                    rendered: outcome.output,
+                    messages: seed.messages,
+                    result: result
+                )
+            )
+        case .decode: return try await runtime.decode(left.tokenIDs)
+        }
+    }
+
+    private enum ComparisonError: LocalizedError {
+        case missingTemplate
+        case renderFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .missingTemplate: "对照侧没有可用 Chat Template。"
+            case let .renderFailed(message): "对照侧模板渲染失败：\(message)"
+            }
         }
     }
 
