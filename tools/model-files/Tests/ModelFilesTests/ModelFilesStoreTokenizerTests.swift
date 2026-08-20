@@ -372,6 +372,114 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         XCTAssertGreaterThan(retryReadCount, initialReadCount)
     }
 
+    func testComparisonUsesSecondSnapshotEntryAndSharedLatestInput() async throws {
+        let fixture = try comparisonFixtureData()
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+        store.tokenize("offline")
+        try await waitUntil { store.tokenizationResult?.input == "offline" }
+        let selectedPath = store.selectedPath
+
+        store.setComparisonSource(.snapshotPath("alternate/tokenizer.json"))
+        try await waitUntil {
+            store.comparison?.phase == .ready
+                && store.comparison?.right?.input == "offline"
+        }
+
+        XCTAssertEqual(store.selectedPath, selectedPath)
+        XCTAssertEqual(store.comparison?.left, store.tokenizationResult)
+        XCTAssertEqual(store.comparison?.rightIdentity?.path, "alternate/tokenizer.json")
+
+        store.tokenize("path")
+        try await waitUntil {
+            store.comparison?.left?.input == "path"
+                && store.comparison?.right?.input == "path"
+        }
+        XCTAssertEqual(store.selectedPath, selectedPath)
+
+        store.retryTokenizerPlayground()
+        XCTAssertNil(store.tokenizationResult)
+        XCTAssertNil(store.comparison?.left)
+        XCTAssertNil(store.comparison?.right)
+        try await waitUntil {
+            store.tokenizerPhase == .ready
+                && store.comparison?.right?.input == "path"
+        }
+
+        store.decodeTokenIDs("not-an-id")
+        XCTAssertNil(store.tokenizationResult)
+        XCTAssertNil(store.comparison?.left)
+        XCTAssertNil(store.comparison?.right)
+
+        store.setComparisonSource(nil)
+        XCTAssertNil(store.comparison)
+    }
+
+    func testComparisonFailureDoesNotReplaceMainResult() async throws {
+        let fixture = try comparisonFixtureData()
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+        store.tokenize("offline")
+        try await waitUntil { store.tokenizationResult?.input == "offline" }
+        let mainResult = store.tokenizationResult
+        let selectedPath = store.selectedPath
+
+        store.setComparisonSource(.snapshotPath("bad/tokenizer.json"))
+        try await waitUntil {
+            if case .failed = store.comparison?.phase { return true }
+            return false
+        }
+
+        XCTAssertEqual(store.tokenizerPhase, .ready)
+        XCTAssertEqual(store.tokenizationResult, mainResult)
+        XCTAssertEqual(store.selectedPath, selectedPath)
+        XCTAssertNil(store.comparison?.right)
+
+        store.select(path: "tokenizer_config.json")
+        XCTAssertNil(store.comparison)
+    }
+
+    func testComparisonLatestTargetWinsWhenOldLoadIsCancelled() async throws {
+        let fixture = try comparisonFixtureData()
+        let access = StoreTokenizerAccess(
+            data: fixture.data,
+            files: fixture.files,
+            delays: ["slow/tokenizer.json": .milliseconds(250)]
+        )
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+        store.tokenize("offline")
+        try await waitUntil { store.tokenizationResult?.input == "offline" }
+
+        store.setComparisonSource(.snapshotPath("slow/tokenizer.json"))
+        store.setComparisonSource(.snapshotPath("alternate/tokenizer.json"))
+        try await waitUntil {
+            store.comparison?.phase == .ready
+                && store.comparison?.rightIdentity?.path == "alternate/tokenizer.json"
+        }
+        try await Task.sleep(for: .milliseconds(350))
+
+        XCTAssertEqual(store.comparison?.rightIdentity?.path, "alternate/tokenizer.json")
+        XCTAssertEqual(store.comparison?.right?.input, "offline")
+    }
+
     func testSentencePieceModelOpensDirectlyInPlayground() async throws {
         let model = Data("invalid".utf8)
         let files = [file("tokenizer.model", data: model, category: .tokenizer)]
@@ -442,6 +550,26 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         return (data, files)
     }
 
+    private func comparisonFixtureData() throws -> (data: [String: Data], files: [RepositoryFile]) {
+        var fixture = try fixtureData()
+        let tokenizer = try XCTUnwrap(fixture.data["tokenizer.json"])
+        let config = try XCTUnwrap(fixture.data["tokenizer_config.json"])
+        for directory in ["alternate", "slow"] {
+            let tokenizerPath = "\(directory)/tokenizer.json"
+            let configPath = "\(directory)/tokenizer_config.json"
+            fixture.data[tokenizerPath] = tokenizer
+            fixture.data[configPath] = config
+            fixture.files.append(file(tokenizerPath, data: tokenizer, category: .tokenizer))
+            fixture.files.append(file(configPath, data: config, category: .tokenizer))
+        }
+        let badTokenizer = Data("{".utf8)
+        fixture.data["bad/tokenizer.json"] = badTokenizer
+        fixture.data["bad/tokenizer_config.json"] = config
+        fixture.files.append(file("bad/tokenizer.json", data: badTokenizer, category: .tokenizer))
+        fixture.files.append(file("bad/tokenizer_config.json", data: config, category: .tokenizer))
+        return fixture
+    }
+
     private func file(
         _ path: String,
         data: Data,
@@ -477,11 +605,17 @@ private actor StoreTokenizerAccess: RepositoryAccess {
     )
     private let data: [String: Data]
     private let files: [RepositoryFile]
+    private let delays: [String: Duration]
     private var reads = 0
 
-    init(data: [String: Data], files: [RepositoryFile]) {
+    init(
+        data: [String: Data],
+        files: [RepositoryFile],
+        delays: [String: Duration] = [:]
+    ) {
         self.data = data
         self.files = files
+        self.delays = delays
     }
 
     func loadSnapshot() async throws -> RepositorySnapshot {
@@ -490,6 +624,9 @@ private actor StoreTokenizerAccess: RepositoryAccess {
 
     func read(_ file: RepositoryFile, range: ClosedRange<UInt64>?) async throws -> Data {
         reads += 1
+        if let delay = delays[file.path] {
+            try await Task.sleep(for: delay)
+        }
         guard range == nil, let data = data[file.path] else {
             throw RepositoryService.ServiceError.invalidResponse
         }

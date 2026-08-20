@@ -26,6 +26,7 @@ final class ModelFilesStore: ObservableObject {
     @Published private(set) var tokenizerConfigData: Data?
     @Published private(set) var tokenizerClassOverride: String?
     @Published private(set) var consistencyReport: RepositoryConsistencyReport?
+    @Published private(set) var comparison: TokenizerComparisonSession?
 
     private let service: RepositoryService
     private var contents: [String: InspectionDocument] = [:]
@@ -34,12 +35,15 @@ final class ModelFilesStore: ObservableObject {
     private var fileTask: Task<Void, Never>?
     private var tokenizerLoadTask: Task<Void, Never>?
     private var tokenizerEncodeTask: Task<Void, Never>?
+    private var comparisonTask: Task<Void, Never>?
     private var tokenizerRuntime: TokenizerRuntime?
+    private var comparisonRuntime: TokenizerRuntime?
     private var tokenizerBundle: TokenizerBundle?
     private var tokenizerIdentity: TokenizerSessionIdentity?
     private var tokenizerLoadGeneration = 0
     private var tokenizerEncodeGeneration = 0
     private var consistencyGeneration = 0
+    private var comparisonGeneration = 0
     private var pendingTokenizerRequest: TokenizerEncodeRequest?
 
     static let maximumTokenizerInputByteCount = 64 * 1_024
@@ -174,19 +178,18 @@ final class ModelFilesStore: ObservableObject {
         tokenizerEncodeGeneration += 1
         let generation = tokenizerEncodeGeneration
         let input = request.text
+        clearTokenizationAndComparisonResults()
 
         guard input.utf8.count <= Self.maximumTokenizerInputByteCount else {
-            tokenizationResult = nil
             tokenizerPhase = .inputTooLarge(limit: Self.maximumTokenizerInputByteCount)
             return
         }
         guard let runtime = tokenizerRuntime else {
-            tokenizationResult = nil
             prepareTokenizerPlaygroundIfNeeded()
             return
         }
         guard !input.isEmpty || request.chatAttribution != nil else {
-            tokenizationResult = TokenizationResult(
+            let result = TokenizationResult(
                 direction: .encode,
                 input: "",
                 tokenIDs: [],
@@ -198,11 +201,12 @@ final class ModelFilesStore: ObservableObject {
                 roles: nil,
                 overhead: nil
             )
+            tokenizationResult = result
+            updateComparison(with: result)
             tokenizerPhase = .ready
             return
         }
 
-        tokenizationResult = nil
         tokenizerPhase = .tokenizing
         tokenizerEncodeTask = Task { [weak self] in
             do {
@@ -237,6 +241,7 @@ final class ModelFilesStore: ObservableObject {
                       generation == self.tokenizerEncodeGeneration,
                       request == self.pendingTokenizerRequest else { return }
                 self.tokenizationResult = publishedResult
+                self.updateComparison(with: publishedResult)
                 self.tokenizerPhase = .ready
             } catch is CancellationError {
                 return
@@ -252,12 +257,12 @@ final class ModelFilesStore: ObservableObject {
         tokenizerEncodeTask?.cancel()
         tokenizerEncodeGeneration += 1
         let generation = tokenizerEncodeGeneration
+        clearTokenizationAndComparisonResults()
 
         let tokenIDs: [Int]
         do {
             tokenIDs = try TokenIDParser.parse(raw)
         } catch let error as TokenIDParser.ParseError {
-            tokenizationResult = nil
             if case let .inputTooLarge(limit) = error {
                 tokenizerPhase = .inputTooLarge(limit: limit)
             } else {
@@ -265,18 +270,15 @@ final class ModelFilesStore: ObservableObject {
             }
             return
         } catch {
-            tokenizationResult = nil
             tokenizerPhase = .failed(error.localizedDescription)
             return
         }
 
         guard let runtime = tokenizerRuntime else {
-            tokenizationResult = nil
             prepareTokenizerPlaygroundIfNeeded()
             return
         }
 
-        tokenizationResult = nil
         tokenizerPhase = .tokenizing
         tokenizerEncodeTask = Task { [weak self] in
             do {
@@ -284,6 +286,7 @@ final class ModelFilesStore: ObservableObject {
                 try Task.checkCancellation()
                 guard let self, generation == self.tokenizerEncodeGeneration else { return }
                 self.tokenizationResult = result
+                self.updateComparison(with: result)
                 self.tokenizerPhase = .ready
             } catch is CancellationError {
                 return
@@ -325,13 +328,183 @@ final class ModelFilesStore: ObservableObject {
         tokenizerChatCatalog = catalog.selecting(id)
     }
 
+    func setComparisonSource(_ source: ComparisonSource?) {
+        comparisonTask?.cancel()
+        comparisonGeneration += 1
+        let generation = comparisonGeneration
+        comparisonRuntime = nil
+
+        guard let source else {
+            comparison = nil
+            return
+        }
+        guard let snapshot else {
+            comparison = TokenizerComparisonSession(
+                source: source,
+                rightIdentity: nil,
+                phase: .failed("当前没有可用 snapshot。"),
+                left: tokenizationResult,
+                right: nil
+            )
+            return
+        }
+
+        let path: String
+        switch source {
+        case let .snapshotPath(value): path = value
+        }
+        guard let file = snapshot.files.first(where: {
+            $0.path == path && !$0.isBlocked && $0.isTokenizerPlaygroundEntryPoint
+        }) else {
+            comparison = TokenizerComparisonSession(
+                source: source,
+                rightIdentity: nil,
+                phase: .failed("snapshot 中没有可用 tokenizer 入口：\(path)"),
+                left: tokenizationResult,
+                right: nil
+            )
+            return
+        }
+
+        let identity = TokenizerSessionIdentity(snapshot: snapshot, file: file)
+        comparison = TokenizerComparisonSession(
+            source: source,
+            rightIdentity: identity,
+            phase: .loading,
+            left: tokenizationResult,
+            right: nil
+        )
+        comparisonTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let bundle = try await service.loadTokenizerBundle(for: file, from: snapshot)
+                try Task.checkCancellation()
+                let runtime = try await Task.detached(priority: .userInitiated) {
+                    try TokenizerRuntime(bundle: bundle)
+                }.value
+                try Task.checkCancellation()
+                guard generation == self.comparisonGeneration else { return }
+                self.comparisonRuntime = runtime
+                guard let left = self.tokenizationResult else {
+                    self.comparison = TokenizerComparisonSession(
+                        source: source,
+                        rightIdentity: identity,
+                        phase: .ready,
+                        left: nil,
+                        right: nil
+                    )
+                    return
+                }
+                let right = try await self.comparisonResult(for: left, runtime: runtime)
+                try Task.checkCancellation()
+                guard generation == self.comparisonGeneration else { return }
+                self.comparison = TokenizerComparisonSession(
+                    source: source,
+                    rightIdentity: identity,
+                    phase: .ready,
+                    left: left,
+                    right: right
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard generation == self.comparisonGeneration else { return }
+                self.comparisonRuntime = nil
+                self.comparison = TokenizerComparisonSession(
+                    source: source,
+                    rightIdentity: identity,
+                    phase: .failed(error.localizedDescription),
+                    left: self.tokenizationResult,
+                    right: nil
+                )
+            }
+        }
+    }
+
     func clearTokenizationResult() {
         tokenizerEncodeTask?.cancel()
         tokenizerEncodeGeneration += 1
         pendingTokenizerRequest = nil
-        tokenizationResult = nil
+        clearTokenizationAndComparisonResults()
         if tokenizerRuntime != nil {
             tokenizerPhase = .ready
+        }
+    }
+
+    private func updateComparison(with left: TokenizationResult?) {
+        guard let session = comparison else { return }
+        guard let runtime = comparisonRuntime, let identity = session.rightIdentity else {
+            comparison = TokenizerComparisonSession(
+                source: session.source,
+                rightIdentity: session.rightIdentity,
+                phase: session.phase,
+                left: left,
+                right: nil
+            )
+            return
+        }
+
+        comparisonTask?.cancel()
+        comparisonGeneration += 1
+        let generation = comparisonGeneration
+        guard let left else {
+            comparison = TokenizerComparisonSession(
+                source: session.source,
+                rightIdentity: identity,
+                phase: .ready,
+                left: nil,
+                right: nil
+            )
+            return
+        }
+
+        comparison = TokenizerComparisonSession(
+            source: session.source,
+            rightIdentity: identity,
+            phase: .loading,
+            left: left,
+            right: nil
+        )
+        comparisonTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let right = try await self.comparisonResult(for: left, runtime: runtime)
+                try Task.checkCancellation()
+                guard generation == self.comparisonGeneration else { return }
+                self.comparison = TokenizerComparisonSession(
+                    source: session.source,
+                    rightIdentity: identity,
+                    phase: .ready,
+                    left: left,
+                    right: right
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard generation == self.comparisonGeneration else { return }
+                self.comparison = TokenizerComparisonSession(
+                    source: session.source,
+                    rightIdentity: identity,
+                    phase: .failed(error.localizedDescription),
+                    left: left,
+                    right: nil
+                )
+            }
+        }
+    }
+
+    private func clearTokenizationAndComparisonResults() {
+        tokenizationResult = nil
+        updateComparison(with: nil)
+    }
+
+    private func comparisonResult(
+        for left: TokenizationResult,
+        runtime: TokenizerRuntime
+    ) async throws -> TokenizationResult {
+        switch left.direction {
+        case .encode: try await runtime.tokenize(left.input)
+        case .decode: try await runtime.decode(left.tokenIDs)
         }
     }
 
@@ -355,7 +528,7 @@ final class ModelFilesStore: ObservableObject {
         tokenizerRuntime = nil
         tokenizerBundle = nil
         tokenizerIdentity = nil
-        tokenizationResult = nil
+        clearTokenizationAndComparisonResults()
         tokenizerChatCatalog = nil
         tokenizerConfigData = nil
         tokenizerPhase = .loading
@@ -395,7 +568,7 @@ final class ModelFilesStore: ObservableObject {
         let generation = tokenizerLoadGeneration
         let tokenizerClassOverride = tokenizerClassOverride
         tokenizerRuntime = nil
-        tokenizationResult = nil
+        clearTokenizationAndComparisonResults()
         tokenizerPhase = .loading
 
         tokenizerLoadTask = Task { [weak self] in
@@ -433,9 +606,12 @@ final class ModelFilesStore: ObservableObject {
     private func resetTokenizerPlayground() {
         tokenizerLoadTask?.cancel()
         tokenizerEncodeTask?.cancel()
+        comparisonTask?.cancel()
         tokenizerLoadGeneration += 1
         tokenizerEncodeGeneration += 1
+        comparisonGeneration += 1
         tokenizerRuntime = nil
+        comparisonRuntime = nil
         tokenizerBundle = nil
         tokenizerIdentity = nil
         tokenizerClassOverride = nil
@@ -444,6 +620,7 @@ final class ModelFilesStore: ObservableObject {
         tokenizerChatCatalog = nil
         tokenizerConfigData = nil
         tokenizerPhase = .idle
+        comparison = nil
     }
 
     private func startConsistencyTask(

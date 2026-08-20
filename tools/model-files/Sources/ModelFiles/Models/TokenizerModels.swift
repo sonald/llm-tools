@@ -84,6 +84,24 @@ struct TokenizerEncodeRequest: Sendable, Equatable {
     }
 }
 
+enum ComparisonSource: Sendable, Equatable {
+    case snapshotPath(String)
+}
+
+enum TokenizerComparisonPhase: Sendable, Equatable {
+    case loading
+    case ready
+    case failed(String)
+}
+
+struct TokenizerComparisonSession: Sendable, Equatable {
+    let source: ComparisonSource
+    let rightIdentity: TokenizerSessionIdentity?
+    let phase: TokenizerComparisonPhase
+    let left: TokenizationResult?
+    let right: TokenizationResult?
+}
+
 struct TokenSegment: Identifiable, Sendable, Equatable {
     let tokenRange: Range<Int>
     let tokenIDs: [Int]
