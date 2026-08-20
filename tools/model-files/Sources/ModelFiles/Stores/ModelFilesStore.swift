@@ -205,6 +205,53 @@ final class ModelFilesStore: ObservableObject {
         }
     }
 
+    func decodeTokenIDs(_ raw: String) {
+        pendingTokenizerInput = nil
+        tokenizerEncodeTask?.cancel()
+        tokenizerEncodeGeneration += 1
+        let generation = tokenizerEncodeGeneration
+
+        let tokenIDs: [Int]
+        do {
+            tokenIDs = try TokenIDParser.parse(raw)
+        } catch let error as TokenIDParser.ParseError {
+            tokenizationResult = nil
+            if case let .inputTooLarge(limit) = error {
+                tokenizerPhase = .inputTooLarge(limit: limit)
+            } else {
+                tokenizerPhase = .failed(error.localizedDescription)
+            }
+            return
+        } catch {
+            tokenizationResult = nil
+            tokenizerPhase = .failed(error.localizedDescription)
+            return
+        }
+
+        guard let runtime = tokenizerRuntime else {
+            tokenizationResult = nil
+            prepareTokenizerPlaygroundIfNeeded()
+            return
+        }
+
+        tokenizationResult = nil
+        tokenizerPhase = .tokenizing
+        tokenizerEncodeTask = Task { [weak self] in
+            do {
+                let result = try await runtime.decode(tokenIDs)
+                try Task.checkCancellation()
+                guard let self, generation == self.tokenizerEncodeGeneration else { return }
+                self.tokenizationResult = result
+                self.tokenizerPhase = .ready
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, generation == self.tokenizerEncodeGeneration else { return }
+                self.tokenizerPhase = .failed(error.localizedDescription)
+            }
+        }
+    }
+
     func retryTokenizerPlayground() {
         tokenizerRuntime = nil
         tokenizerIdentity = nil

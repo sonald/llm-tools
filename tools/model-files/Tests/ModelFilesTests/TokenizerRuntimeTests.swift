@@ -21,6 +21,8 @@ final class TokenizerRuntimeTests: XCTestCase {
         XCTAssertNil(result.roles)
         XCTAssertNil(result.overhead)
         XCTAssertEqual(result.segments.flatMap(\.tokenIDs), result.tokenIDs)
+        let fallbackCount = await runtime.specialTokenDecodeFallbackCount
+        XCTAssertEqual(fallbackCount, 0)
     }
 
     func testStrictlyLoadsWordPieceAndPreservesSubwordIDs() async throws {
@@ -32,6 +34,9 @@ final class TokenizerRuntimeTests: XCTestCase {
         XCTAssertEqual(result.tokenPieces, ["hello", "world", "##s", "中", "文"])
         XCTAssertEqual(result.decodedText, "hello worlds 中 文")
         XCTAssertEqual(result.segments.flatMap(\.tokenIDs), result.tokenIDs)
+        XCTAssertEqual(result.flags.map(\.isSpecial), [false, false, false, false, false])
+        let fallbackCount = await runtime.specialTokenDecodeFallbackCount
+        XCTAssertEqual(fallbackCount, 0)
     }
 
     func testStrictlyLoadsUnigramAndUsesMetaspaceDecoder() async throws {
@@ -44,6 +49,9 @@ final class TokenizerRuntimeTests: XCTestCase {
         XCTAssertEqual(result.decodedText, "hello world")
         XCTAssertEqual(result.sourceMapping, .exact)
         XCTAssertEqual(result.segments.flatMap(\.tokenIDs), result.tokenIDs)
+        XCTAssertEqual(result.flags.map(\.isSpecial), [false, false])
+        let fallbackCount = await runtime.specialTokenDecodeFallbackCount
+        XCTAssertEqual(fallbackCount, 0)
     }
 
     func testByteFallbackGroupsOneEmojiWithoutDroppingItsFourIDs() async throws {
@@ -58,6 +66,99 @@ final class TokenizerRuntimeTests: XCTestCase {
         XCTAssertEqual(result.segments, [
             TokenSegment(tokenRange: 0..<5, tokenIDs: [1, 2, 3, 4, 5], text: "😀x")
         ])
+        XCTAssertEqual(result.flags.map(\.isSpecial), [false, false, false, false, false])
+        let fallbackCount = await runtime.specialTokenDecodeFallbackCount
+        XCTAssertEqual(fallbackCount, 0)
+    }
+
+    func testDecodeRoundTripsBPEAndUnigramResults() async throws {
+        for (fixture, input) in [("bpe", "offline path"), ("unigram", "hello world")] {
+            let runtime = try TokenizerRuntime(bundle: try fixtureBundle(named: fixture))
+            let encoded = try await runtime.tokenize(input)
+
+            let decoded = try await runtime.decode(encoded.tokenIDs)
+
+            XCTAssertEqual(decoded.direction, .decode, fixture)
+            XCTAssertEqual(decoded.input, encoded.tokenIDs.map(String.init).joined(separator: ", "), fixture)
+            XCTAssertEqual(decoded.tokenIDs, encoded.tokenIDs, fixture)
+            XCTAssertEqual(decoded.tokenPieces, encoded.tokenPieces, fixture)
+            XCTAssertEqual(decoded.decodedText, encoded.decodedText, fixture)
+            XCTAssertEqual(decoded.sourceMapping, .decodedOnly, fixture)
+            XCTAssertEqual(decoded.flags.count, decoded.tokenIDs.count, fixture)
+        }
+    }
+
+    func testDecodeEmptyIDsReturnsEmptyDecodedOnlyResult() async throws {
+        let runtime = try TokenizerRuntime(bundle: try fixtureBundle(named: "bpe"))
+
+        let result = try await runtime.decode([])
+
+        XCTAssertEqual(result.direction, .decode)
+        XCTAssertEqual(result.input, "")
+        XCTAssertEqual(result.tokenIDs, [])
+        XCTAssertEqual(result.tokenPieces, [])
+        XCTAssertEqual(result.decodedText, "")
+        XCTAssertEqual(result.segments, [])
+        XCTAssertEqual(result.sourceMapping, .decodedOnly)
+        XCTAssertEqual(result.flags, [])
+        XCTAssertNil(result.roles)
+        XCTAssertNil(result.overhead)
+    }
+
+    func testFlagsPreferReliableIDsThenEncodedConfigPieces() async throws {
+        let wordPiece = try TokenizerRuntime(bundle: try fixtureBundle(named: "wordpiece"))
+        let wordPieceResult = try await wordPiece.decode([1, 3, 2])
+
+        XCTAssertEqual(wordPieceResult.flags, [
+            TokenFlags(isSpecial: true, specialName: "[CLS]"),
+            TokenFlags(isSpecial: false, specialName: nil),
+            TokenFlags(isSpecial: true, specialName: "[SEP]"),
+        ])
+
+        let bpe = try TokenizerRuntime(bundle: try fixtureBundle(named: "bpe"))
+        let bpeResult = try await bpe.decode([0, 15, 2])
+
+        XCTAssertEqual(bpeResult.flags, [
+            TokenFlags(isSpecial: true, specialName: "bos_token"),
+            TokenFlags(isSpecial: false, specialName: nil),
+            TokenFlags(isSpecial: true, specialName: "eos_token"),
+        ])
+    }
+
+    func testDecodePreservesUnknownHuggingFaceIDAsNilPiece() async throws {
+        let runtime = try TokenizerRuntime(bundle: try fixtureBundle(named: "bpe"))
+
+        let result = try await runtime.decode([15, 999, 22])
+
+        XCTAssertEqual(result.tokenIDs, [15, 999, 22])
+        XCTAssertEqual(result.tokenPieces, ["offline", nil, "path"])
+        XCTAssertEqual(result.decodedText, "offlinepath")
+        XCTAssertEqual(result.segments.flatMap(\.tokenIDs), result.tokenIDs)
+        XCTAssertEqual(result.flags.count, result.tokenIDs.count)
+        XCTAssertFalse(result.flags[1].isSpecial)
+        let fallbackCount = await runtime.specialTokenDecodeFallbackCount
+        XCTAssertEqual(fallbackCount, 1)
+    }
+
+    func testEmptyConfiguredSpecialDoesNotMarkUnknownID() async throws {
+        let fixture = try fixtureBundle(named: "bpe")
+        let configData = try XCTUnwrap(fixture.tokenizerConfigData)
+        var config = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: configData) as? [String: Any]
+        )
+        config["additional_special_tokens"] = [""]
+        let bundle = TokenizerBundle(
+            file: fixture.file,
+            tokenizerData: fixture.tokenizerData,
+            tokenizerConfigData: try JSONSerialization.data(withJSONObject: config),
+            chatTemplateData: nil
+        )
+        let runtime = try TokenizerRuntime(bundle: bundle)
+
+        let result = try await runtime.decode([999])
+
+        XCTAssertEqual(result.tokenPieces, [nil])
+        XCTAssertEqual(result.flags, [TokenFlags(isSpecial: false, specialName: nil)])
     }
 
     func testChatPipelineTokenizesTheVisibleRenderedTextWithoutAddingSpecialTokens() async throws {

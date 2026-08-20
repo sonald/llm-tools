@@ -55,6 +55,39 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         XCTAssertNil(store.tokenizationResult)
     }
 
+    func testDecodeTokenIDsPublishesLatestValidResultAndParserErrors() async throws {
+        let fixture = try fixtureData()
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+
+        store.decodeTokenIDs("[15, 22]")
+        store.decodeTokenIDs("22")
+        try await waitUntil { store.tokenizationResult?.direction == .decode }
+
+        XCTAssertEqual(store.tokenizationResult?.tokenIDs, [22])
+        XCTAssertEqual(store.tokenizationResult?.decodedText, "path")
+
+        store.decodeTokenIDs("15, nope")
+        guard case let .failed(message) = store.tokenizerPhase else {
+            return XCTFail("Expected parser failure.")
+        }
+        XCTAssertTrue(message.contains("index 1"))
+        XCTAssertNil(store.tokenizationResult)
+
+        let oversized = String(repeating: "1 ", count: TokenIDParser.maximumInputByteCount / 2 + 1)
+        store.decodeTokenIDs(oversized)
+        XCTAssertEqual(
+            store.tokenizerPhase,
+            .inputTooLarge(limit: TokenIDParser.maximumInputByteCount)
+        )
+    }
+
     func testSentencePieceModelOpensDirectlyInPlayground() async throws {
         let model = Data("invalid".utf8)
         let files = [file("tokenizer.model", data: model, category: .tokenizer)]

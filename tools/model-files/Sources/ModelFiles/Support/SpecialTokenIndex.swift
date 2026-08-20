@@ -13,15 +13,21 @@ struct SpecialTokenIndex: Sendable, Equatable {
         }
     }
 
-    let specialIDs: Set<Int>
+    private(set) var specialIDs: Set<Int>
     let specialPieces: [String: String]
-    let specialNamesByID: [Int: String]
+    private(set) var specialNamesByID: [Int: String]
+    private var specialIDByPiece: [String: Int]
+
+    var unresolvedPieces: [String] {
+        specialPieces.keys.filter { specialIDByPiece[$0] == nil }.sorted()
+    }
 
     init(tokenizerData: Data? = nil, tokenizerConfigData: Data? = nil) throws {
         let tokenizer = try Self.object(from: tokenizerData, named: "tokenizer.json")
         let config = try Self.object(from: tokenizerConfigData, named: "tokenizer_config.json")
         var pieces: [String: String] = [:]
         var namesByID: [Int: String] = [:]
+        var idsByPiece: [String: Int] = [:]
 
         for name in [
             "bos_token", "eos_token", "pad_token", "unk_token",
@@ -43,12 +49,13 @@ struct SpecialTokenIndex: Sendable, Equatable {
         if let addedTokens = tokenizer["added_tokens"] as? [Any] {
             for case let token as [String: Any] in addedTokens {
                 guard Self.isTrue(token["special"]),
-                      let content = token["content"] as? String else {
+                      let content = Self.content(from: token) else {
                     continue
                 }
                 pieces[content] = pieces[content] ?? content
                 if let id = Self.nonNegativeInteger(token["id"]) {
                     namesByID[id] = namesByID[id] ?? pieces[content]
+                    idsByPiece[content] = id
                 }
             }
         }
@@ -56,6 +63,14 @@ struct SpecialTokenIndex: Sendable, Equatable {
         specialIDs = Set(namesByID.keys)
         specialPieces = pieces
         specialNamesByID = namesByID
+        specialIDByPiece = idsByPiece
+    }
+
+    mutating func registerEncodedID(_ id: Int, for piece: String) {
+        guard let name = specialPieces[piece] else { return }
+        specialIDs.insert(id)
+        specialNamesByID[id] = specialNamesByID[id] ?? name
+        specialIDByPiece[piece] = id
     }
 
     private static func object(from data: Data?, named name: String) throws -> [String: Any] {
@@ -67,8 +82,8 @@ struct SpecialTokenIndex: Sendable, Equatable {
     }
 
     private static func content(from value: Any?) -> String? {
-        if let value = value as? String { return value }
-        return (value as? [String: Any])?["content"] as? String
+        let content = value as? String ?? (value as? [String: Any])?["content"] as? String
+        return content?.isEmpty == false ? content : nil
     }
 
     private static func isTrue(_ value: Any?) -> Bool {
