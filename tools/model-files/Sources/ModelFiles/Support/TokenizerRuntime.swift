@@ -96,12 +96,19 @@ actor TokenizerRuntime {
         )
         let reconstructed = segments.map(\.text).joined()
         return TokenizationResult(
+            direction: .encode,
             input: input,
             tokenIDs: tokenIDs,
             tokenPieces: tokenPieces,
             decodedText: decodedText,
             segments: segments,
-            sourceMapping: reconstructed == input && decodedText == input ? .exact : .decodedOnly
+            sourceMapping: reconstructed == input && decodedText == input ? .exact : .decodedOnly,
+            flags: Array(
+                repeating: TokenFlags(isSpecial: false, specialName: nil),
+                count: tokenIDs.count
+            ),
+            roles: nil,
+            overhead: nil
         )
     }
 

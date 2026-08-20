@@ -168,12 +168,16 @@ final class ModelFilesStore: ObservableObject {
         }
         guard !input.isEmpty else {
             tokenizationResult = TokenizationResult(
+                direction: .encode,
                 input: "",
                 tokenIDs: [],
                 tokenPieces: [],
                 decodedText: "",
                 segments: [],
-                sourceMapping: .exact
+                sourceMapping: .exact,
+                flags: [],
+                roles: nil,
+                overhead: nil
             )
             tokenizerPhase = .ready
             return

@@ -13,6 +13,13 @@ final class TokenizerRuntimeTests: XCTestCase {
         XCTAssertEqual(result.tokenPieces, ["offline", "path"])
         XCTAssertEqual(result.decodedText, "offlinepath")
         XCTAssertEqual(result.sourceMapping, .decodedOnly)
+        XCTAssertEqual(result.direction, .encode)
+        XCTAssertEqual(
+            result.flags,
+            Array(repeating: TokenFlags(isSpecial: false, specialName: nil), count: result.tokenIDs.count)
+        )
+        XCTAssertNil(result.roles)
+        XCTAssertNil(result.overhead)
         XCTAssertEqual(result.segments.flatMap(\.tokenIDs), result.tokenIDs)
     }
 

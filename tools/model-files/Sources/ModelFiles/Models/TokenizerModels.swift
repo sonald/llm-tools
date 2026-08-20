@@ -21,6 +21,32 @@ enum TokenizerSourceMapping: String, Sendable, Equatable {
     }
 }
 
+enum TokenizationDirection: Sendable, Equatable {
+    case encode
+    case decode
+}
+
+struct TokenFlags: Sendable, Equatable {
+    let isSpecial: Bool
+    let specialName: String?
+}
+
+enum TokenRole: String, Sendable, Equatable {
+    case system
+    case user
+    case assistant
+    case tool
+    case template
+}
+
+struct TokenOverhead: Sendable, Equatable {
+    let totalCount: Int
+    let contentCount: Int
+    let templateCount: Int
+    let isApproximate: Bool
+    let contentProbe: String
+}
+
 struct TokenSegment: Identifiable, Sendable, Equatable {
     let tokenRange: Range<Int>
     let tokenIDs: [Int]
@@ -30,12 +56,16 @@ struct TokenSegment: Identifiable, Sendable, Equatable {
 }
 
 struct TokenizationResult: Sendable, Equatable {
+    let direction: TokenizationDirection
     let input: String
     let tokenIDs: [Int]
     let tokenPieces: [String?]
     let decodedText: String
     let segments: [TokenSegment]
     let sourceMapping: TokenizerSourceMapping
+    let flags: [TokenFlags]
+    let roles: [TokenRole]?
+    let overhead: TokenOverhead?
 
     var tokenCount: Int { tokenIDs.count }
 

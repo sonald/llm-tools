@@ -8,12 +8,19 @@ struct TokenizerFieldInfo: Identifiable, Sendable, Equatable {
     var id: String { name }
 }
 
+struct TokenizerAddedTokenInfo: Sendable, Equatable {
+    let id: Int?
+    let content: String
+    let special: Bool
+}
+
 struct TokenizerOverview: Sendable, Equatable {
     let version: String?
     let modelType: String?
     let vocabCount: Int?
     let mergeCount: Int?
     let addedTokenCount: Int?
+    let addedTokens: [TokenizerAddedTokenInfo]
     let vocabularyAnalysis: TokenizerVocabularyAnalysis?
     let fields: [TokenizerFieldInfo]
 }
@@ -60,6 +67,7 @@ enum TokenizerInspector {
                 vocabCount: collectionCount(vocabulary),
                 mergeCount: (model?["merges"] as? [Any])?.count,
                 addedTokenCount: (root["added_tokens"] as? [Any])?.count,
+                addedTokens: addedTokens(from: root["added_tokens"]),
                 vocabularyAnalysis: vocabularyEntries(from: vocabulary).flatMap(analyzeVocabulary),
                 fields: root.keys.sorted().map {
                     TokenizerFieldInfo(name: $0, detail: describe(root[$0]))
@@ -75,6 +83,21 @@ enum TokenizerInspector {
         if let value = value as? [String: Any] { return value.count }
         if let value = value as? [Any] { return value.count }
         return nil
+    }
+
+    private static func addedTokens(from value: Any?) -> [TokenizerAddedTokenInfo] {
+        guard let values = value as? [Any] else { return [] }
+        return values.compactMap { value in
+            guard let token = value as? [String: Any],
+                  let content = token["content"] as? String else {
+                return nil
+            }
+            return TokenizerAddedTokenInfo(
+                id: token["id"].flatMap(integerID),
+                content: content,
+                special: boolean(token["special"])
+            )
+        }
     }
 
     private static func vocabularyEntries(from value: Any?) -> [(id: Int, token: String)]? {
@@ -117,6 +140,14 @@ enum TokenizerInspector {
             return nil
         }
         return id
+    }
+
+    private static func boolean(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) == CFBooleanGetTypeID() else {
+            return false
+        }
+        return number.boolValue
     }
 
     private static func analyzeVocabulary(
