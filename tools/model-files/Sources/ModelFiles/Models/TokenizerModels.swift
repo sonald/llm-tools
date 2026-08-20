@@ -123,6 +123,15 @@ enum TokenizerComparisonPhase: Sendable, Equatable {
     case failed(String)
 }
 
+enum TokenizerVocabularyComparison: Sendable, Equatable {
+    case available(
+        left: TokenizerVocabularyIndex,
+        right: TokenizerVocabularyIndex,
+        diff: TokenizerVocabularyDiff
+    )
+    case skipped(String)
+}
+
 struct TokenizerComparisonSession: Sendable, Equatable {
     let source: ComparisonSource
     let rightIdentity: TokenizerSessionIdentity?
@@ -130,6 +139,7 @@ struct TokenizerComparisonSession: Sendable, Equatable {
     let left: TokenizationResult?
     let right: TokenizationResult?
     let rightCatalog: ChatTemplateCatalog?
+    let vocabulary: TokenizerVocabularyComparison?
 
     init(
         source: ComparisonSource,
@@ -137,7 +147,8 @@ struct TokenizerComparisonSession: Sendable, Equatable {
         phase: TokenizerComparisonPhase,
         left: TokenizationResult?,
         right: TokenizationResult?,
-        rightCatalog: ChatTemplateCatalog? = nil
+        rightCatalog: ChatTemplateCatalog? = nil,
+        vocabulary: TokenizerVocabularyComparison? = nil
     ) {
         self.source = source
         self.rightIdentity = rightIdentity
@@ -145,6 +156,7 @@ struct TokenizerComparisonSession: Sendable, Equatable {
         self.left = left
         self.right = right
         self.rightCatalog = rightCatalog
+        self.vocabulary = vocabulary
     }
 }
 

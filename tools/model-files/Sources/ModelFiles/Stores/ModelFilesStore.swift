@@ -367,6 +367,8 @@ final class ModelFilesStore: ObservableObject {
         }
 
         let identity = TokenizerSessionIdentity(snapshot: snapshot, file: file)
+        let leftIdentity = selectedFile.map { TokenizerSessionIdentity(snapshot: snapshot, file: $0) }
+        let leftLoadTask = tokenizerLoadTask
         comparison = TokenizerComparisonSession(
             source: source,
             rightIdentity: identity,
@@ -376,12 +378,56 @@ final class ModelFilesStore: ObservableObject {
         )
         comparisonTask = Task { [weak self] in
             guard let self else { return }
+            var vocabulary: TokenizerVocabularyComparison?
             do {
                 let bundle = try await service.loadTokenizerBundle(for: file, from: snapshot)
                 let catalog = try ChatTemplateCatalog.parse(
                     configData: bundle.tokenizerConfigData,
                     chatTemplateData: bundle.chatTemplateData
                 )
+                try Task.checkCancellation()
+                if self.tokenizerBundle == nil {
+                    await leftLoadTask?.value
+                    try Task.checkCancellation()
+                }
+                guard generation == self.comparisonGeneration else { return }
+                let selectedIdentity: TokenizerSessionIdentity?
+                if let currentSnapshot = self.snapshot, let selectedFile = self.selectedFile {
+                    selectedIdentity = TokenizerSessionIdentity(
+                        snapshot: currentSnapshot,
+                        file: selectedFile
+                    )
+                } else {
+                    selectedIdentity = nil
+                }
+                guard selectedIdentity == leftIdentity else { return }
+                let leftBundle: TokenizerBundle?
+                if let leftIdentity, self.tokenizerIdentity == leftIdentity {
+                    leftBundle = self.tokenizerBundle
+                } else {
+                    leftBundle = nil
+                }
+                if leftBundle?.file.isSentencePieceModel == true || bundle.file.isSentencePieceModel {
+                    vocabulary = .skipped(
+                        "SentencePiece 不提供可解析的 tokenizer.json 词表；编码对照仍可用。"
+                    )
+                } else if let leftData = leftBundle?.tokenizerData {
+                    vocabulary = await Task.detached(priority: .userInitiated) {
+                        guard let left = TokenizerInspector.vocabularyIndex(from: leftData),
+                              let right = TokenizerInspector.vocabularyIndex(from: bundle.tokenizerData) else {
+                            return TokenizerVocabularyComparison.skipped(
+                                "一侧 tokenizer.json 的 model.vocab 无法解析，已跳过词表差集。"
+                            )
+                        }
+                        return .available(
+                            left: left,
+                            right: right,
+                            diff: TokenizerVocabularyDiff(left: left, right: right)
+                        )
+                    }.value
+                } else {
+                    vocabulary = .skipped("主侧 tokenizer 尚未就绪，已跳过词表差集。")
+                }
                 try Task.checkCancellation()
                 let runtime = try await Task.detached(priority: .userInitiated) {
                     try TokenizerRuntime(bundle: bundle)
@@ -396,7 +442,8 @@ final class ModelFilesStore: ObservableObject {
                         phase: .ready,
                         left: nil,
                         right: nil,
-                        rightCatalog: catalog
+                        rightCatalog: catalog,
+                        vocabulary: vocabulary
                     )
                     return
                 }
@@ -414,7 +461,8 @@ final class ModelFilesStore: ObservableObject {
                         phase: .ready,
                         left: left,
                         right: right,
-                        rightCatalog: catalog
+                        rightCatalog: catalog,
+                        vocabulary: vocabulary
                     )
                 } catch is CancellationError {
                     return
@@ -426,7 +474,8 @@ final class ModelFilesStore: ObservableObject {
                         phase: .failed(error.localizedDescription),
                         left: left,
                         right: nil,
-                        rightCatalog: catalog
+                        rightCatalog: catalog,
+                        vocabulary: vocabulary
                     )
                 }
             } catch is CancellationError {
@@ -439,7 +488,8 @@ final class ModelFilesStore: ObservableObject {
                     rightIdentity: identity,
                     phase: .failed(error.localizedDescription),
                     left: self.tokenizationResult,
-                    right: nil
+                    right: nil,
+                    vocabulary: vocabulary
                 )
             }
         }
@@ -453,7 +503,8 @@ final class ModelFilesStore: ObservableObject {
             phase: .loading,
             left: session.left,
             right: nil,
-            rightCatalog: catalog.selecting(id)
+            rightCatalog: catalog.selecting(id),
+            vocabulary: session.vocabulary
         )
         updateComparison(with: session.left)
     }
@@ -477,7 +528,8 @@ final class ModelFilesStore: ObservableObject {
                 phase: session.phase,
                 left: left,
                 right: nil,
-                rightCatalog: session.rightCatalog
+                rightCatalog: session.rightCatalog,
+                vocabulary: session.vocabulary
             )
             return
         }
@@ -492,7 +544,8 @@ final class ModelFilesStore: ObservableObject {
                 phase: .ready,
                 left: nil,
                 right: nil,
-                rightCatalog: session.rightCatalog
+                rightCatalog: session.rightCatalog,
+                vocabulary: session.vocabulary
             )
             return
         }
@@ -503,7 +556,8 @@ final class ModelFilesStore: ObservableObject {
             phase: .loading,
             left: left,
             right: nil,
-            rightCatalog: session.rightCatalog
+            rightCatalog: session.rightCatalog,
+            vocabulary: session.vocabulary
         )
         comparisonTask = Task { [weak self] in
             guard let self else { return }
@@ -521,7 +575,8 @@ final class ModelFilesStore: ObservableObject {
                     phase: .ready,
                     left: left,
                     right: right,
-                    rightCatalog: session.rightCatalog
+                    rightCatalog: session.rightCatalog,
+                    vocabulary: session.vocabulary
                 )
             } catch is CancellationError {
                 return
@@ -533,7 +588,8 @@ final class ModelFilesStore: ObservableObject {
                     phase: .failed(error.localizedDescription),
                     left: left,
                     right: nil,
-                    rightCatalog: session.rightCatalog
+                    rightCatalog: session.rightCatalog,
+                    vocabulary: session.vocabulary
                 )
             }
         }

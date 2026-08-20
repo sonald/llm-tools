@@ -7,6 +7,8 @@ struct TokenizerComparisonView: View {
 
     @State private var leftSelectedTokenIndex: Int?
     @State private var rightSelectedTokenIndex: Int?
+    @State private var vocabularyQuery = ""
+    @State private var showsLeftVocabulary = true
 
     var body: some View {
         Group {
@@ -19,20 +21,95 @@ struct TokenizerComparisonView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             case .ready:
-                if let left = session.left, let right = session.right {
-                    comparisonBody(left: left, right: right)
-                } else {
-                    Text("输入内容后显示对照结果。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 12) {
+                    if let left = session.left, let right = session.right {
+                        comparisonBody(left: left, right: right)
+                    } else {
+                        Text("输入内容后显示对照结果。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    vocabularyComparison
                 }
             }
         }
         .padding(12)
-        .onChange(of: session) { _, _ in
+        .onChange(of: session.left) { _, _ in
             leftSelectedTokenIndex = nil
             rightSelectedTokenIndex = nil
         }
+        .onChange(of: session.right) { _, _ in
+            leftSelectedTokenIndex = nil
+            rightSelectedTokenIndex = nil
+        }
+        .onChange(of: session.rightIdentity) { _, _ in
+            vocabularyQuery = ""
+            showsLeftVocabulary = true
+        }
+    }
+
+    @ViewBuilder
+    private var vocabularyComparison: some View {
+        switch session.vocabulary {
+        case nil:
+            EmptyView()
+        case let .skipped(reason):
+            VStack(alignment: .leading, spacing: 6) {
+                Text("词表差集")
+                    .font(.subheadline.weight(.semibold))
+                Label(reason, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+        case let .available(_, _, diff):
+            vocabularyDiff(diff)
+        }
+    }
+
+    private func vocabularyDiff(_ diff: TokenizerVocabularyDiff) -> some View {
+        let pieces = showsLeftVocabulary ? diff.leftOnly : diff.rightOnly
+        let matches = tokenizerVocabularyMatches(in: pieces, query: vocabularyQuery)
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("词表差集")
+                .font(.subheadline.weight(.semibold))
+            HStack(spacing: 12) {
+                Text("仅主 \(diff.leftOnly.count.formatted())")
+                Text("仅对照 \(diff.rightOnly.count.formatted())")
+                Text("共有 \(diff.sharedCount.formatted())")
+            }
+            .font(.caption.weight(.semibold).monospacedDigit())
+            Picker("差集侧", selection: $showsLeftVocabulary) {
+                Text("仅主").tag(true)
+                Text("仅对照").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 260)
+            TextField("搜索 token piece", text: $vocabularyQuery)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 380)
+            Text("显示 \(matches.count.formatted()) 条，最多 \(TokenizerVocabularyIndex.maximumMatchCount.formatted()) 条")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(matches.enumerated()), id: \.offset) { _, piece in
+                        Text(piece.isEmpty ? "（空 Token）" : piece)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 5)
+                        Divider()
+                    }
+                }
+            }
+            .frame(maxHeight: 220)
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func comparisonBody(left: TokenizationResult, right: TokenizationResult) -> some View {

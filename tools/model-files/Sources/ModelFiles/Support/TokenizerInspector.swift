@@ -37,17 +37,49 @@ struct TokenizerVocabularyEntry: Sendable, Equatable {
 }
 
 struct TokenizerVocabularyIndex: Sendable, Equatable {
+    static let maximumMatchCount = 1_000
+
     let entries: [TokenizerVocabularyEntry]
 
-    func matches(query: String, limit: Int = 1_000) -> [TokenizerVocabularyEntry] {
+    func matches(
+        query: String,
+        limit: Int = TokenizerVocabularyIndex.maximumMatchCount
+    ) -> [TokenizerVocabularyEntry] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let limit = min(max(limit, 0), 1_000)
+        let limit = min(max(limit, 0), Self.maximumMatchCount)
         guard !query.isEmpty, limit > 0 else { return [] }
         return Array(entries.lazy.filter {
             $0.token.localizedCaseInsensitiveContains(query)
                 || String($0.tokenID).contains(query)
         }.prefix(limit))
     }
+}
+
+struct TokenizerVocabularyDiff: Sendable, Equatable {
+    let leftOnly: [String]
+    let rightOnly: [String]
+    let sharedCount: Int
+
+    init(left: TokenizerVocabularyIndex, right: TokenizerVocabularyIndex) {
+        let leftPieces = Set(left.entries.map(\.token))
+        let rightPieces = Set(right.entries.map(\.token))
+        leftOnly = leftPieces.subtracting(rightPieces).sorted()
+        rightOnly = rightPieces.subtracting(leftPieces).sorted()
+        sharedCount = leftPieces.intersection(rightPieces).count
+    }
+}
+
+func tokenizerVocabularyMatches(
+    in pieces: [String],
+    query: String,
+    limit: Int = TokenizerVocabularyIndex.maximumMatchCount
+) -> [String] {
+    let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    let limit = min(max(limit, 0), TokenizerVocabularyIndex.maximumMatchCount)
+    guard limit > 0 else { return [] }
+    return Array(pieces.lazy.filter {
+        query.isEmpty || $0.localizedCaseInsensitiveContains(query)
+    }.prefix(limit))
 }
 
 struct TokenizerVocabularyAnalysis: Sendable, Equatable {

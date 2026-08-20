@@ -4,6 +4,156 @@ import XCTest
 
 @MainActor
 final class ModelFilesStoreTokenizerTests: XCTestCase {
+    func testVocabularyDiffUsesPieceIdentityAndFiltersBeforeOneThousandLimit() {
+        let left = TokenizerVocabularyIndex(entries: [
+            TokenizerVocabularyEntry(tokenID: 1, token: "shared", scalarLength: 6),
+            TokenizerVocabularyEntry(tokenID: 2, token: "left", scalarLength: 4),
+        ])
+        let right = TokenizerVocabularyIndex(entries: [
+            TokenizerVocabularyEntry(tokenID: 99, token: "shared", scalarLength: 6),
+            TokenizerVocabularyEntry(tokenID: 3, token: "right", scalarLength: 5),
+        ])
+
+        let diff = TokenizerVocabularyDiff(left: left, right: right)
+
+        XCTAssertEqual(diff.leftOnly, ["left"])
+        XCTAssertEqual(diff.rightOnly, ["right"])
+        XCTAssertEqual(diff.sharedCount, 1)
+
+        let searchable = (0...1_000).map { "prefix-\($0)" } + ["zzz-needle"]
+        XCTAssertEqual(
+            tokenizerVocabularyMatches(in: searchable, query: "needle"),
+            ["zzz-needle"]
+        )
+        XCTAssertEqual(
+            tokenizerVocabularyMatches(in: searchable, query: "").count,
+            TokenizerVocabularyIndex.maximumMatchCount
+        )
+    }
+
+    func testComparisonPublishesVocabularyDiffWithoutExtraReadsAndReleasesIt() async throws {
+        var fixture = try comparisonFixtureData()
+        fixture.data["tokenizer.json"] = try addingVocabulary(
+            ["left-only": 23, "shared-remapped": 24],
+            to: XCTUnwrap(fixture.data["tokenizer.json"])
+        )
+        fixture.data["alternate/tokenizer.json"] = try addingVocabulary(
+            ["right-only": 23, "shared-remapped": 99],
+            to: XCTUnwrap(fixture.data["alternate/tokenizer.json"])
+        )
+        for path in ["tokenizer.json", "alternate/tokenizer.json"] {
+            let data = try XCTUnwrap(fixture.data[path])
+            fixture.files = fixture.files.map { candidate in
+                guard candidate.path == path else { return candidate }
+                return RepositoryFile(
+                    path: candidate.path,
+                    size: Int64(data.count),
+                    revision: candidate.revision,
+                    contentHash: "\(path)-vocabulary-\(data.count)",
+                    category: candidate.category
+                )
+            }
+        }
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil && store.consistencyReport != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+        let readsBeforeComparison = await access.readCount()
+
+        store.setComparisonSource(.snapshotPath("alternate/tokenizer.json"))
+        try await waitUntil {
+            guard let vocabulary = store.comparison?.vocabulary else { return false }
+            if case .available = vocabulary { return true }
+            return false
+        }
+
+        guard case let .available(left, right, diff) = store.comparison?.vocabulary else {
+            return XCTFail("Expected parsed comparison vocabulary")
+        }
+        XCTAssertEqual(left.entries.count, 25)
+        XCTAssertEqual(right.entries.count, 25)
+        XCTAssertEqual(diff.leftOnly, ["left-only"])
+        XCTAssertEqual(diff.rightOnly, ["right-only"])
+        XCTAssertEqual(diff.sharedCount, 24)
+        let readsAfterComparison = await access.readCount()
+        XCTAssertEqual(readsAfterComparison - readsBeforeComparison, 2)
+
+        store.tokenize("offline")
+        try await waitUntil { store.comparison?.right?.input == "offline" }
+        guard case .available = store.comparison?.vocabulary else {
+            return XCTFail("Expected vocabulary state to survive result updates")
+        }
+
+        store.setComparisonSource(nil)
+        XCTAssertNil(store.comparison)
+    }
+
+    func testComparisonWaitsForLoadingMainBundleBeforeBuildingVocabulary() async throws {
+        let fixture = try comparisonFixtureData()
+        let access = StoreTokenizerAccess(
+            data: fixture.data,
+            files: fixture.files,
+            delays: ["tokenizer.json": .milliseconds(250)]
+        )
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.snapshot != nil && store.selectedFile?.path == "tokenizer.json" }
+        store.perspective = .playground
+        XCTAssertEqual(store.tokenizerPhase, .loading)
+        store.setComparisonSource(.snapshotPath("alternate/tokenizer.json"))
+
+        try await waitUntil {
+            guard store.tokenizerPhase == .ready,
+                  let vocabulary = store.comparison?.vocabulary else { return false }
+            if case .available = vocabulary { return true }
+            return false
+        }
+        guard case let .available(left, right, diff) = store.comparison?.vocabulary else {
+            return XCTFail("Expected vocabulary after the main bundle finished loading")
+        }
+        XCTAssertEqual(left.entries.count, 23)
+        XCTAssertEqual(right.entries.count, 23)
+        XCTAssertEqual(diff.leftOnly, [])
+        XCTAssertEqual(diff.rightOnly, [])
+        XCTAssertEqual(diff.sharedCount, 23)
+    }
+
+    func testComparisonSkipsSentencePieceVocabularyWithoutParsingModelBytes() async throws {
+        var fixture = try comparisonFixtureData()
+        let model = Data("not-json-and-not-a-valid-sentencepiece-model".utf8)
+        fixture.data["sentencepiece/tokenizer.model"] = model
+        fixture.files.append(file(
+            "sentencepiece/tokenizer.model",
+            data: model,
+            category: .tokenizer
+        ))
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+        store.setComparisonSource(.snapshotPath("sentencepiece/tokenizer.model"))
+        try await waitUntil {
+            if case .failed = store.comparison?.phase { return true }
+            return false
+        }
+
+        guard case let .skipped(reason) = store.comparison?.vocabulary else {
+            return XCTFail("Expected SentencePiece vocabulary comparison to be skipped")
+        }
+        XCTAssertTrue(reason.contains("SentencePiece"))
+        XCTAssertEqual(store.tokenizerPhase, .ready)
+    }
+
     func testComparisonSummaryCoversEqualDifferencePrefixAndEmptySides() {
         let equal = TokenizerComparisonSummary(leftIDs: [1, 2], rightIDs: [1, 2])
         XCTAssertEqual(equal.countDelta, 0)
@@ -696,6 +846,16 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         fixture.files.append(file("bad/tokenizer.json", data: badTokenizer, category: .tokenizer))
         fixture.files.append(file("bad/tokenizer_config.json", data: config, category: .tokenizer))
         return fixture
+    }
+
+    private func addingVocabulary(_ additions: [String: Int], to data: Data) throws -> Data {
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var model = try XCTUnwrap(root["model"] as? [String: Any])
+        var vocabulary = try XCTUnwrap(model["vocab"] as? [String: Any])
+        vocabulary.merge(additions) { _, new in new }
+        model["vocab"] = vocabulary
+        root["model"] = model
+        return try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
     }
 
     private func file(
