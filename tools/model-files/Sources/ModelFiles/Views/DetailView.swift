@@ -750,6 +750,15 @@ private struct InspectionFactsView: View {
     }
 }
 
+func shouldBuildTokenizerVocabularyIndex(query: String, hasIndex: Bool) -> Bool {
+    !hasIndex && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
+private struct TokenizerVocabularyIndexTrigger: Hashable {
+    let generation: Int
+    let hasNonemptyQuery: Bool
+}
+
 private struct TokenizerJSONView: View {
     let data: Data
     let showsFields: Bool
@@ -757,6 +766,12 @@ private struct TokenizerJSONView: View {
     @State private var overview: TokenizerOverview?
     @State private var error: String?
     @State private var isInspecting = true
+    @State private var dataGeneration = 0
+    @State private var vocabularyQuery = ""
+    @State private var vocabularyIndex: TokenizerVocabularyIndex?
+    @State private var didAttemptVocabularyIndex = false
+    @State private var isIndexingVocabulary = false
+    @State private var vocabularyIndexError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -775,8 +790,13 @@ private struct TokenizerJSONView: View {
                 }
             }
         }
-        .task(id: data.count) {
+        .task(id: data) {
+            dataGeneration += 1
             isInspecting = true
+            vocabularyIndex = nil
+            didAttemptVocabularyIndex = false
+            isIndexingVocabulary = false
+            vocabularyIndexError = nil
             let inspection = await Task.detached(priority: .userInitiated) {
                 TokenizerInspector.inspect(data)
             }.value
@@ -784,6 +804,9 @@ private struct TokenizerJSONView: View {
             overview = inspection.overview
             error = inspection.error
             isInspecting = false
+        }
+        .task(id: vocabularyIndexTrigger) {
+            await buildVocabularyIndexIfNeeded()
         }
     }
 
@@ -800,6 +823,9 @@ private struct TokenizerJSONView: View {
                 ("合并规则", overview.mergeCount.map { $0.formatted() }),
                 ("新增 Token", overview.addedTokenCount.map { $0.formatted() }),
             ]))
+            if overview.addedTokens.contains(where: \.special) {
+                specialAddedTokens(overview.addedTokens)
+            }
             if let analysis = overview.vocabularyAnalysis {
                 TokenizerVocabularyAnalysisView(
                     analysis: analysis,
@@ -812,10 +838,102 @@ private struct TokenizerJSONView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+            vocabularySearch
             Text("需要逐项查看时，优先使用仓库中的 vocab.json 和 merges.txt；它们有分页阅读器。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private func specialAddedTokens(_ addedTokens: [TokenizerAddedTokenInfo]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Special added_tokens")
+                .font(.subheadline.weight(.semibold))
+            ForEach(Array(addedTokens.filter(\.special).enumerated()), id: \.offset) { _, token in
+                HStack(spacing: 8) {
+                    Text(token.content.isEmpty ? "（空 Token）" : token.content)
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    if let id = token.id {
+                        Text(id.formatted())
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var vocabularySearch: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ReaderTitle("词表搜索", subtitle: "首次输入非空查询时按需构建索引；最多显示 1,000 条匹配。")
+            TextField("搜索 token 或 ID", text: $vocabularyQuery)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 380)
+            if isIndexingVocabulary {
+                ProgressView("正在准备词表索引…")
+                    .controlSize(.small)
+            } else if let vocabularyIndexError {
+                Text(vocabularyIndexError)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else if vocabularyQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("输入 token 或十进制 ID 开始搜索。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else if let vocabularyIndex {
+                let matches = vocabularyIndex.matches(query: vocabularyQuery)
+                Text("匹配 \(matches.count.formatted()) 条")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(matches, id: \.tokenID) { entry in
+                    HStack(spacing: 10) {
+                        Text(entry.token.isEmpty ? "（空 Token）" : entry.token)
+                            .font(.system(.caption, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Text(entry.tokenID.formatted())
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    .textSelection(.enabled)
+                    Divider()
+                }
+            }
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @MainActor
+    private func buildVocabularyIndexIfNeeded() async {
+        guard shouldBuildTokenizerVocabularyIndex(
+            query: vocabularyQuery,
+            hasIndex: didAttemptVocabularyIndex
+        ) else { return }
+        didAttemptVocabularyIndex = true
+        isIndexingVocabulary = true
+        vocabularyIndexError = nil
+        let generation = dataGeneration
+        let built = await Task.detached(priority: .userInitiated) {
+            TokenizerInspector.vocabularyIndex(from: data)
+        }.value
+        guard generation == dataGeneration else { return }
+        vocabularyIndex = built
+        vocabularyIndexError = built == nil ? "当前 vocab 结构无法搜索。" : nil
+        isIndexingVocabulary = false
+    }
+
+    private var vocabularyIndexTrigger: TokenizerVocabularyIndexTrigger {
+        TokenizerVocabularyIndexTrigger(
+            generation: dataGeneration,
+            hasNonemptyQuery: !vocabularyQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        )
     }
 
     private func fields(_ overview: TokenizerOverview) -> some View {

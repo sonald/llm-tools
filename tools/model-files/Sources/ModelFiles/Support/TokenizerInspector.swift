@@ -36,6 +36,20 @@ struct TokenizerVocabularyEntry: Sendable, Equatable {
     let scalarLength: Int
 }
 
+struct TokenizerVocabularyIndex: Sendable, Equatable {
+    let entries: [TokenizerVocabularyEntry]
+
+    func matches(query: String, limit: Int = 1_000) -> [TokenizerVocabularyEntry] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let limit = min(max(limit, 0), 1_000)
+        guard !query.isEmpty, limit > 0 else { return [] }
+        return Array(entries.lazy.filter {
+            $0.token.localizedCaseInsensitiveContains(query)
+                || String($0.tokenID).contains(query)
+        }.prefix(limit))
+    }
+}
+
 struct TokenizerVocabularyAnalysis: Sendable, Equatable {
     let tokenCount: Int
     let averageScalarLength: Double
@@ -54,6 +68,22 @@ struct TokenizerInspection: Sendable {
 }
 
 enum TokenizerInspector {
+    static func vocabularyIndex(from data: Data) -> TokenizerVocabularyIndex? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let model = root["model"] as? [String: Any],
+              let entries = vocabularyEntries(from: model["vocab"]) else { return nil }
+        let sorted = entries.sorted {
+            $0.id == $1.id ? $0.token < $1.token : $0.id < $1.id
+        }
+        return TokenizerVocabularyIndex(entries: sorted.map {
+            TokenizerVocabularyEntry(
+                tokenID: $0.id,
+                token: $0.token,
+                scalarLength: $0.token.unicodeScalars.count
+            )
+        })
+    }
+
     static func inspect(_ data: Data) -> TokenizerInspection {
         do {
             guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
