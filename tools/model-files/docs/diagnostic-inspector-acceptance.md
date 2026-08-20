@@ -1,10 +1,10 @@
 # ModelFiles 诊断工作台验收记录
 
-当前结论：**Phase 1 PASS；Phase 2 / Phase 3 尚未开始**
+当前结论：**Phase 1 / Phase 2 PASS；Phase 3 尚未开始**
 
 日期：2026-08-20
 
-验收基线：`main` / `ea916c0fab305081f8715e58214fc825729af674`
+验收基线：`main` / `6b3ca5f5c8331c289579e16b678a1042bf273d33`
 
 环境：macOS 26.6.2（25G83），Apple Swift 6.3.3，arm64。
 
@@ -132,8 +132,92 @@ ID 往返抽查：把上述 encode 结果前 9 个 ID
 
 ## 2. Phase 2 — 仓库一致性
 
-**PENDING：等待 Checkpoint A 人工确认后开始。**
+### 2.1 实现契约
+
+| 行为 | 结果 | 证据 |
+|---|---|---|
+| 8 条一致性规则是纯分析函数 | PASS | `ConsistencyAnalyzerTests`：7/7；覆盖 config、generation、tokenizer、chat template 与 GGUF 的正反例 |
+| coverage 区分 checked / missing / skipped / failed | PASS | 缺失、单材料损坏与 GGUF 未打开均有独立断言；单项失败不阻断报告 |
+| Store 后台生成报告且 latest-only | PASS | `ModelFilesStoreConsistencyTests`：7/7；切换仓库后旧任务不能发布，打开新仓库立即清空旧报告 |
+| 小 JSON 与 tokenizer inspect 复用现有缓存 | PASS | 同一次仓库会话不重复读取；一致性路径不构造 runtime、不调用 `vocabularyIndex` |
+| 全文件 header badge 与 Config 顶部报告 | PASS | 真实 App 显示“2 项警告”“材料不足”及 popover；Config 概览复用同一报告视图 |
+| GGUF 只在用户打开后加入报告 | PASS | 自动化测试锁定初始 0 reads、coverage skipped；用户选择后 coverage checked，刷新不增加 GGUF read |
+| processor / preprocessor / adapter 配置归类 | PASS | `FileClassifierTests`：20/20；三类文件归 `.configuration`，未新增 category |
+
+### 2.2 自动化测试与构建
+
+标准离线测试：**134 tests，2 个明确的非 CI 环境项 skipped，0 failures，exit 0**。
+
+```bash
+cd tools/model-files
+CLANG_MODULE_CACHE_PATH="$PWD/.build/module-cache" \
+SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache" \
+swift test --disable-sandbox
+```
+
+跳过项仍仅为 `MODELFILES_REAL_TOKENIZER_DIR` 与
+`MODELFILES_REAL_SENTENCEPIECE_DIR` 未设置；Phase 2 新增测试无 skip。
+
+Bundle 验证：**PASS，exit 0**。
+
+```text
+tools/model-files/dist/ModelFiles.app/Contents/Info.plist: OK
+Verified tools/model-files/dist/ModelFiles.app
+git diff --check: PASS
+```
+
+### 2.3 真实 App 证据
+
+通过当前 `dist/ModelFiles.app` 和 macOS Accessibility 树验收；结束后恢复
+`baseten/GLM-5.2-Vision-NVFP4`，仅终止本次启动的 dist 进程并删除临时 fixture。
+
+#### Qwen3 / ModelScope
+
+仓库：`Qwen/Qwen3-4B`，ModelScope `master`。
+
+- header badge 显示“2 项警告”，Config 概览与 badge popover 内容一致。
+- identity：`Qwen3ForCausalLM`、36 layers、hidden size 2,560、config vocab 151,936、context 40,960。
+- findings：config vocab 151,936 与 tokenizer vocab 151,643 不一致；generation EOS
+  `[151645, 151643]` 与 tokenizer EOS 151,645 不一致；context 40,960 与
+  tokenizer `model_max_length` 131,072 的差异以信息项呈现。
+- coverage：config、generation_config、tokenizer_config、tokenizer、chat template 已检查；
+  adapter_config、processor_config、GGUF 缺失。
+
+#### 材料不足与 GGUF 按需检查
+
+| Fixture | 实际结果 |
+|---|---|
+| 仅 `config.json`、无 tokenizer | header 显示“材料不足”；tokenizer 与 tokenizer_config coverage 为 missing；界面未崩溃 |
+| 无 `config.json`、仅普通文本 | 全文件 header 仍显示“材料不足”；popover 明确列出缺 config 与其他 missing coverage |
+| 最小合法 GGUF + config + tokenizer | 初始 GGUF coverage 为“跳过：未在当前会话打开”；选择 `model.gguf` 后变为“已检查”并显示 2 项警告 |
+
+GGUF 两项警告的实际值：config context 4,096 对 GGUF context 2,048；
+tokenizer vocab 1 对 `token_embd.weight[0]` 2。详情页同时显示“只读取 metadata 前缀”。
+
+恢复的 GLM 仓库中，`preprocessor_config.json` 出现在配置分组；其一致性 coverage
+为 processor_config 已检查，证明分类结果进入真实入口。
+
+### 2.4 Never / 范围抽查
+
+| 边界 | 结果 | 证据 |
+|---|---|---|
+| 不自动读取 GGUF | PASS | Store 测试初始 read count 为 0；真实 App 未选择时 coverage 明确为 skipped |
+| 一致性不建全量词表索引 | PASS | Analyzer API 只接收 overview/material；Store consistency 测试未触发 `vocabularyIndex` |
+| 一致性不构造 tokenizer runtime | PASS | Store 复用 `inspect()` 摘要；consistency 调用链不进入 `loadTokenizerRuntime` |
+| 不因单材料失败丢整份报告 | PASS | malformed JSON / invalid jinja 仅把对应 coverage 标为 failed |
+| 不增加分类实体 | PASS | T12 复用既有 `.configuration`，未新增 `FileCategory` |
+
+### 2.5 Phase 2 原子提交
+
+| 任务 | Commit |
+|---|---|
+| T9 一致性分析纯函数 | `644bf66` |
+| T10 Store 后台一致性报告 | `00ed1cc` |
+| T11 badge、popover、Config 报告与 GGUF 刷新 | `1c5e095` |
+| T12 processor / adapter 配置分类 | `6b3ca5f` |
+
+Checkpoint B：**PASS**。
 
 ## 3. Phase 3 — 对照
 
-**PENDING：等待 Checkpoint B 人工确认后开始。**
+**PENDING：Checkpoint B 已通过，等待 T13–T16。**
