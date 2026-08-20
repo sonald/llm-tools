@@ -1,10 +1,10 @@
 # ModelFiles 诊断工作台验收记录
 
-当前结论：**Phase 1 / Phase 2 PASS；Phase 3 尚未开始**
+当前结论：**Phase 1 / Phase 2 / Phase 3 PASS；实施计划完成**
 
 日期：2026-08-20
 
-验收基线：`main` / `6b3ca5f5c8331c289579e16b678a1042bf273d33`
+验收基线：`main` / `46b43e9404571a25ae853dc680fc91371267024a`
 
 环境：macOS 26.6.2（25G83），Apple Swift 6.3.3，arm64。
 
@@ -220,4 +220,96 @@ Checkpoint B：**PASS**。
 
 ## 3. Phase 3 — 对照
 
-**PENDING：Checkpoint B 已通过，等待 T13–T16。**
+### 3.1 实现契约
+
+| 行为 | 结果 | 证据 |
+|---|---|---|
+| 第二 runtime 会话与主状态隔离 | PASS | Store tests 锁定主 `snapshot`、`selectedPath`、result 与 consistency report 不变；右失败不覆盖左侧 |
+| comparison latest-only 与释放 | PASS | slow → fast 等待旧任务完成后仍保留 fast identity；关闭、切主文件与 reset 均令 session/runtime/index 释放 |
+| 同快照对照 UI 与差异摘要 | PASS | 自身对照 delta 0 / firstDifference nil；前缀与空侧边界有纯测试；左右选择状态独立 |
+| Chat 两侧独立模板 | PASS | 右侧使用自己的 catalog 渲染同一 messages/tools/variables；来源切换只重算右侧；缺模板切 Raw 可原地恢复 |
+| 词表差集按 piece 而非 ID | PASS | 同 piece 不同 ID 计共有；only 去重稳定排序；搜索先过滤完整集合再截断 1,000 |
+| 词表索引只活在 comparison session | PASS | 两份 index、diff 或 skipped reason 只挂 session；关闭后 `comparison == nil`，Store 无额外 index 字段 |
+| SentencePiece 明确跳过差集 | PASS | `.model` bytes 不进入 JSON parser，vocabulary 状态显示 skipped，编码/runtime 错误独立 |
+| 跨仓库 tokenizer bundle | PASS | `loadRepository` → root tokenizer / sorted fallback → 既有 bundle loader；不写主历史与错误通道 |
+
+### 3.2 自动化测试与构建
+
+标准离线测试：**147 tests，2 个明确的非 CI 环境项 skipped，0 failures，exit 0**。
+
+```bash
+cd tools/model-files
+CLANG_MODULE_CACHE_PATH="$PWD/.build/module-cache" \
+SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache" \
+swift test --disable-sandbox
+```
+
+跳过项仍仅为 `MODELFILES_REAL_TOKENIZER_DIR` 与
+`MODELFILES_REAL_SENTENCEPIECE_DIR` 未设置；Phase 3 新增测试无 skip。
+
+Bundle 验证：**PASS，exit 0**。
+
+```text
+tools/model-files/dist/ModelFiles.app/Contents/Info.plist: OK
+Verified tools/model-files/dist/ModelFiles.app
+git diff --check: PASS
+```
+
+### 3.3 真实 App 证据
+
+真实 UI 使用最终 `dist/ModelFiles.app` 的同一可执行文件验收。因机器上同时存在
+`/Applications/ModelFiles.app` 且 bundle ID 相同，为避免 Computer Use 命中旧窗口，
+验收时复制当前 dist 到临时目录，仅给临时 `Info.plist` 改唯一 bundle ID / 名称；
+可执行文件与资源未改。临时 App、进程与目录均在验收后删除。
+
+#### 同快照 tokenizer 对照
+
+主目录：仓库内 `Fixtures/Tokenizers`，包含 BPE、ByteFallback、Unigram、WordPiece
+四个真实 playground 入口。
+
+| 检查 | 实际结果 |
+|---|---|
+| 对照入口 | 940 px 窗口中 Menu 可见；列出四个入口并允许选择自身 |
+| BPE 对照自身（Chat） | 主 82 / 对照 82；差值 0；ID 序列相同；第一处不同为无；模板开销均为 1 |
+| 左右选择隔离 | 左表 Token 0 与右表 Token 0 可分别、同时显示 `(selected)`，互不改写 |
+| BPE 对 WordPiece（Raw） | 主 74 / 对照 15；差值 -59；第一处不同 index 0，ID 3 / 0 |
+| 窄宽布局 | 两个 token 表上下堆叠；摘要、两表与词表区均可见、可滚动 |
+| Chat 缺模板恢复 | WordPiece Chat 只在右侧显示缺模板；切 Raw 后同一右 runtime 原地恢复 74 / 15 |
+| 词表差集 | 仅主 23、仅对照 8、共有 0；切“仅对照”显示 8 条；搜索 `UNK` 得到 `[UNK]` 1 条 |
+
+#### 跨仓库路径与模型 ID
+
+主仓库固定为本地 BPE 目录；整个过程中主侧栏仍只有
+`tokenizer_config.json`、`tokenizer.json`、`chat_template.jinja`，主工具栏输入不变。
+
+- 第二仓库输入多入口父目录时，sorted fallback 选择
+  `bpe/tokenizer.json`；右标题显示 canonical 根路径与 entry path；自身结果 82 / 82，
+  词表共有 23。关闭后只剩主结果。
+- 第二仓库输入模型 ID `Qwen/Qwen3-4B` 时，右标题为
+  `Qwen/Qwen3-4B · tokenizer.json`；Chat 为主 82 / 右 30、差值 -52、首差 index 0，
+  模板开销主 1 / 右 13。右侧保留 Qwen Exact roles 与 special token 标记。
+- BPE 与 Qwen 的词表差集为仅主 3、仅右 151,623、共有 20；关闭对照后主本地仓库仍未变化。
+
+### 3.4 Never / 范围抽查
+
+| 边界 | 结果 | 证据 |
+|---|---|---|
+| 不读取权重 | PASS | comparison target 只接受 tokenizer playground entry；跨仓库只调用 tokenizer bundle loader，真实验收未选择权重 |
+| 不自动读取 GGUF | PASS | comparison 源码无 GGUF 路径；既有初始 0-read / skipped 测试在 147-test 全量中继续通过 |
+| 不静默猜 tokenizer class | PASS | `Sources` / `Tests` 无 `strict:false`；主/右 runtime 均走严格构造，覆盖仍是显式会话动作 |
+| 一致性不建全量词表索引 | PASS | `ConsistencyAnalyzer` 无 `vocabularyIndex`；Store 中该调用仅位于 comparison task |
+| `inspect()` 不持有全量 vocab | PASS | `TokenizerOverview` / `TokenizerVocabularyAnalysis` 结构未增加 entries/index，最长 50 合同保持 |
+| 同时最多两个 runtime | PASS | Store 只有主 `tokenizerRuntime` 与右 `comparisonRuntime`；换目标/关闭均取消并置空右侧 |
+| 第二仓库不写历史 | PASS | 成功、失败与 latest-only Store 测试锁定主 input/snapshot/path/history/report/result/error 不变 |
+| 不新增依赖或 provider | PASS | `3989df7..46b43e9` 未修改 `Package.swift` / `Package.resolved`；继续使用具体 Store + 既有 service/loader |
+
+### 3.5 Phase 3 原子提交
+
+| 任务 | Commit |
+|---|---|
+| T13 第二 runtime 会话 | `e3e2001` |
+| T14 对照 UI、差异摘要与独立 Chat 模板 | `0446d3a` |
+| T15 词表差集与 session 索引生命周期 | `d099951` |
+| T16 跨仓库 tokenizer bundle | `46b43e9` |
+
+Checkpoint C：**PASS**。诊断工作台实施计划 T0–T16 全部完成。
