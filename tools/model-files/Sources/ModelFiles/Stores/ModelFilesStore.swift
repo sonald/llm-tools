@@ -25,10 +25,12 @@ final class ModelFilesStore: ObservableObject {
     @Published private(set) var tokenizerChatCatalog: ChatTemplateCatalog?
     @Published private(set) var tokenizerConfigData: Data?
     @Published private(set) var tokenizerClassOverride: String?
+    @Published private(set) var consistencyReport: RepositoryConsistencyReport?
 
     private let service: RepositoryService
     private var contents: [String: InspectionDocument] = [:]
     private var repositoryTask: Task<Void, Never>?
+    private var consistencyTask: Task<Void, Never>?
     private var fileTask: Task<Void, Never>?
     private var tokenizerLoadTask: Task<Void, Never>?
     private var tokenizerEncodeTask: Task<Void, Never>?
@@ -37,6 +39,7 @@ final class ModelFilesStore: ObservableObject {
     private var tokenizerIdentity: TokenizerSessionIdentity?
     private var tokenizerLoadGeneration = 0
     private var tokenizerEncodeGeneration = 0
+    private var consistencyGeneration = 0
     private var pendingTokenizerRequest: TokenizerEncodeRequest?
 
     static let maximumTokenizerInputByteCount = 64 * 1_024
@@ -95,10 +98,14 @@ final class ModelFilesStore: ObservableObject {
 
     func openRepository() {
         repositoryTask?.cancel()
+        consistencyTask?.cancel()
+        consistencyGeneration += 1
         fileTask?.cancel()
+        fileTask = nil
         isLoadingRepository = true
         errorMessage = nil
         snapshot = nil
+        consistencyReport = nil
         selectedPath = nil
         loadingPath = nil
         contents.removeAll()
@@ -123,6 +130,11 @@ final class ModelFilesStore: ObservableObject {
                 self.selectedPath = preferred?.path
                 self.perspective = preferred?.isSentencePieceModel == true ? .playground : .overview
                 self.loadSelectedFile()
+                let initialFileTask = self.fileTask
+                guard self.snapshot?.location == snapshot.location,
+                      self.snapshot?.version == snapshot.version,
+                      self.snapshot?.files == snapshot.files else { return }
+                self.startConsistencyTask(for: snapshot, waitingFor: initialFileTask)
             } catch is CancellationError {
                 return
             } catch {
@@ -432,6 +444,234 @@ final class ModelFilesStore: ObservableObject {
         tokenizerChatCatalog = nil
         tokenizerConfigData = nil
         tokenizerPhase = .idle
+    }
+
+    private func startConsistencyTask(
+        for snapshot: RepositorySnapshot,
+        waitingFor initialFileTask: Task<Void, Never>? = nil
+    ) {
+        consistencyTask?.cancel()
+        consistencyGeneration += 1
+        let generation = consistencyGeneration
+        consistencyTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                if let initialFileTask {
+                    await initialFileTask.value
+                    try Task.checkCancellation()
+                }
+                let report = try await self.buildConsistencyReport(for: snapshot)
+                try Task.checkCancellation()
+                guard generation == self.consistencyGeneration,
+                      self.snapshot?.location == snapshot.location,
+                      self.snapshot?.version == snapshot.version,
+                      self.snapshot?.files == snapshot.files else { return }
+                self.consistencyReport = report
+            } catch is CancellationError {
+                return
+            } catch {
+                guard generation == self.consistencyGeneration,
+                      self.snapshot?.location == snapshot.location,
+                      self.snapshot?.version == snapshot.version,
+                      self.snapshot?.files == snapshot.files else { return }
+                self.consistencyReport = nil
+            }
+        }
+    }
+
+    private func buildConsistencyReport(
+        for snapshot: RepositorySnapshot
+    ) async throws -> RepositoryConsistencyReport {
+        let configFile = consistencyFile(named: ["config.json", "configuration.json"], in: snapshot)
+        let generationFile = consistencyFile(
+            named: ["generation_config.json"],
+            in: snapshot,
+            relativeTo: configFile
+        )
+        let tokenizerConfigFile = consistencyFile(
+            named: ["tokenizer_config.json"],
+            in: snapshot,
+            relativeTo: configFile
+        )
+        let tokenizerFile = consistencyFile(
+            named: ["tokenizer.json"],
+            in: snapshot,
+            relativeTo: tokenizerConfigFile ?? configFile
+        )
+        let adapterFile = consistencyFile(named: ["adapter_config.json"], in: snapshot)
+        let processorFile = consistencyFile(
+            named: ["preprocessor_config.json", "processor_config.json"],
+            in: snapshot
+        )
+
+        let config = try await readConsistencyData(configFile, from: snapshot)
+        let generationConfig = try await readConsistencyData(generationFile, from: snapshot)
+        let tokenizerConfig = try await readConsistencyData(tokenizerConfigFile, from: snapshot)
+        let adapterConfig = try await readConsistencyData(adapterFile, from: snapshot)
+        let processorConfig = try await readConsistencyData(processorFile, from: snapshot)
+
+        let tokenizer: ConsistencyMaterial<TokenizerOverview>
+        switch try await readConsistencyData(tokenizerFile, from: snapshot) {
+        case .missing:
+            tokenizer = .missing
+        case let .failed(message):
+            tokenizer = .failed(message)
+        case let .skipped(reason):
+            tokenizer = .skipped(reason)
+        case let .available(data):
+            let inspection = await Task.detached(priority: .userInitiated) {
+                TokenizerInspector.inspect(data)
+            }.value
+            try Task.checkCancellation()
+            if let overview = inspection.overview, inspection.error == nil {
+                tokenizer = .available(overview)
+            } else {
+                tokenizer = .failed(inspection.error ?? "tokenizer.json 概览解析失败。")
+            }
+        }
+
+        let jinjaFile = consistencyFile(
+            named: ["chat_template.jinja"],
+            in: snapshot,
+            relativeTo: tokenizerConfigFile ?? tokenizerFile ?? configFile
+        )
+        let chatTemplates = try await chatTemplateMaterial(
+            tokenizerConfig: tokenizerConfig,
+            jinjaFile: jinjaFile,
+            snapshot: snapshot
+        )
+        let gguf = consistencyGGUF(in: snapshot)
+        return ConsistencyAnalyzer.analyze(materials: RepositoryConsistencyMaterials(
+            config: config,
+            generationConfig: generationConfig,
+            tokenizerConfig: tokenizerConfig,
+            tokenizer: tokenizer,
+            adapterConfig: adapterConfig,
+            processorConfig: processorConfig,
+            chatTemplates: chatTemplates,
+            gguf: gguf
+        ))
+    }
+
+    private func readConsistencyData(
+        _ file: RepositoryFile?,
+        from snapshot: RepositorySnapshot
+    ) async throws -> ConsistencyMaterial<Data> {
+        guard let file else { return .missing }
+        if let existing = contents[file.path] {
+            switch existing {
+            case let .generic(data): return .available(data)
+            case let .jinja(document): return .available(Data(document.source.utf8))
+            default: return .failed("\(file.path) 不是可读取的 JSON 文档。")
+            }
+        }
+        do {
+            let document = try await service.inspectFile(file, from: snapshot)
+            contents[file.path] = document
+            switch document {
+            case let .generic(data): return .available(data)
+            case let .jinja(document): return .available(Data(document.source.utf8))
+            default: return .failed("\(file.path) 不是可读取的 JSON 文档。")
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    private func chatTemplateMaterial(
+        tokenizerConfig: ConsistencyMaterial<Data>,
+        jinjaFile: RepositoryFile?,
+        snapshot: RepositorySnapshot
+    ) async throws -> ConsistencyMaterial<ChatTemplateCatalog> {
+        let jinja: ConsistencyMaterial<Data> = try await readConsistencyData(jinjaFile, from: snapshot)
+        switch tokenizerConfig {
+        case let .failed(message):
+            if case let .available(data) = jinja {
+                do {
+                    return .available(try ChatTemplateCatalog.parse(
+                        configData: nil,
+                        chatTemplateData: data
+                    ))
+                } catch {
+                    return .failed(error.localizedDescription)
+                }
+            }
+            return .failed(message)
+        case let .skipped(reason): return .skipped(reason)
+        case .missing:
+            switch jinja {
+            case .missing: return .available(ChatTemplateCatalog(entries: []))
+            case let .failed(message): return .failed(message)
+            case let .skipped(reason): return .skipped(reason)
+            case let .available(data):
+                do { return .available(try ChatTemplateCatalog.parse(configData: nil, chatTemplateData: data)) }
+                catch { return .failed(error.localizedDescription) }
+            }
+        case let .available(configData):
+            switch jinja {
+            case .missing:
+                do {
+                    return .available(try ChatTemplateCatalog.parse(
+                        configData: configData,
+                        chatTemplateData: nil
+                    ))
+                } catch {
+                    return .failed(error.localizedDescription)
+                }
+            case let .available(jinjaData):
+                do {
+                    return .available(try ChatTemplateCatalog.parse(
+                        configData: configData,
+                        chatTemplateData: jinjaData
+                    ))
+                } catch {
+                    return .failed(error.localizedDescription)
+                }
+            case let .failed(message):
+                return .failed(message)
+            case let .skipped(reason):
+                return .skipped(reason)
+            }
+        }
+    }
+
+    private func consistencyGGUF(in snapshot: RepositorySnapshot) -> ConsistencyMaterial<GGUFOverview> {
+        let files = snapshot.files.filter { $0.structuredInspectionFormat == .gguf }
+        guard !files.isEmpty else { return .missing }
+        for file in files.sorted(by: { $0.path < $1.path }) {
+            if case let .gguf(overview, _) = contents[file.path] { return .available(overview) }
+        }
+        return .skipped("未在当前会话打开")
+    }
+
+    private func consistencyFile(
+        named names: [String],
+        in snapshot: RepositorySnapshot,
+        relativeTo relativeFile: RepositoryFile? = nil
+    ) -> RepositoryFile? {
+        let names = Set(names.map { $0.lowercased() })
+        let relativeDirectory = relativeFile.map {
+            ($0.path as NSString).deletingLastPathComponent
+        }
+        return snapshot.files
+            .filter { !$0.isBlocked && names.contains($0.name.lowercased()) }
+            .sorted {
+                let left = $0
+                let right = $1
+                let leftRoot = !left.path.contains("/")
+                let rightRoot = !right.path.contains("/")
+                if leftRoot != rightRoot { return leftRoot }
+                if let relativeDirectory {
+                    let leftSame = (left.path as NSString).deletingLastPathComponent == relativeDirectory
+                    let rightSame = (right.path as NSString).deletingLastPathComponent == relativeDirectory
+                    if leftSame != rightSame { return leftSame }
+                }
+                if left.path.count != right.path.count { return left.path.count < right.path.count }
+                return left.path < right.path
+            }
+            .first
     }
 
     func loadSelectedFile() {
