@@ -24,6 +24,7 @@ final class ModelFilesStore: ObservableObject {
     @Published private(set) var tokenizationResult: TokenizationResult?
     @Published private(set) var tokenizerChatCatalog: ChatTemplateCatalog?
     @Published private(set) var tokenizerConfigData: Data?
+    @Published private(set) var tokenizerClassOverride: String?
 
     private let service: RepositoryService
     private var contents: [String: InspectionDocument] = [:]
@@ -32,6 +33,7 @@ final class ModelFilesStore: ObservableObject {
     private var tokenizerLoadTask: Task<Void, Never>?
     private var tokenizerEncodeTask: Task<Void, Never>?
     private var tokenizerRuntime: TokenizerRuntime?
+    private var tokenizerBundle: TokenizerBundle?
     private var tokenizerIdentity: TokenizerSessionIdentity?
     private var tokenizerLoadGeneration = 0
     private var tokenizerEncodeGeneration = 0
@@ -281,9 +283,29 @@ final class ModelFilesStore: ObservableObject {
     }
 
     func retryTokenizerPlayground() {
+        tokenizerLoadTask?.cancel()
         tokenizerRuntime = nil
+        tokenizerBundle = nil
         tokenizerIdentity = nil
         prepareTokenizerPlaygroundIfNeeded()
+    }
+
+    func setTokenizerClassOverride(_ name: String?) {
+        let value = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        tokenizerClassOverride = value?.isEmpty == false ? value : nil
+        guard let bundle = tokenizerBundle,
+              let snapshot,
+              let file = selectedFile,
+              tokenizerChatCatalog != nil else {
+            retryTokenizerPlayground()
+            return
+        }
+        tokenizerLoadTask?.cancel()
+        startTokenizerRuntimeConstruction(
+            bundle: bundle,
+            identity: TokenizerSessionIdentity(snapshot: snapshot, file: file),
+            file: file
+        )
     }
 
     func selectChatTemplate(id: String?) {
@@ -307,8 +329,10 @@ final class ModelFilesStore: ObservableObject {
               let file = selectedFile,
               file.isTokenizerPlaygroundEntryPoint else { return }
         let identity = TokenizerSessionIdentity(snapshot: snapshot, file: file)
-        if tokenizerRuntime != nil, tokenizerIdentity == identity {
-            if let pendingTokenizerRequest { tokenize(pendingTokenizerRequest) }
+        if tokenizerIdentity == identity {
+            if tokenizerRuntime != nil, let pendingTokenizerRequest {
+                tokenize(pendingTokenizerRequest)
+            }
             return
         }
 
@@ -317,6 +341,7 @@ final class ModelFilesStore: ObservableObject {
         tokenizerLoadGeneration += 1
         let generation = tokenizerLoadGeneration
         tokenizerRuntime = nil
+        tokenizerBundle = nil
         tokenizerIdentity = nil
         tokenizationResult = nil
         tokenizerChatCatalog = nil
@@ -328,19 +353,53 @@ final class ModelFilesStore: ObservableObject {
             do {
                 let bundle = try await service.loadTokenizerBundle(for: file, from: snapshot)
                 try Task.checkCancellation()
-                let runtime = try await Task.detached(priority: .userInitiated) {
-                    try TokenizerRuntime(bundle: bundle)
-                }.value
-                try Task.checkCancellation()
                 guard generation == self.tokenizerLoadGeneration,
                       self.selectedPath == file.path else { return }
-                self.tokenizerRuntime = runtime
+                self.tokenizerBundle = bundle
                 self.tokenizerIdentity = identity
                 self.tokenizerConfigData = bundle.tokenizerConfigData
                 self.tokenizerChatCatalog = try ChatTemplateCatalog.parse(
                     configData: bundle.tokenizerConfigData,
                     chatTemplateData: bundle.chatTemplateData
                 )
+                self.startTokenizerRuntimeConstruction(bundle: bundle, identity: identity, file: file)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard generation == self.tokenizerLoadGeneration else { return }
+                self.tokenizerRuntime = nil
+                self.tokenizerPhase = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func startTokenizerRuntimeConstruction(
+        bundle: TokenizerBundle,
+        identity: TokenizerSessionIdentity,
+        file: RepositoryFile
+    ) {
+        tokenizerEncodeTask?.cancel()
+        tokenizerLoadGeneration += 1
+        let generation = tokenizerLoadGeneration
+        let tokenizerClassOverride = tokenizerClassOverride
+        tokenizerRuntime = nil
+        tokenizationResult = nil
+        tokenizerPhase = .loading
+
+        tokenizerLoadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let runtime = try await Task.detached(priority: .userInitiated) {
+                    try TokenizerRuntime(
+                        bundle: bundle,
+                        tokenizerClassOverride: tokenizerClassOverride
+                    )
+                }.value
+                try Task.checkCancellation()
+                guard generation == self.tokenizerLoadGeneration,
+                      self.selectedPath == file.path else { return }
+                self.tokenizerRuntime = runtime
+                self.tokenizerIdentity = identity
                 self.tokenizerPhase = .ready
                 if let request = self.pendingTokenizerRequest {
                     self.tokenize(request)
@@ -350,8 +409,11 @@ final class ModelFilesStore: ObservableObject {
             } catch {
                 guard generation == self.tokenizerLoadGeneration else { return }
                 self.tokenizerRuntime = nil
-                self.tokenizerIdentity = nil
-                self.tokenizerPhase = .failed(error.localizedDescription)
+                if case let TokenizerRuntime.RuntimeError.recoverableTokenizerClass(message) = error {
+                    self.tokenizerPhase = .recoverableTokenizerClassFailure(message)
+                } else {
+                    self.tokenizerPhase = .failed(error.localizedDescription)
+                }
             }
         }
     }
@@ -362,7 +424,9 @@ final class ModelFilesStore: ObservableObject {
         tokenizerLoadGeneration += 1
         tokenizerEncodeGeneration += 1
         tokenizerRuntime = nil
+        tokenizerBundle = nil
         tokenizerIdentity = nil
+        tokenizerClassOverride = nil
         pendingTokenizerRequest = nil
         tokenizationResult = nil
         tokenizerChatCatalog = nil

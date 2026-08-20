@@ -8,6 +8,7 @@ actor TokenizerRuntime {
         case invalidTokenizerData(String)
         case invalidSentencePieceModel(String)
         case invalidTokenizerConfig(String)
+        case recoverableTokenizerClass(String)
         case unsupported(String)
 
         var errorDescription: String? {
@@ -18,6 +19,8 @@ actor TokenizerRuntime {
                 "SentencePiece model 无效：\(message)"
             case let .invalidTokenizerConfig(message):
                 "tokenizer_config.json 无效：\(message)"
+            case let .recoverableTokenizerClass(message):
+                "tokenizer_class 需要显式指定：\(message)"
             case let .unsupported(message):
                 "当前运行时无法加载该 tokenizer：\(message)"
             }
@@ -33,7 +36,15 @@ actor TokenizerRuntime {
     private let specialTokenIndex: SpecialTokenIndex
     private(set) var specialTokenDecodeFallbackCount = 0
 
-    init(bundle: TokenizerBundle) throws {
+    // Source: https://github.com/huggingface/swift-transformers/blob/2fa33e1f5e7131a7fc64c28e6d161dcec0d24820/Sources/Tokenizers/Tokenizer.swift#L158-L194
+    nonisolated static let commonTokenizerClassOverrides = [
+        "PreTrainedTokenizer",
+        "PreTrainedTokenizerFast",
+        "GPT2Tokenizer",
+        "LlamaTokenizer",
+    ]
+
+    init(bundle: TokenizerBundle, tokenizerClassOverride: String? = nil) throws {
         let loadedBackend: Backend
         if bundle.file.isSentencePieceModel {
             let modelURL = FileManager.default.temporaryDirectory
@@ -57,9 +68,15 @@ actor TokenizerRuntime {
 
             let tokenizerConfig: Config
             do {
-                tokenizerConfig = try bundle.tokenizerConfigData.map {
+                let configData = try Self.configData(
+                    bundle.tokenizerConfigData,
+                    tokenizerClassOverride: tokenizerClassOverride
+                )
+                tokenizerConfig = try configData.map {
                     try JSONDecoder().decode(Config.self, from: $0)
                 } ?? Config([String: Config]())
+            } catch let error as RuntimeError {
+                throw error
             } catch {
                 throw RuntimeError.invalidTokenizerConfig(error.localizedDescription)
             }
@@ -70,6 +87,16 @@ actor TokenizerRuntime {
                     tokenizerData: tokenizerData,
                     strict: true
                 ))
+            } catch let error as TokenizerError {
+                // Source: https://github.com/huggingface/swift-transformers/blob/2fa33e1f5e7131a7fc64c28e6d161dcec0d24820/Sources/Tokenizers/Tokenizer.swift#L183-L199
+                switch error {
+                case .missingTokenizerClassInConfig where bundle.tokenizerConfigData != nil:
+                    throw RuntimeError.recoverableTokenizerClass(error.localizedDescription)
+                case .unsupportedTokenizer(_):
+                    throw RuntimeError.recoverableTokenizerClass(error.localizedDescription)
+                default:
+                    throw RuntimeError.unsupported(error.localizedDescription)
+                }
             } catch {
                 throw RuntimeError.unsupported(error.localizedDescription)
             }
@@ -94,6 +121,29 @@ actor TokenizerRuntime {
         }
         backend = loadedBackend
         specialTokenIndex = index
+    }
+
+    private static func configData(
+        _ data: Data?,
+        tokenizerClassOverride: String?
+    ) throws -> Data? {
+        guard let tokenizerClass = tokenizerClassOverride?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !tokenizerClass.isEmpty else {
+            return data
+        }
+
+        var object: [String: Any]
+        if let data {
+            guard let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw RuntimeError.invalidTokenizerConfig("根节点不是对象。")
+            }
+            object = parsed
+        } else {
+            object = [:]
+        }
+        object["tokenizer_class"] = tokenizerClass
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
     func tokenize(_ input: String) throws -> TokenizationResult {

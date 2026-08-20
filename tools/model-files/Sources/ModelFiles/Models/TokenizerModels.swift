@@ -6,6 +6,7 @@ enum TokenizerPlaygroundPhase: Sendable, Equatable {
     case ready
     case tokenizing
     case inputTooLarge(limit: Int)
+    case recoverableTokenizerClassFailure(String)
     case failed(String)
 }
 

@@ -278,6 +278,100 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         XCTAssertNotEqual(jinjaOutput, TemplateRenderer.render(switchedRequest).output)
     }
 
+    func testExplicitTokenizerClassRetryUsesCachedBundleAndClearsOnFileSwitch() async throws {
+        let fixture = try fixtureData(includesOtherFile: true, includesTokenizerClass: false)
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil {
+            if case .recoverableTokenizerClassFailure = store.tokenizerPhase { return true }
+            return false
+        }
+        let initialReadCount = await access.readCount()
+        XCTAssertNil(store.tokenizerClassOverride)
+
+        store.setTokenizerClassOverride("NotARealTokenizer")
+        try await waitUntil {
+            if case let .recoverableTokenizerClassFailure(message) = store.tokenizerPhase {
+                return message.contains("NotARealTokenizer")
+            }
+            return false
+        }
+        XCTAssertEqual(store.tokenizerClassOverride, "NotARealTokenizer")
+        let failedRetryReadCount = await access.readCount()
+        XCTAssertEqual(failedRetryReadCount, initialReadCount)
+
+        store.setTokenizerClassOverride("GPT2Tokenizer")
+        try await waitUntil { store.tokenizerPhase == .ready }
+        XCTAssertEqual(store.tokenizerClassOverride, "GPT2Tokenizer")
+        let successfulRetryReadCount = await access.readCount()
+        XCTAssertEqual(successfulRetryReadCount, initialReadCount)
+
+        store.select(path: "notes.txt")
+        XCTAssertNil(store.tokenizerClassOverride)
+    }
+
+    func testRetryDoesNotBypassFailedChatCatalogParsing() async throws {
+        let fixture = try fixtureData(
+            includesJinjaTemplate: false,
+            invalidConfigChatTemplate: true
+        )
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil {
+            if case .failed = store.tokenizerPhase { return true }
+            return false
+        }
+        XCTAssertNil(store.tokenizerChatCatalog)
+        let initialReadCount = await access.readCount()
+
+        store.retryTokenizerPlayground()
+        XCTAssertEqual(store.tokenizerPhase, .loading)
+        try await waitUntil {
+            if case .failed = store.tokenizerPhase { return true }
+            return false
+        }
+        XCTAssertNotEqual(store.tokenizerPhase, .ready)
+        let retryReadCount = await access.readCount()
+        XCTAssertGreaterThan(retryReadCount, initialReadCount)
+    }
+
+    func testOrdinaryRuntimeRetryReloadsBundleBytes() async throws {
+        var fixture = try fixtureData()
+        fixture.data["tokenizer.json"] = Data("{".utf8)
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil {
+            if case .failed = store.tokenizerPhase { return true }
+            return false
+        }
+        XCTAssertNotNil(store.tokenizerChatCatalog)
+        let initialReadCount = await access.readCount()
+
+        store.retryTokenizerPlayground()
+        XCTAssertEqual(store.tokenizerPhase, .loading)
+        try await waitUntil {
+            if case .failed = store.tokenizerPhase { return true }
+            return false
+        }
+        let retryReadCount = await access.readCount()
+        XCTAssertGreaterThan(retryReadCount, initialReadCount)
+    }
+
     func testSentencePieceModelOpensDirectlyInPlayground() async throws {
         let model = Data("invalid".utf8)
         let files = [file("tokenizer.model", data: model, category: .tokenizer)]
@@ -300,6 +394,8 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         includesOtherFile: Bool = false,
         includesConfigTemplate: Bool = true,
         includesJinjaTemplate: Bool = true,
+        includesTokenizerClass: Bool = true,
+        invalidConfigChatTemplate: Bool = false,
         configChatTemplateObject: [String: String]? = nil,
         jinjaTemplate: String = "JINJA_TEMPLATE"
     ) throws -> (data: [String: Data], files: [RepositoryFile]) {
@@ -310,7 +406,12 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
             JSONSerialization.jsonObject(with: Data(contentsOf: directory.appending(path: "tokenizer_config.json")))
                 as? [String: Any]
         )
-        if includesConfigTemplate {
+        if !includesTokenizerClass {
+            configObject.removeValue(forKey: "tokenizer_class")
+        }
+        if invalidConfigChatTemplate {
+            configObject["chat_template"] = 42
+        } else if includesConfigTemplate {
             if let configChatTemplateObject {
                 configObject["chat_template"] = configChatTemplateObject
             } else {

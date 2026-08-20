@@ -199,6 +199,44 @@ final class TokenizerRuntimeTests: XCTestCase {
         }
     }
 
+    func testMissingAndUnknownTokenizerClassesAreRecoverable() throws {
+        let bundle = try fixtureBundleWithoutTokenizerClass()
+
+        XCTAssertThrowsError(try TokenizerRuntime(bundle: bundle)) { error in
+            guard case TokenizerRuntime.RuntimeError.recoverableTokenizerClass = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        XCTAssertThrowsError(
+            try TokenizerRuntime(bundle: bundle, tokenizerClassOverride: "NotARealTokenizer")
+        ) { error in
+            guard case TokenizerRuntime.RuntimeError.recoverableTokenizerClass = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testCommonExplicitClassOverridesAreSupportedAndDoNotMutateConfigBytes() async throws {
+        let bundle = try fixtureBundleWithoutTokenizerClass()
+        let originalConfig = bundle.tokenizerConfigData
+
+        XCTAssertEqual(TokenizerRuntime.commonTokenizerClassOverrides, [
+            "PreTrainedTokenizer",
+            "PreTrainedTokenizerFast",
+            "GPT2Tokenizer",
+            "LlamaTokenizer",
+        ])
+        for tokenizerClass in TokenizerRuntime.commonTokenizerClassOverrides {
+            let runtime = try TokenizerRuntime(
+                bundle: bundle,
+                tokenizerClassOverride: tokenizerClass
+            )
+            let result = try await runtime.tokenize("offline")
+            XCTAssertEqual(result.tokenIDs, [15], tokenizerClass)
+            XCTAssertEqual(bundle.tokenizerConfigData, originalConfig, tokenizerClass)
+        }
+    }
+
     func testInvalidTokenizerJSONReportsItsStage() throws {
         let bundle = TokenizerBundle(
             file: tokenizerFile(size: 1),
@@ -301,6 +339,21 @@ final class TokenizerRuntimeTests: XCTestCase {
             tokenizerData: tokenizerData,
             tokenizerConfigData: configData,
             chatTemplateData: nil
+        )
+    }
+
+    private func fixtureBundleWithoutTokenizerClass() throws -> TokenizerBundle {
+        let fixture = try fixtureBundle(named: "bpe")
+        let configData = try XCTUnwrap(fixture.tokenizerConfigData)
+        var config = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: configData) as? [String: Any]
+        )
+        config.removeValue(forKey: "tokenizer_class")
+        return TokenizerBundle(
+            file: fixture.file,
+            tokenizerData: fixture.tokenizerData,
+            tokenizerConfigData: try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys]),
+            chatTemplateData: fixture.chatTemplateData
         )
     }
 

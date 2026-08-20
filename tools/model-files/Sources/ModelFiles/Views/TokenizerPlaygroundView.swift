@@ -76,6 +76,8 @@ struct TokenizerPlaygroundView: View {
     @State private var showWhitespace = false
     @State private var resultMode: ResultMode = .segments
     @State private var selectedTokenIndex: Int?
+    @State private var tokenizerClassChoice = "GPT2Tokenizer"
+    @State private var customTokenizerClass = ""
 
     var body: some View {
         GeometryReader { proxy in
@@ -97,7 +99,7 @@ struct TokenizerPlaygroundView: View {
         .onChange(of: store.tokenizerPhase) { _, phase in
             let bundleLoadFinished: Bool
             switch phase {
-            case .ready, .failed:
+            case .ready, .recoverableTokenizerClassFailure, .failed:
                 bundleLoadFinished = true
             default:
                 bundleLoadFinished = false
@@ -358,6 +360,8 @@ struct TokenizerPlaygroundView: View {
             stateView(title: "正在编码最新输入…", progress: true)
         case let .inputTooLarge(limit):
             stateView(title: "输入超过 \(Int64(limit).formattedByteCount) 上限", systemImage: "exclamationmark.triangle")
+        case let .recoverableTokenizerClassFailure(message):
+            recoverableTokenizerClassView(message)
         case let .failed(message):
             if inputMode == .tokenIDs {
                 stateView(title: message, systemImage: "xmark.octagon")
@@ -505,6 +509,34 @@ struct TokenizerPlaygroundView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private func recoverableTokenizerClassView(_ message: String) -> some View {
+        VStack(spacing: 10) {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .textSelection(.enabled)
+            Picker("指定 tokenizer_class 后重试", selection: $tokenizerClassChoice) {
+                ForEach(TokenizerRuntime.commonTokenizerClassOverrides, id: \.self) { name in
+                    Text(name).tag(name)
+                }
+                Text("自定义…").tag("")
+            }
+            .frame(width: 280)
+            if tokenizerClassChoice.isEmpty {
+                TextField("tokenizer_class", text: $customTokenizerClass)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 280)
+            }
+            Button("使用指定的 tokenizer_class 重试") {
+                store.setTokenizerClassOverride(tokenizerClassCandidate)
+            }
+            .disabled(tokenizerClassCandidate.isEmpty)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var workRequest: WorkRequest {
         switch inputMode {
         case .raw:
@@ -576,7 +608,15 @@ struct TokenizerPlaygroundView: View {
         if isRendering { return "正在渲染" }
         if renderError != nil { return "模板错误" }
         if inputMode == .tokenIDs { return "由 Token ID 解码" }
+        if store.tokenizerPhase == .ready, let tokenizerClass = store.tokenizerClassOverride {
+            return "使用指定的 tokenizer_class=\(tokenizerClass)"
+        }
         return "实时编码"
+    }
+
+    private var tokenizerClassCandidate: String {
+        (tokenizerClassChoice.isEmpty ? customTokenizerClass : tokenizerClassChoice)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var authoritativeInputDetail: String {
