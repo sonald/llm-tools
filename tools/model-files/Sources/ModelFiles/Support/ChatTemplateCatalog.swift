@@ -10,7 +10,7 @@ struct ChatTemplateEntry: Identifiable, Sendable, Equatable {
     let source: ChatTemplateSource
     let body: String
 
-    var id: String { name }
+    var id: String { "\(source.rawValue):\(name)" }
     var isUsable: Bool {
         !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -18,6 +18,7 @@ struct ChatTemplateEntry: Identifiable, Sendable, Equatable {
 
 enum ChatTemplateCatalogError: LocalizedError, Sendable, Equatable {
     case invalidJSON(String)
+    case invalidJinja(String)
     case rootIsNotObject
     case unsupportedShape(String)
     case invalidNamedTemplate(index: Int, reason: String)
@@ -26,6 +27,8 @@ enum ChatTemplateCatalogError: LocalizedError, Sendable, Equatable {
         switch self {
         case let .invalidJSON(message):
             "tokenizer_config.json 不是有效 JSON：\(message)"
+        case let .invalidJinja(message):
+            "chat_template.jinja 无效：\(message)"
         case .rootIsNotObject:
             "tokenizer_config.json 根节点不是对象。"
         case let .unsupportedShape(shape):
@@ -114,6 +117,37 @@ struct ChatTemplateCatalog: Sendable, Equatable {
             throw ChatTemplateCatalogError.unsupportedShape("null、数字或布尔值")
         }
         return ChatTemplateCatalog(entries: entries)
+    }
+
+    static func parse(
+        configData: Data?,
+        chatTemplateData: Data?
+    ) throws -> ChatTemplateCatalog {
+        let config = try configData.map { try parse(configData: $0) } ?? ChatTemplateCatalog(entries: [])
+        var entries: [ChatTemplateEntry] = []
+        if let chatTemplateData {
+            guard let body = String(data: chatTemplateData, encoding: .utf8) else {
+                throw ChatTemplateCatalogError.invalidJinja("不是有效 UTF-8")
+            }
+            entries.append(ChatTemplateEntry(name: "default", source: .jinjaFile, body: body))
+        }
+        entries.append(contentsOf: config.entries)
+        let jinjaIsUsable = entries.first {
+            $0.source == .jinjaFile && $0.isUsable
+        } != nil
+        let configIsUsable = config.entries.contains(where: \.isUsable)
+        let activeID = entries.first(where: {
+            $0.source == .jinjaFile && $0.isUsable
+        })?.id ?? config.activeID
+        return ChatTemplateCatalog(
+            entries: entries,
+            activeID: activeID,
+            conflict: jinjaIsUsable && configIsUsable
+        )
+    }
+
+    func selecting(_ id: String?) -> ChatTemplateCatalog {
+        ChatTemplateCatalog(entries: entries, activeID: id, conflict: conflict)
     }
 
     private static func selectID(

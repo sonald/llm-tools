@@ -29,7 +29,7 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
 
         store.perspective = .playground
         try await waitUntil { store.tokenizerPhase == .ready }
-        XCTAssertEqual(store.tokenizerChatTemplate, "JINJA_TEMPLATE")
+        XCTAssertEqual(store.tokenizerChatCatalog?.activeEntry?.body, "JINJA_TEMPLATE")
 
         store.tokenize("offline")
         store.tokenize("path")
@@ -121,7 +121,7 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         store.select(path: "notes.txt")
         XCTAssertEqual(store.tokenizerPhase, .idle)
         XCTAssertNil(store.tokenizationResult)
-        XCTAssertNil(store.tokenizerChatTemplate)
+        XCTAssertNil(store.tokenizerChatCatalog)
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertNil(store.tokenizationResult)
     }
@@ -173,7 +173,11 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
     }
 
     func testTokenIDsRemainAvailableWithoutChatTemplate() async throws {
-        let fixture = try fixtureData(includesChatTemplate: false)
+        let fixture = try fixtureData(
+            includesConfigTemplate: true,
+            includesJinjaTemplate: false,
+            configChatTemplateObject: ["default": " ", "tool_use": "\n"]
+        )
         let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
         let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
         store.repositoryInput = "/tmp/tokenizer-store-fixture"
@@ -183,11 +187,95 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         store.perspective = .playground
         try await waitUntil { store.tokenizerPhase == .ready }
 
-        XCTAssertNil(store.tokenizerChatTemplate)
+        XCTAssertEqual(store.tokenizerChatCatalog?.isAvailable, false)
         store.decodeTokenIDs("22")
         try await waitUntil { store.tokenizationResult?.direction == .decode }
         XCTAssertEqual(store.tokenizationResult?.tokenIDs, [22])
         XCTAssertEqual(store.tokenizationResult?.decodedText, "path")
+    }
+
+    func testOnlyJinjaTemplateBuildsAvailableCatalog() async throws {
+        let fixture = try fixtureData(includesConfigTemplate: false, includesJinjaTemplate: true)
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+
+        XCTAssertEqual(store.tokenizerChatCatalog?.activeEntry?.source, .jinjaFile)
+        XCTAssertEqual(store.tokenizerChatCatalog?.activeEntry?.body, "JINJA_TEMPLATE")
+        XCTAssertFalse(store.tokenizerChatCatalog?.conflict == true)
+    }
+
+    func testNamedConfigTemplateBuildsAvailableCatalogWithoutJinja() async throws {
+        let fixture = try fixtureData(
+            includesConfigTemplate: true,
+            includesJinjaTemplate: false,
+            configChatTemplateObject: ["default": "CONFIG", "tool_use": "TOOL"]
+        )
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+
+        XCTAssertEqual(store.tokenizerChatCatalog?.activeEntry?.id, "tokenizerConfig:default")
+        XCTAssertEqual(store.tokenizerChatCatalog?.activeEntry?.body, "CONFIG")
+        XCTAssertFalse(store.tokenizerChatCatalog?.conflict == true)
+    }
+
+    func testBothSourcesDefaultToJinjaAndSwitchWithoutReloadingBundle() async throws {
+        let fixture = try fixtureData(
+            includesConfigTemplate: true,
+            includesJinjaTemplate: true,
+            configChatTemplateObject: [
+                "default": "CONFIG {{ messages[0].content }}",
+                "tool_use": "TOOL {{ messages[0].content }}",
+            ],
+            jinjaTemplate: "JINJA {{ messages[0].content }}"
+        )
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+
+        XCTAssertEqual(store.tokenizerChatCatalog?.activeEntry?.source, .jinjaFile)
+        XCTAssertTrue(store.tokenizerChatCatalog?.conflict == true)
+        let readCount = await access.readCount()
+        let messages = [TemplateMessage(role: "user", content: "hello")]
+        let request = TemplateRenderRequest(
+            template: store.tokenizerChatCatalog!.activeEntry!.body,
+            messages: messages,
+            includeTools: false,
+            tools: [],
+            variables: [],
+            addGenerationPrompt: false
+        )
+        let jinjaOutput = TemplateRenderer.render(request).output
+
+        store.selectChatTemplate(id: "tokenizerConfig:tool_use")
+        XCTAssertEqual(store.tokenizerChatCatalog?.activeEntry?.id, "tokenizerConfig:tool_use")
+        let switchedReadCount = await access.readCount()
+        XCTAssertEqual(switchedReadCount, readCount)
+        let switchedRequest = TemplateRenderRequest(
+            template: store.tokenizerChatCatalog!.activeEntry!.body,
+            messages: messages,
+            includeTools: false,
+            tools: [],
+            variables: [],
+            addGenerationPrompt: false
+        )
+        XCTAssertNotEqual(jinjaOutput, TemplateRenderer.render(switchedRequest).output)
     }
 
     func testSentencePieceModelOpensDirectlyInPlayground() async throws {
@@ -210,7 +298,10 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
 
     private func fixtureData(
         includesOtherFile: Bool = false,
-        includesChatTemplate: Bool = true
+        includesConfigTemplate: Bool = true,
+        includesJinjaTemplate: Bool = true,
+        configChatTemplateObject: [String: String]? = nil,
+        jinjaTemplate: String = "JINJA_TEMPLATE"
     ) throws -> (data: [String: Data], files: [RepositoryFile]) {
         let directory = Bundle.module.resourceURL!
             .appending(path: "Fixtures/Tokenizers/bpe", directoryHint: .isDirectory)
@@ -219,8 +310,12 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
             JSONSerialization.jsonObject(with: Data(contentsOf: directory.appending(path: "tokenizer_config.json")))
                 as? [String: Any]
         )
-        if includesChatTemplate {
-            configObject["chat_template"] = "CONFIG_TEMPLATE"
+        if includesConfigTemplate {
+            if let configChatTemplateObject {
+                configObject["chat_template"] = configChatTemplateObject
+            } else {
+                configObject["chat_template"] = "CONFIG_TEMPLATE"
+            }
         } else {
             configObject.removeValue(forKey: "chat_template")
         }
@@ -233,8 +328,8 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
             file("tokenizer.json", data: tokenizer, category: .tokenizer),
             file("tokenizer_config.json", data: config, category: .tokenizer),
         ]
-        if includesChatTemplate {
-            let template = Data("JINJA_TEMPLATE".utf8)
+        if includesJinjaTemplate {
+            let template = Data(jinjaTemplate.utf8)
             data["chat_template.jinja"] = template
             files.append(file("chat_template.jinja", data: template, category: .templates))
         }
@@ -281,6 +376,7 @@ private actor StoreTokenizerAccess: RepositoryAccess {
     )
     private let data: [String: Data]
     private let files: [RepositoryFile]
+    private var reads = 0
 
     init(data: [String: Data], files: [RepositoryFile]) {
         self.data = data
@@ -292,9 +388,12 @@ private actor StoreTokenizerAccess: RepositoryAccess {
     }
 
     func read(_ file: RepositoryFile, range: ClosedRange<UInt64>?) async throws -> Data {
+        reads += 1
         guard range == nil, let data = data[file.path] else {
             throw RepositoryService.ServiceError.invalidResponse
         }
         return data
     }
+
+    func readCount() -> Int { reads }
 }

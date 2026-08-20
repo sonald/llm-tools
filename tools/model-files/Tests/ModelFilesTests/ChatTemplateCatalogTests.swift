@@ -9,7 +9,7 @@ final class ChatTemplateCatalogTests: XCTestCase {
         XCTAssertEqual(catalog.entries, [
             ChatTemplateEntry(name: "default", source: .tokenizerConfig, body: "{{ messages }}")
         ])
-        XCTAssertEqual(catalog.activeID, "default")
+        XCTAssertEqual(catalog.activeID, "tokenizerConfig:default")
         XCTAssertEqual(catalog.activeEntry?.body, "{{ messages }}")
         XCTAssertTrue(catalog.isAvailable)
         XCTAssertFalse(catalog.conflict)
@@ -27,7 +27,7 @@ final class ChatTemplateCatalogTests: XCTestCase {
         """#))
 
         XCTAssertEqual(catalog.entries.map(\.name), ["default", "first", "tool_use"])
-        XCTAssertEqual(catalog.activeID, "default")
+        XCTAssertEqual(catalog.activeID, "tokenizerConfig:default")
         XCTAssertEqual(catalog.activeEntry?.body, "default")
     }
 
@@ -42,7 +42,7 @@ final class ChatTemplateCatalogTests: XCTestCase {
         }
         """#))
 
-        XCTAssertEqual(catalog.activeID, "first")
+        XCTAssertEqual(catalog.activeID, "tokenizerConfig:first")
         XCTAssertEqual(catalog.activeEntry?.body, "first")
     }
 
@@ -58,7 +58,7 @@ final class ChatTemplateCatalogTests: XCTestCase {
         """#))
 
         XCTAssertEqual(catalog.entries.map(\.name), ["default", "tool_use", "later"])
-        XCTAssertEqual(catalog.activeID, "tool_use")
+        XCTAssertEqual(catalog.activeID, "tokenizerConfig:tool_use")
         XCTAssertEqual(catalog.activeEntry?.body, "tool")
     }
 
@@ -84,10 +84,10 @@ final class ChatTemplateCatalogTests: XCTestCase {
                 ChatTemplateEntry(name: "tool_use", source: .tokenizerConfig, body: " "),
                 ChatTemplateEntry(name: "later", source: .tokenizerConfig, body: "later")
             ],
-            activeID: "tool_use"
+            activeID: "tokenizerConfig:tool_use"
         )
 
-        XCTAssertEqual(catalog.activeID, "later")
+        XCTAssertEqual(catalog.activeID, "tokenizerConfig:later")
         XCTAssertEqual(catalog.activeEntry?.body, "later")
     }
 
@@ -100,6 +100,43 @@ final class ChatTemplateCatalogTests: XCTestCase {
         ] {
             XCTAssertThrowsError(try ChatTemplateCatalog.parse(configData: data(source)), source)
         }
+    }
+
+    func testJinjaIsTheDefaultSourceWhenConfigAlsoHasTemplates() throws {
+        let catalog = try ChatTemplateCatalog.parse(
+            configData: data(#"{"chat_template":{"default":"CONFIG","tool_use":"TOOL"}}"#),
+            chatTemplateData: Data("JINJA".utf8)
+        )
+
+        XCTAssertEqual(catalog.entries.map(\.source), [.jinjaFile, .tokenizerConfig, .tokenizerConfig])
+        XCTAssertEqual(catalog.entries.map(\.id), [
+            "jinjaFile:default", "tokenizerConfig:default", "tokenizerConfig:tool_use"
+        ])
+        XCTAssertEqual(catalog.activeEntry?.source, .jinjaFile)
+        XCTAssertEqual(catalog.activeEntry?.body, "JINJA")
+        XCTAssertTrue(catalog.conflict)
+    }
+
+    func testEmptyDefaultFallsBackToNonEmptyNamedTemplate() throws {
+        let catalog = try ChatTemplateCatalog.parse(
+            configData: data(#"{"chat_template":{"default":" ","tool_use":"TOOL"}}"#),
+            chatTemplateData: nil
+        )
+
+        XCTAssertEqual(catalog.activeEntry?.id, "tokenizerConfig:tool_use")
+        XCTAssertTrue(catalog.isAvailable)
+        XCTAssertFalse(catalog.conflict)
+    }
+
+    func testEmptySourcesMakeChatUnavailable() throws {
+        let catalog = try ChatTemplateCatalog.parse(
+            configData: data(#"{"chat_template":{"default":"\n"}}"#),
+            chatTemplateData: nil
+        )
+
+        XCTAssertNil(catalog.activeEntry)
+        XCTAssertFalse(catalog.isAvailable)
+        XCTAssertFalse(catalog.conflict)
     }
 
     private func data(_ source: String) -> Data {

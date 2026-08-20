@@ -22,7 +22,7 @@ final class ModelFilesStore: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var tokenizerPhase: TokenizerPlaygroundPhase = .idle
     @Published private(set) var tokenizationResult: TokenizationResult?
-    @Published private(set) var tokenizerChatTemplate: String?
+    @Published private(set) var tokenizerChatCatalog: ChatTemplateCatalog?
     @Published private(set) var tokenizerConfigData: Data?
 
     private let service: RepositoryService
@@ -286,6 +286,11 @@ final class ModelFilesStore: ObservableObject {
         prepareTokenizerPlaygroundIfNeeded()
     }
 
+    func selectChatTemplate(id: String?) {
+        guard let catalog = tokenizerChatCatalog else { return }
+        tokenizerChatCatalog = catalog.selecting(id)
+    }
+
     func clearTokenizationResult() {
         tokenizerEncodeTask?.cancel()
         tokenizerEncodeGeneration += 1
@@ -314,7 +319,7 @@ final class ModelFilesStore: ObservableObject {
         tokenizerRuntime = nil
         tokenizerIdentity = nil
         tokenizationResult = nil
-        tokenizerChatTemplate = nil
+        tokenizerChatCatalog = nil
         tokenizerConfigData = nil
         tokenizerPhase = .loading
 
@@ -332,7 +337,10 @@ final class ModelFilesStore: ObservableObject {
                 self.tokenizerRuntime = runtime
                 self.tokenizerIdentity = identity
                 self.tokenizerConfigData = bundle.tokenizerConfigData
-                self.tokenizerChatTemplate = try Self.chatTemplate(from: bundle)
+                self.tokenizerChatCatalog = try ChatTemplateCatalog.parse(
+                    configData: bundle.tokenizerConfigData,
+                    chatTemplateData: bundle.chatTemplateData
+                )
                 self.tokenizerPhase = .ready
                 if let request = self.pendingTokenizerRequest {
                     self.tokenize(request)
@@ -357,23 +365,9 @@ final class ModelFilesStore: ObservableObject {
         tokenizerIdentity = nil
         pendingTokenizerRequest = nil
         tokenizationResult = nil
-        tokenizerChatTemplate = nil
+        tokenizerChatCatalog = nil
         tokenizerConfigData = nil
         tokenizerPhase = .idle
-    }
-
-    nonisolated private static func chatTemplate(from bundle: TokenizerBundle) throws -> String? {
-        if let data = bundle.chatTemplateData {
-            guard let source = String(data: data, encoding: .utf8) else {
-                throw RepositoryService.ServiceError.invalidUTF8
-            }
-            if !source.isEmpty { return source }
-        }
-        guard let data = bundle.tokenizerConfigData,
-              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let source = object["chat_template"] as? String,
-              !source.isEmpty else { return nil }
-        return source
     }
 
     func loadSelectedFile() {

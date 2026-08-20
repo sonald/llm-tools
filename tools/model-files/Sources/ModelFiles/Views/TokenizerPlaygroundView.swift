@@ -102,14 +102,14 @@ struct TokenizerPlaygroundView: View {
             default:
                 bundleLoadFinished = false
             }
-            if bundleLoadFinished, store.tokenizerChatTemplate == nil, inputMode == .chat {
+            if bundleLoadFinished, store.tokenizerChatCatalog?.isAvailable != true, inputMode == .chat {
                 inputMode = .raw
             }
         }
         .onChange(of: store.tokenizerConfigData) { _, _ in
             initializeVariablesIfNeeded()
         }
-        .onChange(of: store.tokenizerChatTemplate) { _, _ in
+        .onChange(of: store.tokenizerChatCatalog) { _, _ in
             initializeVariablesIfNeeded()
         }
         .onChange(of: store.tokenizationResult) { _, _ in
@@ -120,19 +120,67 @@ struct TokenizerPlaygroundView: View {
         }
     }
 
+    @ViewBuilder
+    private var templateSourceControl: some View {
+        if inputMode == .chat,
+           let catalog = store.tokenizerChatCatalog,
+           let active = catalog.activeEntry {
+            let entries = catalog.entries
+            if entries.count > 1 {
+                Menu {
+                    ForEach(entries) { entry in
+                        Button {
+                            store.selectChatTemplate(id: entry.id)
+                        } label: {
+                            HStack {
+                                Text(templateSourceLabel(entry))
+                                if entry.id == active.id { Image(systemName: "checkmark") }
+                            }
+                        }
+                        .disabled(!entry.isUsable)
+                    }
+                } label: {
+                    templateSourceBadge(active)
+                }
+                .menuStyle(.borderlessButton)
+            } else {
+                templateSourceBadge(active)
+            }
+        }
+    }
+
+    private func templateSourceLabel(_ entry: ChatTemplateEntry) -> String {
+        switch entry.source {
+        case .jinjaFile: "chat_template.jinja"
+        case .tokenizerConfig: "tokenizer_config.json · \(entry.name)"
+        }
+    }
+
+    private func templateSourceBadge(_ entry: ChatTemplateEntry) -> some View {
+        Text(templateSourceLabel(entry))
+            .font(.caption2)
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(.quaternary, in: Capsule())
+    }
+
     private var leftColumn: some View {
         VStack(spacing: 12) {
             TokenizerPanel {
                 TokenizerPanelHeader(title: "输入", detail: inputStatus) {
-                    Picker("输入模式", selection: $inputMode) {
-                        ForEach(InputMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                                .disabled(mode == .chat && !chatIsAvailable)
+                    HStack(spacing: 8) {
+                        templateSourceControl
+                        Picker("输入模式", selection: $inputMode) {
+                            ForEach(InputMode.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                                    .disabled(mode == .chat && !chatIsAvailable)
+                            }
                         }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 250)
                     }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(width: 250)
                     .help(chatIsAvailable ? "选择原始文本、Chat Template 或 Token IDs 输入" : "当前目录没有可用 Chat Template；Token IDs 仍可用")
                 }
 
@@ -462,7 +510,7 @@ struct TokenizerPlaygroundView: View {
         case .raw:
             return .raw(rawText)
         case .chat:
-            guard let template = store.tokenizerChatTemplate else { return .waiting }
+            guard let template = store.tokenizerChatCatalog?.activeEntry?.body else { return .waiting }
             return .chat(TemplateRenderRequest(
                 template: template,
                 messages: messages,
@@ -521,7 +569,7 @@ struct TokenizerPlaygroundView: View {
     }
 
     private var chatIsAvailable: Bool {
-        store.tokenizerChatTemplate != nil || store.tokenizerPhase == .loading
+        store.tokenizerChatCatalog?.isAvailable == true || store.tokenizerPhase == .loading
     }
 
     private var inputStatus: String {
@@ -615,7 +663,7 @@ struct TokenizerPlaygroundView: View {
 
     private func initializeVariablesIfNeeded() {
         guard !didInitializeVariables,
-              let template = store.tokenizerChatTemplate else { return }
+              let template = store.tokenizerChatCatalog?.activeEntry?.body else { return }
         let object = store.tokenizerConfigData.flatMap {
             try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
         } ?? [:]
