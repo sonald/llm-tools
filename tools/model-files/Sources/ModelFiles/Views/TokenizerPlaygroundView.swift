@@ -78,6 +78,8 @@ struct TokenizerPlaygroundView: View {
     @State private var selectedTokenIndex: Int?
     @State private var tokenizerClassChoice = "GPT2Tokenizer"
     @State private var customTokenizerClass = ""
+    @State private var comparisonRepositoryInput = ""
+    @State private var isShowingComparisonRepositoryPopover = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -359,10 +361,33 @@ struct TokenizerPlaygroundView: View {
                         store.setComparisonSource(.snapshotPath(file.path))
                     }
                 }
+                Divider()
+                Button("另一仓库…") {
+                    isShowingComparisonRepositoryPopover = true
+                }
             }
             .controlSize(.small)
             .fixedSize(horizontal: true, vertical: false)
             .layoutPriority(1)
+            .popover(isPresented: $isShowingComparisonRepositoryPopover) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("另一仓库")
+                        .font(.headline)
+                    TextField("模型 ID、URL、本地路径或 ssh://", text: $comparisonRepositoryInput)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 320)
+                    HStack {
+                        Spacer()
+                        Button("加载对照") {
+                            let input = comparisonRepositoryInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                            store.setComparisonSource(.repositoryInput(input))
+                            isShowingComparisonRepositoryPopover = false
+                        }
+                        .disabled(comparisonRepositoryInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                .padding(16)
+            }
         }
     }
 

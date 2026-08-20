@@ -201,8 +201,14 @@ struct TokenizerComparisonView: View {
     }
 
     private var rightTitle: String {
-        if case let .snapshotPath(path) = session.source { return path }
-        return "对照"
+        switch session.source {
+        case let .snapshotPath(path):
+            return path
+        case let .repositoryInput(input):
+            let repository = session.rightIdentity?.repository ?? input
+            let path = session.rightIdentity?.path ?? "tokenizer.json"
+            return "\(repository) · \(path)"
+        }
     }
 
     @ViewBuilder

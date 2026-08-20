@@ -177,6 +177,138 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         XCTAssertEqual(empty.firstDifference, 0)
     }
 
+    func testRepositoryComparisonKeepsMainRepositoryStateAndHistory() async throws {
+        let mainFixture = try fixtureData()
+        let rightFixture = try fixtureData()
+        let mainAccess = RepositoryFixtureAccess(
+            root: "/tmp/t16-main",
+            data: mainFixture.data,
+            files: mainFixture.files
+        )
+        let rightAccess = RepositoryFixtureAccess(
+            root: "/tmp/t16-right",
+            data: rightFixture.data,
+            files: rightFixture.files
+        )
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { location in
+            location.canonicalInput == "/tmp/t16-right" ? rightAccess : mainAccess
+        }))
+        store.repositoryInput = "/tmp/t16-main"
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+        store.tokenize("offline")
+        try await waitUntil { store.tokenizationResult?.input == "offline" }
+        try await waitUntil { store.consistencyReport != nil }
+
+        let mainRepositoryInput = store.repositoryInput
+        let mainSnapshot = store.snapshot
+        let mainPath = store.selectedPath
+        let mainResult = store.tokenizationResult
+        let mainHistory = store.repositoryHistory
+        let mainReport = store.consistencyReport
+
+        store.setComparisonSource(.repositoryInput("/tmp/t16-right"))
+        try await waitUntil {
+            store.comparison?.phase == .ready && store.comparison?.right?.input == "offline"
+        }
+
+        XCTAssertEqual(store.snapshot?.location, mainSnapshot?.location)
+        XCTAssertEqual(store.repositoryInput, mainRepositoryInput)
+        XCTAssertEqual(store.selectedPath, mainPath)
+        XCTAssertNotNil(store.selectedInspection)
+        XCTAssertEqual(store.tokenizationResult, mainResult)
+        XCTAssertEqual(store.repositoryHistory, mainHistory)
+        XCTAssertEqual(store.consistencyReport, mainReport)
+        XCTAssertEqual(store.comparison?.rightIdentity?.repository, "/tmp/t16-right")
+        XCTAssertEqual(store.comparison?.rightIdentity?.path, "tokenizer.json")
+
+        store.setComparisonSource(nil)
+        XCTAssertNil(store.comparison)
+    }
+
+    func testRepositoryComparisonFailureLeavesMainResultAndErrorUntouched() async throws {
+        let fixture = try fixtureData()
+        let mainAccess = RepositoryFixtureAccess(
+            root: "/tmp/t16-main-failure",
+            data: fixture.data,
+            files: fixture.files
+        )
+        let missingAccess = FailingRepositoryAccess(root: "/tmp/t16-missing")
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { location in
+            if location.canonicalInput == "/tmp/t16-missing" {
+                return missingAccess as any RepositoryAccess
+            }
+            return mainAccess as any RepositoryAccess
+        }))
+        store.repositoryInput = "/tmp/t16-main-failure"
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+        store.tokenize("offline")
+        try await waitUntil { store.tokenizationResult?.input == "offline" }
+
+        let mainSnapshot = store.snapshot
+        let mainPath = store.selectedPath
+        let mainHistory = store.repositoryHistory
+        let mainResult = store.tokenizationResult
+        let mainError = store.errorMessage
+        store.setComparisonSource(.repositoryInput("/tmp/t16-missing"))
+        try await waitUntil {
+            if case .failed = store.comparison?.phase { return true }
+            return false
+        }
+
+        XCTAssertEqual(store.tokenizationResult, mainResult)
+        XCTAssertEqual(store.errorMessage, mainError)
+        XCTAssertEqual(store.snapshot?.location, mainSnapshot?.location)
+        XCTAssertEqual(store.selectedPath, mainPath)
+        XCTAssertEqual(store.repositoryHistory, mainHistory)
+        if case .failed = store.comparison?.phase { } else {
+            XCTFail("Expected comparison failure")
+        }
+    }
+
+    func testRepositoryComparisonLatestTargetWinsAfterSlowTarget() async throws {
+        let main = try fixtureData()
+        let slow = try fixtureData()
+        let fast = try fixtureData()
+        let mainAccess = RepositoryFixtureAccess(root: "/tmp/t16-main-latest", data: main.data, files: main.files)
+        let slowAccess = RepositoryFixtureAccess(
+            root: "/tmp/t16-slow",
+            data: slow.data,
+            files: slow.files,
+            delay: .milliseconds(350)
+        )
+        let fastAccess = RepositoryFixtureAccess(root: "/tmp/t16-fast", data: fast.data, files: fast.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { location in
+            switch location.canonicalInput {
+            case "/tmp/t16-slow": return slowAccess as any RepositoryAccess
+            case "/tmp/t16-fast": return fastAccess as any RepositoryAccess
+            default: return mainAccess as any RepositoryAccess
+            }
+        }))
+        store.repositoryInput = "/tmp/t16-main-latest"
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+        store.tokenize("offline")
+        try await waitUntil { store.tokenizationResult?.input == "offline" }
+
+        store.setComparisonSource(.repositoryInput("/tmp/t16-slow"))
+        store.setComparisonSource(.repositoryInput("/tmp/t16-fast"))
+        try await waitUntil {
+            store.comparison?.phase == .ready
+                && store.comparison?.rightIdentity?.repository == "/tmp/t16-fast"
+        }
+        XCTAssertEqual(store.comparison?.right?.input, "offline")
+        try await Task.sleep(for: .milliseconds(450))
+        XCTAssertEqual(store.comparison?.rightIdentity?.repository, "/tmp/t16-fast")
+    }
+
     func testPlaygroundInputModesKeepRawChatAndAlwaysExposeTokenIDs() {
         XCTAssertEqual(
             TokenizerPlaygroundView.InputMode.allCases.map(\.rawValue),
@@ -922,4 +1054,51 @@ private actor StoreTokenizerAccess: RepositoryAccess {
     }
 
     func readCount() -> Int { reads }
+}
+
+private actor RepositoryFixtureAccess: RepositoryAccess {
+    nonisolated let location: RepositoryLocation
+    private let data: [String: Data]
+    private let files: [RepositoryFile]
+    private let delay: Duration?
+
+    init(
+        root: String,
+        data: [String: Data],
+        files: [RepositoryFile],
+        delay: Duration? = nil
+    ) {
+        location = .local(root: URL(fileURLWithPath: root, isDirectory: true))
+        self.data = data
+        self.files = files
+        self.delay = delay
+    }
+
+    func loadSnapshot() async throws -> RepositorySnapshot {
+        RepositorySnapshot(location: location, version: .live, files: files)
+    }
+
+    func read(_ file: RepositoryFile, range: ClosedRange<UInt64>?) async throws -> Data {
+        if let delay { try await Task.sleep(for: delay) }
+        guard range == nil, let data = data[file.path] else {
+            throw RepositoryService.ServiceError.invalidResponse
+        }
+        return data
+    }
+}
+
+private actor FailingRepositoryAccess: RepositoryAccess {
+    nonisolated let location: RepositoryLocation
+
+    init(root: String) {
+        location = .local(root: URL(fileURLWithPath: root, isDirectory: true))
+    }
+
+    func loadSnapshot() async throws -> RepositorySnapshot {
+        throw RepositoryService.ServiceError.invalidResponse
+    }
+
+    func read(_ file: RepositoryFile, range: ClosedRange<UInt64>?) async throws -> Data {
+        throw RepositoryService.ServiceError.invalidResponse
+    }
 }

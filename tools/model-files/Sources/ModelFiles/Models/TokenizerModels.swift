@@ -115,6 +115,7 @@ struct TokenizerEncodeRequest: Sendable, Equatable {
 
 enum ComparisonSource: Sendable, Equatable {
     case snapshotPath(String)
+    case repositoryInput(String)
 }
 
 enum TokenizerComparisonPhase: Sendable, Equatable {

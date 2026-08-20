@@ -349,29 +349,20 @@ final class ModelFilesStore: ObservableObject {
             return
         }
 
-        let path: String
-        switch source {
-        case let .snapshotPath(value): path = value
+        let initialIdentity: TokenizerSessionIdentity?
+        if case let .snapshotPath(path) = source,
+           let file = snapshot.files.first(where: {
+               $0.path == path && !$0.isBlocked && $0.isTokenizerPlaygroundEntryPoint
+           }) {
+            initialIdentity = TokenizerSessionIdentity(snapshot: snapshot, file: file)
+        } else {
+            initialIdentity = nil
         }
-        guard let file = snapshot.files.first(where: {
-            $0.path == path && !$0.isBlocked && $0.isTokenizerPlaygroundEntryPoint
-        }) else {
-            comparison = TokenizerComparisonSession(
-                source: source,
-                rightIdentity: nil,
-                phase: .failed("snapshot 中没有可用 tokenizer 入口：\(path)"),
-                left: tokenizationResult,
-                right: nil
-            )
-            return
-        }
-
-        let identity = TokenizerSessionIdentity(snapshot: snapshot, file: file)
         let leftIdentity = selectedFile.map { TokenizerSessionIdentity(snapshot: snapshot, file: $0) }
         let leftLoadTask = tokenizerLoadTask
         comparison = TokenizerComparisonSession(
             source: source,
-            rightIdentity: identity,
+            rightIdentity: initialIdentity,
             phase: .loading,
             left: tokenizationResult,
             right: nil
@@ -379,8 +370,28 @@ final class ModelFilesStore: ObservableObject {
         comparisonTask = Task { [weak self] in
             guard let self else { return }
             var vocabulary: TokenizerVocabularyComparison?
+            var identity = initialIdentity
             do {
-                let bundle = try await service.loadTokenizerBundle(for: file, from: snapshot)
+                let targetSnapshot: RepositorySnapshot
+                let file: RepositoryFile
+                switch source {
+                case let .snapshotPath(path):
+                    targetSnapshot = snapshot
+                    guard let candidate = targetSnapshot.files.first(where: {
+                        $0.path == path && !$0.isBlocked && $0.isTokenizerPlaygroundEntryPoint
+                    }) else {
+                        throw ComparisonError.invalidSource("snapshot 中没有可用 tokenizer 入口：\(path)")
+                    }
+                    file = candidate
+                case let .repositoryInput(input):
+                    targetSnapshot = try await service.loadRepository(input: input)
+                    guard let candidate = comparisonEntry(in: targetSnapshot) else {
+                        throw ComparisonError.invalidSource("对方仓库没有可用 tokenizer 入口。")
+                    }
+                    file = candidate
+                }
+                identity = TokenizerSessionIdentity(snapshot: targetSnapshot, file: file)
+                let bundle = try await service.loadTokenizerBundle(for: file, from: targetSnapshot)
                 let catalog = try ChatTemplateCatalog.parse(
                     configData: bundle.tokenizerConfigData,
                     chatTemplateData: bundle.chatTemplateData
@@ -642,12 +653,23 @@ final class ModelFilesStore: ObservableObject {
         }
     }
 
+    private func comparisonEntry(in snapshot: RepositorySnapshot) -> RepositoryFile? {
+        snapshot.files.first {
+            $0.path == "tokenizer.json" && !$0.isBlocked
+        } ?? snapshot.files
+            .filter { !$0.isBlocked && $0.isTokenizerPlaygroundEntryPoint }
+            .sorted(by: RepositoryFile.displayOrder)
+            .first
+    }
+
     private enum ComparisonError: LocalizedError {
+        case invalidSource(String)
         case missingTemplate
         case renderFailed(String)
 
         var errorDescription: String? {
             switch self {
+            case let .invalidSource(message): message
             case .missingTemplate: "对照侧没有可用 Chat Template。"
             case let .renderFailed(message): "对照侧模板渲染失败：\(message)"
             }
