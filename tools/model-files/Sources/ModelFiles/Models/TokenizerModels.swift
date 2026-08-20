@@ -47,6 +47,20 @@ struct TokenOverhead: Sendable, Equatable {
     let contentProbe: String
 }
 
+struct ChatAttributionSeed: Sendable, Equatable {
+    let messages: [TemplateMessage]
+}
+
+struct TokenizerEncodeRequest: Sendable, Equatable {
+    let text: String
+    let chatAttribution: ChatAttributionSeed?
+
+    init(text: String, chatAttribution: ChatAttributionSeed? = nil) {
+        self.text = text
+        self.chatAttribution = chatAttribution
+    }
+}
+
 struct TokenSegment: Identifiable, Sendable, Equatable {
     let tokenRange: Range<Int>
     let tokenIDs: [Int]
@@ -71,6 +85,21 @@ struct TokenizationResult: Sendable, Equatable {
 
     func segment(containing tokenIndex: Int) -> TokenSegment? {
         segments.first { $0.tokenRange.contains(tokenIndex) }
+    }
+
+    func with(overhead: TokenOverhead?) -> TokenizationResult {
+        TokenizationResult(
+            direction: direction,
+            input: input,
+            tokenIDs: tokenIDs,
+            tokenPieces: tokenPieces,
+            decodedText: decodedText,
+            segments: segments,
+            sourceMapping: sourceMapping,
+            flags: flags,
+            roles: roles,
+            overhead: overhead
+        )
     }
 }
 

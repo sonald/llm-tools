@@ -35,7 +35,7 @@ final class ModelFilesStore: ObservableObject {
     private var tokenizerIdentity: TokenizerSessionIdentity?
     private var tokenizerLoadGeneration = 0
     private var tokenizerEncodeGeneration = 0
-    private var pendingTokenizerInput: String?
+    private var pendingTokenizerRequest: TokenizerEncodeRequest?
 
     static let maximumTokenizerInputByteCount = 64 * 1_024
 
@@ -151,10 +151,15 @@ final class ModelFilesStore: ObservableObject {
     }
 
     func tokenize(_ input: String) {
-        pendingTokenizerInput = input
+        tokenize(TokenizerEncodeRequest(text: input))
+    }
+
+    func tokenize(_ request: TokenizerEncodeRequest) {
+        pendingTokenizerRequest = request
         tokenizerEncodeTask?.cancel()
         tokenizerEncodeGeneration += 1
         let generation = tokenizerEncodeGeneration
+        let input = request.text
 
         guard input.utf8.count <= Self.maximumTokenizerInputByteCount else {
             tokenizationResult = nil
@@ -166,7 +171,7 @@ final class ModelFilesStore: ObservableObject {
             prepareTokenizerPlaygroundIfNeeded()
             return
         }
-        guard !input.isEmpty else {
+        guard !input.isEmpty || request.chatAttribution != nil else {
             tokenizationResult = TokenizationResult(
                 direction: .encode,
                 input: "",
@@ -191,10 +196,26 @@ final class ModelFilesStore: ObservableObject {
                 try Task.checkCancellation()
                 let result = try await runtime.tokenize(input)
                 try Task.checkCancellation()
+                let publishedResult: TokenizationResult
+                if let attribution = request.chatAttribution {
+                    let contentProbe = TokenAttributor.contentProbe(messages: attribution.messages)
+                    let probeResult = try await runtime.tokenize(contentProbe)
+                    try Task.checkCancellation()
+                    let overhead = TokenAttributor.overhead(
+                        rendered: input,
+                        messages: attribution.messages
+                    ) { candidate in
+                        candidate == contentProbe ? probeResult.tokenCount : result.tokenCount
+                    }
+                    publishedResult = result.with(overhead: overhead)
+                } else {
+                    publishedResult = result
+                }
+                try Task.checkCancellation()
                 guard let self,
                       generation == self.tokenizerEncodeGeneration,
-                      input == self.pendingTokenizerInput else { return }
-                self.tokenizationResult = result
+                      request == self.pendingTokenizerRequest else { return }
+                self.tokenizationResult = publishedResult
                 self.tokenizerPhase = .ready
             } catch is CancellationError {
                 return
@@ -206,7 +227,7 @@ final class ModelFilesStore: ObservableObject {
     }
 
     func decodeTokenIDs(_ raw: String) {
-        pendingTokenizerInput = nil
+        pendingTokenizerRequest = nil
         tokenizerEncodeTask?.cancel()
         tokenizerEncodeGeneration += 1
         let generation = tokenizerEncodeGeneration
@@ -261,7 +282,7 @@ final class ModelFilesStore: ObservableObject {
     func clearTokenizationResult() {
         tokenizerEncodeTask?.cancel()
         tokenizerEncodeGeneration += 1
-        pendingTokenizerInput = nil
+        pendingTokenizerRequest = nil
         tokenizationResult = nil
         if tokenizerRuntime != nil {
             tokenizerPhase = .ready
@@ -275,7 +296,7 @@ final class ModelFilesStore: ObservableObject {
               file.isTokenizerPlaygroundEntryPoint else { return }
         let identity = TokenizerSessionIdentity(snapshot: snapshot, file: file)
         if tokenizerRuntime != nil, tokenizerIdentity == identity {
-            if let pendingTokenizerInput { tokenize(pendingTokenizerInput) }
+            if let pendingTokenizerRequest { tokenize(pendingTokenizerRequest) }
             return
         }
 
@@ -306,8 +327,8 @@ final class ModelFilesStore: ObservableObject {
                 self.tokenizerConfigData = bundle.tokenizerConfigData
                 self.tokenizerChatTemplate = try Self.chatTemplate(from: bundle)
                 self.tokenizerPhase = .ready
-                if let input = self.pendingTokenizerInput {
-                    self.tokenize(input)
+                if let request = self.pendingTokenizerRequest {
+                    self.tokenize(request)
                 }
             } catch is CancellationError {
                 return
@@ -327,7 +348,7 @@ final class ModelFilesStore: ObservableObject {
         tokenizerEncodeGeneration += 1
         tokenizerRuntime = nil
         tokenizerIdentity = nil
-        pendingTokenizerInput = nil
+        pendingTokenizerRequest = nil
         tokenizationResult = nil
         tokenizerChatTemplate = nil
         tokenizerConfigData = nil

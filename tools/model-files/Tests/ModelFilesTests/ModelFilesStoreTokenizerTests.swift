@@ -37,6 +37,63 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
 
         XCTAssertEqual(store.tokenizationResult?.tokenIDs, [22])
         XCTAssertEqual(store.tokenizationResult?.input, "path")
+        XCTAssertNil(store.tokenizationResult?.overhead)
+    }
+
+    func testChatEncodePublishesApproximateOverheadWithoutReplacingMainResult() async throws {
+        let fixture = try fixtureData()
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+
+        let staleRequest = TokenizerEncodeRequest(
+            text: "offline",
+            chatAttribution: ChatAttributionSeed(
+                messages: [TemplateMessage(role: "user", content: "offline")]
+            )
+        )
+        let request = TokenizerEncodeRequest(
+            text: "path",
+            chatAttribution: ChatAttributionSeed(
+                messages: [TemplateMessage(role: "user", content: "path")]
+            )
+        )
+        store.tokenize(staleRequest)
+        store.tokenize(request)
+        try await waitUntil { store.tokenizationResult?.overhead != nil }
+
+        XCTAssertEqual(store.tokenizationResult?.input, "path")
+        XCTAssertEqual(store.tokenizationResult?.tokenIDs, [22])
+        XCTAssertEqual(store.tokenizationResult?.overhead?.contentProbe, "path")
+        XCTAssertEqual(store.tokenizationResult?.overhead?.templateCount, 0)
+        XCTAssertTrue(store.tokenizationResult?.overhead?.isApproximate == true)
+    }
+
+    func testChatAttributionSeedSurvivesRuntimeLoading() async throws {
+        let fixture = try fixtureData()
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        let request = TokenizerEncodeRequest(
+            text: "path",
+            chatAttribution: ChatAttributionSeed(
+                messages: [TemplateMessage(role: "user", content: "path")]
+            )
+        )
+        store.tokenize(request)
+
+        try await waitUntil { store.tokenizationResult?.overhead != nil }
+        XCTAssertEqual(store.tokenizationResult?.input, "path")
+        XCTAssertEqual(store.tokenizationResult?.overhead?.contentCount, 1)
     }
 
     func testInputLimitAndSelectionChangeClearTokenizerState() async throws {

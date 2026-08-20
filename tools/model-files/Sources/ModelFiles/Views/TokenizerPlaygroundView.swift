@@ -231,7 +231,7 @@ struct TokenizerPlaygroundView: View {
     private var rightColumn: some View {
         VStack(spacing: 12) {
             metrics
-                .frame(height: 63)
+                .frame(height: inputMode == .chat ? 105 : 63)
 
             TokenizerPanel {
                 TokenizerPanelHeader(title: "分词结果", detail: resultStatus) {
@@ -269,20 +269,28 @@ struct TokenizerPlaygroundView: View {
     }
 
     private var metrics: some View {
-        HStack(spacing: 9) {
-            metricCard("Token count", value: store.tokenizationResult?.tokenCount.formatted() ?? "—")
-            metricCard("Unicode 字符", value: authoritativeText.count.formatted())
-            metricCard("Bytes / token", value: bytesPerToken)
+        VStack(spacing: 6) {
+            HStack(spacing: 9) {
+                metricCard("Token count", value: store.tokenizationResult?.tokenCount.formatted() ?? "—")
+                metricCard("Unicode 字符", value: authoritativeText.count.formatted())
+                metricCard("Bytes / token", value: bytesPerToken)
+            }
+            if inputMode == .chat {
+                HStack(spacing: 9) {
+                    metricCard("正文 token", value: chatContentCount, compact: true)
+                    metricCard("模板开销（近似）", value: chatTemplateCount, compact: true)
+                }
+            }
         }
     }
 
-    private func metricCard(_ title: String, value: String) -> some View {
+    private func metricCard(_ title: String, value: String, compact: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.system(size: 19, weight: .semibold, design: .rounded))
+                .font(.system(size: compact ? 14 : 19, weight: .semibold, design: .rounded))
                 .contentTransition(.numericText())
         }
         .padding(.horizontal, 11)
@@ -482,7 +490,10 @@ struct TokenizerPlaygroundView: View {
             renderedText = outcome.output
             renderError = outcome.error
             if outcome.error == nil {
-                store.tokenize(outcome.output)
+                store.tokenize(TokenizerEncodeRequest(
+                    text: outcome.output,
+                    chatAttribution: ChatAttributionSeed(messages: request.messages)
+                ))
             } else {
                 store.clearTokenizationResult()
             }
@@ -519,6 +530,15 @@ struct TokenizerPlaygroundView: View {
     private var bytesPerToken: String {
         guard let count = store.tokenizationResult?.tokenCount, count > 0 else { return "—" }
         return String(format: "%.1f", Double(authoritativeText.utf8.count) / Double(count))
+    }
+
+    private var chatContentCount: String {
+        store.tokenizationResult?.overhead?.contentCount.formatted() ?? "—"
+    }
+
+    private var chatTemplateCount: String {
+        guard let count = store.tokenizationResult?.overhead?.templateCount else { return "—" }
+        return count < 0 ? "无法按差量拆分" : count.formatted()
     }
 
     private var authoritativeText: String {
