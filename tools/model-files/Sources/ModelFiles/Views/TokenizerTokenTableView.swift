@@ -2,13 +2,13 @@ import AppKit
 import SwiftUI
 
 struct TokenizerTokenTableView: View {
-    private struct Row: Identifiable {
+    struct Row: Identifiable, Equatable {
         let index: Int
         let tokenID: Int
         let piece: String?
         let decoded: String
         let mapping: TokenizerSourceMapping
-        let segmentRange: Range<Int>
+        let specialName: String?
         let colorIndex: Int
 
         var id: Int { index }
@@ -23,6 +23,16 @@ struct TokenizerTokenTableView: View {
         showWhitespace: Bool,
         selectedTokenIndex: Binding<Int?>
     ) {
+        rows = Self.makeRows(result: result)
+        self.showWhitespace = showWhitespace
+        _selectedTokenIndex = selectedTokenIndex
+    }
+
+    nonisolated static func makeRows(result: TokenizationResult) -> [Row] {
+        precondition(
+            result.flags.count == result.tokenIDs.count,
+            "TokenizationResult.flags must match tokenIDs."
+        )
         var built: [Row] = []
         built.reserveCapacity(result.tokenIDs.count)
         var segmentIndex = 0
@@ -38,13 +48,11 @@ struct TokenizerTokenTableView: View {
                 piece: result.tokenPieces[index],
                 decoded: segment.text,
                 mapping: result.sourceMapping,
-                segmentRange: segment.tokenRange,
+                specialName: result.flags[index].isSpecial ? result.flags[index].specialName : nil,
                 colorIndex: segmentIndex
             ))
         }
-        rows = built
-        self.showWhitespace = showWhitespace
-        _selectedTokenIndex = selectedTokenIndex
+        return built
     }
 
     var body: some View {
@@ -61,7 +69,7 @@ struct TokenizerTokenTableView: View {
                         }
                     }
                 }
-                .frame(width: max(642, proxy.size.width), height: proxy.size.height)
+                .frame(width: max(754, proxy.size.width), height: proxy.size.height)
             }
         }
         .textSelection(.enabled)
@@ -74,6 +82,7 @@ struct TokenizerTokenTableView: View {
             headerCell("ID", width: 86)
             headerCell("Token Piece", width: 152)
             headerCell("Decoded", width: 220)
+            headerCell("Special", width: 112)
             headerCell("Mapping", width: 112)
             Spacer(minLength: 0)
         }
@@ -90,28 +99,33 @@ struct TokenizerTokenTableView: View {
     }
 
     private func rowView(_ row: Row) -> some View {
-        let selected = selectedTokenIndex.map(row.segmentRange.contains) == true
-        return HStack(spacing: 0) {
-            HStack(spacing: 6) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(segmentColor(row.colorIndex))
-                    .frame(width: 8, height: 8)
-                Text(row.index.formatted())
+        let selected = selectedTokenIndex == row.index
+        return Button {
+            selectedTokenIndex = toggleTokenSelection(selectedTokenIndex, clicked: row.index)
+        } label: {
+            HStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(segmentColor(row.colorIndex))
+                        .frame(width: 8, height: 8)
+                    Text(row.index.formatted())
+                }
+                .padding(.horizontal, 8)
+                .frame(width: 52, alignment: .leading)
+                cell(row.tokenID.formatted(), width: 86)
+                cell(visible(row.piece ?? "—"), width: 152)
+                cell(visible(row.decoded), width: 220)
+                cell(row.specialName ?? "—", width: 112)
+                cell(row.mapping.title, width: 112)
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 8)
-            .frame(width: 52, alignment: .leading)
-            cell(row.tokenID.formatted(), width: 86)
-            cell(visible(row.piece ?? "—"), width: 152)
-            cell(visible(row.decoded), width: 220)
-            cell(row.mapping.title, width: 112)
-            Spacer(minLength: 0)
+            .font(.system(size: 11, design: .monospaced))
+            .frame(height: 30)
+            .background(selected ? Color.accentColor.opacity(0.14) : Color.clear)
+            .overlay(alignment: .bottom) { Divider().opacity(0.55) }
+            .contentShape(Rectangle())
         }
-        .font(.system(size: 11, design: .monospaced))
-        .frame(height: 30)
-        .background(selected ? Color.accentColor.opacity(0.14) : Color.clear)
-        .overlay(alignment: .bottom) { Divider().opacity(0.55) }
-        .contentShape(Rectangle())
-        .onHover { hovering in selectedTokenIndex = hovering ? row.index : nil }
+        .buttonStyle(.plain)
         .contextMenu {
             Button("复制 ID") { copy(row.tokenID.formatted()) }
             if let piece = row.piece {
@@ -120,7 +134,10 @@ struct TokenizerTokenTableView: View {
             Button("复制解码片段") { copy(row.decoded) }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Token \(row.index)，ID \(row.tokenID)，Piece \(visible(row.piece ?? "无"))，Decoded \(visible(row.decoded))，\(row.mapping.title)")
+        .accessibilityLabel(
+            "Token \(row.index)，ID \(row.tokenID)，Piece \(visible(row.piece ?? "无"))，Decoded \(visible(row.decoded))，Special \(row.specialName ?? "无")，\(row.mapping.title)"
+        )
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func cell(_ text: String, width: CGFloat) -> some View {

@@ -16,6 +16,10 @@ func visibleTokenizerText(_ text: String, showWhitespace: Bool) -> String {
         .replacingOccurrences(of: "\n", with: "↵")
 }
 
+func toggleTokenSelection(_ current: Int?, clicked: Int) -> Int? {
+    current == clicked ? nil : clicked
+}
+
 struct TokenizerPlaygroundView: View {
     enum InputMode: String, CaseIterable, Identifiable {
         case raw
@@ -107,6 +111,9 @@ struct TokenizerPlaygroundView: View {
         }
         .onChange(of: store.tokenizerChatTemplate) { _, _ in
             initializeVariablesIfNeeded()
+        }
+        .onChange(of: store.tokenizationResult) { _, _ in
+            selectedTokenIndex = nil
         }
         .onAppear {
             initializeVariablesIfNeeded()
@@ -313,22 +320,32 @@ struct TokenizerPlaygroundView: View {
                     ScrollView {
                         TokenizerWrapLayout(spacing: 3) {
                             ForEach(Array(result.segments.enumerated()), id: \.element.id) { index, segment in
-                                Text(visible(segment.text))
-                                    .font(.system(size: 12.5, design: .monospaced))
-                                    .padding(.horizontal, 3)
-                                    .padding(.vertical, 2)
-                                    .background(segmentColor(index), in: RoundedRectangle(cornerRadius: 3))
-                                    .overlay {
-                                        if selectedTokenIndex.map(segment.tokenRange.contains) == true {
-                                            RoundedRectangle(cornerRadius: 3)
-                                                .stroke(.primary.opacity(0.7), lineWidth: 2)
+                                let selected = selectedTokenIndex.map(segment.tokenRange.contains) == true
+                                Button {
+                                    selectedTokenIndex = toggleTokenSelection(
+                                        selectedTokenIndex,
+                                        clicked: segment.tokenRange.lowerBound
+                                    )
+                                } label: {
+                                    Text(visible(segment.text))
+                                        .font(.system(size: 12.5, design: .monospaced))
+                                        .padding(.horizontal, 3)
+                                        .padding(.vertical, 2)
+                                        .background(segmentColor(index), in: RoundedRectangle(cornerRadius: 3))
+                                        .overlay {
+                                            if selected {
+                                                RoundedRectangle(cornerRadius: 3)
+                                                    .stroke(.primary.opacity(0.7), lineWidth: 2)
+                                            }
                                         }
-                                    }
-                                    .opacity(selectedTokenIndex == nil || selectedTokenIndex.map(segment.tokenRange.contains) == true ? 1 : 0.28)
-                                    .onHover { hovering in
-                                        selectedTokenIndex = hovering ? segment.tokenRange.lowerBound : nil
-                                    }
-                                    .accessibilityLabel("Token \(segment.tokenRange.lowerBound) 到 \(segment.tokenRange.upperBound - 1)：\(visible(segment.text))")
+                                        .opacity(selectedTokenIndex == nil || selected ? 1 : 0.28)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(
+                                    "Token \(segment.tokenRange.lowerBound) 到 \(segment.tokenRange.upperBound - 1)，ID \(segment.tokenIDs.map(String.init).joined(separator: ", "))，文本 \(visible(segment.text))"
+                                )
+                                .accessibilityAddTraits(selected ? .isSelected : [])
                             }
                         }
                         .padding(13)
@@ -353,15 +370,32 @@ struct TokenizerPlaygroundView: View {
             ScrollView {
                 TokenizerWrapLayout(spacing: 3) {
                     ForEach(result.tokenIDs.indices, id: \.self) { index in
-                        Text("\(result.tokenIDs[index])\(index == result.tokenIDs.count - 1 ? "" : ",")")
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .padding(.horizontal, 2)
-                            .padding(.vertical, 1)
-                            .foregroundStyle(selectedTokenIndex == nil || selectedSegmentRange?.contains(index) == true ? .primary : .secondary)
-                            .background(selectedSegmentRange?.contains(index) == true ? Color.primary.opacity(0.12) : .clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
-                            .onHover { hovering in selectedTokenIndex = hovering ? index : nil }
-                            .accessibilityLabel("Token \(index)，ID \(result.tokenIDs[index])")
+                        let selected = selectedTokenIndex == index
+                        let tokenText = result.tokenPieces[index]
+                            ?? result.segment(containing: index)?.text
+                            ?? "无"
+                        Button {
+                            selectedTokenIndex = toggleTokenSelection(selectedTokenIndex, clicked: index)
+                        } label: {
+                            Text(result.tokenIDs[index].formatted())
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .foregroundStyle(selectedTokenIndex == nil || selected ? .primary : .secondary)
+                                .background(selected ? Color.accentColor.opacity(0.16) : .clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                                .overlay {
+                                    if selected {
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .stroke(Color.accentColor.opacity(0.65))
+                                    }
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            "Token \(index)，ID \(result.tokenIDs[index])，文本 \(visible(tokenText))"
+                        )
+                        .accessibilityAddTraits(selected ? .isSelected : [])
                     }
                 }
                 .padding(12)
@@ -492,11 +526,6 @@ struct TokenizerPlaygroundView: View {
             return store.tokenizationResult?.decodedText ?? ""
         }
         return renderedText
-    }
-
-    private var selectedSegmentRange: Range<Int>? {
-        guard let selectedTokenIndex else { return nil }
-        return store.tokenizationResult?.segment(containing: selectedTokenIndex)?.tokenRange
     }
 
     private func visible(_ text: String) -> String {

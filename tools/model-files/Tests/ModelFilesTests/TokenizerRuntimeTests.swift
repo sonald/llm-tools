@@ -273,6 +273,23 @@ final class TokenizerRuntimeTests: XCTestCase {
         XCTAssertEqual(visibleTokenizerText(" a\tb ", showWhitespace: true), "·a→b·")
     }
 
+    func testTokenSelectionClickTogglesExactIndex() {
+        XCTAssertEqual(toggleTokenSelection(nil, clicked: 2), 2)
+        XCTAssertNil(toggleTokenSelection(2, clicked: 2))
+        XCTAssertEqual(toggleTokenSelection(2, clicked: 3), 3)
+    }
+
+    func testTokenTableRowsKeepExactIndexesAndSpecialNames() async throws {
+        let runtime = try TokenizerRuntime(bundle: try fixtureBundle(named: "bpe"))
+        let result = try await runtime.decode([0, 15, 2])
+
+        let rows = TokenizerTokenTableView.makeRows(result: result)
+
+        XCTAssertEqual(rows.map(\.index), [0, 1, 2])
+        XCTAssertEqual(rows.map(\.specialName), ["bos_token", nil, "eos_token"])
+        XCTAssertEqual(rows.count, result.flags.count)
+    }
+
     private func fixtureBundle(named name: String) throws -> TokenizerBundle {
         let directory = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
