@@ -17,18 +17,26 @@ func visibleTokenizerText(_ text: String, showWhitespace: Bool) -> String {
 }
 
 struct TokenizerPlaygroundView: View {
-    private enum InputMode: String, CaseIterable, Identifiable {
+    enum InputMode: String, CaseIterable, Identifiable {
         case raw
         case chat
+        case tokenIDs
 
         var id: Self { self }
-        var title: String { self == .raw ? "原始文本" : "Chat 对话" }
+        var title: String {
+            switch self {
+            case .raw: "原始文本"
+            case .chat: "Chat 对话"
+            case .tokenIDs: "Token IDs"
+            }
+        }
     }
 
     private enum WorkRequest: Hashable {
         case waiting
         case raw(String)
         case chat(TemplateRenderRequest)
+        case tokenIDs(String)
     }
 
     private enum ResultMode: String, CaseIterable, Identifiable {
@@ -44,6 +52,7 @@ struct TokenizerPlaygroundView: View {
 
     @State private var inputMode: InputMode = .chat
     @State private var rawText = "ModelFiles 让 tokenizer 的行为变得可见。 👩‍💻\nWhitespace matters."
+    @State private var tokenIDsText = ""
     @State private var messages = [
         TemplateMessage(role: "system", content: "You are a concise assistant."),
         TemplateMessage(role: "user", content: "解释一下：分词为什么会影响上下文长度？"),
@@ -116,8 +125,8 @@ struct TokenizerPlaygroundView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
-                    .frame(width: 174)
-                    .help(chatIsAvailable ? "选择原始文本或 Chat Template 输入" : "当前目录没有可用 Chat Template")
+                    .frame(width: 250)
+                    .help(chatIsAvailable ? "选择原始文本、Chat Template 或 Token IDs 输入" : "当前目录没有可用 Chat Template；Token IDs 仍可用")
                 }
 
                 Group {
@@ -130,7 +139,7 @@ struct TokenizerPlaygroundView: View {
                             addGenerationPrompt: $addGenerationPrompt,
                             compact: true
                         )
-                    } else {
+                    } else if inputMode == .raw {
                         VStack(spacing: 0) {
                             TextEditor(text: $rawText)
                                 .font(.system(size: 12.5, design: .monospaced))
@@ -149,6 +158,25 @@ struct TokenizerPlaygroundView: View {
                             .padding(.horizontal, 10)
                             .frame(height: 38)
                         }
+                    } else {
+                        VStack(spacing: 0) {
+                            TextEditor(text: $tokenIDsText)
+                                .font(.system(size: 12.5, design: .monospaced))
+                                .scrollContentBackground(.hidden)
+                                .padding(9)
+                                .accessibilityLabel("Token IDs")
+                            Divider()
+                            HStack {
+                                Text("支持逗号、空白或 JSON 数组")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("清空") { tokenIDsText = "" }
+                                    .controlSize(.small)
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(height: 38)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -157,12 +185,12 @@ struct TokenizerPlaygroundView: View {
 
             TokenizerPanel {
                 TokenizerPanelHeader(
-                    title: "送入 tokenizer 的文本",
+                    title: inputMode == .tokenIDs ? "解码文本" : "送入 tokenizer 的文本",
                     detail: authoritativeInputDetail
                 ) {
                     Button("复制") { copyAuthoritativeInput() }
                         .controlSize(.small)
-                        .disabled(renderedText.isEmpty)
+                        .disabled(authoritativeText.isEmpty)
                 }
                 Group {
                     if let renderError {
@@ -172,15 +200,15 @@ struct TokenizerPlaygroundView: View {
                             .textSelection(.enabled)
                             .padding(12)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    } else if renderedText.isEmpty {
-                        Text("输入内容后显示实际编码文本。")
+                    } else if authoritativeText.isEmpty {
+                        Text(inputMode == .tokenIDs ? "输入 Token ID 后显示解码文本。" : "输入内容后显示实际编码文本。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(12)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     } else {
                         ScrollView([.horizontal, .vertical]) {
-                            Text(renderedText)
+                            Text(authoritativeText)
                                 .font(.system(size: 11.5, design: .monospaced))
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -236,7 +264,7 @@ struct TokenizerPlaygroundView: View {
     private var metrics: some View {
         HStack(spacing: 9) {
             metricCard("Token count", value: store.tokenizationResult?.tokenCount.formatted() ?? "—")
-            metricCard("Unicode 字符", value: renderedText.count.formatted())
+            metricCard("Unicode 字符", value: authoritativeText.count.formatted())
             metricCard("Bytes / token", value: bytesPerToken)
         }
     }
@@ -268,11 +296,15 @@ struct TokenizerPlaygroundView: View {
         case let .inputTooLarge(limit):
             stateView(title: "输入超过 \(Int64(limit).formattedByteCount) 上限", systemImage: "exclamationmark.triangle")
         case let .failed(message):
-            VStack(spacing: 10) {
+            if inputMode == .tokenIDs {
                 stateView(title: message, systemImage: "xmark.octagon")
-                Button("重试") { store.retryTokenizerPlayground() }
+            } else {
+                VStack(spacing: 10) {
+                    stateView(title: message, systemImage: "xmark.octagon")
+                    Button("重试") { store.retryTokenizerPlayground() }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .idle:
             stateView(title: "等待加载 tokenizer", systemImage: "hourglass")
         case .ready:
@@ -377,6 +409,8 @@ struct TokenizerPlaygroundView: View {
                 variables: variables,
                 addGenerationPrompt: addGenerationPrompt
             ))
+        case .tokenIDs:
+            return .tokenIDs(tokenIDsText)
         }
     }
 
@@ -392,8 +426,18 @@ struct TokenizerPlaygroundView: View {
             renderedText = text
             renderError = nil
             isRendering = false
-            if case .failed = store.tokenizerPhase { return }
             store.tokenize(text)
+        case let .tokenIDs(raw):
+            renderedText = ""
+            renderError = nil
+            isRendering = false
+            do {
+                try await Task.sleep(for: .milliseconds(225))
+                try Task.checkCancellation()
+            } catch {
+                return
+            }
+            store.decodeTokenIDs(raw)
         case let .chat(request):
             isRendering = true
             let outcome = await Task.detached(priority: .userInitiated) {
@@ -418,22 +462,36 @@ struct TokenizerPlaygroundView: View {
     private var inputStatus: String {
         if isRendering { return "正在渲染" }
         if renderError != nil { return "模板错误" }
+        if inputMode == .tokenIDs { return "由 Token ID 解码" }
         return "实时编码"
     }
 
     private var authoritativeInputDetail: String {
+        if inputMode == .tokenIDs {
+            return "由 Token ID 解码 · \(authoritativeText.utf8.count.formatted()) bytes"
+        }
         let source = inputMode == .chat ? "chat_template 渲染结果" : "原始文本"
         return "\(source) · \(renderedText.utf8.count.formatted()) bytes"
     }
 
     private var resultStatus: String {
+        if inputMode == .tokenIDs {
+            return "\(file.path) · 由 Token ID 解码"
+        }
         let mapping = store.tokenizationResult?.sourceMapping.title ?? "等待结果"
         return "\(file.path) · \(mapping)"
     }
 
     private var bytesPerToken: String {
         guard let count = store.tokenizationResult?.tokenCount, count > 0 else { return "—" }
-        return String(format: "%.1f", Double(renderedText.utf8.count) / Double(count))
+        return String(format: "%.1f", Double(authoritativeText.utf8.count) / Double(count))
+    }
+
+    private var authoritativeText: String {
+        if inputMode == .tokenIDs {
+            return store.tokenizationResult?.decodedText ?? ""
+        }
+        return renderedText
     }
 
     private var selectedSegmentRange: Range<Int>? {
@@ -458,7 +516,7 @@ struct TokenizerPlaygroundView: View {
 
     private func copyAuthoritativeInput() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(renderedText, forType: .string)
+        NSPasteboard.general.setString(authoritativeText, forType: .string)
     }
 
     private func initializeVariablesIfNeeded() {

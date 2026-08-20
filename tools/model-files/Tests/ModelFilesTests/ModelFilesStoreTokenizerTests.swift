@@ -4,6 +4,17 @@ import XCTest
 
 @MainActor
 final class ModelFilesStoreTokenizerTests: XCTestCase {
+    func testPlaygroundInputModesKeepRawChatAndAlwaysExposeTokenIDs() {
+        XCTAssertEqual(
+            TokenizerPlaygroundView.InputMode.allCases.map(\.rawValue),
+            ["raw", "chat", "tokenIDs"]
+        )
+        XCTAssertEqual(
+            TokenizerPlaygroundView.InputMode.allCases.map(\.title),
+            ["原始文本", "Chat 对话", "Token IDs"]
+        )
+    }
+
     func testTokenizerPerspectiveLoadsSessionAndPublishesLatestInputOnly() async throws {
         let fixture = try fixtureData()
         let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
@@ -66,7 +77,14 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         store.perspective = .playground
         try await waitUntil { store.tokenizerPhase == .ready }
 
+        store.decodeTokenIDs("15, 22")
+        try await waitUntil { store.tokenizationResult?.direction == .decode }
+        XCTAssertEqual(store.tokenizationResult?.tokenIDs, [15, 22])
+
         store.decodeTokenIDs("[15, 22]")
+        try await waitUntil { store.tokenizationResult?.direction == .decode }
+        XCTAssertEqual(store.tokenizationResult?.tokenIDs, [15, 22])
+
         store.decodeTokenIDs("22")
         try await waitUntil { store.tokenizationResult?.direction == .decode }
 
@@ -80,12 +98,36 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         XCTAssertTrue(message.contains("index 1"))
         XCTAssertNil(store.tokenizationResult)
 
+        store.tokenize("offline")
+        store.tokenize("path")
+        try await waitUntil { store.tokenizationResult?.direction == .encode }
+        XCTAssertEqual(store.tokenizationResult?.input, "path")
+        XCTAssertEqual(store.tokenizationResult?.tokenIDs, [22])
+
         let oversized = String(repeating: "1 ", count: TokenIDParser.maximumInputByteCount / 2 + 1)
         store.decodeTokenIDs(oversized)
         XCTAssertEqual(
             store.tokenizerPhase,
             .inputTooLarge(limit: TokenIDParser.maximumInputByteCount)
         )
+    }
+
+    func testTokenIDsRemainAvailableWithoutChatTemplate() async throws {
+        let fixture = try fixtureData(includesChatTemplate: false)
+        let access = StoreTokenizerAccess(data: fixture.data, files: fixture.files)
+        let store = ModelFilesStore(service: RepositoryService(makeAccess: { _ in access }))
+        store.repositoryInput = "/tmp/tokenizer-store-fixture"
+
+        store.openRepository()
+        try await waitUntil { store.selectedInspection != nil }
+        store.perspective = .playground
+        try await waitUntil { store.tokenizerPhase == .ready }
+
+        XCTAssertNil(store.tokenizerChatTemplate)
+        store.decodeTokenIDs("22")
+        try await waitUntil { store.tokenizationResult?.direction == .decode }
+        XCTAssertEqual(store.tokenizationResult?.tokenIDs, [22])
+        XCTAssertEqual(store.tokenizationResult?.decodedText, "path")
     }
 
     func testSentencePieceModelOpensDirectlyInPlayground() async throws {
@@ -107,7 +149,8 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
     }
 
     private func fixtureData(
-        includesOtherFile: Bool = false
+        includesOtherFile: Bool = false,
+        includesChatTemplate: Bool = true
     ) throws -> (data: [String: Data], files: [RepositoryFile]) {
         let directory = Bundle.module.resourceURL!
             .appending(path: "Fixtures/Tokenizers/bpe", directoryHint: .isDirectory)
@@ -116,19 +159,25 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
             JSONSerialization.jsonObject(with: Data(contentsOf: directory.appending(path: "tokenizer_config.json")))
                 as? [String: Any]
         )
-        configObject["chat_template"] = "CONFIG_TEMPLATE"
+        if includesChatTemplate {
+            configObject["chat_template"] = "CONFIG_TEMPLATE"
+        } else {
+            configObject.removeValue(forKey: "chat_template")
+        }
         let config = try JSONSerialization.data(withJSONObject: configObject, options: [.sortedKeys])
-        let template = Data("JINJA_TEMPLATE".utf8)
         var data = [
             "tokenizer.json": tokenizer,
             "tokenizer_config.json": config,
-            "chat_template.jinja": template,
         ]
         var files = [
             file("tokenizer.json", data: tokenizer, category: .tokenizer),
             file("tokenizer_config.json", data: config, category: .tokenizer),
-            file("chat_template.jinja", data: template, category: .templates),
         ]
+        if includesChatTemplate {
+            let template = Data("JINJA_TEMPLATE".utf8)
+            data["chat_template.jinja"] = template
+            files.append(file("chat_template.jinja", data: template, category: .templates))
+        }
         if includesOtherFile {
             let notes = Data("notes".utf8)
             data["notes.txt"] = notes
