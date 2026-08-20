@@ -54,6 +54,18 @@ final class FileClassifierTests: XCTestCase {
         XCTAssertEqual(FileClassifier.category(for: "README.md"), .documentation)
     }
 
+    func testClassifiesAdapterAndProcessorConfigsAsConfiguration() {
+        for path in [
+            "adapter_config.json",
+            "preprocessor_config.json",
+            "processor_config.json",
+            "nested/PROCESSOR_CONFIG.JSON",
+        ] {
+            XCTAssertEqual(FileClassifier.category(for: path), .configuration, path)
+        }
+        XCTAssertEqual(FileClassifier.category(for: "nested/tokenizer_config.json"), .tokenizer)
+    }
+
     func testRoutesPythonAndPDFFilesToPurposeBuiltReaders() {
         XCTAssertEqual(FileClassifier.syntaxLanguage(for: "scripts/modeling.py"), "python")
         XCTAssertEqual(FileClassifier.syntaxLanguage(for: "SCRIPTS/MODELING.PY"), "python")
@@ -111,6 +123,14 @@ final class FileClassifierTests: XCTestCase {
         XCTAssertLessThan(
             FileClassifier.sortPriority(for: "README.md"),
             FileClassifier.sortPriority(for: "LICENSE")
+        )
+        XCTAssertLessThan(
+            FileClassifier.sortPriority(for: "adapter_config.json"),
+            FileClassifier.sortPriority(for: "other.json")
+        )
+        XCTAssertLessThan(
+            FileClassifier.sortPriority(for: "preprocessor_config.json"),
+            FileClassifier.sortPriority(for: "processor_config.json")
         )
     }
 

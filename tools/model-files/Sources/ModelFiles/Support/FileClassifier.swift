@@ -49,6 +49,11 @@ enum FileClassifier {
             return .weights
         }
 
+        if name == "adapter_config.json" || name == "preprocessor_config.json" ||
+            name == "processor_config.json" {
+            return .configuration
+        }
+
         if name == "config.json" || name == "configuration.json" ||
             name == "generation_config.json" || name.hasSuffix("_config.json") &&
             !name.contains("tokenizer") && !name.contains("processor") &&
@@ -83,6 +88,7 @@ enum FileClassifier {
         let name = URL(fileURLWithPath: path).lastPathComponent.lowercased()
         let preferred = [
             "config.json", "configuration.json", "generation_config.json",
+            "adapter_config.json", "preprocessor_config.json", "processor_config.json",
             "tokenizer_config.json", "tokenizer.json", "vocab.json", "merges.txt",
             "special_tokens_map.json", "model.safetensors.index.json",
             "pytorch_model.bin.index.json", "readme.md", "license"
