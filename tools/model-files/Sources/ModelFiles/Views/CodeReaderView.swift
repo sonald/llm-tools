@@ -148,7 +148,9 @@ func parentHiddenFolds(in ranges: [FoldRange], collapsed: Set<FoldRange>) -> Set
 }
 
 func foldAccessibilityActionName(for fold: FoldRange, collapsed: Bool) -> String {
-    collapsed ? "展开第 \(fold.startLine) 行结构" : "折叠第 \(fold.startLine) 行结构"
+    collapsed
+        ? String(localized: "展开第 \(fold.startLine.formatted()) 行结构")
+        : String(localized: "折叠第 \(fold.startLine.formatted()) 行结构")
 }
 
 func makeFoldAccessibilityCustomActions(
@@ -166,7 +168,10 @@ func makeFoldAccessibilityCustomActions(
         })
     }
     if !collapsed.isEmpty {
-        actions.append(NSAccessibilityCustomAction(name: "全部展开", handler: onExpandAll))
+        actions.append(NSAccessibilityCustomAction(
+            name: String(localized: "全部展开"),
+            handler: onExpandAll
+        ))
     }
     return actions
 }
@@ -225,7 +230,7 @@ struct CodeReaderTextView: NSViewRepresentable {
         textView.autoresizingMask = [.width]
         textView.setAccessibilityElement(true)
         textView.setAccessibilityRole(.textArea)
-        textView.setAccessibilityLabel("源码")
+        textView.setAccessibilityLabel(String(localized: "源码"))
         scrollView.documentView = textView
 
         context.coordinator.textView = textView
@@ -479,8 +484,8 @@ struct CodeReaderTextView: NSViewRepresentable {
             button.image = symbol
             button.title = isCollapsed ? "\(fold.endLine - fold.startLine)" : ""
             let label = isCollapsed
-                ? "展开第 \(fold.startLine) 行结构"
-                : "折叠第 \(fold.startLine) 行结构"
+                ? String(localized: "展开第 \(fold.startLine.formatted()) 行结构")
+                : String(localized: "折叠第 \(fold.startLine.formatted()) 行结构")
             button.toolTip = label
 
             guard !hiddenByParent,

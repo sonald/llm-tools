@@ -28,7 +28,7 @@ enum RenderedOutputInspector {
                     id: index,
                     level: 0,
                     title: token.name,
-                    detail: "特殊 token",
+                    detail: String(localized: "特殊 token"),
                     range: token.range,
                     payloadRange: nil
                 )

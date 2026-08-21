@@ -127,8 +127,8 @@ struct TemplatePlaygroundView: View {
     private var templatePane: some View {
         VStack(alignment: .leading, spacing: 0) {
             PaneHeader(
-                title: "Jinja 模板",
-                detail: "\(template.split(whereSeparator: \.isNewline).count) 行"
+                title: String(localized: "Jinja 模板"),
+                detail: String(localized: "\(template.split(whereSeparator: \.isNewline).count) 行")
             )
             Divider()
             JinjaTextEditor(text: $template)
@@ -143,8 +143,8 @@ struct TemplatePlaygroundView: View {
         return VStack(alignment: .leading, spacing: 0) {
             HStack {
                 PaneHeader(
-                    title: "渲染结果",
-                    detail: renderError == nil ? "\(output.utf8.count.formatted()) bytes" : "未生成"
+                    title: String(localized: "渲染结果"),
+                    detail: renderError == nil ? String(localized: "\(output.utf8.count) 字节") : String(localized: "未生成")
                 )
                 Spacer()
                 Button {
@@ -433,7 +433,7 @@ struct TemplateRequestEditor: View {
                         .overlay {
                             RoundedRectangle(cornerRadius: 6).stroke(.separator.opacity(0.65))
                         }
-                        .accessibilityLabel("\(message.role) 消息")
+                        .accessibilityLabel(String(localized: "\(message.role) 消息"))
 
                     Button {
                         messages.removeAll { $0.id == message.id }
@@ -441,8 +441,8 @@ struct TemplateRequestEditor: View {
                         Image(systemName: "xmark")
                     }
                     .buttonStyle(.borderless)
-                    .help("删除消息")
-                    .accessibilityLabel("删除消息")
+                    .help(String(localized: "删除消息"))
+                    .accessibilityLabel(String(localized: "删除消息"))
                 }
             }
 
@@ -621,7 +621,7 @@ private struct MessageInputCard: View {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
-                .help("删除消息")
+                .help(String(localized: "删除消息"))
             }
 
             TextEditor(text: $message.content)

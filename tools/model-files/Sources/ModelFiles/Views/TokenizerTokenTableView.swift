@@ -81,7 +81,7 @@ struct TokenizerTokenTableView: View {
             }
         }
         .textSelection(.enabled)
-        .accessibilityLabel("Token 表，共 \(rows.count) 行")
+        .accessibilityLabel(String(localized: "Token 表，共 \(rows.count) 行"))
     }
 
     private var header: some View {
@@ -145,7 +145,7 @@ struct TokenizerTokenTableView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-            "Token \(row.index)，ID \(row.tokenID)，Piece \(visible(row.piece ?? "无"))，Decoded \(visible(row.decoded))，Role \(row.role?.title ?? "无")，Special \(row.specialName ?? "无")，\(row.mapping.title)"
+            String(localized: "Token \(row.index)，ID \(row.tokenID)，Piece \(visible(row.piece ?? String(localized: "无")))，Decoded \(visible(row.decoded))，Role \(row.role?.title ?? String(localized: "无"))，Special \(row.specialName ?? String(localized: "无"))，\(row.mapping.title)")
         )
         .accessibilityAddTraits(selected ? .isSelected : [])
     }

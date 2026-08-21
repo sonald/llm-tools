@@ -18,10 +18,13 @@ struct IMatrixWorkspaceView: View {
                     }
 
                     Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 12) {
-                        factRow("条目数", overview.entries.count.formatted())
-                        factRow("Chunk 数", overview.chunkCount?.formatted() ?? "未记录")
-                        factRow("数据集", overview.dataset ?? "未记录")
-                        factRow("文件大小", Int64(overview.byteCount).formattedByteCount)
+                        factRow(String(localized: "条目数"), overview.entries.count.formatted())
+                        factRow(
+                            String(localized: "Chunk 数"),
+                            overview.chunkCount?.formatted() ?? String(localized: "未记录")
+                        )
+                        factRow(String(localized: "数据集"), overview.dataset ?? String(localized: "未记录"))
+                        factRow(String(localized: "文件大小"), Int64(overview.byteCount).formattedByteCount)
                     }
                     .padding(16)
                     .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))

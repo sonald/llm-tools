@@ -29,8 +29,8 @@ struct TokenizerPlaygroundView: View {
         var id: Self { self }
         var title: String {
             switch self {
-            case .raw: "原始文本"
-            case .chat: "Chat 对话"
+            case .raw: String(localized: "原始文本")
+            case .chat: String(localized: "Chat 对话")
             case .tokenIDs: "Token IDs"
             }
         }
@@ -48,7 +48,9 @@ struct TokenizerPlaygroundView: View {
         case table
 
         var id: Self { self }
-        var title: String { self == .segments ? "片段" : "Token 表" }
+        var title: String {
+            self == .segments ? String(localized: "片段") : String(localized: "Token 表")
+        }
     }
 
     @ObservedObject var store: ModelFilesStore
@@ -172,7 +174,7 @@ struct TokenizerPlaygroundView: View {
     private var leftColumn: some View {
         VStack(spacing: 12) {
             TokenizerPanel {
-                TokenizerPanelHeader(title: "输入", detail: inputStatus) {
+                TokenizerPanelHeader(title: String(localized: "输入"), detail: inputStatus) {
                     HStack(spacing: 8) {
                         templateSourceControl
                         Picker("输入模式", selection: $inputMode) {
@@ -185,7 +187,9 @@ struct TokenizerPlaygroundView: View {
                         .pickerStyle(.segmented)
                         .frame(width: 250)
                     }
-                    .help(chatIsAvailable ? "选择原始文本、Chat Template 或 Token IDs 输入" : "当前目录没有可用 Chat Template；Token IDs 仍可用")
+                    .help(chatIsAvailable ?
+                          String(localized: "选择原始文本、Chat Template 或 Token IDs 输入") :
+                          String(localized: "当前目录没有可用 Chat Template；Token IDs 仍可用"))
                 }
 
                 Group {
@@ -204,10 +208,10 @@ struct TokenizerPlaygroundView: View {
                                 .font(.system(size: 12.5, design: .monospaced))
                                 .scrollContentBackground(.hidden)
                                 .padding(9)
-                                .accessibilityLabel("原始文本")
+                                .accessibilityLabel(String(localized: "原始文本"))
                             Divider()
                             HStack {
-                                Text("\(rawText.utf8.count.formatted()) bytes")
+                                Text("\(rawText.utf8.count) 字节")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 Spacer()
@@ -223,7 +227,7 @@ struct TokenizerPlaygroundView: View {
                                 .font(.system(size: 12.5, design: .monospaced))
                                 .scrollContentBackground(.hidden)
                                 .padding(9)
-                                .accessibilityLabel("Token IDs")
+                                .accessibilityLabel(String(localized: "Token IDs"))
                             Divider()
                             HStack {
                                 Text("支持逗号、空白或 JSON 数组")
@@ -244,7 +248,9 @@ struct TokenizerPlaygroundView: View {
 
             TokenizerPanel {
                 TokenizerPanelHeader(
-                    title: inputMode == .tokenIDs ? "解码文本" : "送入 tokenizer 的文本",
+                    title: inputMode == .tokenIDs ?
+                        String(localized: "解码文本") :
+                        String(localized: "送入 tokenizer 的文本"),
                     detail: authoritativeInputDetail
                 ) {
                     Button("复制") { copyAuthoritativeInput() }
@@ -260,7 +266,9 @@ struct TokenizerPlaygroundView: View {
                             .padding(12)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     } else if authoritativeText.isEmpty {
-                        Text(inputMode == .tokenIDs ? "输入 Token ID 后显示解码文本。" : "输入内容后显示实际编码文本。")
+                        Text(inputMode == .tokenIDs ?
+                             String(localized: "输入 Token ID 后显示解码文本。") :
+                             String(localized: "输入内容后显示实际编码文本。"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(12)
@@ -287,7 +295,7 @@ struct TokenizerPlaygroundView: View {
 
             if let comparison = store.comparison {
                 TokenizerPanel {
-                    TokenizerPanelHeader(title: "对照", detail: resultStatus) {
+                    TokenizerPanelHeader(title: String(localized: "对照"), detail: resultStatus) {
                         comparisonControl
                     }
                     TokenizerComparisonView(
@@ -301,7 +309,7 @@ struct TokenizerPlaygroundView: View {
                 .frame(maxHeight: .infinity)
             } else {
                 TokenizerPanel {
-                    TokenizerPanelHeader(title: "分词结果", detail: resultStatus) {
+                    TokenizerPanelHeader(title: String(localized: "分词结果"), detail: resultStatus) {
                         HStack(spacing: 10) {
                             comparisonControl
                             Picker("结果视图", selection: $resultMode) {
@@ -326,7 +334,7 @@ struct TokenizerPlaygroundView: View {
                 TokenizerPanel {
                     TokenizerPanelHeader(
                         title: "Token IDs",
-                        detail: "\(store.tokenizationResult?.tokenCount.formatted() ?? "0") items"
+                        detail: String(localized: "\(store.tokenizationResult?.tokenCount ?? 0) 个 token")
                     ) {
                         Button("复制") { copyTokenIDs() }
                             .controlSize(.small)
@@ -394,14 +402,14 @@ struct TokenizerPlaygroundView: View {
     private var metrics: some View {
         VStack(spacing: 6) {
             HStack(spacing: 9) {
-                metricCard("Token count", value: store.tokenizationResult?.tokenCount.formatted() ?? "—")
-                metricCard("Unicode 字符", value: authoritativeText.count.formatted())
-                metricCard("Bytes / token", value: bytesPerToken)
+                metricCard(String(localized: "Token 数量"), value: store.tokenizationResult?.tokenCount.formatted() ?? "—")
+                metricCard(String(localized: "Unicode 字符"), value: authoritativeText.count.formatted())
+                metricCard(String(localized: "字节 / Token"), value: bytesPerToken)
             }
             if inputMode == .chat {
                 HStack(spacing: 9) {
-                    metricCard("正文 token", value: chatContentCount, compact: true)
-                    metricCard("模板开销（近似）", value: chatTemplateCount, compact: true)
+                    metricCard(String(localized: "正文 token"), value: chatContentCount, compact: true)
+                    metricCard(String(localized: "模板开销（近似）"), value: chatTemplateCount, compact: true)
                 }
             }
         }
@@ -428,11 +436,14 @@ struct TokenizerPlaygroundView: View {
     private var resultBody: some View {
         switch store.tokenizerPhase {
         case .loading:
-            stateView(title: "正在加载 tokenizer…", progress: true)
+            stateView(title: String(localized: "正在加载 tokenizer…"), progress: true)
         case .tokenizing:
-            stateView(title: "正在编码最新输入…", progress: true)
+            stateView(title: String(localized: "正在编码最新输入…"), progress: true)
         case let .inputTooLarge(limit):
-            stateView(title: "输入超过 \(Int64(limit).formattedByteCount) 上限", systemImage: "exclamationmark.triangle")
+            stateView(
+                title: String(localized: "输入超过 \(Int64(limit).formattedByteCount) 上限"),
+                systemImage: "exclamationmark.triangle"
+            )
         case let .recoverableTokenizerClassFailure(message):
             recoverableTokenizerClassView(message)
         case let .failed(message):
@@ -446,7 +457,7 @@ struct TokenizerPlaygroundView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case .idle:
-            stateView(title: "等待加载 tokenizer", systemImage: "hourglass")
+            stateView(title: String(localized: "等待加载 tokenizer"), systemImage: "hourglass")
         case .ready:
             if let result = store.tokenizationResult, !result.tokenIDs.isEmpty {
                 VStack(spacing: 0) {
@@ -495,7 +506,7 @@ struct TokenizerPlaygroundView: View {
                                     }
                                     .buttonStyle(.plain)
                                     .accessibilityLabel(
-                                        "Token \(segment.tokenRange.lowerBound) 到 \(segment.tokenRange.upperBound - 1)，ID \(segment.tokenIDs.map(String.init).joined(separator: ", "))，文本 \(visible(segment.text))，角色 \(role?.title ?? "无")"
+                                        String(localized: "Token \(segment.tokenRange.lowerBound) 到 \(segment.tokenRange.upperBound - 1)，ID \(segment.tokenIDs.map(String.init).joined(separator: ", "))，文本 \(visible(segment.text))，角色 \(role?.title ?? String(localized: "无"))")
                                     )
                                     .accessibilityAddTraits(selected ? .isSelected : [])
                                 }
@@ -512,7 +523,7 @@ struct TokenizerPlaygroundView: View {
                     }
                 }
             } else {
-                stateView(title: "输入内容后显示 token。", systemImage: "text.word.spacing")
+                stateView(title: String(localized: "输入内容后显示 token。"), systemImage: "text.word.spacing")
             }
         }
     }
@@ -526,7 +537,7 @@ struct TokenizerPlaygroundView: View {
                         let selected = selectedTokenIndex == index
                         let tokenText = result.tokenPieces[index]
                             ?? result.segment(containing: index)?.text
-                            ?? "无"
+                            ?? String(localized: "无")
                         Button {
                             selectedTokenIndex = toggleTokenSelection(selectedTokenIndex, clicked: index)
                         } label: {
@@ -546,7 +557,7 @@ struct TokenizerPlaygroundView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(
-                            "Token \(index)，ID \(result.tokenIDs[index])，文本 \(visible(tokenText))"
+                            String(localized: "Token \(index)，ID \(result.tokenIDs[index])，文本 \(visible(tokenText))")
                         )
                         .accessibilityAddTraits(selected ? .isSelected : [])
                     }
@@ -555,7 +566,7 @@ struct TokenizerPlaygroundView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
-            stateView(title: "暂无 token ID。", systemImage: "number")
+            stateView(title: String(localized: "暂无 token ID。"), systemImage: "number")
         }
     }
 
@@ -684,13 +695,13 @@ struct TokenizerPlaygroundView: View {
     }
 
     private var inputStatus: String {
-        if isRendering { return "正在渲染" }
-        if renderError != nil { return "模板错误" }
-        if inputMode == .tokenIDs { return "由 Token ID 解码" }
+        if isRendering { return String(localized: "正在渲染") }
+        if renderError != nil { return String(localized: "模板错误") }
+        if inputMode == .tokenIDs { return String(localized: "由 Token ID 解码") }
         if store.tokenizerPhase == .ready, let tokenizerClass = store.tokenizerClassOverride {
-            return "使用指定的 tokenizer_class=\(tokenizerClass)"
+            return String(localized: "使用指定的 tokenizer_class=\(tokenizerClass)")
         }
-        return "实时编码"
+        return String(localized: "实时编码")
     }
 
     private var tokenizerClassCandidate: String {
@@ -700,18 +711,20 @@ struct TokenizerPlaygroundView: View {
 
     private var authoritativeInputDetail: String {
         if inputMode == .tokenIDs {
-            return "由 Token ID 解码 · \(authoritativeText.utf8.count.formatted()) bytes"
+            return String(localized: "由 Token ID 解码 · \(authoritativeText.utf8.count) 字节")
         }
-        let source = inputMode == .chat ? "chat_template 渲染结果" : "原始文本"
-        return "\(source) · \(renderedText.utf8.count.formatted()) bytes"
+        let source = inputMode == .chat ?
+            String(localized: "chat_template 渲染结果") :
+            String(localized: "原始文本")
+        return String(localized: "\(source) · \(renderedText.utf8.count) 字节")
     }
 
     private var resultStatus: String {
         if inputMode == .tokenIDs {
-            return "\(file.path) · 由 Token ID 解码"
+            return String(localized: "\(file.path) · 由 Token ID 解码")
         }
-        let mapping = store.tokenizationResult?.sourceMapping.title ?? "等待结果"
-        return "\(file.path) · \(mapping)"
+        let mapping = store.tokenizationResult?.sourceMapping.title ?? String(localized: "等待结果")
+        return String(localized: "\(file.path) · \(mapping)")
     }
 
     private var bytesPerToken: String {
@@ -725,7 +738,7 @@ struct TokenizerPlaygroundView: View {
 
     private var chatTemplateCount: String {
         guard let count = store.tokenizationResult?.overhead?.templateCount else { return "—" }
-        return count < 0 ? "无法按差量拆分" : count.formatted()
+        return count < 0 ? String(localized: "无法按差量拆分") : count.formatted()
     }
 
     private var authoritativeText: String {

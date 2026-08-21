@@ -28,7 +28,7 @@ struct ContentView: View {
                     onSubmit: store.openRepository
                 )
                     .frame(width: 460)
-                    .help("输入模型 ID、仓库 URL、本地绝对路径或 ssh:// 地址")
+                    .help(String(localized: "输入模型 ID、仓库 URL、本地绝对路径或 ssh:// 地址"))
 
                 Button {
                     store.chooseLocalDirectory()
@@ -36,7 +36,7 @@ struct ContentView: View {
                     Label("选择文件夹", systemImage: "folder")
                         .labelStyle(.iconOnly)
                 }
-                .help("选择本地模型目录")
+                .help(String(localized: "选择本地模型目录"))
 
                 Button("打开") {
                     store.openRepository()
@@ -69,7 +69,7 @@ struct ContentView: View {
         }
     }
 
-    private let inputPlaceholder = "模型 ID、仓库 URL、本地路径或 ssh:// 地址…"
+    private let inputPlaceholder = String(localized: "模型 ID、仓库 URL、本地路径或 ssh:// 地址…")
 }
 
 private struct ModelHistoryField: NSViewRepresentable {
@@ -178,11 +178,15 @@ private struct ModelHistoryField: NSViewRepresentable {
 private struct RepositoryInputGuidanceView: View {
     var body: some View {
         VStack(spacing: 0) {
-            row(icon: "shippingbox", title: "模型仓库", example: "Qwen/Qwen3-4B 或仓库 URL")
+            row(
+                icon: "shippingbox",
+                title: String(localized: "模型仓库"),
+                example: String(localized: "Qwen/Qwen3-4B 或仓库 URL")
+            )
             Divider()
-            row(icon: "folder", title: "本地目录", example: "/Users/name/models/Qwen3-4B")
+            row(icon: "folder", title: String(localized: "本地目录"), example: "/Users/name/models/Qwen3-4B")
             Divider()
-            row(icon: "network", title: "SSH 目录", example: "ssh://user@host/absolute/path")
+            row(icon: "network", title: String(localized: "SSH 目录"), example: "ssh://user@host/absolute/path")
         }
         .padding(.vertical, 5)
         .frame(width: 460)

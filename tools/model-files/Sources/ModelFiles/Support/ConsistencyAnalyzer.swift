@@ -164,10 +164,10 @@ enum ConsistencyAnalyzer {
             findings.append(ConsistencyFinding(
                 id: "vocab-mismatch",
                 severity: .warning,
-                title: "词表大小不一致",
+                title: String(localized: "词表大小不一致"),
                 left: field("config.vocab_size", "count", String(configVocab), .embedded),
                 right: field("tokenizer.vocab_count", "count", String(tokenizerVocab), .derived),
-                detail: "config.json 与 tokenizer.json 的词表项数不同。"
+                detail: String(localized: "config.json 与 tokenizer.json 的词表项数不同。")
             ))
         }
 
@@ -176,10 +176,20 @@ enum ConsistencyAnalyzer {
             findings.append(ConsistencyFinding(
                 id: "missing-tokenizer-class",
                 severity: .warning,
-                title: "缺少 tokenizer_class",
-                left: field("tokenizer_config.json", "file", "已读取", .repository),
-                right: field("tokenizer_class", "string", "缺失", .embedded),
-                detail: "严格 tokenizer runtime 无法在未显式指定 class 时构造。"
+                title: String(localized: "缺少 tokenizer_class"),
+                left: field(
+                    "tokenizer_config.json",
+                    "file",
+                    String(localized: "已读取"),
+                    .repository
+                ),
+                right: field(
+                    "tokenizer_class",
+                    "string",
+                    String(localized: "缺失"),
+                    .embedded
+                ),
+                detail: String(localized: "严格 tokenizer runtime 无法在未显式指定 class 时构造。")
             ))
         }
 
@@ -187,10 +197,20 @@ enum ConsistencyAnalyzer {
             findings.append(ConsistencyFinding(
                 id: "missing-chat-template",
                 severity: .info,
-                title: "缺少可用 Chat Template",
-                left: field("chat_template.jinja", "template", "未发现", .repository),
-                right: field("tokenizer_config.chat_template", "template", "不可用", .derived),
-                detail: "仓库中没有可用的独立或内嵌 Chat Template。"
+                title: String(localized: "缺少可用 Chat Template"),
+                left: field(
+                    "chat_template.jinja",
+                    "template",
+                    String(localized: "未发现"),
+                    .repository
+                ),
+                right: field(
+                    "tokenizer_config.chat_template",
+                    "template",
+                    String(localized: "不可用"),
+                    .derived
+                ),
+                detail: String(localized: "仓库中没有可用的独立或内嵌 Chat Template。")
             ))
         }
 
@@ -200,7 +220,7 @@ enum ConsistencyAnalyzer {
             findings.append(ConsistencyFinding(
                 id: "eos-mismatch",
                 severity: .warning,
-                title: "EOS Token 不一致",
+                title: String(localized: "EOS Token 不一致"),
                 left: field(
                     "generation_config.eos_token_id",
                     "token IDs",
@@ -208,7 +228,7 @@ enum ConsistencyAnalyzer {
                     .embedded
                 ),
                 right: tokenizerEOS.field,
-                detail: "generation_config 与 tokenizer 的可靠 EOS ID 不同。"
+                detail: String(localized: "generation_config 与 tokenizer 的可靠 EOS ID 不同。")
             ))
         }
 
@@ -218,7 +238,7 @@ enum ConsistencyAnalyzer {
             findings.append(ConsistencyFinding(
                 id: "context-info",
                 severity: .info,
-                title: "上下文长度声明不同",
+                title: String(localized: "上下文长度声明不同"),
                 left: field("config.context", "count", String(configContext), .embedded),
                 right: field(
                     "tokenizer_config.model_max_length",
@@ -226,7 +246,7 @@ enum ConsistencyAnalyzer {
                     String(tokenizerContext),
                     .embedded
                 ),
-                detail: "模型与 tokenizer 的长度上限经常承担不同语义，请人工确认。"
+                detail: String(localized: "模型与 tokenizer 的长度上限经常承担不同语义，请人工确认。")
             ))
         }
 
@@ -234,10 +254,10 @@ enum ConsistencyAnalyzer {
             findings.append(ConsistencyFinding(
                 id: "gguf-context-mismatch",
                 severity: .warning,
-                title: "GGUF 上下文长度不一致",
+                title: String(localized: "GGUF 上下文长度不一致"),
                 left: field("config.context", "count", String(configContext), .embedded),
                 right: field("GGUF context_length", "count", String(ggufContext), .embedded),
-                detail: "已检查 GGUF 的 context_length 与 config.json 不同。"
+                detail: String(localized: "已检查 GGUF 的 context_length 与 config.json 不同。")
             ))
         }
 
@@ -247,7 +267,7 @@ enum ConsistencyAnalyzer {
             findings.append(ConsistencyFinding(
                 id: "gguf-vocab-mismatch",
                 severity: .warning,
-                title: "GGUF Token Embedding 与词表不一致",
+                title: String(localized: "GGUF Token Embedding 与词表不一致"),
                 left: field(
                     "GGUF \(embedding.name)[0]",
                     "count",
@@ -255,7 +275,7 @@ enum ConsistencyAnalyzer {
                     .embedded
                 ),
                 right: field("tokenizer.vocab_count", "count", String(tokenizerVocab), .derived),
-                detail: "保守识别的 token embedding 第一维与 tokenizer 词表项数不同。"
+                detail: String(localized: "保守识别的 token embedding 第一维与 tokenizer 词表项数不同。")
             ))
         }
 
@@ -263,10 +283,20 @@ enum ConsistencyAnalyzer {
             findings.append(ConsistencyFinding(
                 id: "missing-config",
                 severity: .info,
-                title: "缺少模型配置",
-                left: field("repository", "source", "当前仓库", .repository),
-                right: field("config.json", "file", "缺失", .repository),
-                detail: "仓库中没有 config.json 或 configuration.json。"
+                title: String(localized: "缺少模型配置"),
+                left: field(
+                    "repository",
+                    "source",
+                    String(localized: "当前仓库"),
+                    .repository
+                ),
+                right: field(
+                    "config.json",
+                    "file",
+                    String(localized: "缺失"),
+                    .repository
+                ),
+                detail: String(localized: "仓库中没有 config.json 或 configuration.json。")
             ))
         }
 
@@ -300,7 +330,7 @@ enum ConsistencyAnalyzer {
         case let .available(data):
             do {
                 guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    return (nil, .failed("JSON 根节点不是对象。"))
+                    return (nil, .failed(String(localized: "JSON 根节点不是对象。")))
                 }
                 return (object, .checked)
             } catch {

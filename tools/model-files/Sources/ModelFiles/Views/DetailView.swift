@@ -9,10 +9,10 @@ enum ConsistencyBadgeState: Equatable {
 
     var title: String {
         switch self {
-        case .checking: "检查中"
-        case let .warnings(count): "\(count) 项警告"
-        case .insufficient: "材料不足"
-        case .consistent: "一致"
+        case .checking: String(localized: "检查中")
+        case let .warnings(count): String(localized: "\(count) 项警告")
+        case .insufficient: String(localized: "材料不足")
+        case .consistent: String(localized: "一致")
         }
     }
 }
@@ -44,18 +44,18 @@ struct DetailView: View {
                 }
             } else if let message = store.errorMessage {
                 EmptyStateView(
-                    title: "无法打开位置",
+                    title: String(localized: "无法打开位置"),
                     systemImage: "exclamationmark.triangle",
                     message: message,
-                    actionTitle: "重试"
+                    actionTitle: String(localized: "重试")
                 ) {
                     store.openRepository()
                 }
             } else {
                 EmptyStateView(
-                    title: "选择一个文件",
+                    title: String(localized: "选择一个文件"),
                     systemImage: "doc.text",
-                    message: "文件内容只会在选中后加载。"
+                    message: String(localized: "文件内容只会在选中后加载。")
                 )
             }
         }
@@ -66,15 +66,15 @@ struct DetailView: View {
     private func detailBody(file: RepositoryFile) -> some View {
         if file.isBlocked {
             EmptyStateView(
-                title: "权重文件已锁定",
+                title: String(localized: "权重文件已锁定"),
                 systemImage: "lock.shield",
-                message: "为避免意外下载大文件，应用只展示文件名、大小和哈希。"
+                message: String(localized: "为避免意外下载大文件，应用只展示文件名、大小和哈希。")
             )
         } else if store.loadingPath == file.path {
             VStack(spacing: 12) {
                 ProgressView()
                 Text(file.structuredInspectionFormat?.loadingDescription
-                    ?? "正在后台读取 \(file.name)…")
+                    ?? String(localized: "正在后台读取 \(file.name)…"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 5) {
@@ -82,7 +82,7 @@ struct DetailView: View {
                         Text(size.formattedByteCount)
                         Text("·")
                     }
-                    Text(store.snapshot?.location.title ?? "来源")
+                    Text(store.snapshot?.location.title ?? String(localized: "来源"))
                     Text("· 可切换到其他文件取消")
                 }
                 .font(.caption)
@@ -98,15 +98,19 @@ struct DetailView: View {
             )
         } else if let message = store.errorMessage {
             EmptyStateView(
-                title: "无法读取文件",
+                title: String(localized: "无法读取文件"),
                 systemImage: "wifi.exclamationmark",
                 message: message,
-                actionTitle: "重试"
+                actionTitle: String(localized: "重试")
             ) {
                 store.loadSelectedFile()
             }
         } else {
-            EmptyStateView(title: "没有内容", systemImage: "doc", message: "来源未返回可显示的内容。")
+            EmptyStateView(
+                title: String(localized: "没有内容"),
+                systemImage: "doc",
+                message: String(localized: "来源未返回可显示的内容。")
+            )
         }
     }
 }
@@ -181,9 +185,9 @@ private struct DetailHeader: View {
             Picker("查看方式", selection: $store.perspective) {
                 ForEach(store.availablePerspectives) { perspective in
                     Text(perspective == .overview && file.structuredInspectionFormat == .pdf
-                        ? "预览"
+                        ? String(localized: "预览")
                         : perspective == .overview && file.name.lowercased().hasSuffix(".md")
-                            ? "渲染"
+                            ? String(localized: "渲染")
                             : perspective.title)
                         .tag(perspective)
                 }
@@ -209,12 +213,16 @@ private struct DetailHeader: View {
                     store.openSelectedExternally()
                 } label: {
                     Label(
-                        isLocal ? "在 Finder 中显示" : "在源站打开",
+                        isLocal ? String(localized: "在 Finder 中显示") : String(localized: "在源站打开"),
                         systemImage: isLocal ? "folder" : "arrow.up.right.square"
                     )
                     .labelStyle(.iconOnly)
                 }
-                .help(isLocal ? "在 Finder 中显示当前文件" : "在浏览器中打开当前版本")
+                .help(
+                    isLocal
+                        ? String(localized: "在 Finder 中显示当前文件")
+                        : String(localized: "在浏览器中打开当前版本")
+                )
             }
         }
         .padding(.horizontal, 20)
@@ -238,19 +246,21 @@ private struct DetailHeader: View {
 
     private var purpose: String {
         switch file.category {
-        case .configuration: "模型配置"
-        case .tokenizer: "分词器资源"
-        case .templates: "对话模板"
+        case .configuration: String(localized: "模型配置")
+        case .tokenizer: String(localized: "分词器资源")
+        case .templates: String(localized: "对话模板")
         case .weightMetadata:
-            file.structuredInspectionFormat == .imatrix ? "Importance Matrix" : "权重分片索引"
-        case .documentation: "模型文档"
-        case .other: "模型文件"
+            file.structuredInspectionFormat == .imatrix
+                ? "Importance Matrix"
+                : String(localized: "权重分片索引")
+        case .documentation: String(localized: "模型文档")
+        case .other: String(localized: "模型文件")
         case .weights:
             switch file.structuredInspectionFormat {
-            case .safetensors: "SafeTensors 权重结构"
-            case .gguf: "GGUF 模型结构"
+            case .safetensors: String(localized: "SafeTensors 权重结构")
+            case .gguf: String(localized: "GGUF 模型结构")
             case .imatrix: "Importance Matrix"
-            default: "模型权重（禁止加载）"
+            default: String(localized: "模型权重（禁止加载）")
             }
         }
     }
@@ -290,14 +300,14 @@ private struct InspectionWorkspaceView: View {
             switch inspection {
             case let .safetensors(overview, headerByteCount):
                 WeightWorkspaceView(
-                    title: "SafeTensors 权重结构",
-                    subtitle: "Header 描述 tensor 目录；权重数据区未读取。",
+                    title: String(localized: "SafeTensors 权重结构"),
+                    subtitle: String(localized: "Header 描述 tensor 目录；权重数据区未读取。"),
                     facts: [
-                        InspectionField(key: "Tensor 数量", type: "count", value: overview.tensors.count.formatted(), origin: .derived),
-                        InspectionField(key: "参数总数", type: "count", value: overview.parameterCount.formatted(), origin: .derived),
-                        InspectionField(key: "权重数据大小", type: "bytes", value: formattedByteCount(overview.byteCount), origin: .derived),
-                        InspectionField(key: "主要数据类型", type: "dtype", value: dtypeSummary(overview.dtypeCounts), origin: .derived),
-                        InspectionField(key: "Header 大小", type: "bytes", value: Int64(headerByteCount).formattedByteCount, origin: .runtime),
+                        InspectionField(key: String(localized: "Tensor 数量"), type: "count", value: overview.tensors.count.formatted(), origin: .derived),
+                        InspectionField(key: String(localized: "参数总数"), type: "count", value: overview.parameterCount.formatted(), origin: .derived),
+                        InspectionField(key: String(localized: "权重数据大小"), type: "bytes", value: formattedByteCount(overview.byteCount), origin: .derived),
+                        InspectionField(key: String(localized: "主要数据类型"), type: "dtype", value: dtypeSummary(overview.dtypeCounts), origin: .derived),
+                        InspectionField(key: String(localized: "Header 大小"), type: "bytes", value: Int64(headerByteCount).formattedByteCount, origin: .runtime),
                     ],
                     metadata: overview.metadata.sorted(by: { $0.key < $1.key }).map {
                         InspectionField(key: $0.key, type: "string", value: $0.value, origin: .embedded)
@@ -307,10 +317,12 @@ private struct InspectionWorkspaceView: View {
                 )
             case let .gguf(overview, downloadedByteCount):
                 WeightWorkspaceView(
-                    title: overview.isIMatrix ? "GGUF Imatrix" : overview.modelName ?? "GGUF 模型结构",
+                    title: overview.isIMatrix
+                        ? "GGUF Imatrix"
+                        : overview.modelName ?? String(localized: "GGUF 模型结构"),
                     subtitle: overview.isIMatrix
-                        ? "GGUF v\(overview.version) · importance matrix · 只解析 metadata 与 tensor 目录。"
-                        : "GGUF v\(overview.version) · \(overview.isLittleEndian ? "little-endian" : "big-endian") · 只解析 metadata 与 tensor 目录。",
+                        ? String(localized: "GGUF v\(overview.version) · importance matrix · 只解析 metadata 与 tensor 目录。")
+                        : String(localized: "GGUF v\(overview.version) · \(overview.isLittleEndian ? "little-endian" : "big-endian") · 只解析 metadata 与 tensor 目录。"),
                     facts: ggufFacts(overview, downloadedByteCount: downloadedByteCount),
                     metadata: overview.metadata.map {
                         InspectionField(key: $0.key, type: $0.type, value: $0.value, origin: .embedded)
@@ -358,40 +370,40 @@ private struct InspectionWorkspaceView: View {
 
     private var safetyNotice: String? {
         inspection.safetyNotice ?? (file.category == .weightMetadata
-            ? "只读取权重分片索引；不会请求任何权重文件。"
+            ? String(localized: "只读取权重分片索引；不会请求任何权重文件。")
             : nil)
     }
 
     private func ggufFacts(_ overview: GGUFOverview, downloadedByteCount: Int) -> [InspectionField] {
         var facts: [InspectionField] = [
-            InspectionField(key: "Tensor 数量", type: "count", value: overview.tensors.count.formatted(), origin: .derived),
-            InspectionField(key: "参数总数", type: "count", value: overview.parameterCount.formatted(), origin: .derived),
-            InspectionField(key: "Metadata 数量", type: "count", value: overview.metadata.count.formatted(), origin: .derived),
-            InspectionField(key: "数据区对齐", type: "bytes", value: Int64(overview.alignment).formattedByteCount, origin: .embedded),
-            InspectionField(key: "Tensor 数据起点", type: "offset", value: overview.tensorDataOffset.formatted(), origin: .derived),
-            InspectionField(key: "已读取前缀", type: "bytes", value: Int64(downloadedByteCount).formattedByteCount, origin: .runtime),
+            InspectionField(key: String(localized: "Tensor 数量"), type: "count", value: overview.tensors.count.formatted(), origin: .derived),
+            InspectionField(key: String(localized: "参数总数"), type: "count", value: overview.parameterCount.formatted(), origin: .derived),
+            InspectionField(key: String(localized: "Metadata 数量"), type: "count", value: overview.metadata.count.formatted(), origin: .derived),
+            InspectionField(key: String(localized: "数据区对齐"), type: "bytes", value: Int64(overview.alignment).formattedByteCount, origin: .embedded),
+            InspectionField(key: String(localized: "Tensor 数据起点"), type: "offset", value: overview.tensorDataOffset.formatted(), origin: .derived),
+            InspectionField(key: String(localized: "已读取前缀"), type: "bytes", value: Int64(downloadedByteCount).formattedByteCount, origin: .runtime),
         ]
 
         if overview.isIMatrix {
             if let count = overview.imatrixEntryCount {
-                facts.insert(InspectionField(key: "Imatrix 条目", type: "count", value: count.formatted(), origin: .derived), at: 0)
+                facts.insert(InspectionField(key: String(localized: "Imatrix 条目"), type: "count", value: count.formatted(), origin: .derived), at: 0)
             }
-            appendMetadataFact("imatrix.datasets", title: "数据集", from: overview, to: &facts)
-            appendMetadataFact("imatrix.chunk_count", title: "Chunk 数", from: overview, to: &facts)
-            appendMetadataFact("imatrix.chunk_size", title: "Chunk 大小", from: overview, to: &facts)
+            appendMetadataFact("imatrix.datasets", title: String(localized: "数据集"), from: overview, to: &facts)
+            appendMetadataFact("imatrix.chunk_count", title: String(localized: "Chunk 数"), from: overview, to: &facts)
+            appendMetadataFact("imatrix.chunk_size", title: String(localized: "Chunk 大小"), from: overview, to: &facts)
         } else {
             if let architecture = overview.architecture {
-                facts.insert(InspectionField(key: "架构", type: "string", value: architecture, origin: .embedded), at: 0)
+                facts.insert(InspectionField(key: String(localized: "架构"), type: "string", value: architecture, origin: .embedded), at: 0)
             }
             if let dataType = overview.dominantDataType {
-                facts.insert(InspectionField(key: "主要数据类型", type: "dtype", value: dataType, origin: .derived), at: min(1, facts.count))
+                facts.insert(InspectionField(key: String(localized: "主要数据类型"), type: "dtype", value: dataType, origin: .derived), at: min(1, facts.count))
             }
             if let contextLength = overview.contextLength {
-                facts.insert(InspectionField(key: "上下文长度", type: "count", value: contextLength.formatted(), origin: .embedded), at: min(2, facts.count))
+                facts.insert(InspectionField(key: String(localized: "上下文长度"), type: "count", value: contextLength.formatted(), origin: .embedded), at: min(2, facts.count))
             }
-            appendMetadataFact("quantize.imatrix.file", title: "量化 Imatrix", from: overview, to: &facts)
-            appendMetadataFact("quantize.imatrix.dataset", title: "Imatrix 数据集", from: overview, to: &facts)
-            appendMetadataFact("quantize.imatrix.entries_count", title: "Imatrix 条目", from: overview, to: &facts)
+            appendMetadataFact("quantize.imatrix.file", title: String(localized: "量化 Imatrix"), from: overview, to: &facts)
+            appendMetadataFact("quantize.imatrix.dataset", title: String(localized: "Imatrix 数据集"), from: overview, to: &facts)
+            appendMetadataFact("quantize.imatrix.entries_count", title: String(localized: "Imatrix 条目"), from: overview, to: &facts)
             appendMetadataFact("quantize.imatrix.chunks_count", title: "Imatrix Chunks", from: overview, to: &facts)
         }
         return facts
@@ -556,11 +568,11 @@ private struct WeightWorkspaceView: View {
                         ReaderTitle(title, subtitle: subtitle)
                         InspectionFactsView(fields: facts)
                         if !metadata.isEmpty {
-                            Button("查看全部 \(metadata.count.formatted()) 条 Metadata") {
+                            Button(String(localized: "查看全部 \(metadata.count) 条 Metadata")) {
                                 perspective = .metadata
                             }
                         }
-                        Button("查看全部 \(tensors.count.formatted()) 个 Tensors") {
+                        Button(String(localized: "查看全部 \(tensors.count) 个 Tensors")) {
                             perspective = .tensors
                         }
                     }
@@ -601,7 +613,7 @@ private struct WeightWorkspaceView: View {
             tableSearch(
                 title: "Metadata",
                 count: filteredMetadata.count,
-                prompt: "搜索 key 或值"
+                prompt: String(localized: "搜索 key 或值")
             )
             Divider()
             Table(filteredMetadata, selection: $selectedMetadataKey) {
@@ -627,8 +639,8 @@ private struct WeightWorkspaceView: View {
                     Text("字段详情").font(.headline)
                     PropertyGroup(title: "", rows: [
                         ("Key", field.key),
-                        ("类型", field.type),
-                        ("来源", field.origin.title),
+                        (String(localized: "类型"), field.type),
+                        (String(localized: "来源"), field.origin.title),
                     ])
                     Divider()
                     Text("完整值").font(.headline)
@@ -641,9 +653,9 @@ private struct WeightWorkspaceView: View {
             }
         } else {
             EmptyStateView(
-                title: "选择 Metadata",
+                title: String(localized: "选择 Metadata"),
                 systemImage: "list.bullet.rectangle",
-                message: "选择一行查看完整值、类型和来源。"
+                message: String(localized: "选择一行查看完整值、类型和来源。")
             )
         }
     }
@@ -653,7 +665,7 @@ private struct WeightWorkspaceView: View {
             tableSearch(
                 title: "Tensors",
                 count: filteredTensors.count,
-                prompt: "搜索名称或 dtype"
+                prompt: String(localized: "搜索名称或 dtype")
             )
             Divider()
             Table(filteredTensors, selection: $selectedTensorName) {
@@ -680,10 +692,10 @@ private struct WeightWorkspaceView: View {
                         .textSelection(.enabled)
                     PropertyGroup(title: "", rows: compactRows([
                         ("Shape", tensor.shapeText),
-                        ("类型", tensor.dataType),
-                        ("参数", tensor.parameterCount.formatted()),
-                        ("数据大小", tensor.byteCount.map(formattedByteCount)),
-                        ("数据 offset", tensor.offset.map { $0.formatted() }),
+                        (String(localized: "类型"), tensor.dataType),
+                        (String(localized: "参数"), tensor.parameterCount.formatted()),
+                        (String(localized: "数据大小"), tensor.byteCount.map(formattedByteCount)),
+                        (String(localized: "数据 offset"), tensor.offset.map { $0.formatted() }),
                     ]))
                     Text("这里只展示目录信息，不读取 tensor 数据。")
                         .font(.caption)
@@ -693,9 +705,9 @@ private struct WeightWorkspaceView: View {
             }
         } else {
             EmptyStateView(
-                title: "选择 Tensor",
+                title: String(localized: "选择 Tensor"),
                 systemImage: "square.stack.3d.up",
-                message: "选择一行查看 shape、类型和 offset。"
+                message: String(localized: "选择一行查看 shape、类型和 offset。")
             )
         }
     }
@@ -703,7 +715,7 @@ private struct WeightWorkspaceView: View {
     private func tableSearch(title: String, count: Int, prompt: String) -> some View {
         HStack(spacing: 12) {
             Text(title).font(.headline)
-            Text("\(count.formatted()) 项")
+            Text(String(localized: "\(count) 项"))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
             Spacer()
@@ -743,10 +755,10 @@ private struct JinjaWorkspaceView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("源码详情").font(.headline)
                         PropertyGroup(title: "", rows: [
-                            ("格式", "Jinja"),
-                            ("UTF-8 大小", Int64(source.utf8.count).formattedByteCount),
-                            ("行数", lineCount.formatted()),
-                            ("状态", isModified ? "临时修改" : "来源原文"),
+                            (String(localized: "格式"), "Jinja"),
+                            (String(localized: "UTF-8 大小"), Int64(source.utf8.count).formattedByteCount),
+                            (String(localized: "行数"), lineCount.formatted()),
+                            (String(localized: "状态"), isModified ? String(localized: "临时修改") : String(localized: "来源原文")),
                         ])
                         Text("修改只保留在当前文件工作台，不会写回来源。")
                             .font(.caption)
@@ -768,13 +780,13 @@ private struct JinjaWorkspaceView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     ReaderTitle(
                         "Jinja Chat Template",
-                        subtitle: "在源码和试验台之间切换时，临时修改会保留。"
+                        subtitle: String(localized: "在源码和试验台之间切换时，临时修改会保留。")
                     )
                     InspectionFactsView(fields: [
-                        InspectionField(key: "UTF-8 大小", type: "bytes", value: Int64(source.utf8.count).formattedByteCount, origin: isModified ? .runtime : .repository),
-                        InspectionField(key: "行数", type: "count", value: lineCount.formatted(), origin: .derived),
-                        InspectionField(key: "来源", type: "source", value: "模型文件", origin: .repository),
-                        InspectionField(key: "当前状态", type: "state", value: isModified ? "临时修改" : "未修改", origin: .runtime),
+                        InspectionField(key: String(localized: "UTF-8 大小"), type: "bytes", value: Int64(source.utf8.count).formattedByteCount, origin: isModified ? .runtime : .repository),
+                        InspectionField(key: String(localized: "行数"), type: "count", value: lineCount.formatted(), origin: .derived),
+                        InspectionField(key: String(localized: "来源"), type: "source", value: "模型文件", origin: .repository),
+                        InspectionField(key: String(localized: "当前状态"), type: "state", value: isModified ? String(localized: "临时修改") : String(localized: "未修改"), origin: .runtime),
                     ])
                     HStack {
                         Button("查看源码") { perspective = .source }
@@ -904,14 +916,14 @@ private struct TokenizerJSONView: View {
         VStack(alignment: .leading, spacing: 18) {
             ReaderTitle(
                 overview.modelType ?? "Tokenizer",
-                subtitle: "大型 tokenizer.json 在后台解析；摘要不会展开完整词表和合并规则。"
+                subtitle: String(localized: "大型 tokenizer.json 在后台解析；摘要不会展开完整词表和合并规则。")
             )
-            PropertyGroup(title: "结构", rows: compactRows([
-                ("格式版本", overview.version),
-                ("模型类型", overview.modelType),
-                ("词表项", overview.vocabCount.map { $0.formatted() }),
-                ("合并规则", overview.mergeCount.map { $0.formatted() }),
-                ("新增 Token", overview.addedTokenCount.map { $0.formatted() }),
+            PropertyGroup(title: String(localized: "结构"), rows: compactRows([
+                (String(localized: "格式版本"), overview.version),
+                (String(localized: "模型类型"), overview.modelType),
+                (String(localized: "词表项"), overview.vocabCount.map { $0.formatted() }),
+                (String(localized: "合并规则"), overview.mergeCount.map { $0.formatted() }),
+                (String(localized: "新增 Token"), overview.addedTokenCount.map { $0.formatted() }),
             ]))
             if overview.addedTokens.contains(where: \.special) {
                 specialAddedTokens(overview.addedTokens)
@@ -941,7 +953,7 @@ private struct TokenizerJSONView: View {
                 .font(.subheadline.weight(.semibold))
             ForEach(Array(addedTokens.filter(\.special).enumerated()), id: \.offset) { _, token in
                 HStack(spacing: 8) {
-                    Text(token.content.isEmpty ? "（空 Token）" : token.content)
+                    Text(token.content.isEmpty ? String(localized: "（空 Token）") : token.content)
                         .font(.system(.caption, design: .monospaced))
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -960,7 +972,10 @@ private struct TokenizerJSONView: View {
 
     private var vocabularySearch: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ReaderTitle("词表搜索", subtitle: "首次输入非空查询时按需构建索引；最多显示 1,000 条匹配。")
+            ReaderTitle(
+                String(localized: "词表搜索"),
+                subtitle: String(localized: "首次输入非空查询时按需构建索引；最多显示 1,000 条匹配。")
+            )
             TextField("搜索 token 或 ID", text: $vocabularyQuery)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 380)
@@ -977,12 +992,12 @@ private struct TokenizerJSONView: View {
                     .foregroundStyle(.secondary)
             } else if let vocabularyIndex {
                 let matches = vocabularyIndex.matches(query: vocabularyQuery)
-                Text("匹配 \(matches.count.formatted()) 条")
+                Text(String(localized: "匹配 \(matches.count) 条"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 ForEach(matches, id: \.tokenID) { entry in
                     HStack(spacing: 10) {
-                        Text(entry.token.isEmpty ? "（空 Token）" : entry.token)
+                        Text(entry.token.isEmpty ? String(localized: "（空 Token）") : entry.token)
                             .font(.system(.caption, design: .monospaced))
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -1015,7 +1030,7 @@ private struct TokenizerJSONView: View {
         }.value
         guard generation == dataGeneration else { return }
         vocabularyIndex = built
-        vocabularyIndexError = built == nil ? "当前 vocab 结构无法搜索。" : nil
+        vocabularyIndexError = built == nil ? String(localized: "当前 vocab 结构无法搜索。") : nil
         isIndexingVocabulary = false
     }
 
@@ -1029,8 +1044,8 @@ private struct TokenizerJSONView: View {
     private func fields(_ overview: TokenizerOverview) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             ReaderTitle(
-                "根字段",
-                subtitle: "只渲染根层级和集合规模，避免展开十几万条词表导致界面失去响应。"
+                String(localized: "根字段"),
+                subtitle: String(localized: "只渲染根层级和集合规模，避免展开十几万条词表导致界面失去响应。")
             )
             ForEach(overview.fields) { field in
                 KeyValueRow(key: field.name, value: field.detail)
@@ -1074,7 +1089,7 @@ private struct TokenizerVocabularyAnalysisView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("词表长度")
                         .font(.headline)
-                    Text("基础词表 \(analysis.tokenCount.formatted()) 项；按原始 Token Piece 的 Unicode 标量计数。")
+                    Text(String(localized: "基础词表 \(analysis.tokenCount) 项；按原始 Token Piece 的 Unicode 标量计数。"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -1106,12 +1121,12 @@ private struct TokenizerVocabularyAnalysisView: View {
 
     private var metrics: some View {
         let values = [
-            ("平均", analysis.averageScalarLength.formatted(.number.precision(.fractionLength(2)))),
+            (String(localized: "平均"), analysis.averageScalarLength.formatted(.number.precision(.fractionLength(2)))),
             ("P50", analysis.p50ScalarLength.formatted()),
             ("P90", analysis.p90ScalarLength.formatted()),
             ("P95", analysis.p95ScalarLength.formatted()),
             ("P99", analysis.p99ScalarLength.formatted()),
-            ("最长", analysis.maximumScalarLength.formatted()),
+            (String(localized: "最长"), analysis.maximumScalarLength.formatted()),
         ]
         return LazyVGrid(
             columns: [GridItem(.adaptive(minimum: 108), spacing: 8)],
@@ -1163,7 +1178,7 @@ private struct TokenizerVocabularyAnalysisView: View {
                     .buttonStyle(.plain)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(
-                        "长度 \(bucket.label)，\(bucket.count.formatted()) 个 Token，占 \(percentageText(for: bucket))"
+                        String(localized: "长度 \(bucket.label)，\(bucket.count) 个 Token，占 \(percentageText(for: bucket))")
                     )
                     .accessibilityAddTraits(
                         bucket.label == selectedBucket.label ? .isSelected : []
@@ -1171,7 +1186,7 @@ private struct TokenizerVocabularyAnalysisView: View {
                 }
             }
             .frame(height: 158)
-            Text("长度 \(selectedBucket.label)：\(selectedBucket.count.formatted()) 项，占基础词表 \(percentageText(for: selectedBucket))。")
+            Text(String(localized: "长度 \(selectedBucket.label)：\(selectedBucket.count) 项，占基础词表 \(percentageText(for: selectedBucket))。"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1203,7 +1218,11 @@ private struct TokenizerVocabularyAnalysisView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 if analysis.longestTokens.count > 20 {
-                    Button(showsTop50 ? "收起到 Top 20" : "展开 Top \(analysis.longestTokens.count)") {
+                    Button(
+                        showsTop50
+                            ? String(localized: "收起到 Top 20")
+                            : String(localized: "展开 Top \(analysis.longestTokens.count)")
+                    ) {
                         showsTop50.toggle()
                     }
                     .controlSize(.small)
@@ -1293,7 +1312,7 @@ private struct TokenizerVocabularyAnalysisView: View {
                 }
                 .controlSize(.small)
             }
-            Text(entry.token.isEmpty ? "（空字符串）" : entry.token)
+            Text(entry.token.isEmpty ? String(localized: "（空字符串）") : entry.token)
                 .font(.system(.caption, design: .monospaced))
                 .textSelection(.enabled)
                 .lineLimit(4)
@@ -1327,7 +1346,7 @@ private struct TokenizerVocabularyAnalysisView: View {
     }
 
     private func visible(_ token: String) -> String {
-        guard !token.isEmpty else { return "空 Token" }
+        guard !token.isEmpty else { return String(localized: "空 Token") }
         let scalars = Array(token.unicodeScalars)
         if scalars.count > 8, scalars.allSatisfy({ $0 == scalars[0] }) {
             return "\(visible(scalars[0])) × \(scalars.count)"
@@ -1338,9 +1357,9 @@ private struct TokenizerVocabularyAnalysisView: View {
     private func visible(_ scalar: Unicode.Scalar) -> String {
         switch scalar.value {
         case 0x09: "Tab"
-        case 0x0A: "换行"
-        case 0x0D: "回车"
-        case 0x20: "空格"
+        case 0x0A: String(localized: "换行")
+        case 0x0D: String(localized: "回车")
+        case 0x20: String(localized: "空格")
         default:
             CharacterSet.controlCharacters.contains(scalar)
                 ? "\\u{\(String(scalar.value, radix: 16, uppercase: true))}"
@@ -1376,7 +1395,7 @@ private struct ConsistencyReportView: View {
                 }
 
                 if !report.identityFields.isEmpty {
-                    sectionTitle("身份")
+                    sectionTitle(String(localized: "身份"))
                     VStack(spacing: 6) {
                         ForEach(report.identityFields) { field in
                             fieldRow(field)
@@ -1384,7 +1403,7 @@ private struct ConsistencyReportView: View {
                     }
                 }
 
-                sectionTitle("发现")
+                sectionTitle(String(localized: "发现"))
                 if report.findings.isEmpty {
                     Text("未发现可报告的不一致。")
                         .font(.caption)
@@ -1500,10 +1519,10 @@ private struct ConsistencyReportView: View {
 
     private func coverageTitle(_ status: ConsistencyCoverageStatus) -> String {
         switch status {
-        case .checked: "已检查"
-        case .missing: "缺失"
-        case let .skipped(reason): "跳过：\(reason)"
-        case let .failed(message): "失败：\(message)"
+        case .checked: String(localized: "已检查")
+        case .missing: String(localized: "缺失")
+        case let .skipped(reason): String(localized: "跳过：\(reason)")
+        case let .failed(message): String(localized: "失败：\(message)")
         }
     }
 
@@ -1541,28 +1560,28 @@ private struct ConfigSummaryView: View {
                     .foregroundStyle(.secondary)
             }
 
-            PropertyGroup(title: "模型规模", rows: compactRows([
-                ("隐藏层维度（hidden_size）", value("hidden_size")),
-                ("中间层维度（intermediate_size）", value("intermediate_size")),
-                ("词表大小（vocab_size）", value("vocab_size"))
+            PropertyGroup(title: String(localized: "模型规模"), rows: compactRows([
+                (String(localized: "隐藏层维度（hidden_size）"), value("hidden_size")),
+                (String(localized: "中间层维度（intermediate_size）"), value("intermediate_size")),
+                (String(localized: "词表大小（vocab_size）"), value("vocab_size"))
             ]))
 
             PropertyGroup(title: "Attention", rows: compactRows([
-                ("注意力头数（num_attention_heads）", value("num_attention_heads")),
-                ("KV 头数（num_key_value_heads）", value("num_key_value_heads")),
-                ("头维度（head_dim）", value("head_dim"))
+                (String(localized: "注意力头数（num_attention_heads）"), value("num_attention_heads")),
+                (String(localized: "KV 头数（num_key_value_heads）"), value("num_key_value_heads")),
+                (String(localized: "头维度（head_dim）"), value("head_dim"))
             ]))
 
-            PropertyGroup(title: "上下文", rows: compactRows([
-                ("最大上下文长度（max_position_embeddings）", value("max_position_embeddings")),
-                ("RoPE θ（rope_theta）", value("rope_theta"))
+            PropertyGroup(title: String(localized: "上下文"), rows: compactRows([
+                (String(localized: "最大上下文长度（max_position_embeddings）"), value("max_position_embeddings")),
+                (String(localized: "RoPE θ（rope_theta）"), value("rope_theta"))
             ]))
         }
     }
 
     private var architecture: String {
         if let values = object["architectures"] as? [String], let first = values.first { return first }
-        return string("model_type") ?? "模型配置"
+        return string("model_type") ?? String(localized: "模型配置")
     }
 
     private var layerCount: String? {
@@ -1579,18 +1598,21 @@ private struct GenerationSummaryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            ReaderTitle("生成默认值", subtitle: "推理框架在调用 generate 时使用的模型目录默认参数。")
-            PropertyGroup(title: "采样", rows: compactRows([
+            ReaderTitle(
+                String(localized: "生成默认值"),
+                subtitle: String(localized: "推理框架在调用 generate 时使用的模型目录默认参数。")
+            )
+            PropertyGroup(title: String(localized: "采样"), rows: compactRows([
                 ("Do sample", value("do_sample")),
                 ("Temperature", value("temperature")),
                 ("Top P", value("top_p")),
                 ("Top K", value("top_k"))
             ]))
-            PropertyGroup(title: "终止与长度", rows: compactRows([
+            PropertyGroup(title: String(localized: "终止与长度"), rows: compactRows([
                 ("EOS token", value("eos_token_id")),
                 ("PAD token", value("pad_token_id")),
-                ("最大新 token", value("max_new_tokens")),
-                ("重复惩罚", value("repetition_penalty"))
+                (String(localized: "最大新 token"), value("max_new_tokens")),
+                (String(localized: "重复惩罚"), value("repetition_penalty"))
             ]))
         }
     }
@@ -1605,11 +1627,11 @@ private struct TokenizerSummaryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             ReaderTitle(
-                object["tokenizer_class"] as? String ?? "Tokenizer 配置",
-                subtitle: "特殊 token、最大长度，以及随模型发布的对话格式。"
+                object["tokenizer_class"] as? String ?? String(localized: "Tokenizer 配置"),
+                subtitle: String(localized: "特殊 token、最大长度，以及随模型发布的对话格式。")
             )
-            PropertyGroup(title: "核心设置", rows: compactRows([
-                ("最大长度", object["model_max_length"].map(JSONFormatter.inline)),
+            PropertyGroup(title: String(localized: "核心设置"), rows: compactRows([
+                (String(localized: "最大长度"), object["model_max_length"].map(JSONFormatter.inline)),
                 ("Padding side", object["padding_side"].map(JSONFormatter.inline)),
                 ("BOS token", object["bos_token"].map(JSONFormatter.inline)),
                 ("EOS token", object["eos_token"].map(JSONFormatter.inline)),
@@ -1644,11 +1666,14 @@ private struct WeightIndexSummaryView: View {
         let shards = Set(map.values)
         let metadata = object["metadata"] as? [String: Any] ?? [:]
         VStack(alignment: .leading, spacing: 18) {
-            ReaderTitle("权重分片索引", subtitle: "只读取映射关系，不读取任何权重分片。")
-            PropertyGroup(title: "概览", rows: compactRows([
-                ("参数张量", String(map.count)),
-                ("分片数量", String(shards.count)),
-                ("权重总大小", (metadata["total_size"] as? NSNumber).map { Int64(truncating: $0).formattedByteCount })
+            ReaderTitle(
+                String(localized: "权重分片索引"),
+                subtitle: String(localized: "只读取映射关系，不读取任何权重分片。")
+            )
+            PropertyGroup(title: String(localized: "概览"), rows: compactRows([
+                (String(localized: "参数张量"), String(map.count)),
+                (String(localized: "分片数量"), String(shards.count)),
+                (String(localized: "权重总大小"), (metadata["total_size"] as? NSNumber).map { Int64(truncating: $0).formattedByteCount })
             ]))
             VStack(alignment: .leading, spacing: 8) {
                 Text("前 80 条映射").font(.headline)
@@ -1674,7 +1699,10 @@ private struct VocabView: View {
         .sorted { $0.1 < $1.1 }
 
         VStack(alignment: .leading, spacing: 18) {
-            ReaderTitle("词表", subtitle: "共 \(object.count.formatted()) 个 token；列表最多展示当前筛选结果的前 1,000 项。")
+            ReaderTitle(
+                String(localized: "词表"),
+                subtitle: String(localized: "共 \(object.count) 个 token；列表最多展示当前筛选结果的前 1,000 项。")
+            )
             TextField("搜索 token 或 ID", text: $query)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 380)
@@ -1704,7 +1732,10 @@ private struct JSONFieldsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ReaderTitle("全部字段", subtitle: "按字段名排序；复杂值以格式化 JSON 展示。")
+            ReaderTitle(
+                String(localized: "全部字段"),
+                subtitle: String(localized: "按字段名排序；复杂值以格式化 JSON 展示。")
+            )
                 .padding(.bottom, 4)
             if let dictionary = object as? [String: Any] {
                 ForEach(dictionary.keys.sorted(), id: \.self) { key in

@@ -15,17 +15,17 @@ enum TokenIDParser {
         var errorDescription: String? {
             switch self {
             case let .inputTooLarge(limit):
-                "Token ID 输入超过 \(Int64(limit).formattedByteCount) 上限。"
+                String(localized: "Token ID 输入超过 \(Int64(limit).formattedByteCount) 上限。")
             case .empty:
-                "请输入至少一个 Token ID。"
+                String(localized: "请输入至少一个 Token ID。")
             case let .invalidJSON(message):
-                "Token ID JSON 数组无效：\(message)"
+                String(localized: "Token ID JSON 数组无效：\(message)")
             case let .invalidToken(index, token):
-                "第 \(index + 1) 个 token（index \(index)）不是整数：\(token)"
+                String(localized: "第 \(index + 1) 个 token（index \(index)）不是整数：\(token)")
             case let .negativeToken(index, token):
-                "第 \(index + 1) 个 token（index \(index)）不能是负数：\(token)"
+                String(localized: "第 \(index + 1) 个 token（index \(index)）不能是负数：\(token)")
             case let .integerOverflow(index, token):
-                "第 \(index + 1) 个 token（index \(index)）超过 Int 范围：\(token)"
+                String(localized: "第 \(index + 1) 个 token（index \(index)）超过 Int 范围：\(token)")
             }
         }
     }
@@ -54,7 +54,7 @@ enum TokenIDParser {
             throw ParseError.invalidJSON(error.localizedDescription)
         }
         guard let values = value as? [Any] else {
-            throw ParseError.invalidJSON("根节点必须是数组。")
+            throw ParseError.invalidJSON(String(localized: "根节点必须是数组。"))
         }
         return values.map(displayToken)
     }

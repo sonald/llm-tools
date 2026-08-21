@@ -4,6 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "ModelFiles",
+    defaultLocalization: "zh-Hans",
     platforms: [.macOS(.v15)],
     products: [
         .executable(name: "ModelFiles", targets: ["ModelFiles"])
@@ -25,7 +26,13 @@ let package = Package(
                 .product(name: "SentencepieceTokenizer", package: "swift-sentencepiece")
             ],
             path: "Sources/ModelFiles",
-            exclude: ["Resources"]
+            exclude: [
+                "Resources/AppIcon.icns",
+                "Resources/AppIcon.png"
+            ],
+            resources: [
+                .process("Resources/Localizable.xcstrings")
+            ]
         ),
         .testTarget(
             name: "ModelFilesTests",

@@ -88,7 +88,7 @@ enum GGUFInspector {
         } catch let ParseFailure.invalid(message) {
             return .invalid(message)
         } catch {
-            return .invalid("GGUF 解析失败：\(error.localizedDescription)")
+            return .invalid(String(localized: "GGUF 解析失败：\(error.localizedDescription)"))
         }
     }
 }
@@ -121,7 +121,7 @@ private extension GGUFInspector {
         init(data: Data) throws {
             guard data.count >= 4 else { throw ParseFailure.needsMoreData }
             guard Array(data.prefix(4)) == Array("GGUF".utf8) else {
-                throw ParseFailure.invalid("GGUF magic 无效。")
+                throw ParseFailure.invalid(String(localized: "GGUF magic 无效。"))
             }
             guard data.count >= 8 else { throw ParseFailure.needsMoreData }
 
@@ -134,7 +134,7 @@ private extension GGUFInspector {
                 version = bigVersion
                 endianness = .big
             } else {
-                throw ParseFailure.invalid("不支持的 GGUF 版本。")
+                throw ParseFailure.invalid(String(localized: "不支持的 GGUF 版本。"))
             }
             cursor = Cursor(data: data, offset: 8, endianness: endianness)
         }
@@ -143,10 +143,10 @@ private extension GGUFInspector {
             let tensorCount = try readCount()
             let metadataCount = try readCount()
             guard tensorCount <= GGUFInspector.maximumTensorCount else {
-                throw ParseFailure.invalid("GGUF tensor 数量超过安全上限。")
+                throw ParseFailure.invalid(String(localized: "GGUF tensor 数量超过安全上限。"))
             }
             guard metadataCount <= GGUFInspector.maximumMetadataCount else {
-                throw ParseFailure.invalid("GGUF metadata 数量超过安全上限。")
+                throw ParseFailure.invalid(String(localized: "GGUF metadata 数量超过安全上限。"))
             }
 
             var metadata: [GGUFMetadataEntry] = []
@@ -154,7 +154,7 @@ private extension GGUFInspector {
             for _ in 0..<metadataCount {
                 let key = try readString(maximumLength: 65_535, capture: true) ?? ""
                 guard isValidMetadataKey(key), metadataKeys.insert(key).inserted else {
-                    throw ParseFailure.invalid("GGUF metadata key 无效或重复。")
+                    throw ParseFailure.invalid(String(localized: "GGUF metadata key 无效或重复。"))
                 }
                 let typeCode = try cursor.readUInt32()
                 let value = try readValue(typeCode: typeCode, depth: 0, capture: true)
@@ -169,7 +169,7 @@ private extension GGUFInspector {
 
             let alignment = metadata.first { $0.key == "general.alignment" }?.unsignedValue ?? 32
             guard alignment > 0, alignment.isMultiple(of: 8) else {
-                throw ParseFailure.invalid("GGUF general.alignment 无效。")
+                throw ParseFailure.invalid(String(localized: "GGUF general.alignment 无效。"))
             }
 
             var tensors: [TensorDescriptor] = []
@@ -178,11 +178,11 @@ private extension GGUFInspector {
             for _ in 0..<tensorCount {
                 let name = try readString(maximumLength: 64, capture: true) ?? ""
                 guard !name.isEmpty, tensorNames.insert(name).inserted else {
-                    throw ParseFailure.invalid("GGUF tensor 名称无效或重复。")
+                    throw ParseFailure.invalid(String(localized: "GGUF tensor 名称无效或重复。"))
                 }
                 let dimensionCount = try cursor.readUInt32()
                 guard dimensionCount <= GGUFInspector.maximumDimensions else {
-                    throw ParseFailure.invalid("GGUF tensor \(name) 的维数超过安全上限。")
+                    throw ParseFailure.invalid(String(localized: "GGUF tensor \(name) 的维数超过安全上限。"))
                 }
 
                 var shape: [UInt64] = []
@@ -192,10 +192,10 @@ private extension GGUFInspector {
                 let typeCode = try cursor.readUInt32()
                 let offset = try cursor.readUInt64()
                 guard offset.isMultiple(of: alignment) else {
-                    throw ParseFailure.invalid("GGUF tensor \(name) 的 offset 未按 alignment 对齐。")
+                    throw ParseFailure.invalid(String(localized: "GGUF tensor \(name) 的 offset 未按 alignment 对齐。"))
                 }
                 let parameters = try checkedProduct(shape, context: "tensor \(name) shape")
-                parameterCount = try checkedAdd(parameterCount, parameters, context: "参数总数")
+                parameterCount = try checkedAdd(parameterCount, parameters, context: String(localized: "参数总数"))
                 tensors.append(TensorDescriptor(
                     name: name,
                     dataType: tensorTypeName(typeCode),
@@ -230,13 +230,13 @@ private extension GGUFInspector {
         ) throws -> String? {
             let length = try readCount()
             guard length <= maximumLength, length <= UInt64(Int.max) else {
-                throw ParseFailure.invalid("GGUF 字符串超过安全上限。")
+                throw ParseFailure.invalid(String(localized: "GGUF 字符串超过安全上限。"))
             }
             let byteCount = Int(length)
             if capture {
                 let bytes = try cursor.readData(count: byteCount)
                 guard let value = String(data: bytes, encoding: .utf8) else {
-                    throw ParseFailure.invalid("GGUF 字符串不是有效 UTF-8。")
+                    throw ParseFailure.invalid(String(localized: "GGUF 字符串不是有效 UTF-8。"))
                 }
                 return value
             }
@@ -250,7 +250,9 @@ private extension GGUFInspector {
             capture: Bool
         ) throws -> ParsedValue {
             if version == 1, typeCode > 9 {
-                throw ParseFailure.invalid("GGUF v1 包含不支持的 metadata 类型 \(typeCode)。")
+                throw ParseFailure.invalid(
+                    String(localized: "GGUF v1 包含不支持的 metadata 类型 \(typeCode.formatted())。")
+                )
             }
 
             switch typeCode {
@@ -278,7 +280,7 @@ private extension GGUFInspector {
             case 7:
                 let value = try cursor.readUInt8()
                 guard value == 0 || value == 1 else {
-                    throw ParseFailure.invalid("GGUF bool 值必须为 0 或 1。")
+                    throw ParseFailure.invalid(String(localized: "GGUF bool 值必须为 0 或 1。"))
                 }
                 return capture ? ParsedValue(display: value == 1 ? "true" : "false", stringValue: nil, unsignedValue: nil) : .hidden
             case 8:
@@ -286,17 +288,17 @@ private extension GGUFInspector {
                 return capture ? ParsedValue(display: value ?? "", stringValue: value, unsignedValue: nil) : .hidden
             case 9:
                 guard depth < GGUFInspector.maximumArrayDepth else {
-                    throw ParseFailure.invalid("GGUF metadata array 嵌套超过安全上限。")
+                    throw ParseFailure.invalid(String(localized: "GGUF metadata array 嵌套超过安全上限。"))
                 }
                 let elementType = try cursor.readUInt32()
                 guard elementType <= 12 else {
-                    throw ParseFailure.invalid("GGUF metadata array 类型无效。")
+                    throw ParseFailure.invalid(String(localized: "GGUF metadata array 类型无效。"))
                 }
                 let count = try readCount()
                 let nextCount = arrayElementsRead.addingReportingOverflow(count)
                 guard !nextCount.overflow,
                       nextCount.partialValue <= GGUFInspector.maximumArrayElements else {
-                    throw ParseFailure.invalid("GGUF metadata array 元素数量超过安全上限。")
+                    throw ParseFailure.invalid(String(localized: "GGUF metadata array 元素数量超过安全上限。"))
                 }
                 arrayElementsRead = nextCount.partialValue
 
@@ -313,7 +315,7 @@ private extension GGUFInspector {
                 guard capture else { return .hidden }
                 let suffix = count > 16 ? ", …" : ""
                 return ParsedValue(
-                    display: "[\(preview.joined(separator: ", "))\(suffix)] · \(count.formatted()) 项",
+                    display: String(localized: "[\(preview.joined(separator: ", "))\(suffix)] · \(count.formatted()) 项"),
                     stringValue: nil,
                     unsignedValue: nil
                 )
@@ -327,7 +329,9 @@ private extension GGUFInspector {
                 let value = Double(bitPattern: try cursor.readUInt64())
                 return capture ? ParsedValue(display: String(value), stringValue: nil, unsignedValue: nil) : .hidden
             default:
-                throw ParseFailure.invalid("GGUF metadata 类型 \(typeCode) 无效。")
+                throw ParseFailure.invalid(
+                    String(localized: "GGUF metadata 类型 \(typeCode.formatted()) 无效。")
+                )
             }
         }
 
@@ -345,7 +349,7 @@ private extension GGUFInspector {
             for value in values {
                 let next = result.multipliedReportingOverflow(by: value)
                 guard !next.overflow else {
-                    throw ParseFailure.invalid("GGUF \(context) 溢出。")
+                    throw ParseFailure.invalid(String(localized: "GGUF \(context) 溢出。"))
                 }
                 result = next.partialValue
             }
@@ -354,7 +358,9 @@ private extension GGUFInspector {
 
         private func checkedAdd(_ lhs: UInt64, _ rhs: UInt64, context: String) throws -> UInt64 {
             let result = lhs.addingReportingOverflow(rhs)
-            guard !result.overflow else { throw ParseFailure.invalid("GGUF \(context) 溢出。") }
+            guard !result.overflow else {
+                throw ParseFailure.invalid(String(localized: "GGUF \(context) 溢出。"))
+            }
             return result.partialValue
         }
 
@@ -363,7 +369,7 @@ private extension GGUFInspector {
             let addition = (alignment - value % alignment) % alignment
             let result = value.addingReportingOverflow(addition)
             guard !result.overflow, result.partialValue <= UInt64(Int.max) else {
-                throw ParseFailure.invalid("GGUF tensor data offset 溢出。")
+                throw ParseFailure.invalid(String(localized: "GGUF tensor data offset 溢出。"))
             }
             return Int(result.partialValue)
         }

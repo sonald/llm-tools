@@ -14,7 +14,7 @@ struct PDFReaderView: NSViewRepresentable {
         view.autoScales = true
         view.displayDirection = .vertical
         view.displayMode = .singlePageContinuous
-        view.setAccessibilityLabel("PDF 文档")
+        view.setAccessibilityLabel(String(localized: "PDF 文档"))
         view.document = PDFDocument(data: data)
         context.coordinator.data = data
         return view

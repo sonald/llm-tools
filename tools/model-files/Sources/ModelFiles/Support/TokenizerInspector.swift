@@ -119,7 +119,10 @@ enum TokenizerInspector {
     static func inspect(_ data: Data) -> TokenizerInspection {
         do {
             guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return TokenizerInspection(overview: nil, error: "tokenizer.json 根节点不是对象。")
+                return TokenizerInspection(
+                    overview: nil,
+                    error: String(localized: "tokenizer.json 根节点不是对象。")
+                )
             }
             let model = root["model"] as? [String: Any]
             let vocabulary = model?["vocab"]
@@ -306,13 +309,15 @@ enum TokenizerInspector {
             return "null"
         case let value as [String: Any]:
             if let type = value["type"] as? String {
-                return "对象 · \(value.count.formatted()) 字段 · type: \(type)"
+                return String(localized: "对象 · \(value.count) 字段 · type: \(type)")
             }
-            return "对象 · \(value.count.formatted()) 字段"
+            return String(localized: "对象 · \(value.count) 字段")
         case let value as [Any]:
-            return "数组 · \(value.count.formatted()) 项"
+            return String(localized: "数组 · \(value.count) 项")
         case let value as String:
-            return value.count > 80 ? "字符串 · \(value.count.formatted()) 字符" : value
+            return value.count > 80 ?
+                String(localized: "字符串 · \(value.count) 字符") :
+                value
         case let value as NSNumber:
             return value.stringValue
         default:

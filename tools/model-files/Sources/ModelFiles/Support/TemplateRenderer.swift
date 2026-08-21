@@ -13,10 +13,10 @@ enum TemplateValueKind: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .string: "字符串"
-        case .integer: "整数"
-        case .decimal: "小数"
-        case .boolean: "布尔"
+        case .string: String(localized: "字符串")
+        case .integer: String(localized: "整数")
+        case .decimal: String(localized: "小数")
+        case .boolean: String(localized: "布尔")
         case .json: "JSON"
         case .null: "Null"
         }
@@ -28,7 +28,7 @@ enum MessageContentKind: String, CaseIterable, Identifiable, Sendable {
     case json
 
     var id: Self { self }
-    var title: String { self == .text ? "文本" : "JSON" }
+    var title: String { self == .text ? String(localized: "文本") : "JSON" }
 }
 
 struct TemplateMessage: Identifiable, Hashable, Sendable {
@@ -118,12 +118,12 @@ enum TemplateRenderer {
         var kwargs = kwargs
         if let sortKeys = kwargs.removeValue(forKey: "sort_keys") {
             guard case .boolean(true) = sortKeys else {
-                throw RenderError("tojson 目前只支持 sort_keys=true。")
+                throw RenderError(String(localized: "tojson 目前只支持 sort_keys=true。"))
             }
         }
         if let separators = kwargs.removeValue(forKey: "separators") {
             guard case .array([.string(","), .string(":")]) = separators else {
-                throw RenderError("tojson 目前只支持 separators=(\",\", \":\")。")
+                throw RenderError(String(localized: "tojson 目前只支持 separators=(\",\", \":\")。"))
             }
         }
         return try Filters.tojson(args, kwargs: kwargs, env: environment)
@@ -143,9 +143,9 @@ enum TemplateRenderer {
         var seen = Set<String>()
         for variable in request.variables {
             let name = variable.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty else { throw RenderError("变量名不能为空。") }
-            guard !reserved.contains(name) else { throw RenderError("“\(name)”由专用编辑器管理。") }
-            guard seen.insert(name).inserted else { throw RenderError("变量“\(name)”重复。") }
+            guard !name.isEmpty else { throw RenderError(String(localized: "变量名不能为空。")) }
+            guard !reserved.contains(name) else { throw RenderError(String(localized: "“\(name)”由专用编辑器管理。")) }
+            guard seen.insert(name).inserted else { throw RenderError(String(localized: "变量“\(name)”重复。")) }
             context[name] = try value(for: variable)
         }
 
@@ -165,10 +165,10 @@ enum TemplateRenderer {
 
     private static func toolValue(_ tool: TemplateTool) throws -> [String: Any] {
         let name = tool.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { throw RenderError("Tool 名称不能为空。") }
+        guard !name.isEmpty else { throw RenderError(String(localized: "Tool 名称不能为空。")) }
         let parameters = try parseJSON(tool.parametersJSON, label: "Tool \(name) parameters")
         guard parameters is [String: Any] else {
-            throw RenderError("Tool \(name) 的 parameters 必须是 JSON 对象。")
+            throw RenderError(String(localized: "Tool \(name) 的 parameters 必须是 JSON 对象。"))
         }
         return [
             "type": "function",
@@ -186,18 +186,18 @@ enum TemplateRenderer {
             return .string(variable.value)
         case .integer:
             guard let value = Int(variable.value) else {
-                throw RenderError("变量“\(variable.name)”需要整数。")
+                throw RenderError(String(localized: "变量“\(variable.name)”需要整数。"))
             }
             return .int(value)
         case .decimal:
             guard let value = Double(variable.value) else {
-                throw RenderError("变量“\(variable.name)”需要数字。")
+                throw RenderError(String(localized: "变量“\(variable.name)”需要数字。"))
             }
             return .double(value)
         case .boolean:
             return .boolean(variable.value != "false")
         case .json:
-            return try Value(any: parseJSON(variable.value, label: "变量 \(variable.name)"))
+            return try Value(any: parseJSON(variable.value, label: String(localized: "变量 \(variable.name)")))
         case .null:
             return .null
         }
@@ -205,12 +205,12 @@ enum TemplateRenderer {
 
     private static func parseJSON(_ source: String, label: String) throws -> Any {
         guard let data = source.data(using: .utf8) else {
-            throw RenderError("\(label) 不是有效 UTF-8。")
+            throw RenderError(String(localized: "\(label) 不是有效 UTF-8。"))
         }
         do {
             return try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
         } catch {
-            throw RenderError("\(label) JSON 无效：\(error.localizedDescription)")
+            throw RenderError(String(localized: "\(label) JSON 无效：\(error.localizedDescription)"))
         }
     }
 }

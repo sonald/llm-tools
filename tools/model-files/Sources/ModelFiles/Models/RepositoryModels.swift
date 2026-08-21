@@ -31,7 +31,7 @@ enum RepositoryLocation: Hashable, Sendable {
         switch self {
         case .modelScope: "ModelScope"
         case .huggingFace: "Hugging Face"
-        case .local: "本地"
+        case .local: String(localized: "本地")
         case let .ssh(location): "SSH \(location.host)"
         }
     }
@@ -64,13 +64,13 @@ enum FileCategory: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .configuration: "配置"
+        case .configuration: String(localized: "配置")
         case .tokenizer: "Tokenizer"
-        case .templates: "模板"
-        case .weightMetadata: "权重元数据"
-        case .documentation: "文档"
-        case .other: "其他"
-        case .weights: "权重文件"
+        case .templates: String(localized: "模板")
+        case .weightMetadata: String(localized: "权重元数据")
+        case .documentation: String(localized: "文档")
+        case .other: String(localized: "其他")
+        case .weights: String(localized: "权重文件")
         }
     }
 }

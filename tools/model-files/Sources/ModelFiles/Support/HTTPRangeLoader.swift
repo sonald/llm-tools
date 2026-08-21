@@ -8,9 +8,11 @@ final class HTTPRangeLoader: NSObject, URLSessionDataDelegate, @unchecked Sendab
         var errorDescription: String? {
             switch self {
             case let .unsupported(status):
-                "源站未确认 HTTP Range（状态码 \(status)），已取消以避免下载完整权重。"
+                String(localized: "源站未确认 HTTP Range（状态码 \(status.formatted())），已取消以避免下载完整权重。")
             case let .incomplete(expected, received):
-                "Range 响应不完整：需要 \(expected) 字节，只收到 \(received) 字节。"
+                String(
+                    localized: "Range 响应不完整：需要 \(expected.formatted()) 字节，只收到 \(received.formatted()) 字节。"
+                )
             }
         }
     }

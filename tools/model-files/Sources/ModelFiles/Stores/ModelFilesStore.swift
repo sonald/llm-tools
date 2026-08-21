@@ -83,7 +83,7 @@ final class ModelFilesStore: ObservableObject {
             components.append(branch)
             components.append("SHA \(selectedFile?.shortHash ?? label)")
         case .live:
-            components.append("实时目录")
+            components.append(String(localized: "实时目录"))
         }
         return components.joined(separator: " · ")
     }
@@ -154,7 +154,7 @@ final class ModelFilesStore: ObservableObject {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.prompt = "选择模型目录"
+        panel.prompt = String(localized: "选择模型目录")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         repositoryInput = url.path
     }
@@ -342,7 +342,7 @@ final class ModelFilesStore: ObservableObject {
             comparison = TokenizerComparisonSession(
                 source: source,
                 rightIdentity: nil,
-                phase: .failed("当前没有可用 snapshot。"),
+                phase: .failed(String(localized: "当前没有可用 snapshot。")),
                 left: tokenizationResult,
                 right: nil
             )
@@ -380,13 +380,17 @@ final class ModelFilesStore: ObservableObject {
                     guard let candidate = targetSnapshot.files.first(where: {
                         $0.path == path && !$0.isBlocked && $0.isTokenizerPlaygroundEntryPoint
                     }) else {
-                        throw ComparisonError.invalidSource("snapshot 中没有可用 tokenizer 入口：\(path)")
+                        throw ComparisonError.invalidSource(
+                            String(localized: "snapshot 中没有可用 tokenizer 入口：\(path)")
+                        )
                     }
                     file = candidate
                 case let .repositoryInput(input):
                     targetSnapshot = try await service.loadRepository(input: input)
                     guard let candidate = comparisonEntry(in: targetSnapshot) else {
-                        throw ComparisonError.invalidSource("对方仓库没有可用 tokenizer 入口。")
+                        throw ComparisonError.invalidSource(
+                            String(localized: "对方仓库没有可用 tokenizer 入口。")
+                        )
                     }
                     file = candidate
                 }
@@ -420,14 +424,14 @@ final class ModelFilesStore: ObservableObject {
                 }
                 if leftBundle?.file.isSentencePieceModel == true || bundle.file.isSentencePieceModel {
                     vocabulary = .skipped(
-                        "SentencePiece 不提供可解析的 tokenizer.json 词表；编码对照仍可用。"
+                        String(localized: "SentencePiece 不提供可解析的 tokenizer.json 词表；编码对照仍可用。")
                     )
                 } else if let leftData = leftBundle?.tokenizerData {
                     vocabulary = await Task.detached(priority: .userInitiated) {
                         guard let left = TokenizerInspector.vocabularyIndex(from: leftData),
                               let right = TokenizerInspector.vocabularyIndex(from: bundle.tokenizerData) else {
                             return TokenizerVocabularyComparison.skipped(
-                                "一侧 tokenizer.json 的 model.vocab 无法解析，已跳过词表差集。"
+                                String(localized: "一侧 tokenizer.json 的 model.vocab 无法解析，已跳过词表差集。")
                             )
                         }
                         return .available(
@@ -437,7 +441,7 @@ final class ModelFilesStore: ObservableObject {
                         )
                     }.value
                 } else {
-                    vocabulary = .skipped("主侧 tokenizer 尚未就绪，已跳过词表差集。")
+                    vocabulary = .skipped(String(localized: "主侧 tokenizer 尚未就绪，已跳过词表差集。"))
                 }
                 try Task.checkCancellation()
                 let runtime = try await Task.detached(priority: .userInitiated) {
@@ -630,7 +634,7 @@ final class ModelFilesStore: ObservableObject {
             }.value
             try Task.checkCancellation()
             guard outcome.error == nil else {
-                throw ComparisonError.renderFailed(outcome.error ?? "模板渲染失败。")
+                throw ComparisonError.renderFailed(outcome.error ?? String(localized: "模板渲染失败。"))
             }
             let result = try await runtime.tokenize(outcome.output)
             let contentProbe = TokenAttributor.contentProbe(messages: seed.messages)
@@ -670,8 +674,9 @@ final class ModelFilesStore: ObservableObject {
         var errorDescription: String? {
             switch self {
             case let .invalidSource(message): message
-            case .missingTemplate: "对照侧没有可用 Chat Template。"
-            case let .renderFailed(message): "对照侧模板渲染失败：\(message)"
+            case .missingTemplate: String(localized: "对照侧没有可用 Chat Template。")
+            case let .renderFailed(message):
+                String(localized: "对照侧模板渲染失败：\(message)")
             }
         }
     }
@@ -871,7 +876,7 @@ final class ModelFilesStore: ObservableObject {
             if let overview = inspection.overview, inspection.error == nil {
                 tokenizer = .available(overview)
             } else {
-                tokenizer = .failed(inspection.error ?? "tokenizer.json 概览解析失败。")
+                tokenizer = .failed(inspection.error ?? String(localized: "tokenizer.json 概览解析失败。"))
             }
         }
 
@@ -907,7 +912,7 @@ final class ModelFilesStore: ObservableObject {
             switch existing {
             case let .generic(data): return .available(data)
             case let .jinja(document): return .available(Data(document.source.utf8))
-            default: return .failed("\(file.path) 不是可读取的 JSON 文档。")
+            default: return .failed(String(localized: "\(file.path) 不是可读取的 JSON 文档。"))
             }
         }
         do {
@@ -916,7 +921,7 @@ final class ModelFilesStore: ObservableObject {
             switch document {
             case let .generic(data): return .available(data)
             case let .jinja(document): return .available(Data(document.source.utf8))
-            default: return .failed("\(file.path) 不是可读取的 JSON 文档。")
+            default: return .failed(String(localized: "\(file.path) 不是可读取的 JSON 文档。"))
             }
         } catch is CancellationError {
             throw CancellationError()
@@ -988,7 +993,7 @@ final class ModelFilesStore: ObservableObject {
         for file in files.sorted(by: { $0.path < $1.path }) {
             if case let .gguf(overview, _) = contents[file.path] { return .available(overview) }
         }
-        return .skipped("未在当前会话打开")
+        return .skipped(String(localized: "未在当前会话打开"))
     }
 
     private func consistencyFile(

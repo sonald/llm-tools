@@ -318,8 +318,9 @@ struct SSHDirectoryAccess: RepositoryAccess {
         guard output.exitCode == 0 else {
             let rawMessage = String(data: output.stderr, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            var message = rawMessage.flatMap { $0.isEmpty ? nil : $0 } ?? "远端命令失败。"
-            if output.stderrWasTruncated { message += "（stderr 已截断）" }
+            var message = rawMessage.flatMap { $0.isEmpty ? nil : $0 }
+                ?? String(localized: "远端命令失败。")
+            if output.stderrWasTruncated { message += String(localized: "（stderr 已截断）") }
             throw RepositoryService.ServiceError.sshFailed(
                 exitCode: output.exitCode,
                 message: message

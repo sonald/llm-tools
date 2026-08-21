@@ -26,14 +26,17 @@ enum SafetensorsInspector {
     static func inspect(_ data: Data) -> SafetensorsInspection {
         do {
             guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return SafetensorsInspection(overview: nil, error: "SafeTensors header 根节点不是对象。")
+                return SafetensorsInspection(
+                    overview: nil,
+                    error: String(localized: "SafeTensors header 根节点不是对象。")
+                )
             }
             let metadata: [String: String]
             if let rawMetadata = root["__metadata__"] {
                 guard let parsedMetadata = rawMetadata as? [String: String] else {
                     return SafetensorsInspection(
                         overview: nil,
-                        error: "SafeTensors __metadata__ 必须是字符串字典。"
+                        error: String(localized: "SafeTensors __metadata__ 必须是字符串字典。")
                     )
                 }
                 metadata = parsedMetadata
@@ -51,7 +54,7 @@ enum SafetensorsInspector {
                       offsets.allSatisfy({ $0.int64Value >= 0 }) else {
                     return SafetensorsInspection(
                         overview: nil,
-                        error: "SafeTensors tensor \(name) 的结构无效。"
+                        error: String(localized: "SafeTensors tensor \(name) 的结构无效。")
                     )
                 }
 
@@ -59,7 +62,7 @@ enum SafetensorsInspector {
                 guard let parameters = checkedProduct(shape) else {
                     return SafetensorsInspection(
                         overview: nil,
-                        error: "SafeTensors tensor \(name) 的 shape 溢出。"
+                        error: String(localized: "SafeTensors tensor \(name) 的 shape 溢出。")
                     )
                 }
                 let start = UInt64(offsets[0].int64Value)
@@ -67,7 +70,7 @@ enum SafetensorsInspector {
                 guard end >= start else {
                     return SafetensorsInspection(
                         overview: nil,
-                        error: "SafeTensors tensor \(name) 的 data_offsets 无效。"
+                        error: String(localized: "SafeTensors tensor \(name) 的 data_offsets 无效。")
                     )
                 }
                 tensors.append(TensorDescriptor(
@@ -83,7 +86,10 @@ enum SafetensorsInspector {
 
             guard let parameterCount = checkedSum(tensors.map(\.parameterCount)),
                   let byteCount = checkedSum(tensors.compactMap(\.byteCount)) else {
-                return SafetensorsInspection(overview: nil, error: "SafeTensors 汇总值溢出。")
+                return SafetensorsInspection(
+                    overview: nil,
+                    error: String(localized: "SafeTensors 汇总值溢出。")
+                )
             }
 
             return SafetensorsInspection(

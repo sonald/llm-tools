@@ -8,7 +8,7 @@ struct SpecialTokenIndex: Sendable, Equatable {
         var errorDescription: String? {
             switch self {
             case let .rootNotObject(name):
-                "\(name) 根节点不是对象。"
+                String(localized: "\(name) 根节点不是对象。")
             }
         }
     }

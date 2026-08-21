@@ -19,18 +19,18 @@ struct SidebarView: View {
             } else if store.snapshot == nil {
                 Spacer()
                 EmptyStateView(
-                    title: "尚未打开模型",
+                    title: String(localized: "尚未打开模型"),
                     systemImage: "shippingbox",
-                    message: "输入模型 ID、本地目录或 SSH 地址后打开。"
+                    message: String(localized: "输入模型 ID、本地目录或 SSH 地址后打开。")
                 )
                 Spacer()
             } else if !store.filter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       !store.hasMatchingFiles {
                 EmptyStateView(
-                    title: "没有匹配文件",
+                    title: String(localized: "没有匹配文件"),
                     systemImage: "doc.text.magnifyingglass",
-                    message: "换个关键词，或清除当前筛选。",
-                    actionTitle: "清除筛选"
+                    message: String(localized: "换个关键词，或清除当前筛选。"),
+                    actionTitle: String(localized: "清除筛选")
                 ) {
                     store.filter = ""
                 }
@@ -129,11 +129,11 @@ private struct SidebarFileRow: View {
     }
 
     private var note: String? {
-        if file.name == "tokenizer_config.json" { return "含内嵌 Chat Template（如有）" }
-        if file.structuredInspectionFormat == .safetensors { return "只读取 JSON Header" }
-        if file.structuredInspectionFormat == .gguf { return "只读取 metadata 前缀" }
+        if file.name == "tokenizer_config.json" { return String(localized: "含内嵌 Chat Template（如有）") }
+        if file.structuredInspectionFormat == .safetensors { return String(localized: "只读取 JSON Header") }
+        if file.structuredInspectionFormat == .gguf { return String(localized: "只读取 metadata 前缀") }
         if file.structuredInspectionFormat == .imatrix { return "legacy importance matrix" }
-        if file.isBlocked { return "不可预览" }
+        if file.isBlocked { return String(localized: "不可预览") }
         return file.path == file.name ? nil : file.path
     }
 }

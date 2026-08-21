@@ -14,15 +14,15 @@ actor TokenizerRuntime {
         var errorDescription: String? {
             switch self {
             case let .invalidTokenizerData(message):
-                "tokenizer.json 无效：\(message)"
+                String(localized: "tokenizer.json 无效：\(message)")
             case let .invalidSentencePieceModel(message):
-                "SentencePiece model 无效：\(message)"
+                String(localized: "SentencePiece model 无效：\(message)")
             case let .invalidTokenizerConfig(message):
-                "tokenizer_config.json 无效：\(message)"
+                String(localized: "tokenizer_config.json 无效：\(message)")
             case let .recoverableTokenizerClass(message):
-                "tokenizer_class 需要显式指定：\(message)"
+                String(localized: "tokenizer_class 需要显式指定：\(message)")
             case let .unsupported(message):
-                "当前运行时无法加载该 tokenizer：\(message)"
+                String(localized: "当前运行时无法加载该 tokenizer：\(message)")
             }
         }
     }
@@ -136,7 +136,7 @@ actor TokenizerRuntime {
         var object: [String: Any]
         if let data {
             guard let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                throw RuntimeError.invalidTokenizerConfig("根节点不是对象。")
+                throw RuntimeError.invalidTokenizerConfig(String(localized: "根节点不是对象。"))
             }
             object = parsed
         } else {

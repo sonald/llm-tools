@@ -77,9 +77,9 @@ struct TokenizerComparisonView: View {
             Text("词表差集")
                 .font(.subheadline.weight(.semibold))
             HStack(spacing: 12) {
-                Text("仅主 \(diff.leftOnly.count.formatted())")
-                Text("仅对照 \(diff.rightOnly.count.formatted())")
-                Text("共有 \(diff.sharedCount.formatted())")
+                Text("仅主 \(diff.leftOnly.count)")
+                Text("仅对照 \(diff.rightOnly.count)")
+                Text("共有 \(diff.sharedCount)")
             }
             .font(.caption.weight(.semibold).monospacedDigit())
             Picker("差集侧", selection: $showsLeftVocabulary) {
@@ -91,13 +91,13 @@ struct TokenizerComparisonView: View {
             TextField("搜索 token piece", text: $vocabularyQuery)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 380)
-            Text("显示 \(matches.count.formatted()) 条，最多 \(TokenizerVocabularyIndex.maximumMatchCount.formatted()) 条")
+            Text("显示 \(matches.count) 条，最多 \(TokenizerVocabularyIndex.maximumMatchCount) 条")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(matches.enumerated()), id: \.offset) { _, piece in
-                        Text(piece.isEmpty ? "（空 Token）" : piece)
+                        Text(piece.isEmpty ? String(localized: "（空 Token）") : piece)
                             .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -119,7 +119,7 @@ struct TokenizerComparisonView: View {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 12) {
                     resultColumn(
-                        title: "主侧",
+                        title: String(localized: "主侧"),
                         result: left,
                         selectedIndex: $leftSelectedTokenIndex
                     )
@@ -131,7 +131,7 @@ struct TokenizerComparisonView: View {
                 }
                 VStack(alignment: .leading, spacing: 12) {
                     resultColumn(
-                        title: "主侧",
+                        title: String(localized: "主侧"),
                         result: left,
                         selectedIndex: $leftSelectedTokenIndex
                     )
@@ -152,10 +152,12 @@ struct TokenizerComparisonView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 12) {
-                Text("主 \(left.tokenCount.formatted())")
-                Text("对照 \(right.tokenCount.formatted())")
+                Text("主 \(left.tokenCount)")
+                Text("对照 \(right.tokenCount)")
                 Text("差值 \(deltaText(summary.countDelta))")
-                Text(summary.idsMatch ? "ID 序列相同" : "ID 序列不同")
+                Text(summary.idsMatch ?
+                     String(localized: "ID 序列相同") :
+                     String(localized: "ID 序列不同"))
             }
             .font(.caption.weight(.semibold).monospacedDigit())
             if let firstDifference = summary.firstDifference {
@@ -251,7 +253,7 @@ struct TokenizerComparisonView: View {
     }
 
     private func display(_ count: Int) -> String {
-        count < 0 ? "无法按差量拆分" : count.formatted()
+        count < 0 ? String(localized: "无法按差量拆分") : count.formatted()
     }
 
     private func deltaText(_ count: Int) -> String {

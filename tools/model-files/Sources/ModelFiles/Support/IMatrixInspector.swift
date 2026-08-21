@@ -33,7 +33,7 @@ enum IMatrixInspector {
             var cursor = Cursor(data: data)
             let entryCount = Int(try cursor.readInt32())
             guard (1...maximumEntryCount).contains(entryCount) else {
-                throw ParseFailure.invalid("imatrix 条目数量无效或超过安全上限。")
+                throw ParseFailure.invalid(String(localized: "imatrix 条目数量无效或超过安全上限。"))
             }
 
             var entries: [IMatrixEntry] = []
@@ -45,14 +45,14 @@ enum IMatrixInspector {
                 guard (1...maximumNameLength).contains(nameLength),
                       let name = String(data: try cursor.readData(count: nameLength), encoding: .utf8),
                       names.insert(name).inserted else {
-                    throw ParseFailure.invalid("imatrix tensor 名称无效或重复。")
+                    throw ParseFailure.invalid(String(localized: "imatrix tensor 名称无效或重复。"))
                 }
 
                 let callCount = try cursor.readInt32()
                 let valueCount = Int(try cursor.readInt32())
                 guard callCount >= 0, valueCount > 0,
                       valueCount <= maximumValueCount - totalValueCount else {
-                    throw ParseFailure.invalid("imatrix \(name) 的计数无效或超过安全上限。")
+                    throw ParseFailure.invalid(String(localized: "imatrix \(name) 的计数无效或超过安全上限。"))
                 }
                 totalValueCount += valueCount
 
@@ -62,7 +62,7 @@ enum IMatrixInspector {
                 for _ in 0..<valueCount {
                     let value = try cursor.readFloat32()
                     guard value.isFinite else {
-                        throw ParseFailure.invalid("imatrix \(name) 包含非有限数值。")
+                        throw ParseFailure.invalid(String(localized: "imatrix \(name) 包含非有限数值。"))
                     }
                     minimum = min(minimum, value)
                     maximum = max(maximum, value)
@@ -94,7 +94,7 @@ enum IMatrixInspector {
         } catch let ParseFailure.invalid(message) {
             return IMatrixInspection(overview: nil, error: message)
         } catch {
-            return IMatrixInspection(overview: nil, error: "imatrix 文件无效。")
+            return IMatrixInspection(overview: nil, error: String(localized: "imatrix 文件无效。"))
         }
     }
 
@@ -103,18 +103,18 @@ enum IMatrixInspector {
 
         let chunkCount = try cursor.readInt32()
         guard chunkCount >= 0 else {
-            throw ParseFailure.invalid("imatrix chunk 数量无效。")
+            throw ParseFailure.invalid(String(localized: "imatrix chunk 数量无效。"))
         }
         guard cursor.remaining > 0 else { return (chunkCount, nil) }
 
         let datasetLength = Int(try cursor.readInt32())
         guard datasetLength >= 0, datasetLength <= cursor.remaining else {
-            throw ParseFailure.invalid("imatrix dataset 长度无效。")
+            throw ParseFailure.invalid(String(localized: "imatrix dataset 长度无效。"))
         }
         let datasetData = try cursor.readData(count: datasetLength)
         guard cursor.remaining == 0,
               let dataset = String(data: datasetData, encoding: .utf8) else {
-            throw ParseFailure.invalid("imatrix dataset 无效。")
+            throw ParseFailure.invalid(String(localized: "imatrix dataset 无效。"))
         }
         return (chunkCount, dataset.isEmpty ? nil : dataset)
     }
@@ -133,7 +133,7 @@ private extension IMatrixInspector {
 
         mutating func readInt32() throws -> Int32 {
             guard remaining >= 4 else {
-                throw ParseFailure.invalid("imatrix 文件提前结束。")
+                throw ParseFailure.invalid(String(localized: "imatrix 文件提前结束。"))
             }
             let value = UInt32(data[offset])
                 | UInt32(data[offset + 1]) << 8
@@ -149,7 +149,7 @@ private extension IMatrixInspector {
 
         mutating func readData(count: Int) throws -> Data {
             guard count >= 0, count <= remaining else {
-                throw ParseFailure.invalid("imatrix 文件提前结束。")
+                throw ParseFailure.invalid(String(localized: "imatrix 文件提前结束。"))
             }
             defer { offset += count }
             return data.subdata(in: offset..<(offset + count))

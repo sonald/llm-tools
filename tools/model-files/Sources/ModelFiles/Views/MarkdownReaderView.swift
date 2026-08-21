@@ -21,7 +21,7 @@ struct MarkdownReaderView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 240)
-                .accessibilityLabel("Markdown 排版主题")
+                .accessibilityLabel(String(localized: "Markdown 排版主题"))
             }
 
             Divider()
@@ -117,8 +117,8 @@ private enum MarkdownTheme: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .gitHub: "GitHub"
-        case .standard: "默认"
-        case .compact: "紧凑"
+        case .standard: String(localized: "默认")
+        case .compact: String(localized: "紧凑")
         }
     }
 }

@@ -39,57 +39,59 @@ struct RepositoryService: Sendable {
         var errorDescription: String? {
             switch self {
             case .invalidModelID:
-                "模型 ID 无效，请使用类似 Qwen/Qwen3-4B 的格式。"
+                String(localized: "模型 ID 无效，请使用类似 Qwen/Qwen3-4B 的格式。")
             case .invalidLocalDirectory:
-                "本地模型目录无效或不可读取。"
+                String(localized: "本地模型目录无效或不可读取。")
             case .invalidSSHLocation:
-                "SSH 地址无效，请使用 ssh://user@host/absolute/path。"
+                String(localized: "SSH 地址无效，请使用 ssh://user@host/absolute/path。")
             case .directoryNotReadable:
-                "模型目录不存在或不可读取。"
+                String(localized: "模型目录不存在或不可读取。")
             case let .tooManyFiles(limit):
-                "模型目录超过 \(limit.formatted()) 个文件，请选择更小的目录。"
+                String(localized: "模型目录超过 \(limit.formatted()) 个文件，请选择更小的目录。")
             case .listingTooLarge:
-                "SSH 文件清单超过 32 MB 安全上限，请选择更小的目录。"
+                String(localized: "SSH 文件清单超过 32 MB 安全上限，请选择更小的目录。")
             case let .unsafePath(path):
-                "文件路径不安全，已拒绝读取：\(path)"
+                String(localized: "文件路径不安全，已拒绝读取：\(path)")
             case let .fileChanged(path):
-                "文件已在清单生成后发生变化，请刷新目录：\(path)"
+                String(localized: "文件已在清单生成后发生变化，请刷新目录：\(path)")
             case .sshUnavailable:
-                "系统未提供 /usr/bin/ssh，无法打开 SSH 目录。"
+                String(localized: "系统未提供 /usr/bin/ssh，无法打开 SSH 目录。")
             case let .sshFailed(exitCode, message):
                 exitCode == 255
-                    ? "SSH 连接失败：\(message)；请先在 Terminal 中确认该主机可以无交互登录。"
-                    : "SSH 命令失败（退出码 \(exitCode)）：\(message)"
+                    ? String(localized: "SSH 连接失败：\(message)；请先在 Terminal 中确认该主机可以无交互登录。")
+                    : String(localized: "SSH 命令失败（退出码 \(exitCode.formatted())）：\(message)")
             case .invalidResponse:
-                "来源返回了无法识别的数据。"
+                String(localized: "来源返回了无法识别的数据。")
             case let .requestFailed(status, message):
-                "请求失败（HTTP \(status)）：\(message)"
+                String(localized: "请求失败（HTTP \(status.formatted())）：\(message)")
             case let .noSourceAvailable(messages):
-                "两个源都不可用：\(messages.joined(separator: "；"))"
+                String(localized: "两个源都不可用：\(messages.joined(separator: "；"))")
             case .blockedWeight:
-                "该文件属于模型权重，应用不会读取它。"
+                String(localized: "该文件属于模型权重，应用不会读取它。")
             case let .fileTooLarge(size):
-                "文件大小为 \(size.formattedByteCount)，超过 32 MB 阅读上限。"
+                String(localized: "文件大小为 \(size.formattedByteCount)，超过 32 MB 阅读上限。")
             case .invalidSafetensorsHeader:
-                "SafeTensors header 无效。"
+                String(localized: "SafeTensors header 无效。")
             case let .safetensorsHeaderTooLarge(size):
-                "SafeTensors header 为 \(size) 字节，超过安全上限。"
+                String(localized: "SafeTensors header 为 \(size.formatted()) 字节，超过安全上限。")
             case let .invalidGGUF(message):
-                "GGUF 无效：\(message)"
+                String(localized: "GGUF 无效：\(message)")
             case let .invalidIMatrix(message):
-                "Imatrix 无效：\(message)"
+                String(localized: "Imatrix 无效：\(message)")
             case .invalidPDF:
-                "PDF 文件无效或无法由系统 PDFKit 打开。"
+                String(localized: "PDF 文件无效或无法由系统 PDFKit 打开。")
             case .ggufMetadataTooLarge:
-                "GGUF metadata 与 tensor 目录超过 32 MB 安全上限。"
+                String(localized: "GGUF metadata 与 tensor 目录超过 32 MB 安全上限。")
             case .missingFileSize:
-                "来源未提供文件大小，无法安全读取 GGUF 前缀。"
+                String(localized: "来源未提供文件大小，无法安全读取 GGUF 前缀。")
             case .invalidUTF8:
-                "文件不是有效的 UTF-8 文本。"
+                String(localized: "文件不是有效的 UTF-8 文本。")
             case .unsupportedBinary:
-                "该文件没有专用阅读器，且内容不是可安全显示的 UTF-8 文本。"
+                String(localized: "该文件没有专用阅读器，且内容不是可安全显示的 UTF-8 文本。")
             case let .shortRead(expected, actual):
-                "读取不完整：需要 \(expected) 字节，只收到 \(actual) 字节。"
+                String(
+                    localized: "读取不完整：需要 \(expected.formatted()) 字节，只收到 \(actual.formatted()) 字节。"
+                )
             }
         }
     }
@@ -259,7 +261,9 @@ struct RepositoryService: Sendable {
             let data = try await loadReadableFile(file, access: access)
             let inspection = IMatrixInspector.inspect(data)
             guard let overview = inspection.overview else {
-                throw ServiceError.invalidIMatrix(inspection.error ?? "无法解析 legacy imatrix 文件。")
+                throw ServiceError.invalidIMatrix(
+                    inspection.error ?? String(localized: "无法解析 legacy imatrix 文件。")
+                )
             }
             return .imatrix(overview)
         case .jinja:
@@ -346,7 +350,9 @@ struct RepositoryService: Sendable {
         }
 
         if UInt64(fileSize) <= budget {
-            throw ServiceError.invalidGGUF("文件在 metadata 与 tensor 目录完成前结束。")
+            throw ServiceError.invalidGGUF(
+                String(localized: "文件在 metadata 与 tensor 目录完成前结束。")
+            )
         }
         throw ServiceError.ggufMetadataTooLarge
     }
@@ -534,7 +540,8 @@ private struct HubRepositoryAccess: RepositoryAccess {
             throw RepositoryService.ServiceError.invalidResponse
         }
         guard (200..<300).contains(http.statusCode) else {
-            let message = String(data: data.prefix(512), encoding: .utf8) ?? "未知错误"
+            let message = String(data: data.prefix(512), encoding: .utf8)
+                ?? String(localized: "未知错误")
             throw RepositoryService.ServiceError.requestFailed(status: http.statusCode, message: message)
         }
     }

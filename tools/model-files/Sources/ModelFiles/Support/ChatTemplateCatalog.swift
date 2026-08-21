@@ -26,15 +26,15 @@ enum ChatTemplateCatalogError: LocalizedError, Sendable, Equatable {
     var errorDescription: String? {
         switch self {
         case let .invalidJSON(message):
-            "tokenizer_config.json 不是有效 JSON：\(message)"
+            String(localized: "tokenizer_config.json 不是有效 JSON：\(message)")
         case let .invalidJinja(message):
-            "chat_template.jinja 无效：\(message)"
+            String(localized: "chat_template.jinja 无效：\(message)")
         case .rootIsNotObject:
-            "tokenizer_config.json 根节点不是对象。"
+            String(localized: "tokenizer_config.json 根节点不是对象。")
         case let .unsupportedShape(shape):
-            "chat_template 不支持的形态：\(shape)。支持字符串、对象字典或 named 数组。"
+            String(localized: "chat_template 不支持的形态：\(shape)。支持字符串、对象字典或 named 数组。")
         case let .invalidNamedTemplate(index, reason):
-            "chat_template 的第 \(index) 个 named 条目无效：\(reason)"
+            String(localized: "chat_template 的第 \(index) 个 named 条目无效：\(reason)")
         }
     }
 }
@@ -82,7 +82,7 @@ struct ChatTemplateCatalog: Sendable, Equatable {
         } else if let named = value as? [String: Any] {
             entries = try named.keys.sorted().map { name in
                 guard let body = named[name] as? String else {
-                    throw ChatTemplateCatalogError.unsupportedShape("对象值必须是字符串")
+                    throw ChatTemplateCatalogError.unsupportedShape(String(localized: "对象值必须是字符串"))
                 }
                 return ChatTemplateEntry(
                     name: name,
@@ -95,26 +95,26 @@ struct ChatTemplateCatalog: Sendable, Equatable {
                 guard let fields = item as? [String: Any] else {
                     throw ChatTemplateCatalogError.invalidNamedTemplate(
                         index: index,
-                        reason: "必须是包含 name 和 template 的对象"
+                        reason: String(localized: "必须是包含 name 和 template 的对象")
                     )
                 }
                 guard let name = fields["name"] as? String,
                       !name.isEmpty else {
                     throw ChatTemplateCatalogError.invalidNamedTemplate(
                         index: index,
-                        reason: "name 必须是非空字符串"
+                        reason: String(localized: "name 必须是非空字符串")
                     )
                 }
                 guard let body = fields["template"] as? String else {
                     throw ChatTemplateCatalogError.invalidNamedTemplate(
                         index: index,
-                        reason: "template 必须是字符串"
+                        reason: String(localized: "template 必须是字符串")
                     )
                 }
                 return ChatTemplateEntry(name: name, source: .tokenizerConfig, body: body)
             }
         } else {
-            throw ChatTemplateCatalogError.unsupportedShape("null、数字或布尔值")
+            throw ChatTemplateCatalogError.unsupportedShape(String(localized: "null、数字或布尔值"))
         }
         return ChatTemplateCatalog(entries: entries)
     }
@@ -127,7 +127,7 @@ struct ChatTemplateCatalog: Sendable, Equatable {
         var entries: [ChatTemplateEntry] = []
         if let chatTemplateData {
             guard let body = String(data: chatTemplateData, encoding: .utf8) else {
-                throw ChatTemplateCatalogError.invalidJinja("不是有效 UTF-8")
+                throw ChatTemplateCatalogError.invalidJinja(String(localized: "不是有效 UTF-8"))
             }
             entries.append(ChatTemplateEntry(name: "default", source: .jinjaFile, body: body))
         }

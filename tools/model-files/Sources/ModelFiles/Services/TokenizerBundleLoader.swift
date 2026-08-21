@@ -17,13 +17,13 @@ struct TokenizerBundleLoader: Sendable {
         var errorDescription: String? {
             switch self {
             case let .invalidSelection(path):
-                "只能为 tokenizer.json 或 SentencePiece .model 打开分词试验台：\(path)"
+                String(localized: "只能为 tokenizer.json 或 SentencePiece .model 打开分词试验台：\(path)")
             case let .missingSize(path):
-                "来源没有提供 \(path) 的大小，无法在安全上限内读取。"
+                String(localized: "来源没有提供 \(path) 的大小，无法在安全上限内读取。")
             case let .fileTooLarge(path, size, limit):
-                "\(path) 大小为 \(size.formattedByteCount)，超过分词器单文件上限 \(limit.formattedByteCount)。"
+                String(localized: "\(path) 大小为 \(size.formattedByteCount)，超过分词器单文件上限 \(limit.formattedByteCount)。")
             case let .bundleTooLarge(size, limit):
-                "分词器资源合计 \(size.formattedByteCount)，超过 \(limit.formattedByteCount) 安全上限。"
+                String(localized: "分词器资源合计 \(size.formattedByteCount)，超过 \(limit.formattedByteCount) 安全上限。")
             }
         }
     }

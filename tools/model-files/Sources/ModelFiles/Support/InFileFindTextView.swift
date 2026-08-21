@@ -152,6 +152,6 @@ struct PlainTextReaderView: NSViewRepresentable {
         textView.textContainerInset = NSSize(width: 10, height: 10)
         textView.setAccessibilityElement(true)
         textView.setAccessibilityRole(.textArea)
-        textView.setAccessibilityLabel("原文")
+        textView.setAccessibilityLabel(String(localized: "原文"))
     }
 }
