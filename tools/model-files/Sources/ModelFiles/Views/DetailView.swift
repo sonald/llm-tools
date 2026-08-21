@@ -420,42 +420,29 @@ private struct FileReaderView: View {
             CodeReaderView(source: text, language: language)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollView {
-                Group {
-                    switch perspective {
-                    case .raw:
-                        if data.count > 128 * 1_024 {
-                                LinesView(
-                                    documentID: file.path,
-                                    data: data,
-                                    title: "原文",
-                                    subtitle: "大文件按行分批渲染，避免一次性文本排版阻塞界面。"
-                                )
-                        } else {
-                            RawTextView(data: data)
-                        }
-                    case .fields:
-                        if isTokenizerJSON {
+            if let textSurface = plainTextSurface {
+                PlainTextReaderView(text: textSurface)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    Group {
+                        switch perspective {
+                        case .fields:
+                            if isTokenizerJSON {
                                 TokenizerJSONView(data: data, showsFields: true)
-                        } else if isJSON, let object = jsonObject {
-                            JSONFieldsView(object: object)
-                        } else {
-                            LinesView(
-                                documentID: file.path,
-                                data: data,
-                                title: "全部行",
-                                subtitle: "纯文本没有字段结构，按行分批展示。"
-                            )
+                            } else if isJSON, let object = jsonObject {
+                                JSONFieldsView(object: object)
+                            }
+                        case .overview:
+                            summary
+                        default:
+                            summary
                         }
-                    case .overview:
-                        summary
-                    default:
-                        summary
                     }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 18)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -473,29 +460,45 @@ private struct FileReaderView: View {
             VocabView(object: jsonDictionary)
         } else if name == "tokenizer.json" {
             TokenizerJSONView(data: data, showsFields: false)
-        } else if name == "merges.txt" {
-            LinesView(
-                documentID: file.path,
-                data: data,
-                title: "BPE 合并规则",
-                subtitle: "按应用顺序排列；搜索只在已加载内容中进行。"
-            )
         } else if file.category == .weightMetadata {
             WeightIndexSummaryView(object: jsonDictionary)
         } else if file.category == .documentation && name.hasSuffix(".md") {
             MarkdownReaderView(text: text, baseURL: baseURL)
         } else if let object = jsonObject {
             JSONFieldsView(object: object)
-        } else if data.count > 128 * 1_024 {
-            LinesView(
-                documentID: file.path,
-                data: data,
-                title: "内容",
-                subtitle: "大文件按行分批渲染，避免一次性文本排版阻塞界面。"
-            )
         } else {
-            RawTextView(data: data)
+            EmptyView()
         }
+    }
+
+    private var plainTextSurface: String? {
+        switch perspective {
+        case .raw:
+            return text
+        case .fields:
+            guard !isTokenizerJSON, !(isJSON && jsonObject != nil) else { return nil }
+            return text
+        case .overview, .source:
+            return isStructuredOverview ? nil : text
+        default:
+            return nil
+        }
+    }
+
+    private var isStructuredOverview: Bool {
+        let name = file.name.lowercased()
+        let structuredNames = [
+            "config.json",
+            "configuration.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "vocab.json",
+            "tokenizer.json",
+        ]
+        return structuredNames.contains(name)
+            || file.category == .weightMetadata
+            || (file.category == .documentation && name.hasSuffix(".md"))
+            || jsonObject != nil
     }
 
     private var text: String { String(decoding: data, as: UTF8.self) }
@@ -1696,90 +1699,6 @@ private struct VocabView: View {
     }
 }
 
-private struct LinesView: View {
-    let documentID: String
-    let data: Data
-    let title: String
-    let subtitle: String
-    @State private var query = ""
-    @State private var lines: [TextLine] = []
-    @State private var visibleLimit = 1_000
-    @State private var isParsing = true
-
-    var body: some View {
-        let visibleLines = TextLine.visible(in: lines, matching: query, limit: visibleLimit)
-        VStack(alignment: .leading, spacing: 18) {
-            ReaderTitle(title, subtitle: "\(subtitle) 共 \(lines.count.formatted()) 行。")
-            TextField("搜索", text: $query)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 380)
-
-            if isParsing {
-                ProgressView("正在准备逐行视图…")
-                    .controlSize(.small)
-            } else {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(visibleLines) { line in
-                        HStack(alignment: .firstTextBaseline, spacing: 16) {
-                            Text(String(line.id + 1))
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.tertiary)
-                                .frame(width: 58, alignment: .trailing)
-                            Text(line.text)
-                                .font(.system(.body, design: .monospaced))
-                                .textSelection(.enabled)
-                        }
-                        .padding(.vertical, 2)
-                    }
-                }
-
-                if visibleLines.count == visibleLimit {
-                    Button("再显示 1,000 行") {
-                        visibleLimit += 1_000
-                    }
-                }
-            }
-        }
-        .task(id: documentID) {
-            isParsing = true
-            lines = []
-            visibleLimit = 1_000
-            let parsed = await Task.detached(priority: .userInitiated) {
-                TextLine.parse(data)
-            }.value
-            guard !Task.isCancelled else { return }
-            lines = parsed
-            isParsing = false
-        }
-        .onChange(of: query) {
-            visibleLimit = 1_000
-        }
-    }
-}
-
-struct TextLine: Identifiable, Sendable, Equatable {
-    let id: Int
-    let text: String
-
-    static func parse(_ data: Data) -> [TextLine] {
-        String(decoding: data, as: UTF8.self)
-            .split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
-            .enumerated()
-            .map { TextLine(id: $0.offset, text: String($0.element)) }
-    }
-
-    static func visible(in lines: [TextLine], matching query: String, limit: Int) -> [TextLine] {
-        guard !query.isEmpty else { return Array(lines.prefix(limit)) }
-        var result: [TextLine] = []
-        result.reserveCapacity(limit)
-        for line in lines where line.text.localizedCaseInsensitiveContains(query) {
-            result.append(line)
-            if result.count == limit { break }
-        }
-        return result
-    }
-}
-
 private struct JSONFieldsView: View {
     let object: Any
 
@@ -1799,18 +1718,6 @@ private struct JSONFieldsView: View {
                     .textSelection(.enabled)
             }
         }
-    }
-}
-
-private struct RawTextView: View {
-    let data: Data
-
-    var body: some View {
-        Text(String(decoding: data, as: UTF8.self))
-            .font(.system(size: 12.5, design: .monospaced))
-            .lineSpacing(2)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

@@ -47,6 +47,21 @@ struct CodeReaderView: View {
     }
 }
 
+func expandedFoldRangesForSelection(
+    selection utf16Range: NSRange,
+    collapsed: Set<FoldRange>,
+    source: String
+) -> Set<FoldRange> {
+    guard utf16Range.length > 0, !collapsed.isEmpty else { return [] }
+    let hidden = collapsed.compactMap { fold -> (FoldRange, NSRange)? in
+        guard let range = hiddenUTF16Range(for: fold, in: source) else { return nil }
+        return (fold, range)
+    }
+    return Set(hidden.compactMap { fold, range in
+        NSIntersectionRange(utf16Range, range).length > 0 ? fold : nil
+    })
+}
+
 func hiddenUTF16Range(for fold: FoldRange, in source: String) -> NSRange? {
     guard fold.startLine >= 1, fold.endLine > fold.startLine else { return nil }
     let ns = source as NSString
@@ -186,10 +201,14 @@ struct CodeReaderTextView: NSViewRepresentable {
         layoutManager.addTextContainer(textContainer)
         layoutManager.delegate = context.coordinator
 
-        let textView = NSTextView(frame: .zero, textContainer: textContainer)
+        let textView = InFileFindTextView(frame: .zero, textContainer: textContainer)
+        let coordinator = context.coordinator
+        textView.delegate = context.coordinator
+        textView.revealFindRange = { [weak coordinator] range in
+            coordinator?.revealFindRange(range)
+        }
         textView.isEditable = false
         textView.isSelectable = true
-        textView.usesFindBar = false
         textView.isRichText = true
         textView.allowsUndo = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
@@ -229,7 +248,7 @@ struct CodeReaderTextView: NSViewRepresentable {
     static let foldButtonSize = NSSize(width: 28, height: 16)
 
     @MainActor
-    final class Coordinator: NSObject, @MainActor NSLayoutManagerDelegate {
+    final class Coordinator: NSObject, @MainActor NSLayoutManagerDelegate, NSTextViewDelegate {
         weak var textView: NSTextView?
         var foldRanges: [FoldRange] = []
         private var collapsed = Set<FoldRange>()
@@ -254,6 +273,7 @@ struct CodeReaderTextView: NSViewRepresentable {
             collapsed.removeAll()
             highlightTask?.cancel()
             apply(Self.plainString(source), to: textView)
+            (textView as? InFileFindTextView)?.resetFindState()
 
             highlightTask = Task { [weak self] in
                 let tokens = await PrismCodeHighlighter.shared.tokenize(source, language: language)
@@ -299,6 +319,28 @@ struct CodeReaderTextView: NSViewRepresentable {
             } else {
                 collapsed.insert(fold)
             }
+            invalidateFoldGlyphs()
+            rebuildFoldButtons()
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView,
+                  let selection = textView.selectedRanges.first?.rangeValue,
+                  selection.length > 0
+            else { return }
+
+            revealFindRange(selection)
+        }
+
+        func revealFindRange(_ range: NSRange) {
+            guard let source = loadedSource else { return }
+            let toExpand = expandedFoldRangesForSelection(
+                selection: range,
+                collapsed: collapsed,
+                source: source
+            )
+            guard !toExpand.isEmpty else { return }
+            collapsed.subtract(toExpand)
             invalidateFoldGlyphs()
             rebuildFoldButtons()
         }

@@ -62,7 +62,7 @@ struct JinjaTextEditor: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
+        let scrollView = scrollableWrappingTextView()
         guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
         textView.delegate = context.coordinator
         textView.string = text
@@ -76,6 +76,7 @@ struct JinjaTextEditor: NSViewRepresentable {
         textView.backgroundColor = .textBackgroundColor
         context.coordinator.textView = textView
         context.coordinator.applyHighlighting()
+        (textView as? InFileFindTextView)?.resetFindState()
         return scrollView
     }
 

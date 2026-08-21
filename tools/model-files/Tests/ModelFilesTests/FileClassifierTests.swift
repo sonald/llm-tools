@@ -127,16 +127,6 @@ final class FileClassifierTests: XCTestCase {
         )
     }
 
-    func testTextLinesPreserveEmptyRowsAndPageMatches() {
-        let lines = TextLine.parse(Data("first\n\nsecond\r\nthird".utf8))
-
-        XCTAssertEqual(lines.map(\.text), ["first", "", "second", "third"])
-        XCTAssertEqual(
-            TextLine.visible(in: lines, matching: "i", limit: 2).map(\.text),
-            ["first", "third"]
-        )
-    }
-
     func testTokenizerInspectorSummarizesLargeCollectionsWithoutExpandingThem() throws {
         let data = try JSONSerialization.data(withJSONObject: [
             "version": "1.0",
