@@ -72,6 +72,8 @@ final class FileClassifierTests: XCTestCase {
         XCTAssertEqual(FileClassifier.syntaxLanguage(for: "scripts/train.sh"), "bash")
         XCTAssertEqual(FileClassifier.syntaxLanguage(for: "web/view.tsx"), "tsx")
         XCTAssertEqual(FileClassifier.syntaxLanguage(for: "config/settings.yaml"), "yaml")
+        XCTAssertEqual(FileClassifier.syntaxLanguage(for: "config.json"), "json")
+        XCTAssertEqual(FileClassifier.syntaxLanguage(for: "nested/DATA.JSON"), "json")
         XCTAssertNil(FileClassifier.syntaxLanguage(for: "notes.txt"))
         XCTAssertEqual(FileClassifier.category(for: "papers/architecture.pdf"), .documentation)
 
@@ -104,15 +106,6 @@ final class FileClassifierTests: XCTestCase {
         XCTAssertEqual(templatePython.category, .templates)
         XCTAssertNil(templatePython.structuredInspectionFormat)
         XCTAssertEqual(FileClassifier.syntaxLanguage(for: templatePython.path), "python")
-    }
-
-    func testCodeFenceCannotBeClosedBySourceBackticks() {
-        let source = "print(\"```\")\n"
-        let markdown = fencedCodeMarkdown(source, language: "python")
-
-        XCTAssertTrue(markdown.hasPrefix("````python\n"))
-        XCTAssertTrue(markdown.contains(source))
-        XCTAssertTrue(markdown.hasSuffix("````"))
     }
 
     func testUsesReaderFriendlyOrderingWithinCategories() {

@@ -21,7 +21,7 @@ enum FileClassifier {
             "c": "c", "h": "c", "cc": "cpp", "cpp": "cpp", "cxx": "cpp", "hpp": "cpp",
             "java": "java", "kt": "kotlin", "kts": "kotlin",
             "rb": "ruby", "php": "php", "lua": "lua",
-            "yaml": "yaml", "yml": "yaml", "toml": "toml", "sql": "sql",
+            "yaml": "yaml", "yml": "yaml", "json": "json", "toml": "toml", "sql": "sql",
             "css": "css", "scss": "scss", "sass": "sass", "less": "less",
             "html": "markup", "htm": "markup", "xml": "markup", "svg": "markup",
         ]

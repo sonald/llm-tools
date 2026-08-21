@@ -416,7 +416,10 @@ private struct FileReaderView: View {
     let consistencyReport: RepositoryConsistencyReport?
 
     var body: some View {
-        Group {
+        if let language = codeReaderLanguage {
+            CodeReaderView(source: text, language: language)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
             ScrollView {
                 Group {
                     switch perspective {
@@ -481,8 +484,6 @@ private struct FileReaderView: View {
             WeightIndexSummaryView(object: jsonDictionary)
         } else if file.category == .documentation && name.hasSuffix(".md") {
             MarkdownReaderView(text: text, baseURL: baseURL)
-        } else if let language = FileClassifier.syntaxLanguage(for: file.path), data.count <= 128 * 1_024 {
-            CodeReaderView(source: text, language: language)
         } else if let object = jsonObject {
             JSONFieldsView(object: object)
         } else if data.count > 128 * 1_024 {
@@ -498,6 +499,20 @@ private struct FileReaderView: View {
     }
 
     private var text: String { String(decoding: data, as: UTF8.self) }
+    private var codeReaderLanguage: String? {
+        guard data.count <= 128 * 1_024,
+              let language = FileClassifier.syntaxLanguage(for: file.path)
+        else { return nil }
+        if language == "json" {
+            return perspective == .raw ? language : nil
+        }
+        switch perspective {
+        case .overview, .source:
+            return language
+        default:
+            return nil
+        }
+    }
     private var isJSON: Bool { file.name.lowercased().hasSuffix(".json") }
     private var isTokenizerJSON: Bool { file.name.lowercased() == "tokenizer.json" }
     private var jsonObject: Any? { try? JSONSerialization.jsonObject(with: data) }
