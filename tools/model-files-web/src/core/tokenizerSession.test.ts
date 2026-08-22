@@ -1,0 +1,334 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import {
+  createComparisonTokenizerSession,
+  inspectTokenizerData,
+  mainTokenizerSession,
+  type TokenizerSession,
+} from '../tokenizerClient.ts'
+import { type LocalDirectorySnapshot } from './huggingface.ts'
+
+class FakeWorker {
+  static created: FakeWorker[] = []
+  onmessage: ((event: MessageEvent<unknown>) => void) | null = null
+  onerror: ((event: ErrorEvent) => void) | null = null
+  sent: Array<Record<string, unknown>> = []
+  terminated = false
+
+  constructor() {
+    FakeWorker.created.push(this)
+  }
+
+  postMessage(message: unknown) {
+    this.sent.push(message as Record<string, unknown>)
+  }
+
+  terminate() {
+    this.terminated = true
+  }
+}
+
+function installFakeWorker() {
+  const originalWorker = globalThis.Worker
+  globalThis.Worker = FakeWorker as unknown as typeof Worker
+  FakeWorker.created.length = 0
+  return originalWorker
+}
+
+function deliver(worker: FakeWorker, data: Record<string, unknown>) {
+  worker.onmessage?.(new MessageEvent('message', { data }))
+}
+
+function reply(worker: FakeWorker, overrides: Record<string, unknown> = {}, index = -1) {
+  const request = worker.sent.at(index)
+  assert.ok(request, 'FakeWorker did not receive the expected request')
+  deliver(worker, {
+    kind: 'reply',
+    operation: request.operation,
+    requestId: request.requestId,
+    sessionId: request.sessionId,
+    generation: request.generation,
+    tokenizerIdentity: request.tokenizerIdentity,
+    ok: true,
+    value: tokenizerStructure(),
+    ...overrides,
+  })
+}
+
+function tokenizerStructure() {
+  return {
+    addedTokenCount: null,
+    addedTokens: [],
+    chatTemplates: { entries: [], activeId: null, conflict: false },
+    fields: [],
+    mergeCount: null,
+    modelType: 'BPE',
+    vocabCount: 0,
+    version: '1.0',
+    vocabulary: null,
+    vocabularyError: '',
+  }
+}
+
+function localSnapshot(id: string): LocalDirectorySnapshot {
+  return {
+    source: 'local',
+    name: id,
+    revision: 'live',
+    selectionId: id,
+    files: [],
+    localFiles: new Map([['tokenizer.json', new File(['{}'], 'tokenizer.json')]]),
+  }
+}
+
+function tokenizerData() {
+  return new TextEncoder().encode('{}').buffer as ArrayBuffer
+}
+
+function isAbort(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
+function cleanup(originalWorker: typeof Worker, comparisons: TokenizerSession[]) {
+  for (const comparison of comparisons) {
+    comparison.dispose()
+  }
+  mainTokenizerSession.cancel()
+  globalThis.Worker = originalWorker
+  FakeWorker.created.length = 0
+}
+
+test('comparison sessions isolate workers, cancellation, and disposal', { timeout: 1_000 }, async () => {
+  const originalWorker = installFakeWorker()
+  const comparisons: TokenizerSession[] = []
+  try {
+    const comparison = createComparisonTokenizerSession()
+    comparisons.push(comparison)
+    let mainStarted = false
+    let comparisonStarted = false
+    const mainPromise = inspectTokenizerData(tokenizerData(), undefined, () => { mainStarted = true })
+    const comparisonPromise = comparison.inspectTokenizerData(tokenizerData(), undefined, () => { comparisonStarted = true })
+    await Promise.resolve()
+    assert.ok(mainStarted && comparisonStarted)
+    assert.equal(FakeWorker.created.length, 2)
+    const [mainWorker, comparisonWorker] = FakeWorker.created
+    assert.notEqual(mainWorker.sent[0].sessionId, comparisonWorker.sent[0].sessionId)
+
+    comparison.cancel()
+    await assert.rejects(comparisonPromise, /已取消/)
+    assert.equal(comparisonWorker.terminated, true)
+    reply(mainWorker, {}, 0)
+    assert.equal((await mainPromise).modelType, 'BPE')
+
+    const reusedComparison = comparison.inspectTokenizerData(tokenizerData())
+    await Promise.resolve()
+    const replacementWorker = FakeWorker.created.at(-1)!
+    assert.equal(replacementWorker.terminated, false)
+    reply(replacementWorker)
+    await assert.doesNotReject(reusedComparison)
+
+    comparison.dispose()
+    await assert.rejects(comparison.inspectTokenizerData(tokenizerData()), /已释放/)
+    const recreated = createComparisonTokenizerSession()
+    comparisons.push(recreated)
+    const mainAgain = inspectTokenizerData(tokenizerData())
+    await Promise.resolve()
+    reply(mainWorker, {}, -1)
+    await assert.doesNotReject(mainAgain)
+  }
+  finally {
+    cleanup(originalWorker, comparisons)
+  }
+})
+
+test('only one comparison session can be live', { timeout: 1_000 }, () => {
+  const originalWorker = installFakeWorker()
+  const comparisons: TokenizerSession[] = []
+  try {
+    const comparison = createComparisonTokenizerSession()
+    comparisons.push(comparison)
+    assert.throws(createComparisonTokenizerSession, /comparison session/)
+    comparison.dispose()
+    const replacement = createComparisonTokenizerSession()
+    comparisons.push(replacement)
+  }
+  finally {
+    cleanup(originalWorker, comparisons)
+  }
+})
+
+test('one aborted request ignores its late reply and keeps the session usable', { timeout: 1_000 }, async () => {
+  const originalWorker = installFakeWorker()
+  const comparisons: TokenizerSession[] = []
+  try {
+    const comparison = createComparisonTokenizerSession()
+    comparisons.push(comparison)
+    const controller = new AbortController()
+    const aborted = comparison.inspectTokenizerData(tokenizerData(), controller.signal)
+    await Promise.resolve()
+    controller.abort()
+    await assert.rejects(aborted, isAbort)
+    const worker = FakeWorker.created[0]
+    assert.equal(worker.terminated, false)
+    reply(worker)
+
+    const next = comparison.inspectTokenizerData(tokenizerData())
+    await Promise.resolve()
+    reply(worker, {}, 1)
+    await assert.doesNotReject(next)
+  }
+  finally {
+    cleanup(originalWorker, comparisons)
+  }
+})
+
+test('invalid replies and worker errors fail only their own session', { timeout: 1_000 }, async () => {
+  const originalWorker = installFakeWorker()
+  const comparisons: TokenizerSession[] = []
+  try {
+    const mainPromise = inspectTokenizerData(tokenizerData())
+    await Promise.resolve()
+    const mainWorker = FakeWorker.created[0]
+    const mismatches = [
+      { operation: 'tokenize' },
+      { sessionId: 'other-session' },
+      { generation: 999 },
+      { tokenizerIdentity: 'other-identity' },
+      { requestId: 'not-a-number' },
+      { extra: true },
+    ]
+    for (const override of mismatches) {
+      const comparison = createComparisonTokenizerSession()
+      comparisons.push(comparison)
+      const comparisonPromise = comparison.inspectTokenizerData(tokenizerData())
+      await Promise.resolve()
+      const worker = FakeWorker.created.at(-1)!
+      reply(worker, override, 0)
+      await assert.rejects(comparisonPromise, /协议|无效/)
+      assert.equal(worker.terminated, true)
+      comparison.dispose()
+    }
+
+    const recoveryComparison = createComparisonTokenizerSession()
+    comparisons.push(recoveryComparison)
+    const mismatchPromise = recoveryComparison.inspectTokenizerData(tokenizerData())
+    await Promise.resolve()
+    const mismatchWorker = FakeWorker.created.at(-1)!
+    reply(mismatchWorker, { sessionId: 'other-session' }, 0)
+    await assert.rejects(mismatchPromise, /协议不一致/)
+    const recoveryPromise = recoveryComparison.inspectTokenizerData(tokenizerData())
+    await Promise.resolve()
+    const recoveryWorker = FakeWorker.created.at(-1)!
+    assert.notEqual(recoveryWorker, mismatchWorker)
+    reply(recoveryWorker)
+    await assert.doesNotReject(recoveryPromise)
+    recoveryComparison.dispose()
+
+    const errorComparison = createComparisonTokenizerSession()
+    comparisons.push(errorComparison)
+    const errorPromise = errorComparison.inspectTokenizerData(tokenizerData())
+    await Promise.resolve()
+    const errorWorker = FakeWorker.created.at(-1)!
+    errorWorker.onerror?.(new ErrorEvent('error', { message: 'worker failed' }))
+    await assert.rejects(errorPromise, /worker failed/)
+    assert.equal(errorWorker.terminated, true)
+    const retryPromise = errorComparison.inspectTokenizerData(tokenizerData())
+    await Promise.resolve()
+    const retryWorker = FakeWorker.created.at(-1)!
+    assert.notEqual(retryWorker, errorWorker)
+    reply(retryWorker)
+    await assert.doesNotReject(retryPromise)
+    errorComparison.dispose()
+
+    reply(mainWorker, {}, 0)
+    assert.equal((await mainPromise).modelType, 'BPE')
+  }
+  finally {
+    cleanup(originalWorker, comparisons)
+  }
+})
+
+test('a newer tokenizer identity cancels the old load and the loaded identity is reused', { timeout: 1_000 }, async () => {
+  const originalWorker = installFakeWorker()
+  const comparisons: TokenizerSession[] = []
+  try {
+    const comparison = createComparisonTokenizerSession()
+    comparisons.push(comparison)
+    const oldPromise = comparison.inspectTokenizer(localSnapshot('old'), {
+      path: 'tokenizer.json', size: 2, hash: null, category: 'tokenizer',
+    }, undefined)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const oldWorker = FakeWorker.created[0]
+    const oldRequest = oldWorker.sent[0]
+    assert.equal(oldRequest.operation, 'load')
+    assert.equal(oldRequest.tokenizerIdentity, 'old/tokenizer.json+no-config')
+
+    const newPromise = comparison.inspectTokenizer(localSnapshot('new'), {
+      path: 'tokenizer.json', size: 2, hash: null, category: 'tokenizer',
+    }, undefined)
+    await assert.rejects(oldPromise, isAbort)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(FakeWorker.created.length, 2)
+    assert.equal(oldWorker.terminated, true)
+    const newWorker = FakeWorker.created[1]
+    const newRequest = newWorker.sent[0]
+    assert.equal(newRequest.operation, 'load')
+    assert.equal(newRequest.tokenizerIdentity, 'new/tokenizer.json+no-config')
+    reply(newWorker, {}, 0)
+    const loaded = await newPromise
+    assert.equal(loaded.modelType, 'BPE')
+
+    const loadCount = newWorker.sent.length
+    await assert.doesNotReject(comparison.inspectTokenizer(localSnapshot('new'), {
+      path: 'tokenizer.json', size: 2, hash: null, category: 'tokenizer',
+    }, undefined))
+    assert.equal(newWorker.sent.length, loadCount)
+    assert.equal(FakeWorker.created.length, 2)
+  }
+  finally {
+    cleanup(originalWorker, comparisons)
+  }
+})
+
+test('local load errors keep their original reason', { timeout: 1_000 }, async () => {
+  const originalWorker = installFakeWorker()
+  const comparisons: TokenizerSession[] = []
+  try {
+    const comparison = createComparisonTokenizerSession()
+    comparisons.push(comparison)
+    const snapshot: LocalDirectorySnapshot = {
+      ...localSnapshot('changed'),
+      localFiles: new Map([['tokenizer.json', new File(['{}'], 'tokenizer.json')]]),
+    }
+    const changed = comparison.inspectTokenizer(snapshot, {
+      path: 'tokenizer.json', size: 3, hash: null, category: 'tokenizer',
+    }, undefined)
+    await assert.rejects(changed, error => {
+      assert.match((error as Error).message, /本地文件已变化/)
+      assert.equal(isAbort(error), false)
+      return true
+    })
+  }
+  finally {
+    cleanup(originalWorker, comparisons)
+  }
+})
+
+test('disposed sessions reject every API before input validation', { timeout: 1_000 }, async () => {
+  const originalWorker = installFakeWorker()
+  const comparisons: TokenizerSession[] = []
+  try {
+    const comparison = createComparisonTokenizerSession()
+    comparisons.push(comparison)
+    const snapshot = localSnapshot('disposed')
+    const file = { path: 'tokenizer.json', size: 2, hash: null, category: 'tokenizer' } as const
+    comparison.dispose()
+    await assert.rejects(comparison.chatTokenize(snapshot, file, undefined, 'x'.repeat(65 * 1024), {}, []), /已释放/)
+    await assert.rejects(comparison.decodeTokenIds(snapshot, file, undefined, 'not ids'), /已释放/)
+    await assert.rejects(comparison.searchTokenizerVocabulary(snapshot, file, undefined, ''), /已释放/)
+    assert.equal(FakeWorker.created.length, 0)
+  }
+  finally {
+    cleanup(originalWorker, comparisons)
+  }
+})

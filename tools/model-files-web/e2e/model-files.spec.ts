@@ -1152,7 +1152,7 @@ test('external tokenizer cancellation still publishes partial consistency', asyn
 
           worker.postMessage = (message: unknown, transfer?: Transferable[] | StructuredSerializeOptions) => {
             if (!(typeof message === 'object' && message !== null
-              && (message as { type?: unknown }).type === 'inspect-structure')) {
+              && (message as { operation?: unknown }).operation === 'inspect-structure')) {
               if (Array.isArray(transfer)) originalPostMessage(message, transfer)
               else if (transfer === undefined) originalPostMessage(message)
               else originalPostMessage(message, transfer)

@@ -18,21 +18,7 @@ import {
   type ChatAttributionMessage,
 } from './core/tokenAttribution.ts'
 import { parseChatTemplates } from './core/chatTemplates.ts'
-
-type Request =
-  | { id: number; type: 'load'; tokenizerData: ArrayBuffer; configData: ArrayBuffer | null }
-  | { id: number; type: 'inspect-structure'; tokenizerData: ArrayBuffer }
-  | { id: number; type: 'tokenize'; text: string }
-  | {
-    id: number
-    type: 'chat-tokenize'
-    template: string
-    context: Record<string, unknown>
-    attribution: ChatAttributionMessage[]
-  }
-  | { id: number; type: 'decode-token-ids'; ids: number[]; originalInput: string }
-  | { id: number; type: 'render-template'; source: string; context: Record<string, unknown> }
-  | { id: number; type: 'search-vocabulary'; query: string }
+import { isTokenizerRequest, type TokenizerReply, type TokenizerRequest } from './tokenizerProtocol.ts'
 
 let tokenizer: Tokenizer | null = null
 let specialIndex: SpecialTokenIndex | null = null
@@ -40,27 +26,30 @@ let tokenizerError = 'Tokenizer 尚未加载。'
 let vocabularySource: unknown = null
 let vocabularyAvailable = false
 let vocabularyIndex: ReturnType<typeof buildTokenizerVocabularyIndex> | null = null
+let loadedTokenizerIdentity = ''
 
-self.onmessage = async (event: MessageEvent<Request>) => {
+self.onmessage = async (event: MessageEvent<unknown>) => {
   const request = event.data
+  if (!isTokenizerRequest(request)) return
   try {
-    if (request.type === 'render-template') {
-      self.postMessage({ id: request.id, ok: true, value: new Template(request.source).render(request.context) })
+    if (request.operation === 'render-template') {
+      self.postMessage(reply(request, true, new Template(request.source).render(request.context)))
       return
     }
-    if (request.type === 'inspect-structure') {
+    if (request.operation === 'inspect-structure') {
       const parsedTokenizer: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(request.tokenizerData))
       if (!isRecord(parsedTokenizer)) throw new Error('tokenizer.json 根节点不是对象。')
-      self.postMessage({ id: request.id, ok: true, value: inspectTokenizerStructure(parsedTokenizer) })
+      self.postMessage(reply(request, true, inspectTokenizerStructure(parsedTokenizer)))
       return
     }
-    if (request.type === 'load') {
+    if (request.operation === 'load') {
       tokenizer = null
       specialIndex = null
       tokenizerError = 'Tokenizer 尚未加载。'
       vocabularySource = null
       vocabularyAvailable = false
       vocabularyIndex = null
+      loadedTokenizerIdentity = ''
       const decoder = new TextDecoder('utf-8', { fatal: true })
       const parsedTokenizer: unknown = JSON.parse(decoder.decode(request.tokenizerData))
       if (!isRecord(parsedTokenizer)) throw new Error('tokenizer.json 根节点不是对象。')
@@ -86,12 +75,14 @@ self.onmessage = async (event: MessageEvent<Request>) => {
           tokenizerError = error instanceof Error ? error.message : String(error)
         }
       }
-      self.postMessage({ id: request.id, ok: true, value: structure })
+      self.postMessage(reply(request, true, structure))
+      loadedTokenizerIdentity = request.tokenizerIdentity
       return
     }
-    if (request.type === 'search-vocabulary') {
+    if (request.operation === 'search-vocabulary') {
+      if (request.tokenizerIdentity !== loadedTokenizerIdentity) throw new Error('Tokenizer 身份已变化，请重新加载。')
       if (request.query.trim().length === 0) {
-        self.postMessage({ id: request.id, ok: true, value: [] })
+        self.postMessage(reply(request, true, []))
         return
       }
       if (!vocabularyAvailable) throw new Error(tokenizerError)
@@ -99,17 +90,14 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       if (vocabularyIndex.entries === null) {
         throw new Error(`当前 vocab 结构无法搜索：${vocabularyIndex.error}`)
       }
-      self.postMessage({
-        id: request.id,
-        ok: true,
-        value: filterTokenizerVocabulary(vocabularyIndex.entries, request.query),
-      })
+      self.postMessage(reply(request, true, filterTokenizerVocabulary(vocabularyIndex.entries, request.query)))
       return
     }
     if (tokenizer === null || specialIndex === null) throw new Error(tokenizerError)
+    if (request.tokenizerIdentity !== loadedTokenizerIdentity) throw new Error('Tokenizer 身份已变化，请重新加载。')
     const activeTokenizer = tokenizer
     const activeSpecialIndex = specialIndex
-    if (request.type === 'chat-tokenize') {
+    if (request.operation === 'chat-tokenize') {
       const rendered = new Template(request.template).render(request.context)
       const probe = chatContentProbe(request.attribution)
       const encoding = encodeText(activeTokenizer, rendered, 'Chat 渲染输入')
@@ -129,10 +117,10 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         ...baseResult,
         roles: chatTokenRoles(rendered, request.attribution, baseResult),
       }
-      self.postMessage({ id: request.id, ok: true, value: result })
+      self.postMessage(reply(request, true, result))
       return
     }
-    if (request.type === 'decode-token-ids') {
+    if (request.operation === 'decode-token-ids') {
       const pieces = request.ids.map(id => activeTokenizer.id_to_token(id) ?? null)
       const decoded = request.ids.length === 0 ? '' : activeTokenizer.decode(request.ids, { skip_special_tokens: false })
       const result = buildTokenization(
@@ -144,7 +132,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         request.ids.map((id, index) => tokenFlag(id, pieces[index], activeSpecialIndex, pieces[index] ? undefined : () => activeTokenizer.decode([id], { skip_special_tokens: false }))),
         'decode',
       )
-      self.postMessage({ id: request.id, ok: true, value: result })
+      self.postMessage(reply(request, true, result))
       return
     }
     const encoding = encodeText(activeTokenizer, request.text, '输入')
@@ -158,14 +146,27 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       encoding.tokens.map((piece, index) => tokenFlag(encoding.ids[index], piece, activeSpecialIndex)),
       'encode',
     )
-    self.postMessage({ id: request.id, ok: true, value: result })
+    self.postMessage(reply(request, true, result))
   } catch (error) {
-    self.postMessage({
-      id: request.id,
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    })
+    self.postMessage(reply(request, false, undefined, error instanceof Error ? error.message : String(error)))
   }
+}
+
+function reply(
+  request: TokenizerRequest,
+  ok: boolean,
+  value?: unknown,
+  error?: string,
+): TokenizerReply {
+  const metadata = {
+    kind: 'reply' as const,
+    operation: request.operation,
+    requestId: request.requestId,
+    sessionId: request.sessionId,
+    generation: request.generation,
+    tokenizerIdentity: request.tokenizerIdentity,
+  }
+  return ok ? { ...metadata, ok, value } : { ...metadata, ok, error: error ?? '' }
 }
 
 function encodeText(tokenizer: Tokenizer, text: string, label: string) {

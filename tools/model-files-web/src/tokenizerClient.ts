@@ -11,30 +11,422 @@ import {
   type TokenizerStructure,
 } from './core/tokenizer.ts'
 import type { ChatTemplateCatalog, ChatTemplateEntry, ChatTemplateSource } from './core/chatTemplates.ts'
+import type { TokenizerOperation, TokenizerReply, TokenizerRequest } from './tokenizerProtocol.ts'
 
-type Reply = { id: number; ok: true; value: unknown } | { id: number; ok: false; error: string }
-type Request =
-  | { id: number; type: 'load'; tokenizerData: ArrayBuffer; configData: ArrayBuffer | null }
-  | { id: number; type: 'inspect-structure'; tokenizerData: ArrayBuffer }
-  | { id: number; type: 'tokenize'; text: string }
-  | {
-    id: number
-    type: 'chat-tokenize'
-    template: string
-    context: Record<string, unknown>
-    attribution: ChatAttributionMessage[]
+type OutgoingTokenizerRequest =
+  | { operation: 'load'; tokenizerIdentity: string; tokenizerData: ArrayBuffer; configData: ArrayBuffer | null }
+  | { operation: 'inspect-structure'; tokenizerIdentity: ''; tokenizerData: ArrayBuffer }
+  | { operation: 'tokenize'; tokenizerIdentity: string; text: string }
+  | { operation: 'chat-tokenize'; tokenizerIdentity: string; template: string; context: Record<string, unknown>; attribution: ChatAttributionMessage[] }
+  | { operation: 'decode-token-ids'; tokenizerIdentity: string; ids: number[]; originalInput: string }
+  | { operation: 'render-template'; tokenizerIdentity: ''; source: string; context: Record<string, unknown> }
+  | { operation: 'search-vocabulary'; tokenizerIdentity: string; query: string }
+
+type PendingTokenizerRequest = {
+  operation: TokenizerOperation
+  requestId: number
+  sessionId: string
+  generation: number
+  tokenizerIdentity: string
+  resolve(value: unknown): void
+  reject(error: Error): void
+  removeAbort(): void
+}
+
+type LoadedTokenizer = {
+  identity: string
+  structure: TokenizerStructure
+}
+
+export type TokenizerSession = {
+  inspectTokenizer(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    signal?: AbortSignal,
+  ): Promise<TokenizerStructure>
+  inspectTokenizerData(
+    tokenizerData: ArrayBuffer,
+    signal?: AbortSignal,
+    onStartRequest?: () => void,
+  ): Promise<TokenizerStructure>
+  tokenize(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    text: string,
+    signal?: AbortSignal,
+  ): Promise<Tokenization>
+  chatTokenize(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    template: string,
+    context: Record<string, unknown>,
+    attribution: ChatAttributionMessage[],
+    signal?: AbortSignal,
+  ): Promise<Tokenization>
+  decodeTokenIds(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    input: string,
+    signal?: AbortSignal,
+  ): Promise<Tokenization>
+  searchTokenizerVocabulary(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    query: string,
+    signal?: AbortSignal,
+  ): Promise<TokenizerVocabularyEntry[]>
+  renderTemplate(source: string, context: Record<string, unknown>): Promise<string>
+  cancel(): void
+  dispose(): void
+}
+
+class ClientTokenizerSession implements TokenizerSession {
+  private isDisposed = false
+  private worker: Worker | null = null
+  private nextId = 0
+  private readonly pending = new Map<number, PendingTokenizerRequest>()
+  private loadedIdentity = ''
+  private loadedStructure: TokenizerStructure | null = null
+  private loading: { identity: string; promise: Promise<LoadedTokenizer> } | null = null
+  private loadController: AbortController | null = null
+  private generation = 0
+
+  async inspectTokenizer(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    signal?: AbortSignal,
+): Promise<TokenizerStructure> {
+    return (await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)).structure
   }
-  | { id: number; type: 'decode-token-ids'; ids: number[]; originalInput: string }
-  | { id: number; type: 'render-template'; source: string; context: Record<string, unknown> }
-  | { id: number; type: 'search-vocabulary'; query: string }
 
-let worker: Worker | null = null
-let nextId = 0
-const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>()
-let loadedIdentity = ''
-let loadedStructure: TokenizerStructure | null = null
-let loading: { identity: string; promise: Promise<TokenizerStructure> } | null = null
-let generation = 0
+  async inspectTokenizerData(
+    tokenizerData: ArrayBuffer,
+    signal?: AbortSignal,
+    onStartRequest?: () => void,
+  ): Promise<TokenizerStructure> {
+    this.assertUsable()
+    if (tokenizerData.byteLength > 32 * 1024 * 1024) throw new Error('Tokenizer 数据超过 32 MiB 上限。')
+    signal?.throwIfAborted()
+    onStartRequest?.()
+    const reply = await this.request({
+      operation: 'inspect-structure',
+      tokenizerIdentity: '',
+      tokenizerData,
+    }, [tokenizerData], signal)
+    if (signal?.aborted) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
+    return validateTokenizerStructure(reply)
+  }
+
+  async tokenize(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    text: string,
+    signal?: AbortSignal,
+  ): Promise<Tokenization> {
+    this.assertUsable()
+    if (text.length === 0) return {
+      direction: 'encode', input: text, ids: [], pieces: [], decoded: '', segments: [], mapping: 'Exact', flags: [],
+      overhead: null, roles: null,
+    }
+    if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new Error('输入超过 64 KiB 上限。')
+    const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
+    return validateTokenization(await this.request({
+      operation: 'tokenize',
+      tokenizerIdentity: identity,
+      text,
+    }, [], signal), false)
+  }
+
+  async chatTokenize(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    template: string,
+    context: Record<string, unknown>,
+    attribution: ChatAttributionMessage[],
+    signal?: AbortSignal,
+  ): Promise<Tokenization> {
+    this.assertUsable()
+    if (new TextEncoder().encode(template).byteLength > 64 * 1024) throw new Error('模板源码超过 64 KiB 上限。')
+    const serializedContext = JSON.stringify(context)
+    if (serializedContext === undefined || new TextEncoder().encode(serializedContext).byteLength > 64 * 1024) {
+      throw new Error('模板输入超过 64 KiB 上限。')
+    }
+    const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
+    return validateTokenization(await this.request({
+      operation: 'chat-tokenize',
+      tokenizerIdentity: identity,
+      template,
+      context,
+      attribution,
+    }, [], signal), true)
+  }
+
+  async decodeTokenIds(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    input: string,
+    signal?: AbortSignal,
+  ): Promise<Tokenization> {
+    this.assertUsable()
+    const ids = parseTokenIds(input)
+    const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
+    return validateTokenization(await this.request({
+      operation: 'decode-token-ids',
+      tokenizerIdentity: identity,
+      ids,
+      originalInput: input,
+    }, [], signal), false)
+  }
+
+  async searchTokenizerVocabulary(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    query: string,
+    signal?: AbortSignal,
+  ): Promise<TokenizerVocabularyEntry[]> {
+    this.assertUsable()
+    const term = query.trim()
+    if (term.length === 0) return []
+    if (new TextEncoder().encode(term).byteLength > 64 * 1024) throw new Error('词表搜索输入超过 64 KiB 上限。')
+    const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
+    return validateTokenizerVocabularySearch(await this.request({
+      operation: 'search-vocabulary',
+      tokenizerIdentity: identity,
+      query: term,
+    }, [], signal))
+  }
+
+  async renderTemplate(source: string, context: Record<string, unknown>): Promise<string> {
+    this.assertUsable()
+    if (new TextEncoder().encode(source).byteLength > 64 * 1024) throw new Error('模板源码超过 64 KiB 上限。')
+    const serialized = JSON.stringify(context)
+    if (new TextEncoder().encode(serialized).byteLength > 64 * 1024) throw new Error('模板输入超过 64 KiB 上限。')
+    return await this.request({
+      operation: 'render-template',
+      tokenizerIdentity: '',
+      source,
+      context,
+    }) as string
+  }
+
+  cancel(): void {
+    if (this.isDisposed) return
+    this.invalidate(new DOMException('Tokenizer 请求已取消。', 'AbortError'))
+  }
+
+  dispose(): void {
+    if (this.isDisposed) return
+    this.isDisposed = true
+    this.invalidate(new DOMException('Tokenizer session 已释放。', 'AbortError'))
+    if (comparisonSession === this) comparisonSession = null
+  }
+
+  private assertUsable() {
+    if (this.isDisposed) throw new DOMException('Tokenizer session 已释放。', 'InvalidStateError')
+  }
+
+  private assertLoadActive(generation: number, signal: AbortSignal) {
+    if (this.generation !== generation || signal.aborted) {
+      throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
+    }
+  }
+
+  private async ensureLoaded(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    signal?: AbortSignal,
+  ): Promise<LoadedTokenizer> {
+    this.assertUsable()
+    tokenizerBundleBytes(tokenizerFile, configFile)
+    if (tokenizerFile.size === null || configFile?.size === null) throw new Error('Tokenizer 资源大小无效。')
+    const tokenizerSize = tokenizerFile.size
+    const configSize = configFile?.size ?? 0
+    const identity = tokenizerIdentity(snapshot, tokenizerFile, configFile)
+    if (this.loadedIdentity === identity && this.loadedStructure !== null) {
+      return { identity, structure: this.loadedStructure }
+    }
+    if (this.loading?.identity === identity) return await awaitWithAbort(this.loading.promise, signal)
+    this.invalidate(new DOMException('Tokenizer 请求已取消。', 'AbortError'))
+    this.generation += 1
+    const activeGeneration = this.generation
+    const loadController = new AbortController()
+    const runLoad = async (): Promise<LoadedTokenizer> => {
+      try {
+        const [tokenizerData, configData] = await Promise.all([
+          readWholeFile(snapshot, tokenizerFile, loadController.signal, tokenizerSize),
+          configFile === undefined ? Promise.resolve(null) : readWholeFile(snapshot, configFile, loadController.signal, configSize),
+        ])
+        this.assertLoadActive(activeGeneration, loadController.signal)
+        const transfer = configData === null ? [tokenizerData] : [tokenizerData, configData]
+        const structure = validateTokenizerStructure(await this.request(
+          { operation: 'load', tokenizerIdentity: identity, tokenizerData, configData },
+          transfer,
+          loadController.signal,
+        ))
+        this.assertLoadActive(activeGeneration, loadController.signal)
+        this.loadedIdentity = identity
+        this.loadedStructure = structure
+        return { identity, structure }
+      }
+      catch (error) {
+        throw normalizedError(error)
+      }
+      finally {
+        if (this.loadController === loadController) this.loadController = null
+        if (this.loading?.promise === promise) this.loading = null
+      }
+    }
+    const promise = runLoad()
+    this.loading = { identity, promise }
+    this.loadController = loadController
+    return await awaitWithAbort(promise, signal)
+  }
+
+  private request(
+    message: OutgoingTokenizerRequest,
+    transfer: Transferable[] = [],
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    this.assertUsable()
+    if (signal?.aborted) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
+    const requestId = ++this.nextId
+    let removeAbort: () => void = () => {}
+    const expected: PendingTokenizerRequest = {
+      operation: message.operation,
+      requestId,
+      sessionId: sessionIdOf(this),
+      generation: this.generation,
+      tokenizerIdentity: message.tokenizerIdentity,
+      resolve: () => {},
+      reject: () => {},
+      removeAbort: () => removeAbort(),
+    }
+    let settled = false
+    const settle = (complete: (entry: PendingTokenizerRequest) => void) => {
+      if (settled) return
+      settled = true
+      this.pending.delete(requestId)
+      removeAbort()
+      complete(expected)
+    }
+    const onAbort = () => settle(entry => entry.reject(new DOMException('Tokenizer 请求已取消。', 'AbortError')))
+    removeAbort = () => signal?.removeEventListener('abort', onAbort)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    const activeWorker = this.getWorker()
+    const envelope: TokenizerRequest = {
+      ...message,
+      kind: 'request',
+      sessionId: sessionIdOf(this),
+      generation: expected.generation,
+      requestId,
+    } as TokenizerRequest
+    return new Promise((resolve, reject) => {
+      expected.resolve = resolve
+      expected.reject = reject
+      this.pending.set(requestId, expected)
+      try {
+        activeWorker.postMessage(envelope, transfer)
+      }
+      catch (error) {
+        settle(entry => entry.reject(error instanceof Error ? error : new Error(String(error))))
+      }
+    })
+  }
+
+  private getWorker(): Worker {
+    if (this.worker !== null) return this.worker
+    const worker = new Worker(new URL('./tokenizer.worker.ts', import.meta.url), { type: 'module' })
+    worker.onmessage = event => this.receiveReply(event.data)
+    worker.onerror = event => {
+      this.invalidate(new Error(event.message || 'Tokenizer Worker 失败。'))
+    }
+    this.worker = worker
+    return worker
+  }
+
+  private receiveReply(data: unknown) {
+    if (!isReplyEnvelope(data)) {
+      this.invalidate(new Error('Tokenizer Worker 协议无效。'))
+      return
+    }
+    const expected = this.pending.get(data.requestId)
+    if (expected === undefined) return
+    if (data.requestId !== expected.requestId
+      || data.sessionId !== expected.sessionId
+      || data.operation !== expected.operation
+      || data.generation !== expected.generation
+      || data.tokenizerIdentity !== expected.tokenizerIdentity) {
+      this.invalidate(new Error('Tokenizer Worker 协议不一致。'))
+      return
+    }
+    this.pending.delete(data.requestId)
+    expected.removeAbort()
+    if (data.ok) expected.resolve(data.value)
+    else expected.reject(new Error(data.error))
+  }
+
+  private invalidate(error: Error) {
+    this.loadController?.abort()
+    this.loadController = null
+    this.worker?.terminate()
+    if (this.worker !== null) {
+      this.worker.onmessage = null
+      this.worker.onerror = null
+    }
+    this.worker = null
+    this.generation += 1
+    this.loadedIdentity = ''
+    this.loadedStructure = null
+    this.loading = null
+    for (const entry of this.pending.values()) {
+      entry.removeAbort()
+      entry.reject(error)
+    }
+    this.pending.clear()
+  }
+}
+
+let comparisonSession: ClientTokenizerSession | null = null
+let nextSessionId = 0
+const sessionIds = new WeakMap<ClientTokenizerSession, string>()
+
+function sessionIdOf(session: ClientTokenizerSession): string {
+  let sessionId = sessionIds.get(session)
+  if (sessionId === undefined) {
+    sessionId = `tokenizer-session-${++nextSessionId}`
+    sessionIds.set(session, sessionId)
+  }
+  return sessionId
+}
+
+function isReplyEnvelope(value: unknown): value is TokenizerReply & { ok: boolean } {
+  if (!isUnknownRecord(value) || value.kind !== 'reply' || typeof value.ok !== 'boolean') return false
+  const keys = Object.keys(value).toSorted().join(',')
+  const requiredKeys = ['generation', 'kind', 'ok', 'operation', 'requestId', 'sessionId', 'tokenizerIdentity']
+  if (keys !== (value.ok ? [...requiredKeys, 'value'] : [...requiredKeys, 'error']).toSorted().join(',')) return false
+  return typeof value.sessionId === 'string' && value.sessionId.length > 0
+    && isSafeNonNegativeInteger(value.requestId)
+    && isSafeNonNegativeInteger(value.generation)
+    && typeof value.tokenizerIdentity === 'string'
+    && typeof value.operation === 'string' && operations.has(value.operation)
+    && (typeof value.error === 'string' || 'value' in value)
+}
+
+const operations = new Set<string>([
+  'load', 'inspect-structure', 'tokenize', 'chat-tokenize',
+  'decode-token-ids', 'render-template', 'search-vocabulary',
+] satisfies TokenizerOperation[])
 
 export async function tokenize(
   snapshot: RepositorySnapshot,
@@ -43,13 +435,7 @@ export async function tokenize(
   text: string,
   signal?: AbortSignal,
 ): Promise<Tokenization> {
-  if (text.length === 0) return {
-    direction: 'encode', input: text, ids: [], pieces: [], decoded: '', segments: [], mapping: 'Exact', flags: [],
-    overhead: null, roles: null,
-  }
-  if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new Error('输入超过 64 KiB 上限。')
-  await ensureLoaded(snapshot, tokenizerFile, configFile, signal)
-  return validateTokenization(await request({ id: ++nextId, type: 'tokenize', text }), false)
+  return await mainTokenizerSession.tokenize(snapshot, tokenizerFile, configFile, text, signal)
 }
 
 export async function chatTokenize(
@@ -61,15 +447,7 @@ export async function chatTokenize(
   attribution: ChatAttributionMessage[],
   signal?: AbortSignal,
 ): Promise<Tokenization> {
-  if (new TextEncoder().encode(template).byteLength > 64 * 1024) throw new Error('模板源码超过 64 KiB 上限。')
-  const serializedContext = JSON.stringify(context)
-  if (serializedContext === undefined || new TextEncoder().encode(serializedContext).byteLength > 64 * 1024) {
-    throw new Error('模板输入超过 64 KiB 上限。')
-  }
-  await ensureLoaded(snapshot, tokenizerFile, configFile, signal)
-  return validateTokenization(await request({
-    id: ++nextId, type: 'chat-tokenize', template, context, attribution,
-  }), true)
+  return await mainTokenizerSession.chatTokenize(snapshot, tokenizerFile, configFile, template, context, attribution, signal)
 }
 
 export async function decodeTokenIds(
@@ -79,9 +457,7 @@ export async function decodeTokenIds(
   input: string,
   signal?: AbortSignal,
 ): Promise<Tokenization> {
-  const ids = parseTokenIds(input)
-  await ensureLoaded(snapshot, tokenizerFile, configFile, signal)
-  return validateTokenization(await request({ id: ++nextId, type: 'decode-token-ids', ids, originalInput: input }), false)
+  return await mainTokenizerSession.decodeTokenIds(snapshot, tokenizerFile, configFile, input, signal)
 }
 
 export async function inspectTokenizer(
@@ -90,7 +466,7 @@ export async function inspectTokenizer(
   configFile: RepositoryFile | undefined,
   signal?: AbortSignal,
 ): Promise<TokenizerStructure> {
-  return await ensureLoaded(snapshot, tokenizerFile, configFile, signal)
+  return await mainTokenizerSession.inspectTokenizer(snapshot, tokenizerFile, configFile, signal)
 }
 
 export async function inspectTokenizerData(
@@ -98,17 +474,7 @@ export async function inspectTokenizerData(
   signal?: AbortSignal,
   onStartRequest?: () => void,
 ): Promise<TokenizerStructure> {
-  if (tokenizerData.byteLength > 32 * 1024 * 1024) throw new Error('Tokenizer 数据超过 32 MiB 上限。')
-  signal?.throwIfAborted()
-  const activeGeneration = generation
-  onStartRequest?.()
-  const reply = await request({
-    id: ++nextId,
-    type: 'inspect-structure',
-    tokenizerData,
-  }, [tokenizerData])
-  if (signal?.aborted || generation !== activeGeneration) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
-  return validateTokenizerStructure(reply)
+  return await mainTokenizerSession.inspectTokenizerData(tokenizerData, signal, onStartRequest)
 }
 
 export async function searchTokenizerVocabulary(
@@ -118,71 +484,23 @@ export async function searchTokenizerVocabulary(
   query: string,
   signal?: AbortSignal,
 ): Promise<TokenizerVocabularyEntry[]> {
-  const term = query.trim()
-  if (term.length === 0) return []
-  if (new TextEncoder().encode(term).byteLength > 64 * 1024) throw new Error('词表搜索输入超过 64 KiB 上限。')
-  await ensureLoaded(snapshot, tokenizerFile, configFile, signal)
-  return validateTokenizerVocabularySearch(await request({
-    id: ++nextId,
-    type: 'search-vocabulary',
-    query: term,
-  }))
+  return await mainTokenizerSession.searchTokenizerVocabulary(snapshot, tokenizerFile, configFile, query, signal)
 }
 
 export async function renderTemplate(source: string, context: Record<string, unknown>): Promise<string> {
-  if (new TextEncoder().encode(source).byteLength > 64 * 1024) throw new Error('模板源码超过 64 KiB 上限。')
-  const serialized = JSON.stringify(context)
-  if (new TextEncoder().encode(serialized).byteLength > 64 * 1024) throw new Error('模板输入超过 64 KiB 上限。')
-  return await request({ id: ++nextId, type: 'render-template', source, context }) as string
-}
-
-async function ensureLoaded(
-  snapshot: RepositorySnapshot,
-  tokenizerFile: RepositoryFile,
-  configFile: RepositoryFile | undefined,
-  signal?: AbortSignal,
-): Promise<TokenizerStructure> {
-  tokenizerBundleBytes(tokenizerFile, configFile)
-  if (tokenizerFile.size === null || configFile?.size === null) throw new Error('Tokenizer 资源大小无效。')
-  const tokenizerSize = tokenizerFile.size
-  const configSize = configFile?.size ?? 0
-  const identity = tokenizerIdentity(snapshot, tokenizerFile, configFile)
-  if (loadedIdentity === identity && loadedStructure !== null) return loadedStructure
-  if (loading?.identity === identity) return await loading.promise
-  const activeGeneration = generation
-  const promise = (async () => {
-    const [tokenizerData, configData] = await Promise.all([
-      readWholeFile(snapshot, tokenizerFile, signal, tokenizerSize),
-      configFile === undefined ? Promise.resolve(null) : readWholeFile(snapshot, configFile, signal, configSize),
-    ])
-    if (signal?.aborted || generation !== activeGeneration) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
-    const transfer = configData === null ? [tokenizerData] : [tokenizerData, configData]
-    const structure = validateTokenizerStructure(await request(
-      { id: ++nextId, type: 'load', tokenizerData, configData },
-      transfer,
-    ))
-    if (signal?.aborted || generation !== activeGeneration) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
-    loadedIdentity = identity
-    loadedStructure = structure
-    return structure
-  })()
-  loading = { identity, promise }
-  try {
-    return await promise
-  } finally {
-    if (loading?.promise === promise) loading = null
-  }
+  return await mainTokenizerSession.renderTemplate(source, context)
 }
 
 export function cancelTokenizerRequests(): void {
-  generation += 1
-  worker?.terminate()
-  worker = null
-  loadedIdentity = ''
-  loadedStructure = null
-  loading = null
-  for (const promise of pending.values()) promise.reject(new DOMException('Tokenizer 请求已取消。', 'AbortError'))
-  pending.clear()
+  mainTokenizerSession.cancel()
+}
+
+export const mainTokenizerSession: TokenizerSession = new ClientTokenizerSession()
+
+export function createComparisonTokenizerSession(): TokenizerSession {
+  if (comparisonSession !== null) throw new Error('Tokenizer comparison session 已存在。')
+  comparisonSession = new ClientTokenizerSession()
+  return comparisonSession
 }
 
 function tokenizerIdentity(
@@ -196,35 +514,20 @@ function tokenizerIdentity(
   return `${source}/${tokenizerFile.path}+${configFile?.path ?? 'no-config'}`
 }
 
-function request(message: Request, transfer: Transferable[] = []): Promise<unknown> {
-  const activeWorker = getWorker()
-  return new Promise((resolve, reject) => {
-    pending.set(message.id, { resolve, reject })
-    activeWorker.postMessage(message, transfer)
+async function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
+  if (!signal) return await promise
+  return await new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException('Tokenizer 请求已取消。', 'AbortError'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort)
+    })
   })
 }
 
-
-function getWorker(): Worker {
-  if (worker !== null) return worker
-  worker = new Worker(new URL('./tokenizer.worker.ts', import.meta.url), { type: 'module' })
-  worker.onmessage = (event: MessageEvent<Reply>) => {
-    const reply = event.data
-    const promise = pending.get(reply.id)
-    if (promise === undefined) return
-    pending.delete(reply.id)
-    if (reply.ok) promise.resolve(reply.value)
-    else promise.reject(new Error(reply.error))
-  }
-  worker.onerror = event => {
-    for (const promise of pending.values()) promise.reject(new Error(event.message || 'Tokenizer Worker 失败。'))
-    pending.clear()
-    worker = null
-    loadedIdentity = ''
-    loadedStructure = null
-    loading = null
-  }
-  return worker
+function normalizedError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error))
 }
 
 function validateTokenization(value: unknown, requiresOverhead: boolean): Tokenization {
