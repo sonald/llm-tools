@@ -40,6 +40,27 @@ export function parseChatMessages(value: unknown): {
   return { messages: value, attribution }
 }
 
+export function buildChatContext(
+  messages: unknown,
+  tools: unknown,
+  variables: unknown,
+  includeTools: boolean,
+  addGenerationPrompt: boolean,
+): {
+  context: Record<string, unknown>
+  attribution: ChatAttributionMessage[]
+} {
+  const parsedMessages = parseChatMessages(messages)
+  if (!Array.isArray(tools)) throw new Error('Tools 必须是 JSON 数组。')
+  if (!isRecord(variables)) throw new Error('Typed Variables 必须是 JSON 对象。')
+  for (const key of ['messages', 'tools', 'add_generation_prompt']) {
+    if (key in variables) throw new Error(`Typed Variables 不能使用保留键：${key}。`)
+  }
+  const context: Record<string, unknown> = { ...variables, messages: parsedMessages.messages, add_generation_prompt: addGenerationPrompt }
+  if (includeTools) context.tools = tools
+  return { context, attribution: parsedMessages.attribution }
+}
+
 export function chatContentProbe(messages: readonly ChatAttributionMessage[]): string {
   return messages
     .filter(message => message.contentKind === 'text' && message.content !== '')

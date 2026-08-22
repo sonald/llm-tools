@@ -16,9 +16,8 @@ type Request =
     id: number
     type: 'chat-tokenize'
     template: string
-    messages: unknown[]
+    context: Record<string, unknown>
     attribution: ChatAttributionMessage[]
-    addGenerationPrompt: boolean
   }
   | { id: number; type: 'decode-token-ids'; ids: number[]; originalInput: string }
   | { id: number; type: 'render-template'; source: string; context: Record<string, unknown> }
@@ -52,20 +51,18 @@ export async function chatTokenize(
   tokenizerFile: RepositoryFile,
   configFile: RepositoryFile | undefined,
   template: string,
-  messages: unknown[],
+  context: Record<string, unknown>,
   attribution: ChatAttributionMessage[],
-  addGenerationPrompt: boolean,
   signal?: AbortSignal,
 ): Promise<Tokenization> {
   if (new TextEncoder().encode(template).byteLength > 64 * 1024) throw new Error('模板源码超过 64 KiB 上限。')
-  const context = { messages, tools: [], enable_thinking: false, mode: 'chat', add_generation_prompt: addGenerationPrompt }
   const serializedContext = JSON.stringify(context)
   if (serializedContext === undefined || new TextEncoder().encode(serializedContext).byteLength > 64 * 1024) {
     throw new Error('模板输入超过 64 KiB 上限。')
   }
   await ensureLoaded(snapshot, tokenizerFile, configFile, signal)
   return validateTokenization(await request({
-    id: ++nextId, type: 'chat-tokenize', template, messages, attribution, addGenerationPrompt,
+    id: ++nextId, type: 'chat-tokenize', template, context, attribution,
   }), true)
 }
 

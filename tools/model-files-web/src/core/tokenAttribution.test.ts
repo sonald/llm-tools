@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  buildChatContext,
   chatContentProbe,
   chatTokenOverhead,
   chatTokenRoles,
@@ -150,4 +151,51 @@ test('rejects circular or otherwise unserializable Chat content', () => {
   cyclic.content = cyclic
   assert.throws(() => parseChatMessages([cyclic]), /第 1 项 content 不可序列化为 JSON。/)
   assert.throws(() => parseChatMessages([{ role: 'user', content: 1n }]), /第 1 项 content 不可序列化为 JSON。/)
+})
+
+test('builds Chat context with optional tools and typed variables', () => {
+  const messages = [{ role: 'user', content: 'hello' }]
+  const tools = [{ type: 'function', function: { name: 'search' } }]
+  const included = buildChatContext(
+    messages,
+    tools,
+    { enable_thinking: true, mode: 'chat-plus' },
+    true,
+    true,
+  )
+  assert.deepEqual(included.attribution, [{ role: 'user', content: 'hello', contentKind: 'text' }])
+  assert.deepEqual(included.context, {
+    enable_thinking: true,
+    mode: 'chat-plus',
+    messages,
+    add_generation_prompt: true,
+    tools,
+  })
+
+  const omitted = buildChatContext(
+    messages,
+    [],
+    { enable_thinking: false, mode: 'chat' },
+    false,
+    false,
+  )
+  assert.deepEqual(omitted.context, {
+    enable_thinking: false,
+    mode: 'chat',
+    messages,
+    add_generation_prompt: false,
+  })
+  assert.equal('tools' in omitted.context, false)
+})
+
+test('rejects invalid Chat context boundaries and reserved keys', () => {
+  assert.throws(() => parseChatMessages({}), /Messages 必须是 JSON 数组。/)
+  assert.throws(() => buildChatContext([], {}, {}, true, true), /Tools 必须是 JSON 数组。/)
+  assert.throws(() => buildChatContext([], [], [], true, true), /Typed Variables 必须是 JSON 对象。/)
+  for (const key of ['messages', 'tools', 'add_generation_prompt']) {
+    assert.throws(
+      () => buildChatContext([], [], { [key]: null }, true, true),
+      new RegExp(`Typed Variables 不能使用保留键：${key}。`),
+    )
+  }
 })

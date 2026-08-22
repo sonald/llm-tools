@@ -23,9 +23,8 @@ type Request =
     id: number
     type: 'chat-tokenize'
     template: string
-    messages: unknown[]
+    context: Record<string, unknown>
     attribution: ChatAttributionMessage[]
-    addGenerationPrompt: boolean
   }
   | { id: number; type: 'decode-token-ids'; ids: number[]; originalInput: string }
   | { id: number; type: 'render-template'; source: string; context: Record<string, unknown> }
@@ -73,14 +72,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
     const activeTokenizer = tokenizer
     const activeSpecialIndex = specialIndex
     if (request.type === 'chat-tokenize') {
-      const context = {
-        messages: request.messages,
-        tools: [],
-        enable_thinking: false,
-        mode: 'chat',
-        add_generation_prompt: request.addGenerationPrompt,
-      }
-      const rendered = new Template(request.template).render(context)
+      const rendered = new Template(request.template).render(request.context)
       const probe = chatContentProbe(request.attribution)
       const encoding = encodeText(activeTokenizer, rendered, 'Chat 渲染输入')
       const probeEncoding = encodeText(activeTokenizer, probe, 'Chat 正文 probe')

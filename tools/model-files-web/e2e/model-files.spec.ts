@@ -106,6 +106,24 @@ test('Tokenizer Worker tokenizes and decodes back to the input', async ({ page }
   }
   expect(requests.filter(request => request.path.startsWith('tokenizer'))).toHaveLength(2)
 
+  await page.getByText('Tools 与 Variables').click()
+  await page.getByRole('textbox', { name: 'Chat Tools' })
+    .fill('[{"type":"function","function":{"name":"search","parameters":{"type":"object"}}}]')
+  await page.getByRole('textbox', { name: 'Chat Typed Variables' })
+    .fill('{"enable_thinking":true,"mode":"chat-plus"}')
+  await page.getByRole('checkbox', { name: 'include_tools' }).check()
+  await page.getByRole('button', { name: '渲染并分词' }).click()
+  await expect(page.getByLabel('Chat 权威输入')).toContainText('tools=[{"type": "function"')
+  await expect(page.getByLabel('Chat 权威输入')).toContainText('"name": "search"')
+  await expect(page.getByLabel('Chat 权威输入')).toContainText('thinking=true;mode=chat-plus;assistant=')
+
+  await page.getByRole('checkbox', { name: 'include_tools' }).uncheck()
+  await page.getByRole('button', { name: '渲染并分词' }).click()
+  await expect(page.getByLabel('Chat 权威输入')).toHaveText(
+    'system=You are concise.;user=Hello;thinking=true;mode=chat-plus;assistant=',
+  )
+  expect(requests.filter(request => request.path.startsWith('tokenizer'))).toHaveLength(2)
+
   await page.getByRole('textbox', { name: 'Chat Messages' }).fill('[{"role":"user","content":"{{ 7 * 7 }}"}]')
   await page.getByRole('button', { name: '渲染并分词' }).click()
   await expect(page.getByLabel('Chat 权威输入')).toContainText('{{ 7 * 7 }}')

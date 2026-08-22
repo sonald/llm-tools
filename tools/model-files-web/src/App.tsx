@@ -21,7 +21,7 @@ import {
   type SafeTensorsSummary,
 } from './core/inspectors.ts'
 import { decodeStrictText, validatePdfData } from './core/readers.ts'
-import { parseChatMessages, type ChatTokenRole } from './core/tokenAttribution.ts'
+import { buildChatContext, type ChatTokenRole } from './core/tokenAttribution.ts'
 import type { Tokenization, TokenizerStructure } from './core/tokenizer.ts'
 import { PdfInspection, SourceInspection, TextInspection } from './Readers.tsx'
 import { TemplateWorkbench } from './TemplateWorkbench.tsx'
@@ -718,6 +718,12 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     { role: 'system', content: 'You are concise.' }, { role: 'user', content: 'Hello' },
   ], null, 2))
   const [addGenerationPrompt, setAddGenerationPrompt] = useState(true)
+  const [chatTools, setChatTools] = useState(JSON.stringify([], null, 2))
+  const [chatVariables, setChatVariables] = useState(JSON.stringify({
+    enable_thinking: false,
+    mode: 'chat',
+  }, null, 2))
+  const [includeTools, setIncludeTools] = useState(false)
   const [chatPreview, setChatPreview] = useState('')
   const [result, setResult] = useState<Tokenization | null>(null)
   const [phase, setPhase] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
@@ -842,11 +848,17 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setError(null)
     try {
       if (chatTemplate === null) throw new Error(templateFile === undefined ? '当前 tokenizer 没有可用 Chat Template。' : '正在读取独立 Chat Template。')
-      const { messages, attribution } = parseChatMessages(JSON.parse(chatMessages))
+      const { context, attribution } = buildChatContext(
+        JSON.parse(chatMessages),
+        JSON.parse(chatTools),
+        JSON.parse(chatVariables),
+        includeTools,
+        addGenerationPrompt,
+      )
       const module = await import('./tokenizerClient.ts')
       cancelWorker.current = module.cancelTokenizerRequests
       const next = await module.chatTokenize(
-        snapshot, file, config, chatTemplate, messages, attribution, addGenerationPrompt, activeController.signal,
+        snapshot, file, config, chatTemplate, context, attribution, activeController.signal,
       )
       if (activeController.signal.aborted || generation.current !== activeGeneration) return
       setChatPreview(next.input)
@@ -971,8 +983,23 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
               resetResult()
               setChatMessages(event.target.value)
             }} aria-label="Chat Messages" />
+            <details className="chat-context-details">
+              <summary>Tools 与 Variables</summary>
+              <label>Tools<textarea aria-label="Chat Tools" value={chatTools} onChange={event => {
+                resetResult()
+                setChatTools(event.target.value)
+              }} /></label>
+              <label>Typed Variables<textarea aria-label="Chat Typed Variables" value={chatVariables} onChange={event => {
+                resetResult()
+                setChatVariables(event.target.value)
+              }} /></label>
+            </details>
             <pre className="chat-preview" aria-label="Chat 权威输入">{chatPreview || '渲染后，这里显示唯一权威编码输入。'}</pre>
             <footer>
+              <label><input type="checkbox" checked={includeTools} onChange={event => {
+                resetResult()
+                setIncludeTools(event.target.checked)
+              }} />include_tools</label>
               <label><input type="checkbox" checked={addGenerationPrompt} onChange={event => {
                 resetResult()
                 setAddGenerationPrompt(event.target.checked)
