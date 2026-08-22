@@ -86,6 +86,58 @@ export function textLines(content: string): string[] {
   return content.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n')
 }
 
+export type TextFindNavigation = 'initial' | 'next' | 'previous'
+export type TextFindState = { total: number; current: number; start: number; end: number }
+
+export function navigateTextMatches(
+  content: string,
+  query: string,
+  navigation: TextFindNavigation,
+  current = 0,
+): TextFindState {
+  if (query === '') return { total: 0, current: 0, start: 0, end: 0 }
+  let total = 0
+  let first = -1
+  forEachTextMatch(content, query, (index) => {
+    if (first === -1) first = index
+    total++
+  })
+  if (total === 0) return { total, current: 0, start: 0, end: 0 }
+
+  const ordinal = navigation === 'initial'
+    ? 0
+    : navigation === 'next'
+      ? (current % total + total) % total
+      : ((current - 2) % total + total) % total
+  let start = first
+  let seen = 0
+  forEachTextMatch(content, query, (index) => {
+    if (seen++ === ordinal) start = index
+  })
+  return { total, current: ordinal + 1, start, end: start + query.length }
+}
+
+function forEachTextMatch(content: string, query: string, visit: (start: number) => void): void {
+  const source = query.replace(/[$()*+.?[\\\]^{|}]/g, '\\$&')
+  const pattern = new RegExp(source, 'giu')
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(content)) !== null) {
+    visit(match.index)
+    if (match[0] === '') pattern.lastIndex++
+  }
+}
+
+export function textLineAtOffset(content: string, offset: number): number {
+  const end = Math.max(0, Math.min(offset, content.length))
+  let lines = 1
+  for (let index = 0; index < end; index++) {
+    if (content.charCodeAt(index) !== 13 && content.charCodeAt(index) !== 10) continue
+    lines++
+    if (content.charCodeAt(index) === 13 && content.charCodeAt(index + 1) === 10) index++
+  }
+  return lines
+}
+
 export function repositoryMarkdownUrl(
   snapshot: RepositorySnapshot,
   filePath: string,

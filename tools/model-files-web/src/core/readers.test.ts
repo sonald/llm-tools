@@ -4,7 +4,9 @@ import {
   decodeStrictText,
   jsonRows,
   repositoryMarkdownUrl,
+  navigateTextMatches,
   summarizeJson,
+  textLineAtOffset,
   textLines,
   validatePdfData,
   visibleRows,
@@ -37,6 +39,44 @@ test('searches stable JSON rows and text lines with explicit limits', () => {
   assert.deepEqual(rows, [['alpha', '1'], ['beta', '2'], ['gamma', '3']])
   assert.deepEqual(visibleRows(rows, 'TA', 1), [['beta', '2']])
   assert.deepEqual(textLines('first\r\n\r\nsecond'), ['first', '', 'second'])
+})
+
+test('finds literal text matches without retaining a match array', () => {
+  const content = 'Aa aa .a 中文😀中文'
+  const empty = { total: 0, current: 0, start: 0, end: 0 }
+  assert.deepEqual(navigateTextMatches(content, '', 'initial'), empty)
+  assert.deepEqual(navigateTextMatches(content, 'zz', 'initial'), empty)
+  assert.deepEqual(navigateTextMatches(content, '.', 'initial'), {
+    total: 1, current: 1, start: 6, end: 7,
+  })
+  assert.deepEqual(navigateTextMatches(content, 'a', 'next', 2), {
+    total: 5, current: 3, start: 3, end: 4,
+  })
+  assert.deepEqual(navigateTextMatches(content, 'a', 'previous', 1), {
+    total: 5, current: 5, start: 7, end: 8,
+  })
+  assert.deepEqual(navigateTextMatches(content, 'a', 'next', 5), {
+    total: 5, current: 1, start: 0, end: 1,
+  })
+})
+
+test('matches Chinese and emoji by UTF-16 offsets', () => {
+  const content = '中文😀中文'
+  const lineContent = 'one\n中文\r\n😀\n'
+  assert.deepEqual(navigateTextMatches(content, '文', 'initial'), {
+    total: 2, current: 1, start: 1, end: 2,
+  })
+  assert.deepEqual(navigateTextMatches(content, '😀中', 'next'), {
+    total: 1, current: 1, start: 2, end: 5,
+  })
+  const expanding = 'İNEEDLE'
+  assert.deepEqual(navigateTextMatches(expanding, 'NEEDLE', 'initial'), {
+    total: 1, current: 1, start: 1, end: 7,
+  })
+  assert.equal(textLineAtOffset(content, 0), 1)
+  assert.equal(textLineAtOffset(content, content.length), 1)
+  assert.equal(textLineAtOffset(lineContent, lineContent.indexOf('😀')), 3)
+  assert.equal(textLineAtOffset('one\nsecond\n', 10), 2)
 })
 
 test('pins repository-relative Markdown URLs and rejects active protocols', () => {
