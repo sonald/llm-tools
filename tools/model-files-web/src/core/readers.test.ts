@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   decodeStrictText,
+  forEachTextMatch,
   jsonRows,
   repositoryMarkdownUrl,
   navigateTextMatches,
@@ -77,6 +78,15 @@ test('matches Chinese and emoji by UTF-16 offsets', () => {
   assert.equal(textLineAtOffset(content, content.length), 1)
   assert.equal(textLineAtOffset(lineContent, lineContent.indexOf('😀')), 3)
   assert.equal(textLineAtOffset('one\nsecond\n', 10), 2)
+})
+
+test('visits callback matches with UTF-16 start and end offsets', () => {
+  const content = '中文😀中文'
+  const starts: number[] = []
+  forEachTextMatch(content, '中文', start => starts.push(start))
+  assert.deepEqual(starts, [0, 4])
+  const lastStart = starts.at(-1)!
+  assert.equal(lastStart + '中文'.length, 6)
 })
 
 test('pins repository-relative Markdown URLs and rejects active protocols', () => {

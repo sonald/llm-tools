@@ -7,8 +7,14 @@ export const fixtureRevision = '0123456789abcdef0123456789abcdef01234567'
 export const pythonReaderSource = `class Model:
     def greet(self, name):
         if name:
-            return f"hello {name}"
-        return "hello"
+            return f"hello NEEDLE {name}"
+        return "hello needle"
+# needle
+# 中文 alpha
+# 中文 beta
+# 🚩
+if ready:
+    pass
 `
 export const yamlReaderSource = `model:
   name: demo
@@ -128,6 +134,7 @@ const files = new Map<string, Uint8Array>([
 
 const localReaderFiles = new Map<string, Uint8Array>([
   ['reader.py', bytes(pythonReaderSource)],
+  ['reader-copy.py', bytes(pythonReaderSource)],
   ['reader.yaml', bytes(yamlReaderSource)],
   ['folding.json', bytes(jsonFoldingSource)],
   ['boundary.py', bytes(boundaryPythonSource)],

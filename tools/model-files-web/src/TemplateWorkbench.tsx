@@ -1,5 +1,6 @@
-import { useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { formatBytes, type RepositorySnapshot } from './core/huggingface.ts'
+import { forEachTextMatch, navigateTextMatches } from './core/readers.ts'
 import { TextInspection } from './Readers.tsx'
 
 type ConfigView = { path: string; content: string; parsed: unknown; bytesRead: number }
@@ -32,13 +33,34 @@ export function TemplateWorkbench({
   const [outputView, setOutputView] = useState<'structure' | 'raw'>('structure')
   const [selectedLine, setSelectedLine] = useState(0)
   const [copyLabel, setCopyLabel] = useState('复制输出')
+  const [find, setFind] = useState({ open: false, query: '', current: 0 })
   const generation = useRef(0)
+  const sourceRef = useRef<HTMLTextAreaElement | null>(null)
   const sourceBytes = new TextEncoder().encode(source).byteLength
   const outputLines = useMemo(() => output.split('\n'), [output])
+  const activeMatch = useMemo(
+    () => navigateTextMatches(source, find.open ? find.query : '', 'next', Math.max(find.current, 1) - 1),
+    [find.current, find.open, find.query, source],
+  )
+
+  useEffect(() => {
+    if (!find.open || activeMatch.total === 0) return
+    sourceRef.current?.setSelectionRange(activeMatch.start, activeMatch.end)
+  }, [activeMatch.end, activeMatch.start, activeMatch.total, find.open])
+
+  function navigateFind(navigation: 'next' | 'previous') {
+    setFind(state => ({
+      ...state,
+      current: navigateTextMatches(source, state.query, navigation, Math.max(state.current, 1)).current,
+    }))
+  }
 
   function changeSource(value: string) {
     generation.current += 1
     setSource(value)
+    setFind(state => state.open
+      ? { ...state, current: navigateTextMatches(value, state.query, 'next', Math.max(state.current, 1) - 1).current }
+      : state)
     setOutput('')
     setError(null)
     setPhase('idle')
@@ -126,8 +148,49 @@ export function TemplateWorkbench({
       {view === 'source' ? (
         <div className="template-source">
           <header><span>{sourceOrigin} · {source.split('\n').length} 行 · {formatBytes(sourceBytes)} · {source === initialSource ? '来源原文' : '已修改'}</span><button type="button" onClick={() => changeSource(initialSource)} disabled={source === initialSource}>恢复来源</button></header>
-          <textarea aria-label="Jinja 源码" value={source} onChange={event => changeSource(event.target.value)} spellCheck={false} />
-          <pre className="jinja-highlight" aria-label="Jinja 高亮预览"><HighlightedJinja source={source} /></pre>
+          <textarea
+            aria-label="Jinja 源码"
+            value={source}
+            onChange={event => changeSource(event.target.value)}
+            onKeyDown={event => {
+              if (event.metaKey === event.ctrlKey || event.altKey || event.shiftKey) return
+              if (event.key.toLowerCase() !== 'f') return
+              event.preventDefault()
+              setFind(state => state.open ? state : { open: true, query: '', current: 0 })
+            }}
+            ref={sourceRef}
+            spellCheck={false}
+          />
+          {find.open ? (
+            <section aria-label="当前文件查找" className="source-find" role="search">
+              <input
+                aria-label="当前文件查找"
+                autoFocus
+                onChange={event => setFind({ open: true, query: event.target.value, current: 0 })}
+                onKeyDown={event => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    navigateFind(event.shiftKey ? 'previous' : 'next')
+                  } else if (event.key === 'Escape') {
+                    event.preventDefault()
+                    setFind({ open: false, query: '', current: 0 })
+                  }
+                }}
+                value={find.query}
+              />
+              <span>{activeMatch.current.toLocaleString()} / {activeMatch.total.toLocaleString()}</span>
+              <button disabled={activeMatch.total === 0} onClick={() => navigateFind('previous')} type="button">上一个命中</button>
+              <button disabled={activeMatch.total === 0} onClick={() => navigateFind('next')} type="button">下一个命中</button>
+            </section>
+          ) : null}
+          <pre className="jinja-highlight" aria-label="Jinja 高亮预览">
+            <HighlightedJinja
+              activeEnd={activeMatch.end}
+              activeStart={activeMatch.start}
+              query={find.open ? find.query : ''}
+              source={source}
+            />
+          </pre>
         </div>
       ) : null}
       {view === 'playground' ? (
@@ -167,13 +230,65 @@ export function TemplateWorkbench({
   )
 }
 
-function HighlightedJinja({ source }: { source: string }) {
-  return source.split(/({{[\s\S]*?}}|{%[\s\S]*?%}|{#[\s\S]*?#})/g).map((part, index) => (
-    part.startsWith('{{') ? <span className="jinja-expression" key={index}>{part}</span>
-      : part.startsWith('{%') ? <span className="jinja-statement" key={index}>{part}</span>
-        : part.startsWith('{#') ? <span className="jinja-comment" key={index}>{part}</span>
-          : part
-  ))
+function HighlightedJinja({
+  source,
+  query,
+  activeStart,
+  activeEnd,
+}: {
+  source: string
+  query: string
+  activeStart: number
+  activeEnd: number
+}) {
+  let segmentStart = 0
+  return source.split(/({{[\s\S]*?}}|{%[\s\S]*?%}|{#[\s\S]*?#})/g).map((part, index) => {
+    const start = segmentStart
+    segmentStart += part.length
+    const className = part.startsWith('{{') ? 'jinja-expression'
+      : part.startsWith('{%') ? 'jinja-statement'
+        : part.startsWith('{#') ? 'jinja-comment' : ''
+    const nodes = renderHighlightedSegment(part, start, className, query, activeStart, activeEnd, source)
+    return className === '' ? <Fragment key={index}>{nodes}</Fragment> : <span className={className} key={index}>{nodes}</span>
+  })
+}
+
+function renderHighlightedSegment(
+  text: string,
+  segmentStart: number,
+  className: string,
+  query: string,
+  activeStart: number,
+  activeEnd: number,
+  source: string,
+) {
+  if (query === '') return text
+  // ponytail: rescans source per Jinja segment; use one coordinated match walk if large-template profiling shows a cost.
+  const nodes: Array<ReactNode> = []
+  let cursor = 0
+  forEachTextMatch(source, query, start => {
+    const end = start + query.length
+    const markStart = Math.max(start, segmentStart)
+    const markEnd = Math.min(end, segmentStart + text.length)
+    if (markStart >= markEnd) return
+    if (markStart > segmentStart + cursor) {
+      nodes.push(text.slice(cursor, markStart - segmentStart))
+      cursor = markStart - segmentStart
+    }
+    const current = start === activeStart && end === activeEnd
+    nodes.push(
+      <mark
+        aria-current={current ? 'true' : undefined}
+        className={current ? 'find-match current' : 'find-match'}
+        key={start}
+      >{className === ''
+        ? text.slice(cursor, markEnd - segmentStart)
+        : <span className={className}>{text.slice(cursor, markEnd - segmentStart)}</span>}
+      </mark>,
+    )
+    cursor = markEnd - segmentStart
+  })
+  return cursor < text.length ? [...nodes, text.slice(cursor)] : nodes
 }
 
 const presets = {

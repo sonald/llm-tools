@@ -1,9 +1,19 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { formatBytes, type RepositorySnapshot } from './core/huggingface.ts'
 import { foldRanges, type FoldRange } from './core/sourceFolding.ts'
-import { jsonRows, repositoryMarkdownUrl, summarizeJson, textLines, visibleRows } from './core/readers.ts'
+import {
+  forEachTextMatch,
+  jsonRows,
+  navigateTextMatches,
+  repositoryMarkdownUrl,
+  summarizeJson,
+  textLineAtOffset,
+  textLines,
+  visibleRows,
+  type TextFindNavigation,
+} from './core/readers.ts'
 
 type Props = {
   snapshot: RepositorySnapshot
@@ -13,6 +23,8 @@ type Props = {
   json: boolean
   bytesRead: number
 }
+
+type LineFind = { open: boolean; query: string; current: number }
 
 export function TextInspection(props: Props) {
   const lower = props.path.toLocaleLowerCase()
@@ -56,13 +68,51 @@ function JsonInspection({ path, content, parsed, bytesRead }: Props) {
 function LineInspection({ content, bytesRead }: Props) {
   const [query, setQuery] = useState('')
   const [limit, setLimit] = useState(1000)
+  const [find, setFind] = useState<LineFind>(closedFind)
   const lines = useMemo(() => textLines(content).map((line, index): [string, string] => [String(index + 1), line]), [content])
   const matching = useMemo(() => visibleRows(lines, query, Number.MAX_SAFE_INTEGER), [lines, query])
   useEffect(() => setLimit(1000), [query])
+  useEffect(() => setFind(closedFind), [content])
+
+  const result = useMemo(
+    () => navigateTextMatches(
+      content,
+      find.open ? find.query : '',
+      'next',
+      Math.max(find.current, 1) - 1,
+    ),
+    [content, find.current, find.open, find.query],
+  )
+  const activeKey = result.total === 0 ? '' : String(textLineAtOffset(content, result.start))
+  const activeOffsetInLine = result.total === 0 ? -1 : result.start - lineStartAt(content, result.start)
+
+  const navigateFind = (navigation: TextFindNavigation) => setFind(state => ({
+    ...state,
+    current: navigateTextMatches(content, state.query, navigation, Math.max(state.current, 1)).current,
+  }))
+
   return (
     <div className="reader-canvas">
       <ReaderHeader bytesRead={bytesRead} result="UTF-8 有效" />
-      <ProgressiveRows rows={matching} query={query} setQuery={setQuery} limit={limit} setLimit={setLimit} firstColumn="行" secondColumn="内容" />
+      <ProgressiveRows
+        rows={matching}
+        query={query}
+        setQuery={setQuery}
+        limit={limit}
+        setLimit={setLimit}
+        firstColumn="行"
+        secondColumn="内容"
+        find={{ open: find.open, query: find.query, total: result.total, current: result.current }}
+        onNavigate={navigateFind}
+        onFindChange={(open, nextQuery) => setFind(state => {
+          if (!open) return closedFind
+          if (state.open && nextQuery === undefined) return state
+          return { ...closedFind, open: true, query: nextQuery ?? '' }
+        })}
+        activeKey={activeKey}
+        activeOffset={activeOffsetInLine}
+        activeRow={result.total === 0 ? undefined : lines[Number(activeKey) - 1]}
+      />
     </div>
   )
 }
@@ -88,7 +138,7 @@ function MarkdownInspection(props: Props) {
           </label>
         ) : null}
       </div>
-      {mode === 'raw' ? <pre className="source-reader standalone">{props.content}</pre> : (
+      {mode === 'raw' ? <SourceCode content={props.content} language="markdown" bytesRead={props.bytesRead} /> : (
         <article className={`markdown-body markdown-${theme}`}>
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
@@ -130,7 +180,11 @@ export function PdfInspection({ data, bytesRead }: { data: ArrayBuffer; bytesRea
 
 type SourceSegment = { text: string; className: string }
 
+type SourceMatch = { start: number; end: number }
+type SourceFind = { open: boolean; query: string; current: number }
+
 const richLimitBytes = 128 * 1024
+const closedFind: SourceFind = { open: false, query: '', current: 0 }
 
 function validateReply(reply: unknown, expectedContent: string) {
   if (typeof reply !== 'object' || reply === null || !('ok' in reply) || reply.ok !== true) return null
@@ -176,6 +230,8 @@ function SourceCode({
 }) {
   const [segments, setSegments] = useState<SourceSegment[] | null>(null)
   const rich = bytesRead <= richLimitBytes
+  const sourceRef = useRef<HTMLPreElement>(null)
+  const [find, setFind] = useState<SourceFind>(closedFind)
   const ranges = useMemo(() => (rich ? foldRanges(content, language) : []), [content, language, rich])
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   useEffect(() => {
@@ -206,6 +262,22 @@ function SourceCode({
   }, [content, language, rich])
   useEffect(() => setCollapsed(new Set()), [content, language])
 
+  const matches = useMemo(() => {
+    if (!rich || !find.open || find.query === '') return []
+    const found: SourceMatch[] = []
+    forEachTextMatch(content, find.query, start => found.push({ start, end: start + find.query.length }))
+    return found
+  }, [content, find.open, find.query, rich])
+  useEffect(() => setFind(closedFind), [content, language])
+
+  const current = matches.length === 0
+    ? 0
+    : find.current <= 0
+      ? 1
+    : Math.min(find.current, matches.length)
+  const activeMatch = current === 0 ? null : matches[current - 1]
+  const activeLine = activeMatch === null ? 0 : textLineAtOffset(content, activeMatch.start)
+
   const hiddenLines = useMemo(() => {
     const hidden = new Set<number>()
     for (const range of ranges) {
@@ -224,7 +296,33 @@ function SourceCode({
     return markers
   }, [ranges])
 
-  const lines = useMemo(() => splitSourceLines(content, segments), [content, segments])
+  const navigateFind = (navigation: 'next' | 'previous') => setFind(state => ({
+    ...state,
+    current: navigateTextMatches(content, state.query, navigation, current).current,
+  }))
+  const lines = useMemo(
+    () => splitSourceLines(content, segments, matches, activeMatch),
+    [activeMatch, content, matches, segments],
+  )
+
+  useEffect(() => {
+    if (activeMatch === null) return
+    let frame = 0
+    setCollapsed(current => {
+      const hiddenAncestors = [...collapsed]
+        .filter(key => ranges.some(range => (
+          foldKey(range) === key && range.startLine <= activeLine && activeLine <= range.endLine
+        )))
+      if (hiddenAncestors.length === 0) return current
+      const next = new Set(current)
+      for (const key of hiddenAncestors) next.delete(key)
+      return next
+    })
+    frame = requestAnimationFrame(() => {
+      sourceRef.current?.querySelector('mark.current')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [activeLine, activeMatch, collapsed, content, ranges])
   const showToolbar = ranges.length > 0
 
   if (!rich) {
@@ -242,7 +340,37 @@ function SourceCode({
           <button type="button" onClick={() => setCollapsed(new Set())}>全部展开</button>
         </div>
       ) : null}
+      {find.open ? (
+        <section aria-label="当前文件查找" className="source-find" role="search">
+          <input
+            aria-label="当前文件查找"
+            autoFocus
+            onChange={event => setFind({ ...closedFind, open: true, query: event.target.value })}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                navigateFind(event.shiftKey ? 'previous' : 'next')
+              } else if (event.key === 'Escape') {
+                event.preventDefault()
+                setFind(closedFind)
+              }
+            }}
+            value={find.query}
+          />
+          <span>{current.toLocaleString()} / {matches.length.toLocaleString()}</span>
+          <button disabled={matches.length === 0} onClick={() => navigateFind('previous')} type="button">上一个命中</button>
+          <button disabled={matches.length === 0} onClick={() => navigateFind('next')} type="button">下一个命中</button>
+        </section>
+      ) : null}
       <pre
+        onKeyDown={event => {
+          if ((!event.metaKey && !event.ctrlKey) || event.altKey || event.shiftKey) return
+          if (event.key.toLowerCase() !== 'f') return
+          event.preventDefault()
+          setFind(state => state.open ? state : { ...closedFind, open: true })
+        }}
+        ref={sourceRef}
+        tabIndex={0}
         className="source-reader standalone"
         data-language={language}
         data-highlighted={segments !== null}
@@ -272,7 +400,16 @@ function SourceCode({
                   })}
                 </span>
               ) : null}
-              {line.map((piece, pieceIndex) => piece.className === ''
+              {line.map((piece, pieceIndex) => piece.match ? (
+                <mark
+                  aria-current={piece.current ? 'true' : undefined}
+                  className={`find-match${piece.current ? ' current' : ''}`}
+                  key={pieceIndex}
+                >{piece.className === ''
+                  ? piece.text
+                  : <span className={piece.className}>{piece.text}</span>}
+                </mark>
+              ) : piece.className === ''
                 ? <span key={pieceIndex}>{piece.text}</span>
                 : <span className={piece.className} key={pieceIndex}>{piece.text}</span>)}
             </span>
@@ -283,7 +420,7 @@ function SourceCode({
   )
 }
 
-type SourcePiece = { text: string; className: string }
+type SourcePiece = { text: string; className: string; match: boolean; current: boolean }
 
 function foldKey(range: FoldRange) {
   return `${range.startLine}:${range.endLine}`
@@ -302,29 +439,59 @@ function toggleFold(
   })
 }
 
-function splitSourceLines(content: string, segments: SourceSegment[] | null): Array<Array<SourcePiece>> {
+function splitSourceLines(
+  content: string,
+  segments: SourceSegment[] | null,
+  matches: SourceMatch[],
+  activeMatch: SourceMatch | null,
+): Array<Array<SourcePiece>> {
   const pieces = segments ?? [{ text: content, className: '' }]
   const lines: Array<Array<SourcePiece>> = [[]]
 
-  const appendPiece = (text: string, className: string) => {
+  const appendPiece = (text: string, className: string, match: boolean, current: boolean) => {
     const currentLine = lines[lines.length - 1]
     const lastPiece = currentLine[currentLine.length - 1]
-    if (lastPiece && lastPiece.className === className) lastPiece.text += text
-    else currentLine.push({ text, className })
+    if (lastPiece && lastPiece.className === className && lastPiece.match === match
+      && lastPiece.current === current) lastPiece.text += text
+    else currentLine.push({ text, className, match, current })
   }
 
+  let segmentStart = 0
   for (const segment of pieces) {
-    let start = 0
-    while (start < segment.text.length) {
-      const newlineIndex = segment.text.indexOf('\n', start)
-      if (newlineIndex === -1) {
-        appendPiece(segment.text.slice(start), segment.className)
-        break
+    const renderSegment = (text: string, className: string, match = false, current = false) => {
+      let start = 0
+      while (start < text.length) {
+        const newlineIndex = text.indexOf('\n', start)
+        if (newlineIndex === -1) {
+          appendPiece(text.slice(start), className, match, current)
+          break
+        }
+        appendPiece(text.slice(start, newlineIndex + 1), className, match, current)
+        lines.push([])
+        start = newlineIndex + 1
       }
-      appendPiece(segment.text.slice(start, newlineIndex + 1), segment.className)
-      lines.push([])
-      start = newlineIndex + 1
     }
+
+    let cursor = segmentStart
+    for (const match of matches) {
+      const start = Math.max(cursor, match.start)
+      const end = Math.min(segmentStart + segment.text.length, match.end)
+      if (end <= cursor || start >= end) continue
+      if (start > cursor) {
+        renderSegment(segment.text.slice(cursor - segmentStart, start - segmentStart), segment.className)
+      }
+      renderSegment(
+        segment.text.slice(start - segmentStart, end - segmentStart),
+        segment.className,
+        true,
+        activeMatch?.start === match.start && activeMatch?.end === match.end,
+      )
+      cursor = end
+    }
+    if (cursor < segmentStart + segment.text.length) {
+      renderSegment(segment.text.slice(cursor - segmentStart), segment.className)
+    }
+    segmentStart += segment.text.length
   }
 
   return lines
@@ -366,6 +533,12 @@ function ProgressiveRows({
   setLimit,
   firstColumn = '字段',
   secondColumn = '值',
+  find,
+  onNavigate,
+  onFindChange,
+  activeKey = '',
+  activeOffset = -1,
+  activeRow,
 }: {
   rows: Array<[string, string]>
   query: string
@@ -374,18 +547,87 @@ function ProgressiveRows({
   setLimit(value: number): void
   firstColumn?: string
   secondColumn?: string
+  find?: { open: boolean; query: string; total: number; current: number }
+  onNavigate?(navigation: TextFindNavigation): void
+  onFindChange?(open: boolean, query?: string): void
+  activeKey?: string
+  activeOffset?: number
+  activeRow?: [string, string]
 }) {
-  const visible = rows.slice(0, limit)
+  const tableRef = useRef<HTMLDivElement>(null)
+  let visible = rows.slice(0, limit)
+  const canFind = find !== undefined && onNavigate !== undefined && onFindChange !== undefined
+  if (canFind && find!.total > 0) {
+    if (activeRow !== undefined && !visible.some(([key]) => key === activeKey)) {
+      visible = [...visible, activeRow].toSorted(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
+    }
+  }
+  useEffect(() => {
+    if (!find?.open || find.total === 0 || activeRow === undefined) return
+    const frame = requestAnimationFrame(() => {
+      tableRef.current?.querySelector('mark.current')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [activeKey, activeOffset, activeRow, find?.open, find?.query, find?.total])
   return (
     <section className="reader-section">
+      {canFind && find!.open ? (
+        <section aria-label="当前文件查找" className="source-find" role="search">
+          <input
+            aria-label="当前文件查找"
+            autoFocus
+            onChange={event => onFindChange!(true, event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                onNavigate!(event.shiftKey ? 'previous' : 'next')
+              } else if (event.key === 'Escape') {
+                event.preventDefault()
+                onFindChange!(false)
+              }
+            }}
+            value={find!.query}
+          />
+          <span>{find!.current.toLocaleString()} / {find!.total.toLocaleString()}</span>
+          <button disabled={find!.total === 0} onClick={() => onNavigate!('previous')} type="button">上一个命中</button>
+          <button disabled={find!.total === 0} onClick={() => onNavigate!('next')} type="button">下一个命中</button>
+        </section>
+      ) : null}
       <div className="inspection-toolbar">
         <label><span>搜索</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="字段或内容包含…" /></label>
         <span>显示 {visible.length.toLocaleString()} / {rows.length.toLocaleString()}</span>
       </div>
-      <div className="table-scroll">
+      <div
+        ref={tableRef}
+        className="table-scroll"
+        onKeyDown={event => {
+          if (!canFind || event.metaKey === event.ctrlKey || event.altKey || event.shiftKey) return
+          if (event.key.toLowerCase() !== 'f') return
+          event.preventDefault()
+          onFindChange!(true)
+        }}
+        tabIndex={canFind ? 0 : undefined}
+      >
         <table aria-label={`${firstColumn}列表`}>
           <thead><tr><th>{firstColumn}</th><th>{secondColumn}</th></tr></thead>
-          <tbody>{visible.map(([key, value]) => <tr key={key}><td>{key}</td><td title={value}>{value}</td></tr>)}</tbody>
+          <tbody>{visible.map(([key, value]) => (
+            <tr key={key}>
+              <td>{key}</td>
+              <td title={value}>
+                {canFind && find!.open && find!.query !== '' ? splitCellMatches(
+                  value,
+                  find!.query,
+                  key === activeKey ? activeOffset : -1,
+                ).map((piece, index) => piece.match ? (
+                  <mark
+                    aria-current={piece.current ? 'true' : undefined}
+                    className={`find-match${piece.current ? ' current' : ''}`}
+                    key={index}
+                  >{piece.text}</mark>
+                ) : <span key={index}>{piece.text}</span>) : value}
+              </td>
+            </tr>
+          ))}</tbody>
         </table>
       </div>
       {visible.length < rows.length ? (
@@ -393,4 +635,26 @@ function ProgressiveRows({
       ) : null}
     </section>
   )
+}
+
+function lineStartAt(content: string, offset: number): number {
+  if (offset <= 0) return 0
+  return Math.max(
+    content.lastIndexOf('\n', offset - 1),
+    content.lastIndexOf('\r', offset - 1),
+  ) + 1
+}
+
+function splitCellMatches(value: string, query: string, activeOffset: number): Array<SourcePiece> {
+  if (query === '') return [{ text: value, className: '', match: false, current: false }]
+  const pieces: Array<SourcePiece> = []
+  let cursor = 0
+  forEachTextMatch(value, query, start => {
+    const end = start + query.length
+    if (start > cursor) pieces.push({ text: value.slice(cursor, start), className: '', match: false, current: false })
+    pieces.push({ text: value.slice(start, end), className: '', match: true, current: start === activeOffset })
+    cursor = end
+  })
+  if (cursor < value.length) pieces.push({ text: value.slice(cursor), className: '', match: false, current: false })
+  return pieces
 }

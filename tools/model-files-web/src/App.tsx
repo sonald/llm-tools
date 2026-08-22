@@ -501,8 +501,9 @@ function Detail({
         {inspection.kind === 'gguf' && snapshot !== null ? <GGUFInspection inspection={inspection} snapshot={snapshot} /> : null}
         {inspection.kind === 'imatrix' ? <ImatrixInspection inspection={inspection} /> : null}
         {inspection.kind === 'pdf' ? <PdfInspection data={inspection.data} bytesRead={inspection.bytesRead} /> : null}
-        {inspection.kind === 'source' ? (
+        {inspection.kind === 'source' && snapshot !== null ? (
           <SourceInspection
+            key={`${snapshotIdentity(snapshot)}/${file.path}`}
             content={inspection.content}
             language={inspection.language}
             bytesRead={inspection.bytesRead}

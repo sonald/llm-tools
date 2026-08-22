@@ -117,7 +117,7 @@ export function navigateTextMatches(
   return { total, current: ordinal + 1, start, end: start + query.length }
 }
 
-function forEachTextMatch(content: string, query: string, visit: (start: number) => void): void {
+export function forEachTextMatch(content: string, query: string, visit: (start: number) => void): void {
   const source = query.replace(/[$()*+.?[\\\]^{|}]/g, '\\$&')
   const pattern = new RegExp(source, 'giu')
   let match: RegExpExecArray | null

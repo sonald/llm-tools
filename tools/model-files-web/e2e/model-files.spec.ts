@@ -290,6 +290,244 @@ test('folds Python YAML and JSON while preserving the full source', async ({ pag
   expect(errors).toEqual([])
 })
 
+test('source find navigates matches and reveals collapsed ancestors', async ({ page }, testInfo) => {
+  const localFixture = testInfo.outputPath('source-find-local-fixture')
+  await writeFixtureDirectory(localFixture)
+  await page.goto('/')
+  await page.getByLabel('选择本地目录').setInputFiles(localFixture)
+  const filter = page.getByPlaceholder('筛选文件')
+  await filter.fill('reader')
+  await page.getByRole('button', { name: /^reader\.py/ }).click()
+
+  await page.getByRole('button', { name: '折叠第 2 行结构' }).click()
+  await page.getByRole('button', { name: '折叠第 1 行结构' }).click()
+  await page.getByRole('button', { name: '折叠第 10 行结构' }).click()
+  const source = page.locator('.source-reader')
+  await source.focus()
+  await page.keyboard.press('Meta+F')
+
+  const search = page.getByRole('search', { name: '当前文件查找' })
+  const searchInput = search.getByRole('textbox', { name: '当前文件查找' })
+  await expect(search).toBeVisible()
+  await expect(searchInput).toBeVisible()
+  await expect(filter).toHaveValue('reader')
+
+  await searchInput.fill('needle')
+  const current = page.locator('.source-reader mark.current')
+  await expect(search.getByText('1 / 3', { exact: true })).toBeVisible()
+  await expect(page.locator('.source-reader mark.find-match')).toHaveCount(3)
+  await expect(current).toHaveCount(1)
+  await expect(current).toHaveAttribute('aria-current', 'true')
+  await expect(page.getByRole('button', { name: '折叠第 1 行结构' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '折叠第 2 行结构' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '展开第 10 行结构' })).toHaveAttribute(
+    'data-hidden-lines',
+    '1',
+  )
+  await expect(page.locator('.source-reader .source-line[hidden]')).toHaveCount(1)
+  expect(await current.evaluate(element => {
+    const container = element.closest('.source-reader')
+    if (!(container instanceof HTMLElement)) return false
+    const mark = element.getBoundingClientRect()
+    const viewport = container.getBoundingClientRect()
+    return mark.bottom >= viewport.top && mark.top <= viewport.bottom
+      && mark.right >= viewport.left && mark.left <= viewport.right
+  })).toBe(true)
+
+  await searchInput.press('Enter')
+  await expect(current).toHaveText('needle')
+  await searchInput.press('Enter')
+  await expect(current).toHaveText('needle')
+  await searchInput.press('Enter')
+  await expect(current).toHaveText('NEEDLE')
+  await searchInput.press('Shift+Enter')
+  await expect(current).toHaveText('needle')
+
+  await search.getByRole('button', { name: '下一个命中' }).click()
+  await expect(current).toHaveText('NEEDLE')
+  await search.getByRole('button', { name: '上一个命中' }).click()
+  await expect(current).toHaveText('needle')
+  await expect(search.getByText('3 / 3', { exact: true })).toBeVisible()
+
+  await searchInput.fill('中文')
+  await expect(search.getByText('1 / 2', { exact: true })).toBeVisible()
+  await expect(page.locator('.source-reader mark.find-match')).toHaveCount(2)
+  await searchInput.fill('🚩')
+  await expect(search.getByText('1 / 1', { exact: true })).toBeVisible()
+  await expect(page.locator('.source-reader mark.find-match')).toHaveCount(1)
+  await searchInput.fill('missing-query')
+  await expect(search.getByText('0 / 0', { exact: true })).toBeVisible()
+  await expect(page.locator('.source-reader mark')).toHaveCount(0)
+
+  await page.getByRole('button', { name: /^reader-copy\.py/ }).click()
+  await expect(search).toBeHidden()
+  await expect(page.locator('.source-reader mark')).toHaveCount(0)
+
+  await page.getByRole('button', { name: /^reader\.py/ }).click()
+  await source.focus()
+  await page.keyboard.press('Control+F')
+  await expect(search).toBeVisible()
+  await searchInput.fill('')
+  await expect(page.locator('.source-reader mark')).toHaveCount(0)
+
+  await searchInput.press('Escape')
+  await expect(search).toBeHidden()
+  await expect(page.locator('.source-reader mark')).toHaveCount(0)
+  await source.focus()
+  await page.keyboard.press('Control+F')
+  await expect(search).toBeVisible()
+
+  await page.getByRole('button', { name: /^reader\.yaml/ }).click()
+  await expect(search).toBeHidden()
+  await expect(page.locator('.source-reader mark')).toHaveCount(0)
+})
+
+test('find works in JSON Markdown and full progressive text', async ({ page }) => {
+  const errors = collectErrors(page)
+  await installFixtureRoutes(page)
+  await openFixture(page)
+
+  await page.getByRole('button', { name: /^config\.json/ }).click()
+  await page.getByRole('button', { name: '原文' }).click()
+  const source = page.locator('.source-reader')
+  await source.focus()
+  await page.keyboard.press('Meta+F')
+  let search = page.getByRole('search', { name: '当前文件查找' })
+  let searchInput = search.getByRole('textbox', { name: '当前文件查找' })
+  await searchInput.fill('hidden_size')
+  await expect(search).toBeVisible()
+  await expect(search.getByText('1 / 1', { exact: true })).toBeVisible()
+  await expect(page.locator('.source-reader mark.find-match')).toHaveCount(1)
+  await expect(page.locator('.source-reader mark.current')).toHaveAttribute('aria-current', 'true')
+
+  await page.getByRole('button', { name: '概览' }).click()
+  await expect(search).toBeHidden()
+  await expect(page.locator('.source-reader mark')).toHaveCount(0)
+  await page.getByRole('button', { name: '原文' }).click()
+  await source.focus()
+  await page.keyboard.press('Meta+F')
+  await expect(searchInput).toHaveValue('')
+  await searchInput.press('Escape')
+
+  await page.getByRole('button', { name: /^README\.md/ }).click()
+  await expect(page.getByRole('heading', { name: 'Fixture Model' })).toBeVisible()
+  await expect(page.getByRole('search', { name: '当前文件查找' })).toHaveCount(0)
+  await page.getByRole('button', { name: '原文' }).click()
+  await source.focus()
+  await page.keyboard.press('Meta+F')
+  search = page.getByRole('search', { name: '当前文件查找' })
+  searchInput = search.getByRole('textbox', { name: '当前文件查找' })
+  await searchInput.fill('Fixture')
+  await expect(search.getByText('1 / 1', { exact: true })).toBeVisible()
+  await expect(page.locator('.source-reader mark.find-match')).toHaveCount(1)
+  await page.getByRole('button', { name: '渲染' }).click()
+  await expect(search).toBeHidden()
+
+  await page.getByRole('button', { name: /^merges\.txt/ }).click()
+  await expect(page.getByText('显示 1,000 / 100,002')).toBeVisible({ timeout: 3_000 })
+  const filter = page.getByPlaceholder('字段或内容包含…')
+  await expect(filter).toHaveValue('')
+  const rowsViewport = page.locator('.table-scroll')
+  await rowsViewport.focus()
+  await page.keyboard.press('Meta+F')
+  search = page.getByRole('search', { name: '当前文件查找' })
+  searchInput = search.getByRole('textbox', { name: '当前文件查找' })
+  const query = 'token-100001 token-100002'
+  const findStarted = Date.now()
+  await searchInput.fill(query)
+  await expect(search.getByText('1 / 1', { exact: true })).toBeVisible({ timeout: 3_000 })
+  expect(Date.now() - findStarted).toBeLessThan(3_000)
+  const row = page.getByRole('row', { name: new RegExp(query.replace(/[$()*+.?[\\\]^{|}]/g, '\\$&')) })
+  const currentMark = row.locator('mark.current')
+  await expect(row).toBeVisible()
+  await expect(currentMark).toHaveCount(1)
+  await expect(currentMark).toHaveAttribute('aria-current', 'true')
+  expect(await currentMark.evaluate((element, selector) => {
+    const viewport = document.querySelector(selector)
+    if (!(element instanceof HTMLElement) || !(viewport instanceof HTMLElement)) return false
+    const mark = element.getBoundingClientRect()
+    const bounds = viewport.getBoundingClientRect()
+    return mark.bottom >= bounds.top && mark.top <= bounds.bottom
+      && mark.right >= bounds.left && mark.left <= bounds.right
+  }, '.table-scroll')).toBe(true)
+
+  await searchInput.press('Escape')
+  await expect(search).toBeHidden()
+  await expect(filter).toHaveValue('')
+  await filter.fill(query)
+  await expect(filter).toHaveValue(query)
+  await expect(page.getByText('显示 1 / 1', { exact: true })).toBeVisible()
+  await expect(row).toContainText(query)
+  expect(errors).toEqual([])
+})
+
+test('Jinja source find preserves query while editing and resets on file switch', async ({ page }) => {
+  const errors = collectErrors(page)
+  await installFixtureRoutes(page)
+  await openFixture(page)
+
+  await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
+  await page.getByRole('tab', { name: '源码' }).click()
+  const jinjaSource = page.getByLabel('Jinja 源码')
+  await jinjaSource.focus()
+  await page.keyboard.press('Meta+F')
+  const search = page.getByRole('search', { name: '当前文件查找' })
+  const searchInput = search.getByRole('textbox', { name: '当前文件查找' })
+  await searchInput.fill('thinking')
+  await expect(search.getByText('1 / 2', { exact: true })).toBeVisible()
+  await expect(page.locator('.jinja-highlight mark.find-match')).toHaveCount(2)
+  const firstMatchStart = await jinjaSource.evaluate(element =>
+    (element as HTMLTextAreaElement).value.indexOf('thinking'))
+  expect(await jinjaSource.evaluate(element => ({
+    start: (element as HTMLTextAreaElement).selectionStart,
+    end: (element as HTMLTextAreaElement).selectionEnd,
+  }))).toEqual({ start: firstMatchStart, end: firstMatchStart + 'thinking'.length })
+  const currentMark = page.locator('.jinja-highlight mark.find-match.current')
+  await expect(currentMark).toHaveCount(1)
+  await expect(currentMark).toHaveAttribute('aria-current', 'true')
+
+  await searchInput.press('Enter')
+  await expect(search.getByText('2 / 2', { exact: true })).toBeVisible()
+  const secondMatchStart = await jinjaSource.evaluate(element =>
+    (element as HTMLTextAreaElement).value.lastIndexOf('thinking'))
+  expect(await jinjaSource.evaluate(element => ({
+    start: (element as HTMLTextAreaElement).selectionStart,
+    end: (element as HTMLTextAreaElement).selectionEnd,
+  }))).toEqual({ start: secondMatchStart, end: secondMatchStart + 'thinking'.length })
+
+  await searchInput.press('Shift+Enter')
+  await expect(search.getByText('1 / 2', { exact: true })).toBeVisible()
+  expect(await jinjaSource.evaluate(element => ({
+    start: (element as HTMLTextAreaElement).selectionStart,
+    end: (element as HTMLTextAreaElement).selectionEnd,
+  }))).toEqual({ start: firstMatchStart, end: firstMatchStart + 'thinking'.length })
+
+  const originalSource = await jinjaSource.inputValue()
+  await jinjaSource.fill(`${originalSource}\nthinking`)
+  await expect(searchInput).toHaveValue('thinking')
+  await expect(search.getByText('1 / 3', { exact: true })).toBeVisible()
+  await expect(page.locator('.jinja-highlight mark.find-match')).toHaveCount(3)
+  expect(await jinjaSource.evaluate(element => {
+    const source = element as HTMLTextAreaElement
+    return {
+      selected: source.value.slice(source.selectionStart ?? 0, source.selectionEnd ?? 0),
+      length: (source.selectionEnd ?? 0) - (source.selectionStart ?? 0),
+    }
+  })).toEqual({ selected: 'thinking', length: 'thinking'.length })
+
+  await page.getByRole('button', { name: /^config\.json/ }).click()
+  await expect(search).toBeHidden()
+  await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
+  await page.getByRole('tab', { name: '源码' }).click()
+  await expect(search).toBeHidden()
+  await expect(page.locator('.jinja-highlight mark')).toHaveCount(0)
+  await jinjaSource.focus()
+  await page.keyboard.press('Meta+F')
+  await expect(searchInput).toHaveValue('')
+  await searchInput.press('Escape')
+  expect(errors).toEqual([])
+})
+
 test('reads semantic JSON, progressive text, and safe Markdown views', async ({ page }) => {
   const errors = collectErrors(page)
   const thirdPartyRequests: string[] = []
