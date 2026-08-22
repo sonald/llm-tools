@@ -26,7 +26,7 @@ Web 基线：`11e1086 feat(model-files-web): add complete browser inspector`
 | 原生基线后行为 | Web 当前状态 | 本轮决定 | 主要原生证据 | Web 目标入口 |
 | --- | --- | --- | --- | --- |
 | Tokenizer 换行/空白片段保持单行显示 | 未完整对齐；CRLF 与关闭空白显示时仍可换行 | 移植 | `7ecdb07` | `visiblePiece()`、Token table E2E |
-| 独立 SentencePiece `.model` 编解码 | 缺失 | 必做；先过依赖门 | `cff8139` | Worker runtime、same-directory bundle |
+| 独立 SentencePiece `.model` 编解码 | `BLOCKED` | 必做；候选依赖门失败，等待外部变化/新授权 | `cff8139`、`docs/sentencepiece-web-feasibility.md` | Worker runtime、same-directory bundle |
 | 源码语法高亮 | 缺失 | 移植 | `457b66e` | `Readers.tsx` 或最小专用 Reader |
 | PDF 本地预览 | 缺失 | 移植；浏览器 Blob URL/内建 viewer | `457b66e` | inspection dispatch、PDF Reader |
 | 不支持的二进制明确拒绝 | 仅依赖 UTF-8 fatal decode，不拒绝 NUL | 移植 | `457b66e` | 全文读取后的文本边界检查 |
