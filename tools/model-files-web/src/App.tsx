@@ -21,6 +21,7 @@ import {
   type SafeTensorsSummary,
 } from './core/inspectors.ts'
 import { decodeStrictText, validatePdfData } from './core/readers.ts'
+import { parseChatMessages } from './core/tokenAttribution.ts'
 import type { Tokenization, TokenizerStructure } from './core/tokenizer.ts'
 import { PdfInspection, SourceInspection, TextInspection } from './Readers.tsx'
 import { TemplateWorkbench } from './TemplateWorkbench.tsx'
@@ -781,6 +782,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       controller.current?.abort()
       setResult({
         direction: 'encode', input: '', ids: [], pieces: [], decoded: '', segments: [], mapping: 'Exact', flags: [],
+        overhead: null,
       })
       setError(null)
       setPhase('ready')
@@ -839,17 +841,14 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setError(null)
     try {
       if (chatTemplate === null) throw new Error(templateFile === undefined ? '当前 tokenizer 没有可用 Chat Template。' : '正在读取独立 Chat Template。')
-      const messages: unknown = JSON.parse(chatMessages)
-      if (!Array.isArray(messages)) throw new Error('Messages 必须是 JSON 数组。')
+      const { messages, attribution } = parseChatMessages(JSON.parse(chatMessages))
       const module = await import('./tokenizerClient.ts')
       cancelWorker.current = module.cancelTokenizerRequests
-      const rendered = await module.renderTemplate(chatTemplate, {
-        messages, tools: [], enable_thinking: false, mode: 'chat', add_generation_prompt: addGenerationPrompt,
-      })
+      const next = await module.chatTokenize(
+        snapshot, file, config, chatTemplate, messages, attribution, addGenerationPrompt, activeController.signal,
+      )
       if (activeController.signal.aborted || generation.current !== activeGeneration) return
-      setChatPreview(rendered)
-      const next = await module.tokenize(snapshot, file, config, rendered, activeController.signal)
-      if (activeController.signal.aborted || generation.current !== activeGeneration) return
+      setChatPreview(next.input)
       setResult(next)
       setPhase('ready')
     } catch (failure) {
@@ -1094,6 +1093,12 @@ function TokenizerResultView({
             ['运行位置', 'Web Worker'],
             ['方向', result.direction === 'decode' ? 'decode' : 'encode'],
             ['Token 数', result.ids.length.toLocaleString()],
+            ...(result.overhead === null ? [] : [
+              ['正文 Token', result.overhead.contentCount.toLocaleString()],
+              ['模板开销（近似）', result.overhead.templateCount < 0
+                ? '无法拆分'
+                : result.overhead.templateCount.toLocaleString()],
+            ] as Array<[string, string]>),
             ['Bytes / Token', result.ids.length === 0 ? '0' : (inputBytes / result.ids.length).toLocaleString('zh-CN', { maximumFractionDigits: 2 })],
             ['映射', result.mapping],
           ]} />

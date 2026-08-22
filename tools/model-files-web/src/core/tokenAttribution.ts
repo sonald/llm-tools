@@ -18,6 +18,28 @@ export type ChatTokenRole =
   | { kind: 'template' }
   | { kind: 'message'; role: string }
 
+export function parseChatMessages(value: unknown): {
+  messages: unknown[]
+  attribution: ChatAttributionMessage[]
+} {
+  if (!Array.isArray(value)) throw new Error('Messages 必须是 JSON 数组。')
+  const attribution = value.map((item, index): ChatAttributionMessage => {
+    if (!isRecord(item) || typeof item.role !== 'string' || !('content' in item)) {
+      throw new Error(`第 ${index + 1} 项必须是非数组对象，且 role 是字符串、content 存在。`)
+    }
+    if (typeof item.content === 'string') return { role: item.role, content: item.content, contentKind: 'text' }
+    let content: string | undefined
+    try {
+      content = JSON.stringify(item.content)
+    } catch {
+      throw new Error(`第 ${index + 1} 项 content 不可序列化为 JSON。`)
+    }
+    if (content === undefined) throw new Error(`第 ${index + 1} 项 content 不可序列化为 JSON。`)
+    return { role: item.role, content, contentKind: 'json' }
+  })
+  return { messages: value, attribution }
+}
+
 export function chatContentProbe(messages: readonly ChatAttributionMessage[]): string {
   return messages
     .filter(message => message.contentKind === 'text' && message.content !== '')
@@ -86,4 +108,8 @@ function validSegments(
   }
   if (expectedStart !== ids.length) return null
   return locations
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

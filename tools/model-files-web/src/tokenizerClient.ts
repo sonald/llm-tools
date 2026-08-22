@@ -1,4 +1,5 @@
 import { readWholeFile, type RepositoryFile, type RepositorySnapshot } from './core/huggingface.ts'
+import type { ChatAttributionMessage, ChatTokenOverhead } from './core/tokenAttribution.ts'
 import {
   parseTokenIds,
   tokenizerBundleBytes,
@@ -11,6 +12,14 @@ type Reply = { id: number; ok: true; value: unknown } | { id: number; ok: false;
 type Request =
   | { id: number; type: 'load'; tokenizerData: ArrayBuffer; configData: ArrayBuffer | null }
   | { id: number; type: 'tokenize'; text: string }
+  | {
+    id: number
+    type: 'chat-tokenize'
+    template: string
+    messages: unknown[]
+    attribution: ChatAttributionMessage[]
+    addGenerationPrompt: boolean
+  }
   | { id: number; type: 'decode-token-ids'; ids: number[]; originalInput: string }
   | { id: number; type: 'render-template'; source: string; context: Record<string, unknown> }
 
@@ -31,10 +40,33 @@ export async function tokenize(
 ): Promise<Tokenization> {
   if (text.length === 0) return {
     direction: 'encode', input: text, ids: [], pieces: [], decoded: '', segments: [], mapping: 'Exact', flags: [],
+    overhead: null,
   }
   if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new Error('输入超过 64 KiB 上限。')
   await ensureLoaded(snapshot, tokenizerFile, configFile, signal)
-  return validateTokenization(await request({ id: ++nextId, type: 'tokenize', text }))
+  return validateTokenization(await request({ id: ++nextId, type: 'tokenize', text }), false)
+}
+
+export async function chatTokenize(
+  snapshot: RepositorySnapshot,
+  tokenizerFile: RepositoryFile,
+  configFile: RepositoryFile | undefined,
+  template: string,
+  messages: unknown[],
+  attribution: ChatAttributionMessage[],
+  addGenerationPrompt: boolean,
+  signal?: AbortSignal,
+): Promise<Tokenization> {
+  if (new TextEncoder().encode(template).byteLength > 64 * 1024) throw new Error('模板源码超过 64 KiB 上限。')
+  const context = { messages, tools: [], enable_thinking: false, mode: 'chat', add_generation_prompt: addGenerationPrompt }
+  const serializedContext = JSON.stringify(context)
+  if (serializedContext === undefined || new TextEncoder().encode(serializedContext).byteLength > 64 * 1024) {
+    throw new Error('模板输入超过 64 KiB 上限。')
+  }
+  await ensureLoaded(snapshot, tokenizerFile, configFile, signal)
+  return validateTokenization(await request({
+    id: ++nextId, type: 'chat-tokenize', template, messages, attribution, addGenerationPrompt,
+  }), true)
 }
 
 export async function decodeTokenIds(
@@ -46,7 +78,7 @@ export async function decodeTokenIds(
 ): Promise<Tokenization> {
   const ids = parseTokenIds(input)
   await ensureLoaded(snapshot, tokenizerFile, configFile, signal)
-  return validateTokenization(await request({ id: ++nextId, type: 'decode-token-ids', ids, originalInput: input }))
+  return validateTokenization(await request({ id: ++nextId, type: 'decode-token-ids', ids, originalInput: input }), false)
 }
 
 export async function inspectTokenizer(
@@ -153,11 +185,12 @@ function getWorker(): Worker {
   return worker
 }
 
-function validateTokenization(value: unknown): Tokenization {
+function validateTokenization(value: unknown, requiresOverhead: boolean): Tokenization {
   const isStringOrNull = (item: unknown) => item === null || typeof item === 'string'
   const isFlag = (item: unknown): item is TokenFlag => isUnknownRecord(item)
     && typeof item.isSpecial === 'boolean' && (item.specialName === null || typeof item.specialName === 'string')
   if (!isUnknownRecord(value)
+    || !('overhead' in value)
     || (value.direction !== 'encode' && value.direction !== 'decode')
     || typeof value.input !== 'string'
     || typeof value.decoded !== 'string'
@@ -173,6 +206,7 @@ function validateTokenization(value: unknown): Tokenization {
     throw new Error('Tokenizer Worker 返回的 ID、piece 与 flag 数量不一致。')
   }
   const ids = value.ids as number[]
+  const overhead = validateChatTokenOverhead(value.overhead, requiresOverhead, ids.length)
   for (const segment of value.segments) {
     if (!isUnknownRecord(segment)
       || !isSafeNonNegativeInteger(segment.start)
@@ -187,7 +221,30 @@ function validateTokenization(value: unknown): Tokenization {
       throw new Error('Tokenizer Worker 返回的片段结构无效。')
     }
   }
-  return value as Tokenization
+  return { ...(value as Tokenization), overhead }
+}
+
+function validateChatTokenOverhead(value: unknown, required: boolean, idCount: number): ChatTokenOverhead | null {
+  if (value !== null) {
+    const keys = isUnknownRecord(value) ? Object.keys(value).toSorted() : []
+    if (!isUnknownRecord(value)
+      || keys.length !== 5
+      || !['contentCount', 'contentProbe', 'isApproximate', 'templateCount', 'totalCount'].every(key => keys.includes(key))
+      || value.isApproximate !== true
+      || !isSafeNonNegativeInteger(value.totalCount)
+      || !isSafeNonNegativeInteger(value.contentCount)
+      || typeof value.templateCount !== 'number' || !Number.isSafeInteger(value.templateCount)
+      || typeof value.contentProbe !== 'string'
+      || value.templateCount !== value.totalCount - value.contentCount) {
+      throw new Error('Tokenizer Worker 返回的 Chat overhead 结构无效。')
+    }
+    const overhead = value as ChatTokenOverhead
+    if (!required) throw new Error('Tokenizer Worker 返回的结果不应包含 Chat overhead。')
+    if (overhead.totalCount !== idCount) throw new Error('Tokenizer Worker 返回的 Chat overhead 与 Token ID 数量不一致。')
+    return overhead
+  }
+  else if (required) throw new Error('Tokenizer Worker 返回的 Chat 结果缺少 overhead。')
+  return null
 }
 
 function isSafeNonNegativeInteger(value: unknown): value is number {

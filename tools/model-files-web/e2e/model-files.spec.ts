@@ -73,6 +73,8 @@ test('Tokenizer Worker tokenizes and decodes back to the input', async ({ page }
   await expect(page.getByText('Token 数').locator('..').getByText('3')).toBeVisible()
   await expect(page.getByText('映射').locator('..').getByText('Exact')).toBeVisible()
   await expect(page.getByText('Bytes / Token').locator('..')).toContainText('4')
+  await expect(page.getByText('正文 Token')).toHaveCount(0)
+  await expect(page.getByText('模板开销（近似）')).toHaveCount(0)
   await expect(page.getByRole('table', { name: 'Tokenizer Tokens' }).getByRole('columnheader', { name: 'Decoded' })).toBeVisible()
   await page.getByRole('button', { name: 'Token ID 3，index 0', exact: true }).click()
   await page.getByRole('button', { name: '复制 ID' }).click()
@@ -89,11 +91,20 @@ test('Tokenizer Worker tokenizes and decodes back to the input', async ({ page }
 
   await page.getByRole('tab', { name: 'Chat 工作台' }).click()
   await page.getByRole('button', { name: '渲染并分词' }).click()
-  await expect(page.getByLabel('Chat 权威输入')).toContainText('mode=chat')
+  const expectedAuthoritative = 'system=You are concise.;user=Hello;thinking=false;mode=chat;assistant='
+  await expect(page.getByLabel('Chat 权威输入')).toHaveText(expectedAuthoritative)
   await expect(page.getByRole('columnheader', { name: 'Special' })).toBeVisible()
+  await expect(page.getByText('Token 数').locator('..').getByText('21')).toBeVisible()
+  await expect(page.getByText('正文 Token').locator('..').getByText('5')).toBeVisible()
+  await expect(page.getByText('模板开销（近似）').locator('..').getByText('16')).toBeVisible()
   const authoritative = await page.getByLabel('Chat 权威输入').textContent()
   await expect(page.locator('.decoded-text').filter({ hasText: '权威输入：' })).toHaveText(`权威输入：${authoritative}`)
   expect(requests.filter(request => request.path.startsWith('tokenizer'))).toHaveLength(2)
+
+  await page.getByRole('textbox', { name: 'Chat Messages' }).fill('[{"role":"user","content":"{{ 7 * 7 }}"}]')
+  await page.getByRole('button', { name: '渲染并分词' }).click()
+  await expect(page.getByLabel('Chat 权威输入')).toContainText('{{ 7 * 7 }}')
+  await expect(page.getByLabel('Chat 权威输入')).not.toContainText('49')
   expect(errors).toEqual([])
 })
 

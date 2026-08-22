@@ -1,4 +1,5 @@
 import type { RepositoryFile } from './huggingface.ts'
+import type { ChatTokenOverhead } from './tokenAttribution.ts'
 
 export type TokenSegment = {
   start: number
@@ -18,6 +19,7 @@ export type Tokenization = {
   segments: TokenSegment[]
   mapping: 'Exact' | 'Decoded only'
   flags: TokenFlag[]
+  overhead: ChatTokenOverhead | null
 }
 
 export type TokenizerField = { name: string; detail: string }
@@ -87,11 +89,12 @@ export function buildTokenization(
   decode: (ids: number[]) => string,
   flags: TokenFlag[],
   direction: 'encode' | 'decode' = 'encode',
+  overhead: ChatTokenOverhead | null = null,
 ): Tokenization {
   if (ids.length !== pieces.length) throw new Error('Tokenizer 返回的 ID 与 piece 数量不一致。')
   if (ids.length !== flags.length) throw new Error('Tokenizer 返回的 ID 与 flags 数量不一致。')
   // ponytail: Large runs stay one grapheme-safe authoritative group; chunk them only if per-token highlighting becomes necessary.
-  if (ids.length > 2_000) return authoritativeTokenization(input, ids, pieces, decoded, flags, direction)
+  if (ids.length > 2_000) return authoritativeTokenization(input, ids, pieces, decoded, flags, direction, overhead)
   const provisional: TokenSegment[] = []
   for (let start = 0; start < ids.length;) {
     let end = start + 1
@@ -119,6 +122,7 @@ export function buildTokenization(
     direction,
     input,
     flags,
+    overhead,
   }
 }
 
@@ -129,6 +133,7 @@ function authoritativeTokenization(
   decoded: string,
   flags: TokenFlag[],
   direction: 'encode' | 'decode',
+  overhead: ChatTokenOverhead | null = null,
 ): Tokenization {
   return {
     direction,
@@ -139,6 +144,7 @@ function authoritativeTokenization(
     segments: ids.length === 0 ? [] : [{ start: 0, end: ids.length, ids: [...ids], text: decoded }],
     mapping: direction === 'encode' && decoded === input ? 'Exact' : 'Decoded only',
     flags,
+    overhead,
   }
 }
 

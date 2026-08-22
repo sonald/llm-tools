@@ -4,6 +4,7 @@ import {
   chatContentProbe,
   chatTokenOverhead,
   chatTokenRoles,
+  parseChatMessages,
 } from './tokenAttribution.ts'
 import type { TokenSegment } from './tokenizer.ts'
 
@@ -118,4 +119,35 @@ test('rejects invalid overhead counts', () => {
   assert.throws(() => chatTokenOverhead(-1, 0, ''), /非负安全整数/)
   assert.throws(() => chatTokenOverhead(1.5, 1, ''), /非负安全整数/)
   assert.throws(() => chatTokenOverhead(Number.MAX_SAFE_INTEGER + 1, 0, ''), /非负安全整数/)
+})
+
+test('parses Chat message boundaries once and classifies content', () => {
+  const messages = [
+    { role: 'system', content: 'shell' },
+    { role: 'user', content: { question: 'why?' } },
+    { role: 'assistant', content: '' },
+  ]
+  const parsed = parseChatMessages(messages)
+  assert.equal(parsed.messages, messages)
+  assert.deepEqual(parsed.attribution, [
+    { role: 'system', content: 'shell', contentKind: 'text' },
+    { role: 'user', content: '{"question":"why?"}', contentKind: 'json' },
+    { role: 'assistant', content: '', contentKind: 'text' },
+  ])
+})
+
+test('rejects invalid Chat message roles and content values', () => {
+  assert.throws(() => parseChatMessages({}), /Messages 必须是 JSON 数组。/)
+  assert.throws(() => parseChatMessages([{ role: 'user' }]), /第 1 项必须是非数组对象，且 role 是字符串、content 存在。/)
+  assert.throws(() => parseChatMessages([{ role: 1, content: 'ok' }]), /第 1 项必须是非数组对象，且 role 是字符串、content 存在。/)
+  assert.throws(() => parseChatMessages([[1]]), /第 1 项必须是非数组对象，且 role 是字符串、content 存在。/)
+  assert.throws(() => parseChatMessages([{ role: 'user', content: undefined }]), /第 1 项 content 不可序列化为 JSON。/)
+  assert.throws(() => parseChatMessages([{ role: 'user', content: () => 'x' }]), /第 1 项 content 不可序列化为 JSON。/)
+})
+
+test('rejects circular or otherwise unserializable Chat content', () => {
+  const cyclic: Record<string, unknown> = { role: 'user' }
+  cyclic.content = cyclic
+  assert.throws(() => parseChatMessages([cyclic]), /第 1 项 content 不可序列化为 JSON。/)
+  assert.throws(() => parseChatMessages([{ role: 'user', content: 1n }]), /第 1 项 content 不可序列化为 JSON。/)
 })

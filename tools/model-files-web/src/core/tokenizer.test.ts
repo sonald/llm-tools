@@ -8,6 +8,7 @@ import {
   tokenFlag,
   tokenizerBundleBytes,
 } from './tokenizer.ts'
+import { chatTokenOverhead } from './tokenAttribution.ts'
 import type { RepositoryFile } from './huggingface.ts'
 
 test('groups partial byte decoding without losing token IDs', () => {
@@ -25,6 +26,7 @@ test('groups partial byte decoding without losing token IDs', () => {
   assert.equal(result.mapping, 'Exact')
   assert.equal(result.direction, 'encode')
   assert.equal(result.input, '😀!')
+  assert.equal(result.overhead, null)
 })
 
 test('keeps combining marks and ZWJ emoji inside grapheme-safe groups', () => {
@@ -139,13 +141,15 @@ test('cold-decodes only missing pieces for special flags', () => {
 test('keeps large tokenizations bounded without per-token decode', () => {
   const ids = Array.from({ length: 2_001 }, (_, index) => index)
   const flags = ids.map(() => ({ isSpecial: false, specialName: null }))
+  const overhead = chatTokenOverhead(ids.length, 0, '')
   const result = buildTokenization('authoritative', ids, ids.map(String), 'authoritative', () => {
     throw new Error('large tokenizations must not decode each token')
-  }, flags)
+  }, flags, 'encode', overhead)
 
   assert.deepEqual(result.segments, [{ start: 0, end: ids.length, ids, text: 'authoritative' }])
   assert.equal(result.mapping, 'Exact')
   assert.deepEqual(result.flags, flags)
+  assert.equal(result.overhead, overhead)
 })
 
 test('rejects token piece arrays that lose ID positions', () => {

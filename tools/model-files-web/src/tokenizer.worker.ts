@@ -9,10 +9,19 @@ import {
   tokenFlag,
   type SpecialTokenIndex,
 } from './core/tokenizer.ts'
+import { chatContentProbe, chatTokenOverhead, type ChatAttributionMessage } from './core/tokenAttribution.ts'
 
 type Request =
   | { id: number; type: 'load'; tokenizerData: ArrayBuffer; configData: ArrayBuffer | null }
   | { id: number; type: 'tokenize'; text: string }
+  | {
+    id: number
+    type: 'chat-tokenize'
+    template: string
+    messages: unknown[]
+    attribution: ChatAttributionMessage[]
+    addGenerationPrompt: boolean
+  }
   | { id: number; type: 'decode-token-ids'; ids: number[]; originalInput: string }
   | { id: number; type: 'render-template'; source: string; context: Record<string, unknown> }
 
@@ -58,6 +67,32 @@ self.onmessage = async (event: MessageEvent<Request>) => {
     if (tokenizer === null || specialIndex === null) throw new Error(tokenizerError)
     const activeTokenizer = tokenizer
     const activeSpecialIndex = specialIndex
+    if (request.type === 'chat-tokenize') {
+      const context = {
+        messages: request.messages,
+        tools: [],
+        enable_thinking: false,
+        mode: 'chat',
+        add_generation_prompt: request.addGenerationPrompt,
+      }
+      const rendered = new Template(request.template).render(context)
+      const probe = chatContentProbe(request.attribution)
+      const encoding = encodeText(activeTokenizer, rendered, 'Chat 渲染输入')
+      const probeEncoding = encodeText(activeTokenizer, probe, 'Chat 正文 probe')
+      const decoded = encoding.ids.length === 0 ? '' : activeTokenizer.decode(encoding.ids, { skip_special_tokens: false })
+      const result = buildTokenization(
+        rendered,
+        encoding.ids,
+        encoding.tokens,
+        decoded,
+        ids => activeTokenizer.decode(ids, { skip_special_tokens: false }),
+        encoding.tokens.map((piece, index) => tokenFlag(encoding.ids[index], piece, activeSpecialIndex)),
+        'encode',
+        chatTokenOverhead(encoding.ids.length, probeEncoding.ids.length, probe),
+      )
+      self.postMessage({ id: request.id, ok: true, value: result })
+      return
+    }
     if (request.type === 'decode-token-ids') {
       const pieces = request.ids.map(id => activeTokenizer.id_to_token(id) ?? null)
       const decoded = request.ids.length === 0 ? '' : activeTokenizer.decode(request.ids, { skip_special_tokens: false })
@@ -73,7 +108,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       self.postMessage({ id: request.id, ok: true, value: result })
       return
     }
-    const encoding = activeTokenizer.encode(request.text, { add_special_tokens: false })
+    const encoding = encodeText(activeTokenizer, request.text, '输入')
     const decoded = encoding.ids.length === 0 ? '' : activeTokenizer.decode(encoding.ids, { skip_special_tokens: false })
     const result = buildTokenization(
       request.text,
@@ -92,6 +127,11 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       error: error instanceof Error ? error.message : String(error),
     })
   }
+}
+
+function encodeText(tokenizer: Tokenizer, text: string, label: string) {
+  if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new Error(`${label}超过 64 KiB 上限。`)
+  return tokenizer.encode(text, { add_special_tokens: false })
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
