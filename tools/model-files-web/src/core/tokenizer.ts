@@ -37,12 +37,14 @@ export type TokenizerVocabularyAnalysis = {
   buckets: Array<{ label: string; count: number }>
   longestTokens: TokenizerVocabularyEntry[]
 }
+export type AddedTokenSummary = { id: number | null; content: string; special: boolean }
 export type TokenizerStructure = {
   version: string | null
   modelType: string | null
   vocabCount: number | null
   mergeCount: number | null
   addedTokenCount: number | null
+  addedTokens: AddedTokenSummary[]
   fields: TokenizerField[]
   vocabulary: TokenizerVocabularyAnalysis | null
   vocabularyError: string | null
@@ -76,6 +78,7 @@ export function inspectTokenizerStructure(value: unknown): TokenizerStructure {
     vocabCount,
     mergeCount: Array.isArray(model?.merges) ? model.merges.length : null,
     addedTokenCount: Array.isArray(value.added_tokens) ? value.added_tokens.length : null,
+    addedTokens: summarizeAddedTokens(value.added_tokens),
     fields: Object.keys(value).toSorted().map(name => ({ name, detail: describeValue(value[name]) })),
     vocabulary: entries.entries === null ? null : analyzeVocabulary(entries.entries),
     vocabularyError: entries.error,
@@ -179,6 +182,33 @@ export function parseTokenIds(input: string): number[] {
   })
 }
 
+export function buildTokenizerVocabularyIndex(value: unknown): {
+  entries: TokenizerVocabularyEntry[] | null
+  error: string | null
+} {
+  const parsed = vocabularyEntries(value)
+  if (parsed.entries === null) return { entries: null, error: parsed.error }
+  return {
+    entries: parsed.entries.toSorted((left, right) => left.id - right.id).map((entry): TokenizerVocabularyEntry => ({
+      tokenId: entry.id,
+      token: entry.token,
+      scalarLength: Array.from(entry.token).length,
+    })),
+    error: null,
+  }
+}
+
+export function filterTokenizerVocabulary(
+  entries: TokenizerVocabularyEntry[],
+  query: string,
+): TokenizerVocabularyEntry[] {
+  const term = query.trim()
+  if (term.length === 0) return []
+  const lowerTerm = term.toLocaleLowerCase()
+  return entries.filter(entry => entry.token.toLocaleLowerCase().includes(lowerTerm)
+    || String(entry.tokenId).includes(term)).slice(0, 1_000)
+}
+
 export type SpecialTokenIndex = {
   byId: Map<number, string>
   byPiece: Map<string, string>
@@ -245,6 +275,21 @@ function safeNonNegativeInteger(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
 }
 
+function summarizeAddedTokens(value: unknown): AddedTokenSummary[] {
+  if (!Array.isArray(value)) return []
+  const tokens: AddedTokenSummary[] = []
+  for (const raw of value) {
+    if (!isRecord(raw) || typeof raw.content !== 'string'
+      || !(raw.id === null || safeNonNegativeInteger(raw.id) !== null)) continue
+    tokens.push({
+      id: safeNonNegativeInteger(raw.id),
+      content: raw.content,
+      special: typeof raw.special === 'boolean' ? raw.special : false,
+    })
+  }
+  return tokens
+}
+
 function mergeAcrossGraphemeBoundaries(segments: TokenSegment[], decoded: string): TokenSegment[] {
   const boundaries = new Set(Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(decoded), item => (
     item.index + item.segment.length
@@ -284,9 +329,7 @@ function vocabularyEntries(value: unknown): {
       ids.add(Number(rawId))
       entries.push({ id: Number(rawId), token })
     }
-    return entries.length === 0
-      ? { entries: null, error: '词表为空，无法分析。' }
-      : { entries, error: null }
+    return { entries, error: null }
   }
   if (Array.isArray(value)) {
     const entries: Array<{ id: number; token: string }> = []
@@ -297,14 +340,13 @@ function vocabularyEntries(value: unknown): {
       }
       entries.push({ id, token: item[0] })
     }
-    return entries.length === 0
-      ? { entries: null, error: '词表为空，无法分析。' }
-      : { entries, error: null }
+    return { entries, error: null }
   }
   return { entries: null, error: '未识别 model.vocab，无法分析。' }
 }
 
-function analyzeVocabulary(entries: Array<{ id: number; token: string }>): TokenizerVocabularyAnalysis {
+function analyzeVocabulary(entries: Array<{ id: number; token: string }>): TokenizerVocabularyAnalysis | null {
+  if (entries.length === 0) return null
   const lengths = entries.map(entry => Array.from(entry.token).length)
   const sortedLengths = lengths.toSorted((left, right) => left - right)
   const counts = Array.from({ length: 9 }, () => 0)

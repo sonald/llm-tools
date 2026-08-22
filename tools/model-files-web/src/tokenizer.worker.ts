@@ -5,6 +5,8 @@ import { Template } from '@huggingface/jinja'
 import {
   buildSpecialTokenIndex,
   buildTokenization,
+  buildTokenizerVocabularyIndex,
+  filterTokenizerVocabulary,
   inspectTokenizerStructure,
   tokenFlag,
   type SpecialTokenIndex,
@@ -29,10 +31,14 @@ type Request =
   }
   | { id: number; type: 'decode-token-ids'; ids: number[]; originalInput: string }
   | { id: number; type: 'render-template'; source: string; context: Record<string, unknown> }
+  | { id: number; type: 'search-vocabulary'; query: string }
 
 let tokenizer: Tokenizer | null = null
 let specialIndex: SpecialTokenIndex | null = null
 let tokenizerError = 'Tokenizer 尚未加载。'
+let vocabularySource: unknown = null
+let vocabularyAvailable = false
+let vocabularyIndex: ReturnType<typeof buildTokenizerVocabularyIndex> | null = null
 
 self.onmessage = async (event: MessageEvent<Request>) => {
   const request = event.data
@@ -42,12 +48,19 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       return
     }
     if (request.type === 'load') {
+      tokenizer = null
+      specialIndex = null
+      tokenizerError = 'Tokenizer 尚未加载。'
+      vocabularySource = null
+      vocabularyAvailable = false
+      vocabularyIndex = null
       const decoder = new TextDecoder('utf-8', { fatal: true })
       const parsedTokenizer: unknown = JSON.parse(decoder.decode(request.tokenizerData))
       if (!isRecord(parsedTokenizer)) throw new Error('tokenizer.json 根节点不是对象。')
       const structure = inspectTokenizerStructure(parsedTokenizer)
-      tokenizer = null
-      specialIndex = null
+      const model = isRecord(parsedTokenizer.model) ? parsedTokenizer.model : null
+      vocabularySource = model?.vocab ?? null
+      vocabularyAvailable = true
       if (request.configData === null) {
         tokenizerError = '缺少 tokenizer_config.json，当前运行时无法严格构造 Tokenizer。'
       } else {
@@ -67,6 +80,23 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         }
       }
       self.postMessage({ id: request.id, ok: true, value: structure })
+      return
+    }
+    if (request.type === 'search-vocabulary') {
+      if (request.query.trim().length === 0) {
+        self.postMessage({ id: request.id, ok: true, value: [] })
+        return
+      }
+      if (!vocabularyAvailable) throw new Error(tokenizerError)
+      vocabularyIndex ??= buildTokenizerVocabularyIndex(vocabularySource)
+      if (vocabularyIndex.entries === null) {
+        throw new Error(`当前 vocab 结构无法搜索：${vocabularyIndex.error}`)
+      }
+      self.postMessage({
+        id: request.id,
+        ok: true,
+        value: filterTokenizerVocabulary(vocabularyIndex.entries, request.query),
+      })
       return
     }
     if (tokenizer === null || specialIndex === null) throw new Error(tokenizerError)

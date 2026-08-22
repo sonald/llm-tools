@@ -158,6 +158,49 @@ test('attributes Exact Chat tokens to custom message roles', async ({ page }) =>
   expect(errors).toEqual([])
 })
 
+test('searches vocabulary latest-only without rereading tokenizer resources', async ({ page }) => {
+  const errors = collectErrors(page)
+  const requests = await installFixtureRoutes(page)
+  await openFixture(page)
+  await page.getByRole('button', { name: /tokenizer\.json/ }).click()
+  const search = page.getByRole('textbox', { name: '词表搜索' })
+
+  await expect(search).toHaveAttribute('placeholder', '搜索 token 或十进制 ID')
+  await expect(page.getByText('输入 token 或十进制 ID 开始搜索')).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Special Added Tokens' }).locator('tbody tr')).toHaveCount(3)
+
+  await search.fill('HEL')
+  await expect(page.getByText('匹配 1 条')).toBeVisible()
+  const caseRows = page.getByRole('table', { name: '词表搜索结果' }).locator('tbody tr')
+  await expect(caseRows).toHaveCount(1)
+  await expect(caseRows.nth(0)).toContainText('hello')
+
+  await search.fill('4')
+  await expect(page.getByText('匹配 1 条')).toBeVisible()
+  const idRows = page.getByRole('table', { name: '词表搜索结果' }).locator('tbody tr')
+  await expect(idRows).toHaveCount(1)
+  await expect(idRows.nth(0)).toContainText('world')
+
+  await search.fill('hello')
+  await search.fill('world')
+  await expect(page.getByText('匹配 1 条')).toBeVisible()
+  const latestRows = page.getByRole('table', { name: '词表搜索结果' }).locator('tbody tr')
+  await expect(latestRows).toHaveCount(1)
+  await expect(latestRows.nth(0)).toContainText('world')
+
+  await search.fill('')
+  await expect(page.getByText('输入 token 或十进制 ID 开始搜索')).toBeVisible()
+  await expect(page.getByRole('table', { name: '词表搜索结果' })).toHaveCount(0)
+
+  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await page.getByRole('tab', { name: '结构与词表' }).click()
+  await expect(page.getByRole('textbox', { name: '词表搜索' })).toHaveValue('')
+  await expect(page.getByText('输入 token 或十进制 ID 开始搜索')).toBeVisible()
+  expect(requests.filter(request => request.path === 'tokenizer.json')).toHaveLength(1)
+  expect(requests.filter(request => request.path === 'tokenizer_config.json')).toHaveLength(1)
+  expect(errors).toEqual([])
+})
+
 test('selects between independent and tokenizer config chat templates', async ({ page }) => {
   const errors = collectErrors(page)
   const requests = await installFixtureRoutes(page)
@@ -253,6 +296,34 @@ test('keeps 10k-token Raw results progressive and latest-only', async ({ page },
   await expect(page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr')).toHaveCount(1000)
   await page.getByRole('button', { name: '再显示 1,000 个 Token' }).click()
   await expect(page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr')).toHaveCount(2000)
+})
+
+test('caps large vocabulary search results at one thousand without config', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', 'Performance gate is recorded once in Chromium.')
+  const errors = collectErrors(page)
+  const requests = await installFixtureRoutes(page, { largeVocabularyWithoutConfig: true })
+  await openFixture(page, 12)
+  await page.getByRole('button', { name: /tokenizer\.json/ }).click()
+  const search = page.getByRole('textbox', { name: '词表搜索' })
+
+  await expect(page.getByText('Tokenizer Config').locator('..')).toContainText('缺失 · Raw 不支持')
+  const started = Date.now()
+  await search.fill('needle')
+  await expect(page.getByText('匹配 1,000 条')).toBeVisible({ timeout: 10_000 })
+  expect(Date.now() - started).toBeLessThan(10_000)
+  const rows = page.getByRole('table', { name: '词表搜索结果' }).locator('tbody tr')
+  await expect(rows).toHaveCount(1000)
+
+  await search.fill('needle-1004')
+  await expect(page.getByText('匹配 1 条')).toBeVisible()
+  const uniqueRows = page.getByRole('table', { name: '词表搜索结果' }).locator('tbody tr')
+  await expect(uniqueRows).toHaveCount(1)
+  await expect(uniqueRows.nth(0)).toContainText('needle-1004')
+  await expect(uniqueRows.nth(0)).toContainText('1,010')
+
+  expect(requests.filter(request => request.path === 'tokenizer.json')).toHaveLength(1)
+  expect(requests.filter(request => request.path === 'tokenizer_config.json')).toHaveLength(0)
+  expect(errors).toEqual([])
 })
 
 test('decodes shared Token IDs with special flags and linked selection', async ({ page }) => {

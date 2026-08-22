@@ -3,8 +3,11 @@ import type { ChatAttributionMessage, ChatTokenOverhead, ChatTokenRole } from '.
 import {
   parseTokenIds,
   tokenizerBundleBytes,
+  type AddedTokenSummary,
   type TokenFlag,
   type Tokenization,
+  type TokenizerVocabularyAnalysis,
+  type TokenizerVocabularyEntry,
   type TokenizerStructure,
 } from './core/tokenizer.ts'
 import type { ChatTemplateCatalog, ChatTemplateEntry, ChatTemplateSource } from './core/chatTemplates.ts'
@@ -22,6 +25,7 @@ type Request =
   }
   | { id: number; type: 'decode-token-ids'; ids: number[]; originalInput: string }
   | { id: number; type: 'render-template'; source: string; context: Record<string, unknown> }
+  | { id: number; type: 'search-vocabulary'; query: string }
 
 let worker: Worker | null = null
 let nextId = 0
@@ -86,6 +90,24 @@ export async function inspectTokenizer(
   signal?: AbortSignal,
 ): Promise<TokenizerStructure> {
   return await ensureLoaded(snapshot, tokenizerFile, configFile, signal)
+}
+
+export async function searchTokenizerVocabulary(
+  snapshot: RepositorySnapshot,
+  tokenizerFile: RepositoryFile,
+  configFile: RepositoryFile | undefined,
+  query: string,
+  signal?: AbortSignal,
+): Promise<TokenizerVocabularyEntry[]> {
+  const term = query.trim()
+  if (term.length === 0) return []
+  if (new TextEncoder().encode(term).byteLength > 64 * 1024) throw new Error('词表搜索输入超过 64 KiB 上限。')
+  await ensureLoaded(snapshot, tokenizerFile, configFile, signal)
+  return validateTokenizerVocabularySearch(await request({
+    id: ++nextId,
+    type: 'search-vocabulary',
+    query: term,
+  }))
 }
 
 export async function renderTemplate(source: string, context: Record<string, unknown>): Promise<string> {
@@ -231,9 +253,98 @@ function validateTokenization(value: unknown, requiresOverhead: boolean): Tokeni
   return { ...(value as Tokenization), overhead, roles }
 }
 
-function validateTokenizerStructure(value: unknown): TokenizerStructure {
-  if (!isUnknownRecord(value)) throw new Error('Tokenizer Worker 返回的结构无效。')
+export function validateTokenizerStructure(value: unknown): TokenizerStructure {
+  if (!hasExactKeys(value, [
+    'addedTokenCount', 'addedTokens', 'chatTemplates', 'fields', 'mergeCount',
+    'modelType', 'vocabCount', 'version', 'vocabulary', 'vocabularyError',
+  ])) throw new Error('Tokenizer Worker 返回的结构无效。')
+  const structure = value as TokenizerStructure
+  if (!(structure.version === null || typeof structure.version === 'string')
+    || !(structure.modelType === null || typeof structure.modelType === 'string')
+    || !isOptionalNonNegativeInteger(structure.vocabCount)
+    || !isOptionalNonNegativeInteger(structure.mergeCount)
+    || !isOptionalNonNegativeInteger(structure.addedTokenCount)
+    || !Array.isArray(structure.fields)
+    || !structure.fields.every(item => hasExactKeys(item, ['detail', 'name'])
+      && typeof item.name === 'string' && typeof item.detail === 'string')) {
+    throw new Error('Tokenizer Worker 返回的结构字段无效。')
+  }
+  if (!Array.isArray(structure.addedTokens)
+    || (structure.addedTokenCount === null ? structure.addedTokens.length !== 0 : structure.addedTokens.length > structure.addedTokenCount)
+    || !structure.addedTokens.every(isAddedTokenSummary)) {
+    throw new Error('Tokenizer Worker 返回的 added tokens 摘要无效。')
+  }
+  if (!(structure.vocabulary === null || isTokenizerVocabularyAnalysis(structure.vocabulary))
+    || !(structure.vocabularyError === null || typeof structure.vocabularyError === 'string')) {
+    throw new Error('Tokenizer Worker 返回的词表摘要无效。')
+  }
   return { ...(value as TokenizerStructure), chatTemplates: validateChatTemplateCatalog(value.chatTemplates) }
+}
+
+function isAddedTokenSummary(value: unknown): value is AddedTokenSummary {
+  return hasExactKeys(value, ['content', 'id', 'special'])
+    && (value.id === null || isSafeNonNegativeInteger(value.id))
+    && typeof value.content === 'string'
+    && typeof value.special === 'boolean'
+}
+
+function isTokenizerVocabularyEntry(value: unknown): value is TokenizerVocabularyEntry {
+  return hasExactKeys(value, ['scalarLength', 'token', 'tokenId'])
+    && isSafeNonNegativeInteger(value.tokenId)
+    && typeof value.token === 'string'
+    && value.scalarLength === Array.from(value.token).length
+}
+
+function isTokenizerVocabularyAnalysis(value: unknown): value is TokenizerVocabularyAnalysis {
+  if (!hasExactKeys(value, [
+    'averageScalarLength', 'buckets', 'longestTokens', 'maximumScalarLength',
+    'p50ScalarLength', 'p90ScalarLength', 'p95ScalarLength', 'p99ScalarLength', 'tokenCount',
+  ])
+    || !isSafeNonNegativeInteger(value.tokenCount)
+    || typeof value.averageScalarLength !== 'number' || !Number.isFinite(value.averageScalarLength) || value.averageScalarLength < 0
+    || !isSafeNonNegativeInteger(value.p50ScalarLength)
+    || !isSafeNonNegativeInteger(value.p90ScalarLength)
+    || !isSafeNonNegativeInteger(value.p95ScalarLength)
+    || !isSafeNonNegativeInteger(value.p99ScalarLength)
+    || !isSafeNonNegativeInteger(value.maximumScalarLength)
+    || !Array.isArray(value.buckets)
+    || !value.buckets.every(item => hasExactKeys(item, ['count', 'label'])
+      && typeof item.label === 'string' && isSafeNonNegativeInteger(item.count))
+    || !Array.isArray(value.longestTokens) || value.longestTokens.length > 50
+    || !value.longestTokens.every(isTokenizerVocabularyEntry)) {
+    throw new Error('Tokenizer Worker 返回的最长 Token 或词表统计无效。')
+  }
+  return true
+}
+
+export function validateTokenizerVocabularySearch(value: unknown): TokenizerVocabularyEntry[] {
+  if (!Array.isArray(value) || value.length > 1_000 || !value.every(isSearchReplyItem)) {
+    throw new Error('Tokenizer Worker 返回的搜索结果结构无效。')
+  }
+  const result = value.map((item): TokenizerVocabularyEntry => ({
+    tokenId: item.tokenId,
+    token: item.token,
+    scalarLength: item.scalarLength,
+  }))
+  for (let index = 1; index < result.length; index += 1) {
+    if (result[index].tokenId <= result[index - 1].tokenId) throw new Error('Tokenizer Worker 返回的搜索结果排序无效。')
+  }
+  return result
+}
+
+function isSearchReplyItem(value: unknown): value is TokenizerVocabularyEntry {
+  return isTokenizerVocabularyEntry(value)
+}
+
+function hasExactKeys(
+  value: unknown,
+  keys: readonly string[],
+): value is Record<string, unknown> {
+  return isUnknownRecord(value) && Object.keys(value).toSorted().join(',') === keys.toSorted().join(',')
+}
+
+function isOptionalNonNegativeInteger(value: unknown): boolean {
+  return value === null || isSafeNonNegativeInteger(value)
 }
 
 function validateChatTemplateCatalog(value: unknown): ChatTemplateCatalog {

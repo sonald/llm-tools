@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  buildTokenizerVocabularyIndex,
   buildTokenization,
   buildSpecialTokenIndex,
+  filterTokenizerVocabulary,
   inspectTokenizerStructure,
   parseTokenIds,
   tokenFlag,
   tokenizerBundleBytes,
 } from './tokenizer.ts'
+import { validateTokenizerStructure, validateTokenizerVocabularySearch } from '../tokenizerClient.ts'
 import { parseChatTemplates } from './chatTemplates.ts'
 import { chatTokenOverhead } from './tokenAttribution.ts'
 import type { RepositoryFile } from './huggingface.ts'
@@ -171,12 +174,24 @@ test('accepts only bounded same-directory tokenizer bundles', () => {
 test('analyzes BPE and WordPiece vocabularies by Unicode scalar length', () => {
   const structure = inspectTokenizerStructure({
     version: '1.0',
-    added_tokens: [{ id: 99, content: '<added>' }],
+    added_tokens: [
+      { id: 99, content: '<added>', special: true },
+      { id: null, content: '<null-id>', special: false },
+      { content: '<missing-id>', special: false },
+      { id: -1, content: '<bad>' },
+      { id: 1.2, content: '<unsafe>' },
+      { id: '2', content: '<wrong-type>' },
+    ],
     model: { type: 'BPE', vocab: { a: 1, '👩‍💻': 2, longest: 3 }, merges: ['a b'] },
   })
   assert.equal(structure.vocabCount, 3)
   assert.equal(structure.mergeCount, 1)
-  assert.equal(structure.addedTokenCount, 1)
+  assert.equal(structure.addedTokenCount, 6)
+  assert.deepEqual(structure.addedTokens, [
+    { id: 99, content: '<added>', special: true },
+    { id: null, content: '<null-id>', special: false },
+  ])
+  assert.ok(structure.vocabulary!.longestTokens.length <= 50)
   assert.equal(structure.vocabulary?.tokenCount, 3)
   assert.deepEqual(structure.vocabulary?.longestTokens.map(item => [item.tokenId, item.scalarLength]), [[3, 7], [2, 3], [1, 1]])
   assert.equal(structure.vocabulary?.p50ScalarLength, 3)
@@ -188,6 +203,93 @@ test('analyzes Unigram vocabularies and rejects ambiguous IDs or unknown structu
   assert.match(inspectTokenizerStructure({ model: { vocab: { a: 1, b: 1 } } }).vocabularyError ?? '', /重复/)
   assert.match(inspectTokenizerStructure({ model: { type: 'Unknown' } }).vocabularyError ?? '', /未识别/)
   assert.deepEqual(unigram.chatTemplates, parseChatTemplates(undefined))
+})
+
+test('keeps empty vocabulary summaries bounded and free of full entries', () => {
+  const structure = inspectTokenizerStructure({ version: '1.0', model: { type: 'BPE', vocab: {} } })
+
+  assert.deepEqual(new Set(Object.keys(structure)), new Set([
+    'addedTokenCount', 'addedTokens', 'chatTemplates', 'fields', 'mergeCount', 'modelType',
+    'vocabCount', 'version', 'vocabulary', 'vocabularyError',
+  ]))
+  assert.equal(structure.vocabCount, 0)
+  assert.equal(structure.vocabulary, null)
+  assert.equal(structure.vocabularyError, null)
+})
+
+test('builds searchable vocabulary indexes for object, array, and empty vocabularies', () => {
+  const object = buildTokenizerVocabularyIndex({ zeta: 2, Alpha: 10, middle: 4 })
+  assert.deepEqual(object.entries?.map(entry => [entry.tokenId, entry.token, entry.scalarLength]), [
+    [2, 'zeta', 4],
+    [4, 'middle', 6],
+    [10, 'Alpha', 5],
+  ])
+
+  const unigram = buildTokenizerVocabularyIndex([['中文', -1], ['a', 0.5]])
+  assert.deepEqual(unigram.entries?.map(entry => [entry.tokenId, entry.token, entry.scalarLength]), [
+    [0, '中文', 2],
+    [1, 'a', 1],
+  ])
+
+  assert.deepEqual(buildTokenizerVocabularyIndex({}).entries, [])
+  assert.deepEqual(buildTokenizerVocabularyIndex([]).entries, [])
+})
+
+test('rejects vocabulary indexes with invalid IDs or unknown structures', () => {
+  const invalidCases: unknown[] = [
+    { one: 1, two: 1 },
+    { negative: -1 },
+    { unsafe: 9007199254740992 },
+    undefined,
+    ['token'],
+  ]
+  for (const value of invalidCases) {
+    assert.equal(buildTokenizerVocabularyIndex(value).entries, null)
+  }
+})
+
+test('filters vocabulary by case-insensitive piece or decimal ID before capping', () => {
+  const built = buildTokenizerVocabularyIndex(Object.fromEntries([
+    ['skip-a', 0], ['skip-b', 1], ['skip-c', 2], ['skip-d', 3],
+    ...Array.from({ length: 1_005 }, (_, index) => [`match-${index}`, index + 4]),
+  ]))
+  const entries = built.entries ?? []
+  assert.equal(entries.length, 1_009)
+  const matches = filterTokenizerVocabulary(entries, ' MATCH ')
+  assert.equal(matches.length, 1_000)
+  assert.equal(matches[0].tokenId, 4)
+  assert.equal(matches.at(-1)?.tokenId, 1_003)
+
+  const small = buildTokenizerVocabularyIndex({ zeta: 2, Alpha: 10, middle: 4 }).entries ?? []
+  assert.deepEqual(filterTokenizerVocabulary(small, 'alp').map(entry => entry.tokenId), [10])
+  assert.deepEqual(filterTokenizerVocabulary(small, '10').map(entry => entry.tokenId), [10])
+  assert.deepEqual(filterTokenizerVocabulary(small, ' \n\t '), [])
+})
+
+test('validates worker structure and vocabulary replies at the client boundary', () => {
+  const structure = inspectTokenizerStructure({ model: { type: 'BPE', vocab: { a: 0, b: 1 } } })
+  assert.deepEqual(validateTokenizerStructure(structure).vocabulary?.longestTokens.map(item => item.tokenId), [0, 1])
+  assert.throws(() => validateTokenizerStructure({ ...structure, entries: [{ tokenId: 99 }] }), /结构无效/s)
+  assert.throws(() => validateTokenizerStructure({
+    ...structure,
+    vocabulary: {
+      ...structure.vocabulary!,
+      longestTokens: Array.from({ length: 51 }, (_, id) => ({ tokenId: id, token: String(id), scalarLength: 1 })),
+    },
+  }), /最长 Token/)
+
+  const search = [{ tokenId: 1, token: 'a', scalarLength: 1 }]
+  assert.deepEqual(validateTokenizerVocabularySearch(search), search)
+  const invalidReplies: unknown[] = [
+    null,
+    Array.from({ length: 1_001 }, (_, id) => ({ tokenId: id, token: String(id), scalarLength: 1 })),
+    [{ tokenId: 1, token: 'a', scalarLength: 1, extra: true }],
+    [{ tokenId: -1, token: 'a', scalarLength: 1 }],
+    [{ tokenId: 2, token: 'a', scalarLength: 1 }, { tokenId: 2, token: 'b', scalarLength: 1 }],
+    [{ tokenId: 1, token: 2, scalarLength: 1 }],
+    [{ tokenId: 1, token: '中文', scalarLength: 1 }],
+  ]
+  for (const reply of invalidReplies) assert.throws(() => validateTokenizerVocabularySearch(reply), /搜索结果/)
 })
 
 function file(path: string, size: number): RepositoryFile {

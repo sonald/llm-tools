@@ -28,7 +28,7 @@ import {
   type ChatTemplateEntry,
 } from './core/chatTemplates.ts'
 import { buildChatContext, type ChatTokenRole } from './core/tokenAttribution.ts'
-import type { Tokenization, TokenizerStructure } from './core/tokenizer.ts'
+import type { Tokenization, TokenizerStructure, TokenizerVocabularyEntry } from './core/tokenizer.ts'
 import { PdfInspection, SourceInspection, TextInspection } from './Readers.tsx'
 import { TemplateWorkbench } from './TemplateWorkbench.tsx'
 
@@ -953,7 +953,14 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
         <button type="button" role="tab" aria-selected={view === 'chat'} onClick={() => changeView('chat')}>Chat 工作台</button>
       </div>
       {view === 'structure' ? (
-        <TokenizerStructureInspection structure={structure} error={structureError} configPresent={config !== undefined} />
+        <TokenizerStructureInspection
+          structure={structure}
+          error={structureError}
+          configPresent={config !== undefined}
+          snapshot={snapshot}
+          file={file}
+          config={config}
+        />
       ) : null}
       {view === 'decode' ? (
         <div className="tokenizer-layout">
@@ -1057,16 +1064,68 @@ function TokenizerStructureInspection({
   structure,
   error,
   configPresent,
+  snapshot,
+  file,
+  config,
 }: {
   structure: TokenizerStructure | null
   error: string | null
   configPresent: boolean
+  snapshot: RepositorySnapshot
+  file: RepositoryFile
+  config: RepositoryFile | undefined
 }) {
   const [showsTop50, setShowsTop50] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<TokenizerVocabularyEntry[]>([])
+  const [searchStatus, setSearchStatus] = useState<'empty' | 'searching' | 'ready' | 'error'>('empty')
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const searchGeneration = useRef(0)
+  const searchController = useRef<AbortController | null>(null)
+
+  useEffect(() => () => {
+    searchGeneration.current += 1
+    searchController.current?.abort()
+  }, [])
+
+  async function searchVocabulary(query: string) {
+    setSearchQuery(query)
+    const term = query.trim()
+    searchGeneration.current += 1
+    searchController.current?.abort()
+    if (term === '') {
+      setSearchResults([])
+      setSearchError(null)
+      setSearchStatus('empty')
+      return
+    }
+
+    const controller = new AbortController()
+    searchController.current = controller
+    const generation = ++searchGeneration.current
+    setSearchStatus('searching')
+    setSearchError(null)
+    try {
+      const { searchTokenizerVocabulary } = await import('./tokenizerClient.ts')
+      const results = await searchTokenizerVocabulary(snapshot, file, config, term, controller.signal)
+      if (controller.signal.aborted || searchGeneration.current !== generation) return
+      setSearchResults(results.slice(0, 1000))
+      setSearchStatus('ready')
+    } catch (failure) {
+      if (controller.signal.aborted || searchGeneration.current !== generation) return
+      setSearchResults([])
+      setSearchError(errorMessage(failure))
+      setSearchStatus('error')
+    } finally {
+      if (searchController.current === controller) searchController.current = null
+    }
+  }
+
   if (error !== null) return <div className="inspection-canvas"><InlineError>{error}</InlineError></div>
   if (structure === null) return <div className="loading-state" role="status"><span className="spinner" /><h2>正在 Worker 中分析 Tokenizer…</h2></div>
   const vocabulary = structure.vocabulary
   const longest = vocabulary?.longestTokens.slice(0, showsTop50 ? 50 : 20) ?? []
+  const specialTokens = structure.addedTokens.filter(token => token.special)
   return (
     <div className="inspection-canvas tokenizer-structure">
       <ValidationStrip items={[
@@ -1074,6 +1133,16 @@ function TokenizerStructureInspection({
         ['Tokenizer Config', configPresent ? '同目录' : '缺失 · Raw 不支持'],
         ['Added Token', (structure.addedTokenCount ?? 0).toLocaleString()],
       ]} />
+      {specialTokens.length > 0 ? (
+        <section className="inspection-section">
+          <h2>Special Added Tokens</h2>
+          <DataTable
+            label="Special Added Tokens"
+            columns={['ID', 'Token']}
+            rows={specialTokens.map(token => [token.id === null ? '—' : token.id.toLocaleString(), token.content])}
+          />
+        </section>
+      ) : null}
       <MetricGrid items={[
         ['格式版本', structure.version ?? '未知'],
         ['Model Type', structure.modelType ?? '未知'],
@@ -1084,8 +1153,12 @@ function TokenizerStructureInspection({
         <h2>根字段</h2>
         <DataTable label="Tokenizer 根字段" columns={['Field', 'Detail']} rows={structure.fields.map(field => [field.name, field.detail])} />
       </section>
-      {vocabulary === null ? <InlineError>{structure.vocabularyError ?? '词表不可分析。'}</InlineError> : (
+      {vocabulary === null && !(structure.vocabCount === 0 && structure.vocabularyError === null)
+        ? <InlineError>{structure.vocabularyError ?? '词表不可分析。'}</InlineError>
+        : (
         <>
+          {vocabulary === null ? <p className="scope-note">model.vocab 为空，没有可分析的 Token。</p> : (
+            <>
           <MetricGrid items={[
             ['平均标量长度', vocabulary.averageScalarLength.toLocaleString('zh-CN', { maximumFractionDigits: 2 })],
             ['P50 / P90', `${vocabulary.p50ScalarLength} / ${vocabulary.p90ScalarLength}`],
@@ -1107,6 +1180,35 @@ function TokenizerStructureInspection({
               </button>
             ) : null}
           </section>
+            </>
+          )}
+          <div className="inspection-toolbar">
+            <label>
+              <span>词表搜索</span>
+              <input
+                value={searchQuery}
+                onChange={event => void searchVocabulary(event.target.value)}
+                aria-label="词表搜索"
+                placeholder="搜索 token 或十进制 ID"
+              />
+            </label>
+            <span aria-live="polite">
+              {searchStatus === 'empty' ? '输入 token 或十进制 ID 开始搜索'
+                : searchStatus === 'searching' ? '正在准备词表索引'
+                : searchStatus === 'ready' ? `匹配 ${searchResults.length.toLocaleString()} 条`
+                : '词表搜索失败'}
+            </span>
+          </div>
+          {searchStatus === 'error' && searchError !== null ? <InlineError>{searchError}</InlineError> : null}
+          {searchStatus === 'ready' ? (
+            <DataTable
+              label="词表搜索结果"
+              columns={['ID', 'Token', 'Unicode 标量']}
+              rows={searchResults.map(entry => [
+                entry.tokenId.toLocaleString(), visiblePiece(entry.token), Array.from(entry.token).length.toLocaleString(),
+              ])}
+            />
+          ) : null}
         </>
       )}
     </div>

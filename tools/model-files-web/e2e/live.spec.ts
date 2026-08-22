@@ -19,6 +19,23 @@ test('Qwen config, README, SafeTensors, Tokenizer Raw and Chat work from a fixed
 
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
   await expect(page.getByText('Model Type').locator('..')).toContainText('BPE', { timeout: 60_000 })
+  const search = page.getByRole('textbox', { name: '词表搜索' })
+  const vocabularyRequestsBefore = requests.length
+  const firstSearchStarted = Date.now()
+  await search.fill('1')
+  await expect(page.getByText('匹配 1,000 条')).toBeVisible({ timeout: 10_000 })
+  await expect(page.getByRole('table', { name: '词表搜索结果' }).locator('tbody tr')).toHaveCount(1000)
+  const firstVocabularyQueryMs = Date.now() - firstSearchStarted
+  expect(firstVocabularyQueryMs).toBeLessThan(10_000)
+
+  const cachedSearchStarted = Date.now()
+  await search.fill('0')
+  await expect(page.getByText('匹配 1,000 条')).toBeVisible({ timeout: 10_000 })
+  await expect(page.getByRole('table', { name: '词表搜索结果' }).locator('tbody tr')).toHaveCount(1000)
+  const cachedVocabularyQueryMs = Date.now() - cachedSearchStarted
+  expect(cachedVocabularyQueryMs).toBeLessThan(10_000)
+  expect(requests.length).toBe(vocabularyRequestsBefore)
+
   await page.getByRole('tab', { name: 'Raw 工作台' }).click()
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill('Hello，世界 👋')
   await page.getByRole('button', { name: '立即分词' }).click()
@@ -30,7 +47,14 @@ test('Qwen config, README, SafeTensors, Tokenizer Raw and Chat work from a fixed
   await expect(page.getByLabel('Chat 权威输入')).not.toContainText('渲染后，这里显示唯一权威编码输入。', { timeout: 60_000 })
   await expect(page.getByText('Token 数').locator('..')).toBeVisible()
   expect(errors).toEqual([])
-  await attachEvidence(testInfo, 'qwen-live.json', { revision: identity.sha, requests })
+  await attachEvidence(testInfo, 'qwen-live.json', {
+    revision: identity.sha,
+    requests,
+    vocabularyRequestsBefore,
+    firstVocabularyQueryMs,
+    cachedVocabularyQueryMs,
+    vocabularyRequestsAfter: requests.length,
+  })
   console.log(`LIVE Qwen revision=${identity.sha} ranges=${JSON.stringify(requests.filter(request => request.range !== null))}`)
 })
 

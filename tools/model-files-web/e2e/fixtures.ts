@@ -50,6 +50,7 @@ type FixtureOptions = {
   includeBoundaryFiles?: boolean
   omitIndependentChatTemplate?: boolean
   configChatTemplate?: unknown
+  largeVocabularyWithoutConfig?: boolean
 }
 
 const tokenizer = JSON.stringify({
@@ -166,10 +167,12 @@ export async function installFixtureRoutes(page: Page, options: FixtureOptions =
         options.includeBoundaryFiles ?? false,
         options.omitIndependentChatTemplate ?? false,
         options.configChatTemplate,
+        options.largeVocabularyWithoutConfig ?? false,
       ) })
       return
     }
-    await fulfillFile(route, requests, options.rangeBehavior ?? 'valid', options.configChatTemplate)
+    await fulfillFile(route, requests, options.rangeBehavior ?? 'valid', options.configChatTemplate,
+      options.largeVocabularyWithoutConfig ?? false)
   })
   return requests
 }
@@ -179,8 +182,9 @@ function manifest(
   includeBoundaryFiles: boolean,
   omitChatTemplate: boolean,
   configChatTemplate?: unknown,
+  largeVocabularyWithoutConfig = false,
 ) {
-  const bodies = fixtureBodies(configChatTemplate)
+  const bodies = fixtureBodies(configChatTemplate, largeVocabularyWithoutConfig)
   return {
     id: modelId,
     sha: modelId === fixtureModelId ? fixtureRevision : 'f'.repeat(40),
@@ -206,11 +210,12 @@ async function fulfillFile(
   requests: RequestRecord[],
   rangeBehavior: NonNullable<FixtureOptions['rangeBehavior']>,
   configChatTemplate?: unknown,
+  largeVocabularyWithoutConfig = false,
 ) {
   const url = new URL(route.request().url())
   const match = url.pathname.match(/^\/[^/]+\/[^/]+\/resolve\/[0-9a-f]{40}\/(.+)$/)
   const path = match === null ? '' : decodeURIComponent(match[1])
-  const body = fixtureBodies(configChatTemplate).get(path)
+  const body = fixtureBodies(configChatTemplate, largeVocabularyWithoutConfig).get(path)
   if (body === undefined) {
     await route.fulfill({ status: 404, body: 'missing fixture' })
     return
@@ -243,12 +248,22 @@ async function fulfillFile(
   })
 }
 
-function fixtureBodies(configChatTemplate?: unknown): Map<string, Uint8Array> {
-  if (configChatTemplate === undefined) return files
-  return new Map(files).set('tokenizer_config.json', bytes(JSON.stringify({
+function fixtureBodies(configChatTemplate?: unknown, largeVocabularyWithoutConfig = false): Map<string, Uint8Array> {
+  let bodies = configChatTemplate === undefined ? files : new Map(files).set('tokenizer_config.json', bytes(JSON.stringify({
     ...JSON.parse(tokenizerConfig),
     chat_template: configChatTemplate,
   })))
+  if (largeVocabularyWithoutConfig) {
+    const parsed = JSON.parse(tokenizer) as { model: { vocab: Record<string, number> } }
+    parsed.model.vocab = Object.fromEntries([
+      ...Object.entries(parsed.model.vocab),
+      ...Array.from({ length: 1_005 }, (_, index) => [`needle-${index}`, 6 + index]),
+    ])
+    bodies = new Map(bodies)
+    bodies.delete('tokenizer_config.json')
+    bodies.set('tokenizer.json', bytes(JSON.stringify(parsed)))
+  }
+  return bodies
 }
 
 function safeTensorsFixture(): Uint8Array {
