@@ -1,5 +1,6 @@
 import type { RepositoryFile } from './huggingface.ts'
 import type { ChatTokenOverhead, ChatTokenRole } from './tokenAttribution.ts'
+import type { ChatTemplateCatalog } from './chatTemplates.ts'
 
 export type TokenSegment = {
   start: number
@@ -45,7 +46,7 @@ export type TokenizerStructure = {
   fields: TokenizerField[]
   vocabulary: TokenizerVocabularyAnalysis | null
   vocabularyError: string | null
-  chatTemplate: string | null
+  chatTemplates: ChatTemplateCatalog
 }
 
 export function tokenizerBundleBytes(tokenizerFile: RepositoryFile, configFile?: RepositoryFile): number {
@@ -78,7 +79,7 @@ export function inspectTokenizerStructure(value: unknown): TokenizerStructure {
     fields: Object.keys(value).toSorted().map(name => ({ name, detail: describeValue(value[name]) })),
     vocabulary: entries.entries === null ? null : analyzeVocabulary(entries.entries),
     vocabularyError: entries.error,
-    chatTemplate: null,
+    chatTemplates: { entries: [], activeId: null, conflict: false },
   }
 }
 

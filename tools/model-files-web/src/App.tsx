@@ -21,6 +21,12 @@ import {
   type SafeTensorsSummary,
 } from './core/inspectors.ts'
 import { decodeStrictText, validatePdfData } from './core/readers.ts'
+import {
+  activeChatTemplate,
+  mergeChatTemplates,
+  selectChatTemplate,
+  type ChatTemplateEntry,
+} from './core/chatTemplates.ts'
 import { buildChatContext, type ChatTokenRole } from './core/tokenAttribution.ts'
 import type { Tokenization, TokenizerStructure } from './core/tokenizer.ts'
 import { PdfInspection, SourceInspection, TextInspection } from './Readers.tsx'
@@ -731,6 +737,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
   const [structure, setStructure] = useState<TokenizerStructure | null>(null)
   const [structureError, setStructureError] = useState<string | null>(null)
   const [independentTemplate, setIndependentTemplate] = useState<string | null>(null)
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
   const [showWhitespace, setShowWhitespace] = useState(true)
   const [inputCopyLabel, setInputCopyLabel] = useState('复制输入')
   const generation = useRef(0)
@@ -742,7 +749,12 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
   const templatePath = directory === '' ? 'chat_template.jinja' : `${directory}/chat_template.jinja`
   const config = snapshot.files.find(candidate => candidate.path === configPath)
   const templateFile = snapshot.files.find(candidate => candidate.path === templatePath)
-  const chatTemplate = templateFile === undefined ? structure?.chatTemplate ?? null : independentTemplate
+  const templateLoading = templateFile !== undefined && independentTemplate === null
+  const chatCatalog = templateLoading ? null : selectChatTemplate(mergeChatTemplates(
+    structure?.chatTemplates ?? { entries: [], activeId: null, conflict: false },
+    templateFile === undefined ? null : independentTemplate,
+  ), selectedTemplateId)
+  const activeTemplate = chatCatalog === null ? null : activeChatTemplate(chatCatalog)
 
   useEffect(() => () => {
     generation.current += 1
@@ -755,6 +767,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     const activeController = new AbortController()
     setStructure(null)
     setStructureError(null)
+    setSelectedTemplateId(null)
     void import('./tokenizerClient.ts').then(async module => {
       cancelWorker.current = module.cancelTokenizerRequests
       return await module.inspectTokenizer(snapshot, file, config, activeController.signal)
@@ -769,10 +782,12 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
   useEffect(() => {
     if (templateFile === undefined) {
       setIndependentTemplate(null)
+      setSelectedTemplateId(null)
       return
     }
     const activeController = new AbortController()
     setIndependentTemplate(null)
+    setSelectedTemplateId(null)
     void readWholeFile(snapshot, templateFile, activeController.signal, 64 * 1024).then(data => {
       if (!activeController.signal.aborted) setIndependentTemplate(decodeStrictText(data))
     }).catch(failure => {
@@ -830,6 +845,11 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setTokenIdInput(value)
   }
 
+  function changeChatTemplate(id: string) {
+    resetResult()
+    setSelectedTemplateId(id)
+  }
+
   async function runRaw(authoritativeInput = rawInput) {
     if (authoritativeInput.length === 0) return
     if (rawTimer.current !== null) window.clearTimeout(rawTimer.current)
@@ -847,7 +867,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setChatPreview('')
     setError(null)
     try {
-      if (chatTemplate === null) throw new Error(templateFile === undefined ? '当前 tokenizer 没有可用 Chat Template。' : '正在读取独立 Chat Template。')
+      if (activeTemplate === null) throw new Error(templateLoading ? '正在读取独立 Chat Template。' : '模板不可用。')
       const { context, attribution } = buildChatContext(
         JSON.parse(chatMessages),
         JSON.parse(chatTools),
@@ -858,7 +878,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       const module = await import('./tokenizerClient.ts')
       cancelWorker.current = module.cancelTokenizerRequests
       const next = await module.chatTokenize(
-        snapshot, file, config, chatTemplate, context, attribution, activeController.signal,
+        snapshot, file, config, activeTemplate.body, context, attribution, activeController.signal,
       )
       if (activeController.signal.aborted || generation.current !== activeGeneration) return
       setChatPreview(next.input)
@@ -978,7 +998,26 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       {view === 'chat' ? (
         <div className="tokenizer-layout">
           <section className="input-panel chat-panel">
-            <header><h2>Chat Messages</h2><span>{chatTemplate === null ? '模板不可用' : templateFile?.path ?? 'tokenizer_config.json · chat_template'}</span></header>
+            <header>
+              <h2>Chat Messages</h2>
+              {chatCatalog !== null && chatCatalog.entries.length > 1 ? (
+                <select
+                  aria-label="Chat Template"
+                  value={chatCatalog.activeId ?? ''}
+                  onChange={event => changeChatTemplate(event.target.value)}
+                >
+                  {chatCatalog.entries.map(entry => (
+                    <option key={entry.id} value={entry.id} disabled={!entry.usable}>{templateLabel(entry)}</option>
+                  ))}
+                </select>
+              ) : null}
+              {templateLoading
+                ? <span>正在读取 chat_template.jinja</span>
+                : activeTemplate === null ? <span>模板不可用</span> : null}
+              {!templateLoading && chatCatalog !== null && chatCatalog.entries.length === 1 ? (
+                <span className="chat-template-badge">{templateLabel(chatCatalog.entries[0])}</span>
+              ) : null}
+            </header>
             <textarea value={chatMessages} onChange={event => {
               resetResult()
               setChatMessages(event.target.value)
@@ -1004,7 +1043,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
                 resetResult()
                 setAddGenerationPrompt(event.target.checked)
               }} />add_generation_prompt</label>
-              <button className="primary-button" type="button" onClick={() => void runChat()} disabled={phase === 'loading'}>渲染并分词</button>
+              <button className="primary-button" type="button" onClick={() => void runChat()} disabled={phase === 'loading' || activeTemplate === null}>渲染并分词</button>
             </footer>
           </section>
           <TokenizerResultView phase={phase} error={error} result={result} authoritativeInput={chatPreview} showWhitespace={showWhitespace} setShowWhitespace={setShowWhitespace} />
@@ -1326,6 +1365,12 @@ function visiblePiece(piece: string, showWhitespace = true): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function templateLabel(entry: ChatTemplateEntry): string {
+  return entry.source === 'jinjaFile'
+    ? 'chat_template.jinja'
+    : `tokenizer_config.json · ${entry.name}`
 }
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {

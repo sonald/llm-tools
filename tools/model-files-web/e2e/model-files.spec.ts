@@ -158,6 +158,83 @@ test('attributes Exact Chat tokens to custom message roles', async ({ page }) =>
   expect(errors).toEqual([])
 })
 
+test('selects between independent and tokenizer config chat templates', async ({ page }) => {
+  const errors = collectErrors(page)
+  const requests = await installFixtureRoutes(page)
+  await openFixture(page)
+  await page.getByRole('button', { name: /tokenizer\.json/ }).click()
+  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  const selector = page.getByRole('combobox', { name: 'Chat Template' })
+
+  await expect(selector).toHaveValue('jinjaFile:default')
+  await expect(selector.locator('option')).toHaveText([
+    'chat_template.jinja',
+    'tokenizer_config.json · default',
+  ])
+  await page.getByRole('button', { name: '渲染并分词' }).click()
+  await expect(page.getByLabel('Chat 权威输入')).toContainText('system=You are concise.')
+  await selector.selectOption('tokenizerConfig:default')
+  await page.getByRole('button', { name: '渲染并分词' }).click()
+  await expect(page.getByLabel('Chat 权威输入')).toHaveText('You are concise.')
+  await selector.selectOption('jinjaFile:default')
+  await page.getByRole('button', { name: '渲染并分词' }).click()
+  await expect(page.getByLabel('Chat 权威输入')).toContainText('system=You are concise.')
+
+  expect(requests.filter(request => request.path === 'chat_template.jinja')).toHaveLength(1)
+  expect(requests.filter(request => request.path === 'tokenizer_config.json')).toHaveLength(1)
+  expect(errors).toEqual([])
+})
+
+test('sorts named object templates and switches without rereading the config', async ({ page }) => {
+  const errors = collectErrors(page)
+  const requests = await installFixtureRoutes(page, {
+    omitIndependentChatTemplate: true,
+    configChatTemplate: { tool_use: 'TOOL', first: ' ', default: 'CONFIG_DEFAULT' },
+  })
+  await openFixture(page, 12)
+  await page.getByRole('button', { name: /tokenizer\.json/ }).click()
+  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  const selector = page.getByRole('combobox', { name: 'Chat Template' })
+
+  await expect(selector).toHaveValue('tokenizerConfig:default')
+  const options = selector.locator('option')
+  await expect(options).toHaveText([
+    'tokenizer_config.json · default',
+    'tokenizer_config.json · first',
+    'tokenizer_config.json · tool_use',
+  ])
+  await expect(options.nth(1)).toBeDisabled()
+  await page.getByRole('button', { name: '渲染并分词' }).click()
+  await expect(page.getByLabel('Chat 权威输入')).toHaveText('CONFIG_DEFAULT')
+  await selector.selectOption('tokenizerConfig:tool_use')
+  await page.getByRole('button', { name: '渲染并分词' }).click()
+  await expect(page.getByLabel('Chat 权威输入')).toHaveText('TOOL')
+
+  expect(requests.filter(request => request.path === 'tokenizer_config.json')).toHaveLength(1)
+  expect(errors).toEqual([])
+})
+
+test('disables chat rendering when every config template is blank', async ({ page }) => {
+  const errors = collectErrors(page)
+  const requests = await installFixtureRoutes(page, {
+    omitIndependentChatTemplate: true,
+    configChatTemplate: { tool_use: ' ', default: '\n\t' },
+  })
+  await openFixture(page, 12)
+  await page.getByRole('button', { name: /tokenizer\.json/ }).click()
+  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  const selector = page.getByRole('combobox', { name: 'Chat Template' })
+
+  await expect(selector.locator('option')).toHaveCount(2)
+  await expect(selector.locator('option').nth(0)).toBeDisabled()
+  await expect(selector.locator('option').nth(1)).toBeDisabled()
+  await expect(page.getByText('模板不可用')).toBeVisible()
+  await expect(page.getByRole('button', { name: '渲染并分词' })).toBeDisabled()
+
+  expect(requests.filter(request => request.path === 'tokenizer_config.json')).toHaveLength(1)
+  expect(errors).toEqual([])
+})
+
 test('keeps 10k-token Raw results progressive and latest-only', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'chromium', 'Performance gate is recorded once in Chromium.')
   await installFixtureRoutes(page)

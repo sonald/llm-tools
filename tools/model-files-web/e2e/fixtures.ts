@@ -49,6 +49,7 @@ type FixtureOptions = {
   rangeBehavior?: 'valid' | 'http200'
   includeBoundaryFiles?: boolean
   omitIndependentChatTemplate?: boolean
+  configChatTemplate?: unknown
 }
 
 const tokenizer = JSON.stringify({
@@ -164,20 +165,27 @@ export async function installFixtureRoutes(page: Page, options: FixtureOptions =
         modelId,
         options.includeBoundaryFiles ?? false,
         options.omitIndependentChatTemplate ?? false,
+        options.configChatTemplate,
       ) })
       return
     }
-    await fulfillFile(route, requests, options.rangeBehavior ?? 'valid')
+    await fulfillFile(route, requests, options.rangeBehavior ?? 'valid', options.configChatTemplate)
   })
   return requests
 }
 
-function manifest(modelId: string, includeBoundaryFiles: boolean, omitChatTemplate: boolean) {
+function manifest(
+  modelId: string,
+  includeBoundaryFiles: boolean,
+  omitChatTemplate: boolean,
+  configChatTemplate?: unknown,
+) {
+  const bodies = fixtureBodies(configChatTemplate)
   return {
     id: modelId,
     sha: modelId === fixtureModelId ? fixtureRevision : 'f'.repeat(40),
     siblings: [
-      ...[...files]
+      ...[...bodies]
         .filter(([rfilename]) => !(omitChatTemplate && rfilename === 'chat_template.jinja'))
         .map(([rfilename, body]) => ({ rfilename, size: body.byteLength, blobId: rfilename })),
       ...(includeBoundaryFiles ? [
@@ -197,11 +205,12 @@ async function fulfillFile(
   route: Route,
   requests: RequestRecord[],
   rangeBehavior: NonNullable<FixtureOptions['rangeBehavior']>,
+  configChatTemplate?: unknown,
 ) {
   const url = new URL(route.request().url())
   const match = url.pathname.match(/^\/[^/]+\/[^/]+\/resolve\/[0-9a-f]{40}\/(.+)$/)
   const path = match === null ? '' : decodeURIComponent(match[1])
-  const body = files.get(path)
+  const body = fixtureBodies(configChatTemplate).get(path)
   if (body === undefined) {
     await route.fulfill({ status: 404, body: 'missing fixture' })
     return
@@ -232,6 +241,14 @@ async function fulfillFile(
       'Content-Range': `bytes ${start}-${end}/${body.byteLength}`,
     },
   })
+}
+
+function fixtureBodies(configChatTemplate?: unknown): Map<string, Uint8Array> {
+  if (configChatTemplate === undefined) return files
+  return new Map(files).set('tokenizer_config.json', bytes(JSON.stringify({
+    ...JSON.parse(tokenizerConfig),
+    chat_template: configChatTemplate,
+  })))
 }
 
 function safeTensorsFixture(): Uint8Array {

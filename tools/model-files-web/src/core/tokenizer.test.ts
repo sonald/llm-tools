@@ -8,6 +8,7 @@ import {
   tokenFlag,
   tokenizerBundleBytes,
 } from './tokenizer.ts'
+import { parseChatTemplates } from './chatTemplates.ts'
 import { chatTokenOverhead } from './tokenAttribution.ts'
 import type { RepositoryFile } from './huggingface.ts'
 
@@ -186,6 +187,7 @@ test('analyzes Unigram vocabularies and rejects ambiguous IDs or unknown structu
   assert.equal(unigram.vocabulary?.maximumScalarLength, 2)
   assert.match(inspectTokenizerStructure({ model: { vocab: { a: 1, b: 1 } } }).vocabularyError ?? '', /重复/)
   assert.match(inspectTokenizerStructure({ model: { type: 'Unknown' } }).vocabularyError ?? '', /未识别/)
+  assert.deepEqual(unigram.chatTemplates, parseChatTemplates(undefined))
 })
 
 function file(path: string, size: number): RepositoryFile {

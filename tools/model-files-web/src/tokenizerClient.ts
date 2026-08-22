@@ -7,6 +7,7 @@ import {
   type Tokenization,
   type TokenizerStructure,
 } from './core/tokenizer.ts'
+import type { ChatTemplateCatalog, ChatTemplateEntry, ChatTemplateSource } from './core/chatTemplates.ts'
 
 type Reply = { id: number; ok: true; value: unknown } | { id: number; ok: false; error: string }
 type Request =
@@ -115,7 +116,10 @@ async function ensureLoaded(
     ])
     if (signal?.aborted || generation !== activeGeneration) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
     const transfer = configData === null ? [tokenizerData] : [tokenizerData, configData]
-    const structure = await request({ id: ++nextId, type: 'load', tokenizerData, configData }, transfer) as TokenizerStructure
+    const structure = validateTokenizerStructure(await request(
+      { id: ++nextId, type: 'load', tokenizerData, configData },
+      transfer,
+    ))
     if (signal?.aborted || generation !== activeGeneration) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
     loadedIdentity = identity
     loadedStructure = structure
@@ -225,6 +229,34 @@ function validateTokenization(value: unknown, requiresOverhead: boolean): Tokeni
     }
   }
   return { ...(value as Tokenization), overhead, roles }
+}
+
+function validateTokenizerStructure(value: unknown): TokenizerStructure {
+  if (!isUnknownRecord(value)) throw new Error('Tokenizer Worker 返回的结构无效。')
+  return { ...(value as TokenizerStructure), chatTemplates: validateChatTemplateCatalog(value.chatTemplates) }
+}
+
+function validateChatTemplateCatalog(value: unknown): ChatTemplateCatalog {
+  if (!isUnknownRecord(value)
+    || !Array.isArray(value.entries)
+    || typeof value.conflict !== 'boolean'
+    || !(value.activeId === null || typeof value.activeId === 'string')) {
+    throw new Error('Tokenizer Worker 返回的 Chat Template catalog 结构无效。')
+  }
+  const entries = value.entries.map((item): ChatTemplateEntry => {
+    if (!isUnknownRecord(item) || typeof item.id !== 'string' || typeof item.name !== 'string'
+      || (item.source !== 'tokenizerConfig' && item.source !== 'jinjaFile')
+      || typeof item.body !== 'string' || typeof item.usable !== 'boolean'
+      || item.id !== `${item.source}:${item.name}` || item.usable !== (item.body.trim().length > 0)) {
+      throw new Error('Tokenizer Worker 返回的 Chat Template entry 结构无效。')
+    }
+    return { id: item.id, name: item.name, source: item.source as ChatTemplateSource, body: item.body, usable: item.usable }
+  })
+  const activeId = value.activeId
+  if (activeId !== null && !entries.some(entry => entry.id === activeId && entry.usable)) {
+    throw new Error('Tokenizer Worker 返回的 active Chat Template 无效。')
+  }
+  return { entries, activeId, conflict: value.conflict }
 }
 
 function validateChatTokenRoles(

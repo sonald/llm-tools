@@ -15,6 +15,7 @@ import {
   chatTokenRoles,
   type ChatAttributionMessage,
 } from './core/tokenAttribution.ts'
+import { parseChatTemplates } from './core/chatTemplates.ts'
 
 type Request =
   | { id: number; type: 'load'; tokenizerData: ArrayBuffer; configData: ArrayBuffer | null }
@@ -52,7 +53,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       } else {
         const parsedConfig: unknown = JSON.parse(decoder.decode(request.configData))
         if (!isRecord(parsedConfig)) throw new Error('tokenizer_config.json 根节点不是对象。')
-        structure.chatTemplate = typeof parsedConfig.chat_template === 'string' ? parsedConfig.chat_template : null
+        structure.chatTemplates = parseChatTemplates(parsedConfig.chat_template)
         try {
           tokenizer = new Tokenizer(parsedTokenizer, parsedConfig)
           specialIndex = buildSpecialTokenIndex(
