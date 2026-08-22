@@ -785,7 +785,7 @@ private struct JinjaWorkspaceView: View {
                     InspectionFactsView(fields: [
                         InspectionField(key: String(localized: "UTF-8 大小"), type: "bytes", value: Int64(source.utf8.count).formattedByteCount, origin: isModified ? .runtime : .repository),
                         InspectionField(key: String(localized: "行数"), type: "count", value: lineCount.formatted(), origin: .derived),
-                        InspectionField(key: String(localized: "来源"), type: "source", value: "模型文件", origin: .repository),
+                        InspectionField(key: String(localized: "来源"), type: "source", value: String(localized: "模型文件"), origin: .repository),
                         InspectionField(key: String(localized: "当前状态"), type: "state", value: isModified ? String(localized: "临时修改") : String(localized: "未修改"), origin: .runtime),
                     ])
                     HStack {

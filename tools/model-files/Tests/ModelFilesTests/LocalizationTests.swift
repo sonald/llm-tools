@@ -5,6 +5,9 @@ final class LocalizationTests: XCTestCase {
     private let smokeKey = "本地化测试"
     private let overviewKey = "概览"
     private let overflowKey = "GGUF %@ 溢出。"
+    private let inputPromptKey = "输入模型 ID、仓库 URL、本地绝对路径或 ssh:// 地址"
+    private let utf8SizeKey = "UTF-8 大小"
+    private let modelFilesKey = "模型文件"
 
     private var productionResourceBundle: Bundle {
         get throws {
@@ -73,8 +76,17 @@ final class LocalizationTests: XCTestCase {
         let chineseBundle = try XCTUnwrap(Bundle(url: outputURL.appending(path: "zh-Hans.lproj")))
         XCTAssertEqual(englishBundle.localizedString(forKey: overviewKey, value: nil, table: nil), "Overview")
         XCTAssertEqual(englishBundle.localizedString(forKey: overflowKey, value: nil, table: nil), "GGUF %@ overflow.")
+        XCTAssertEqual(
+            englishBundle.localizedString(forKey: inputPromptKey, value: nil, table: nil),
+            "Enter a model ID, repository URL, local absolute path, or ssh:// address"
+        )
+        XCTAssertEqual(englishBundle.localizedString(forKey: utf8SizeKey, value: nil, table: nil), "UTF-8 Size")
+        XCTAssertEqual(englishBundle.localizedString(forKey: modelFilesKey, value: nil, table: nil), "Model files")
         XCTAssertEqual(chineseBundle.localizedString(forKey: overviewKey, value: nil, table: nil), overviewKey)
         XCTAssertEqual(chineseBundle.localizedString(forKey: overflowKey, value: nil, table: nil), overflowKey)
+        XCTAssertEqual(chineseBundle.localizedString(forKey: inputPromptKey, value: nil, table: nil), inputPromptKey)
+        XCTAssertEqual(chineseBundle.localizedString(forKey: utf8SizeKey, value: nil, table: nil), utf8SizeKey)
+        XCTAssertEqual(chineseBundle.localizedString(forKey: modelFilesKey, value: nil, table: nil), modelFilesKey)
     }
 
     func testProductionCatalogContainsSmokeTranslations() throws {

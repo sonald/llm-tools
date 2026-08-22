@@ -9026,6 +9026,40 @@
           }
         }
       }
+    },
+    "输入模型 ID、仓库 URL、本地绝对路径或 ssh:// 地址": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a model ID, repository URL, local absolute path, or ssh:// address"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入模型 ID、仓库 URL、本地绝对路径或 ssh:// 地址"
+          }
+        }
+      }
+    },
+    "UTF-8 大小": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "UTF-8 Size"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "UTF-8 大小"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
