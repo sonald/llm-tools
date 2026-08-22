@@ -47,7 +47,7 @@ function JsonInspection({ path, content, parsed, bytesRead }: Props) {
       {perspective === 'fields' ? (
         <ProgressiveRows rows={matching} query={query} setQuery={setQuery} limit={limit} setLimit={setLimit} />
       ) : null}
-      {perspective === 'raw' ? <pre className="source-reader standalone">{content}</pre> : null}
+      {perspective === 'raw' ? <pre className="source-reader standalone" data-language="json">{content}</pre> : null}
     </div>
   )
 }
@@ -107,6 +107,93 @@ function MarkdownInspection(props: Props) {
     </div>
   )
 }
+
+export function PdfInspection({ data, bytesRead }: { data: ArrayBuffer; bytesRead: number }) {
+  const [url, setUrl] = useState('')
+  useEffect(() => {
+    const nextUrl = URL.createObjectURL(new Blob([data], { type: 'application/pdf' }))
+    setUrl(nextUrl)
+    return () => URL.revokeObjectURL(nextUrl)
+  }, [data])
+
+  return (
+    <div className="reader-canvas pdf-reader">
+      <ReaderHeader bytesRead={bytesRead} result="PDF 签名有效" />
+      {url !== '' ? <iframe className="pdf-frame" title="PDF 文档" src={url} /> : null}
+      {url !== ''
+        ? <a className="pdf-open" href={url} target="_blank" rel="noreferrer">在新标签页打开 PDF</a>
+        : null}
+    </div>
+  )
+}
+
+type SourceSegment = { text: string; className: string }
+
+function validateReply(reply: unknown, expectedContent: string) {
+  if (typeof reply !== 'object' || reply === null || !('ok' in reply) || reply.ok !== true) return null
+  const segments = (reply as { segments?: unknown }).segments
+  if (!Array.isArray(segments)) return null
+  let content = ''
+  const validSegments: SourceSegment[] = []
+  for (const segment of segments) {
+    if (typeof segment !== 'object' || segment === null) return null
+    const { text, className } = segment as Record<string, unknown>
+    if (typeof text !== 'string' || typeof className !== 'string') return null
+    content += text
+    validSegments.push({ text, className })
+  }
+  return content === expectedContent ? { segments: validSegments } : null
+}
+
+export function SourceInspection({
+  content,
+  language,
+  bytesRead,
+}: {
+  content: string
+  language: string
+  bytesRead: number
+}) {
+  const [segments, setSegments] = useState<SourceSegment[] | null>(null)
+  useEffect(() => {
+    setSegments(null)
+    let active = true
+    let worker: Worker | null = new Worker(new URL('./sourceHighlight.worker.ts', import.meta.url), { type: 'module' })
+    const terminate = () => {
+      worker?.terminate()
+      worker = null
+    }
+    worker.onmessage = (event: MessageEvent<unknown>) => {
+      terminate()
+      const reply = validateReply(event.data, content)
+      if (!active || reply === null) return
+      setSegments(reply.segments)
+    }
+    worker.onerror = event => {
+      event.preventDefault()
+      terminate()
+      if (active) setSegments(null)
+    }
+    worker.postMessage({ content, language })
+    return () => {
+      active = false
+      terminate()
+    }
+  }, [content, language])
+  return (
+    <div className="reader-layout">
+      <ReaderHeader bytesRead={bytesRead} result="UTF-8 有效" />
+      <pre
+        className="source-reader standalone"
+        data-language={language}
+        data-highlighted={segments !== null}
+      >{segments?.map((segment, index) => (
+        <span key={index} className={segment.className}>{segment.text}</span>
+      )) ?? content}</pre>
+    </div>
+  )
+}
+
 
 function ReaderHeader({ bytesRead, result }: { bytesRead: number; result: string }) {
   return (

@@ -71,6 +71,7 @@ export function classifyFile(path: string): FileCategory {
     return 'weightMetadata'
   }
   if (blockedExtensions.has(ext)) return 'weights'
+  if (name.endsWith('.pdf')) return 'documentation'
   if (name === 'config.json' || name === 'configuration.json' || name === 'generation_config.json'
     || name.endsWith('_config.json') && !name.includes('tokenizer')
       && !name.includes('processor') && !name.includes('preprocessor')) return 'configuration'
@@ -80,6 +81,59 @@ export function classifyFile(path: string): FileCategory {
   if (name === 'readme.md' || name === 'license' || name.startsWith('license.')
     || name === 'notice' || name.endsWith('.md') || name.endsWith('.rst')) return 'documentation'
   return 'other'
+}
+
+const syntaxLanguages: Readonly<Record<string, string>> = {
+  py: 'python',
+  pyw: 'python',
+  js: 'javascript',
+  javascript: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  jsx: 'jsx',
+  ts: 'typescript',
+  mts: 'typescript',
+  cts: 'typescript',
+  tsx: 'tsx',
+  sh: 'bash',
+  bash: 'bash',
+  zsh: 'bash',
+  swift: 'swift',
+  rs: 'rust',
+  go: 'go',
+  c: 'c',
+  h: 'c',
+  cc: 'cpp',
+  cpp: 'cpp',
+  cxx: 'cpp',
+  hpp: 'cpp',
+  java: 'java',
+  kt: 'kotlin',
+  kts: 'kotlin',
+  rb: 'ruby',
+  php: 'php',
+  lua: 'lua',
+  yaml: 'yaml',
+  yml: 'yaml',
+  json: 'json',
+  toml: 'toml',
+  sql: 'sql',
+  css: 'css',
+  scss: 'scss',
+  sass: 'sass',
+  less: 'less',
+  html: 'markup',
+  htm: 'markup',
+  xml: 'markup',
+  svg: 'markup',
+}
+
+export function syntaxLanguage(path: string): string | null {
+  const basename = path.split('/').at(-1) ?? ''
+  const extensionStart = basename.lastIndexOf('.')
+  if (extensionStart === -1) return null
+  const extension = basename.slice(extensionStart + 1).toLocaleLowerCase()
+  return syntaxLanguages[extension] ?? null
 }
 
 export function isImatrixPath(path: string): boolean {
@@ -155,7 +209,9 @@ export async function readWholeFile(
   }
   const response = await fetch(contentUrl(snapshot, file), requestOptions(signal))
   if (!response.ok) throw new Error(`文件请求失败：HTTP ${response.status}`)
-  return await readBounded(response, maximumBytes)
+  const data = await readBounded(response, maximumBytes)
+  if (data.byteLength !== file.size) throw new Error(`文件响应字节数为 ${data.byteLength}，与声明的 ${file.size} 不一致。`)
+  return data
 }
 
 export async function readExactRange(

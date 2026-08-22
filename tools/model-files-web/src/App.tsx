@@ -9,6 +9,7 @@ import {
   type FileCategory,
   type RepositoryFile,
   type RepositorySnapshot,
+  syntaxLanguage,
 } from './core/huggingface.ts'
 import { addRepositoryHistory, parseRepositoryHistory } from './core/history.ts'
 import { inspectImatrix, type ImatrixSummary } from './core/imatrix.ts'
@@ -19,8 +20,9 @@ import {
   type GGUFPrefix,
   type SafeTensorsSummary,
 } from './core/inspectors.ts'
+import { decodeStrictText, validatePdfData } from './core/readers.ts'
 import type { Tokenization, TokenizerStructure } from './core/tokenizer.ts'
-import { TextInspection } from './Readers.tsx'
+import { PdfInspection, SourceInspection, TextInspection } from './Readers.tsx'
 import { TemplateWorkbench } from './TemplateWorkbench.tsx'
 
 const categoryLabels: Record<FileCategory, string> = {
@@ -44,6 +46,8 @@ type Inspection =
   | { kind: 'safetensors'; file: RepositoryFile; summary: SafeTensorsSummary; bytesRead: number }
   | { kind: 'gguf'; file: RepositoryFile; summary: GGUFPrefix; bytesRead: number }
   | { kind: 'imatrix'; file: RepositoryFile; summary: ImatrixSummary; bytesRead: number }
+  | { kind: 'pdf'; file: RepositoryFile; data: ArrayBuffer; bytesRead: number }
+  | { kind: 'source'; file: RepositoryFile; content: string; language: string; bytesRead: number }
   | { kind: 'tokenizer'; file: RepositoryFile }
   | {
     kind: 'template'
@@ -242,15 +246,19 @@ export default function App() {
         next = { kind: 'gguf', file, summary: inspectGGUFPrefix(prefix), bytesRead: prefix.byteLength }
       } else if (file.path.split('/').at(-1)?.toLocaleLowerCase() === 'tokenizer.json') {
         next = { kind: 'tokenizer', file }
+      } else if (lower.endsWith('.pdf')) {
+        const data = await readWholeFile(activeSnapshot, file, controller.signal)
+        validatePdfData(data)
+        next = { kind: 'pdf', file, data, bytesRead: data.byteLength }
       } else if (lower.endsWith('.jinja')) {
         const data = await readWholeFile(activeSnapshot, file, controller.signal, 64 * 1024)
         next = {
-          kind: 'template', file, source: new TextDecoder('utf-8', { fatal: true }).decode(data),
+          kind: 'template', file, source: decodeStrictText(data),
           sourceOrigin: file.path, bytesRead: data.byteLength, config: null,
         }
       } else if (file.path.split('/').at(-1)?.toLocaleLowerCase() === 'tokenizer_config.json') {
         const data = await readWholeFile(activeSnapshot, file, controller.signal)
-        const decoded = new TextDecoder('utf-8', { fatal: true }).decode(data)
+        const decoded = decodeStrictText(data)
         const parsed: unknown = JSON.parse(decoded)
         const directory = file.path.split('/').slice(0, -1).join('/')
         const templatePath = directory === '' ? 'chat_template.jinja' : `${directory}/chat_template.jinja`
@@ -263,7 +271,7 @@ export default function App() {
           next = {
             kind: 'template',
             file,
-            source: templateData === null ? embedded ?? '' : new TextDecoder('utf-8', { fatal: true }).decode(templateData),
+            source: templateData === null ? embedded ?? '' : decodeStrictText(templateData),
             sourceOrigin: independent?.path ?? `${file.path} · chat_template`,
             bytesRead: data.byteLength + (templateData?.byteLength ?? 0),
             config: { content: decoded, parsed, bytesRead: data.byteLength },
@@ -274,19 +282,28 @@ export default function App() {
       } else if (isImatrixPath(file.path)) {
         const data = await readWholeFile(activeSnapshot, file, controller.signal)
         next = { kind: 'imatrix', file, summary: inspectImatrix(data), bytesRead: data.byteLength }
-      } else if (isBlocked(file)) {
-        next = { kind: 'locked', file }
       } else {
-        const data = await readWholeFile(activeSnapshot, file, controller.signal)
-        const decoded = new TextDecoder('utf-8', { fatal: true }).decode(data)
-        const json = lower.endsWith('.json')
-        next = {
-          kind: 'text',
-          file,
-          content: decoded,
-          parsed: json ? JSON.parse(decoded) : null,
-          bytesRead: data.byteLength,
-          json,
+        const language = syntaxLanguage(file.path)
+        if (file.size !== null && file.size <= 128 * 1024 && language !== null && language !== 'json') {
+          const data = await readWholeFile(activeSnapshot, file, controller.signal)
+          next = {
+            kind: 'source', file, content: decodeStrictText(data),
+            language, bytesRead: data.byteLength,
+          }
+        } else if (isBlocked(file)) {
+          next = { kind: 'locked', file }
+        } else {
+          const data = await readWholeFile(activeSnapshot, file, controller.signal)
+          const decoded = decodeStrictText(data)
+          const json = lower.endsWith('.json')
+          next = {
+            kind: 'text',
+            file,
+            content: decoded,
+            parsed: json ? JSON.parse(decoded) : null,
+            bytesRead: data.byteLength,
+            json,
+          }
         }
       }
       if (!controller.signal.aborted && inspectionGeneration.current === generation) {
@@ -483,6 +500,14 @@ function Detail({
           : null}
         {inspection.kind === 'gguf' && snapshot !== null ? <GGUFInspection inspection={inspection} snapshot={snapshot} /> : null}
         {inspection.kind === 'imatrix' ? <ImatrixInspection inspection={inspection} /> : null}
+        {inspection.kind === 'pdf' ? <PdfInspection data={inspection.data} bytesRead={inspection.bytesRead} /> : null}
+        {inspection.kind === 'source' ? (
+          <SourceInspection
+            content={inspection.content}
+            language={inspection.language}
+            bytesRead={inspection.bytesRead}
+          />
+        ) : null}
         {inspection.kind === 'template' && snapshot !== null ? (
           <TemplateWorkbench
             key={`${snapshotIdentity(snapshot)}/${file.path}`}
@@ -740,7 +765,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     const activeController = new AbortController()
     setIndependentTemplate(null)
     void readWholeFile(snapshot, templateFile, activeController.signal, 64 * 1024).then(data => {
-      if (!activeController.signal.aborted) setIndependentTemplate(new TextDecoder('utf-8', { fatal: true }).decode(data))
+      if (!activeController.signal.aborted) setIndependentTemplate(decodeStrictText(data))
     }).catch(failure => {
       if (!activeController.signal.aborted) setError(errorMessage(failure))
     })

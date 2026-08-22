@@ -2,6 +2,23 @@ import type { RepositorySnapshot } from './huggingface.ts'
 
 export type JsonSummary = { title: string; facts: Array<[string, string]> }
 
+export function decodeStrictText(data: ArrayBuffer): string {
+  let text: string
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(data)
+  } catch {
+    throw new Error('文本不是有效的 UTF-8。')
+  }
+  if (text.includes('\0')) throw new Error('文本包含 NUL 字节。')
+  return text
+}
+
+export function validatePdfData(data: ArrayBuffer): void {
+  const bytes = new Uint8Array(data, 0, Math.min(5, data.byteLength))
+  if (bytes.length !== 5 || bytes[0] !== 37 || bytes[1] !== 80 || bytes[2] !== 68
+    || bytes[3] !== 70 || bytes[4] !== 45) throw new Error('不是有效的 PDF 文件签名。')
+}
+
 export function summarizeJson(path: string, value: unknown): JsonSummary {
   const name = path.split('/').at(-1)?.toLocaleLowerCase() ?? ''
   if (!isRecord(value)) return { title: 'JSON', facts: [['根类型', Array.isArray(value) ? '数组' : typeof value]] }

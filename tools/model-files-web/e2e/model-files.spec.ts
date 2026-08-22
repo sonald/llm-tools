@@ -1,5 +1,11 @@
 import { expect, test, type Page } from '@playwright/test'
-import { fixtureModelId, fixtureRevision, installFixtureRoutes, writeFixtureDirectory } from './fixtures.ts'
+import {
+  fixtureModelId,
+  fixtureRevision,
+  installFixtureRoutes,
+  pythonReaderSource,
+  writeFixtureDirectory,
+} from './fixtures.ts'
 
 test('inspects SafeTensors through two exact ranges without tensor data', async ({ page }) => {
   const errors = collectErrors(page)
@@ -123,7 +129,7 @@ test('opens every supported local directory reader without network upload', asyn
   const picker = page.getByLabel('选择本地目录')
   await picker.setInputFiles(localFixture)
 
-  await expect(page.getByText('本地目录 · live · 13 个文件')).toBeVisible()
+  await expect(page.getByText('本地目录 · live · 18 个文件')).toBeVisible()
   await expect(page).toHaveURL('http://127.0.0.1:5173/')
   await expect(page.getByRole('link', { name: '源站' })).toBeHidden()
   await expect(page.getByRole('heading', { name: 'Model Config' })).toBeVisible()
@@ -161,6 +167,76 @@ test('opens every supported local directory reader without network upload', asyn
   await picker.setInputFiles(localFixture)
   await expect(page.getByRole('heading', { name: 'Model Config' })).toBeVisible()
   expect(externalRequests).toEqual([])
+  expect(errors).toEqual([])
+})
+
+test('dispatches local Python and PDF readers safely', async ({ page }, testInfo) => {
+  const errors = collectErrors(page)
+  const localFixture = testInfo.outputPath("reader-local-fixture")
+  await writeFixtureDirectory(localFixture)
+  await page.goto('/')
+  await page.evaluate(() => {
+    const states: Record<string, { revoked?: boolean }> = {}
+    const createObjectURL = URL.createObjectURL.bind(URL)
+    URL.createObjectURL = object => {
+      const url = createObjectURL(object)
+      states[url] = {}
+      return url
+    }
+    const revokeObjectURL = URL.revokeObjectURL.bind(URL)
+    URL.revokeObjectURL = url => {
+      states[url] ??= {}
+      states[url].revoked = true
+      return revokeObjectURL(url)
+    }
+    ;(window as unknown as { __objectUrls: Record<string, { revoked?: boolean }> }).__objectUrls = states
+  })
+  await page.getByLabel('选择本地目录').setInputFiles(localFixture)
+
+  const csp = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content')
+  expect(csp).toContain("object-src 'none'")
+  expect(csp).toContain('frame-src blob:')
+
+  await page.getByRole('button', { name: /^reader\.py/ }).click()
+  const sourceReader = page.locator('.source-reader')
+  await expect(sourceReader).toHaveAttribute('data-language', 'python')
+  expect(await sourceReader.textContent()).toBe(pythonReaderSource)
+  await expect(sourceReader).toHaveAttribute('data-highlighted', 'true')
+  await expect(sourceReader.locator('.token.keyword').filter({ hasText: /^def$/ })).toHaveText('def')
+  await expect(sourceReader.locator('.token.function')).toHaveText('greet')
+
+  const scssStarted = Date.now()
+  await page.getByRole('button', { name: /^reader\.scss/ }).click({ timeout: 10_000 })
+  await page.getByRole('button', { name: /^README\.md/ }).click()
+  await expect(page.getByRole('heading', { name: 'Fixture Model' })).toBeVisible()
+  expect(Date.now() - scssStarted).toBeLessThan(1000)
+  await expect(page.locator('.source-reader[data-language="scss"]')).toHaveCount(0)
+
+  await page.getByRole('button', { name: /^valid\.pdf/ }).click()
+  const pdfFrame = page.locator('iframe[title="PDF 文档"]')
+  const blobUrl = await pdfFrame.getAttribute('src')
+  if (blobUrl === null) throw new Error('PDF blob URL is missing')
+  expect(blobUrl).toMatch(/^blob:http:\/\/127\.0\.0\.1:5173\//)
+  const openPdf = page.getByRole('link', { name: '在新标签页打开 PDF' })
+  await expect(openPdf).toBeVisible()
+  await expect(openPdf).toHaveAttribute('href', blobUrl)
+
+  await page.getByRole('button', { name: /^README\.md/ }).click()
+  expect(await page.evaluate(
+    (url: string) => (window as unknown as { __objectUrls: Record<string, { revoked?: boolean }> }).__objectUrls[url]?.revoked,
+    blobUrl,
+  )).toBe(true)
+
+  await page.getByRole('button', { name: /^invalid\.pdf/ }).click()
+  const invalidError = page.getByRole('heading', { name: '无法读取文件' })
+  await expect(invalidError).toBeVisible()
+  await expect(invalidError.locator('..')).toContainText(/PDF/)
+
+  await page.getByRole('button', { name: /^unknown\.dat/ }).click()
+  const binaryError = page.getByRole('heading', { name: '无法读取文件' })
+  await expect(binaryError).toBeVisible()
+  await expect(binaryError.locator('..')).toContainText(/NUL|二进制/)
+  await expect(page.locator('.source-reader')).toHaveCount(0)
   expect(errors).toEqual([])
 })
 

@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { jsonRows, repositoryMarkdownUrl, summarizeJson, textLines, visibleRows } from './readers.ts'
+import {
+  decodeStrictText,
+  jsonRows,
+  repositoryMarkdownUrl,
+  summarizeJson,
+  textLines,
+  validatePdfData,
+  visibleRows,
+} from './readers.ts'
 import type { RepositorySnapshot } from './huggingface.ts'
 
 const snapshot: RepositorySnapshot = {
@@ -41,4 +49,18 @@ test('pins repository-relative Markdown URLs and rejects active protocols', () =
     `https://huggingface.co/owner/model/resolve/${snapshot.revision}/docs/image.png`,
   )
   assert.equal(repositoryMarkdownUrl(snapshot, 'README.md', 'javascript:alert(1)', 'href'), null)
+})
+
+test('decodes fatal UTF-8 text and rejects invalid sequences', () => {
+  assert.equal(decodeStrictText(new TextEncoder().encode('中文').buffer), '中文')
+  assert.throws(() => decodeStrictText(Uint8Array.from([0xff]).buffer), /UTF-8/)
+})
+
+test('rejects NUL bytes in strict text', () => {
+  assert.throws(() => decodeStrictText(Uint8Array.from([97, 0]).buffer), /NUL/)
+})
+
+test('validates PDF data by its first five signature bytes', () => {
+  validatePdfData(new TextEncoder().encode('%PDF-1.7').buffer)
+  assert.throws(() => validatePdfData(new TextEncoder().encode('not a pdf').buffer), /PDF/)
 })

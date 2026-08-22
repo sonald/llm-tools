@@ -4,6 +4,10 @@ import { join } from 'node:path'
 
 export const fixtureModelId = 'fixture/model'
 export const fixtureRevision = '0123456789abcdef0123456789abcdef01234567'
+export const pythonReaderSource = `def greet(name):
+    return f"hello {name}"
+`
+export const scssReaderSource = `.${'a-b-'.repeat(8000)}`
 
 export type RequestRecord = {
   path: string
@@ -101,6 +105,14 @@ const files = new Map<string, Uint8Array>([
   ['model.gguf', ggufFixture()],
 ])
 
+const localReaderFiles = new Map<string, Uint8Array>([
+  ['reader.py', bytes(pythonReaderSource)],
+  ['reader.scss', bytes(scssReaderSource)],
+  ['valid.pdf', pdfFixture()],
+  ['invalid.pdf', bytes('This file deliberately lacks a PDF signature.')],
+  ['unknown.dat', Uint8Array.from([0x61, 0x00])],
+])
+
 export async function installFixtureRoutes(page: Page, options: FixtureOptions = {}): Promise<RequestRecord[]> {
   const requests: RequestRecord[] = []
   let manifestFailures = options.manifestFailures ?? 0
@@ -139,7 +151,7 @@ function manifest(modelId: string, includeBoundaryFiles: boolean) {
 
 export async function writeFixtureDirectory(directory: string): Promise<void> {
   await mkdir(directory, { recursive: true })
-  await Promise.all([...files].map(([path, body]) => writeFile(join(directory, path), body)))
+  await Promise.all([...files, ...localReaderFiles].map(([path, body]) => writeFile(join(directory, path), body)))
 }
 
 async function fulfillFile(
@@ -221,6 +233,26 @@ function imatrixFixture(): Uint8Array {
   appendInt32(output, dataset.length)
   output.push(...dataset)
   return Uint8Array.from(output)
+}
+
+function pdfFixture(): Uint8Array {
+  const objects = [
+    '<</Type/Catalog/Pages 2 0 R>>',
+    '<</Type/Pages/Kids[3 0 R]/Count 1>>',
+    '<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>',
+  ]
+  let pdf = '%PDF-1.4\n'
+  const offsets: number[] = []
+  objects.forEach((object, index) => {
+    const offset = bytes(pdf).byteLength
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`
+    offsets.push(offset)
+  })
+  const xrefStart = bytes(pdf).byteLength
+  pdf += 'xref\n0 4\n0000000000 65535 f \n'
+  for (const offset of offsets) pdf += `${String(offset).padStart(10, '0')} 00000 n \n`
+  pdf += `trailer\n<</Size 4/Root 1 0 R>>\nstartxref\n${xrefStart}\n%%EOF\n`
+  return bytes(pdf)
 }
 
 function appendImatrixEntry(output: number[], name: string, calls: number, values: number[]) {

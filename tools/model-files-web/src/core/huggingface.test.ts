@@ -7,6 +7,7 @@ import {
   normalizeModelId,
   readExactRange,
   readWholeFile,
+  syntaxLanguage,
   type RepositoryFile,
   type RepositorySnapshot,
 } from './huggingface.ts'
@@ -65,6 +66,7 @@ test('matches native file intent classification and reader-friendly ordering', a
   assert.equal(classifyFile('imatrix_unsloth.gguf_file'), 'weights')
   assert.equal(classifyFile('templates/default/value.txt'), 'templates')
   assert.equal(classifyFile('LICENSE.apache'), 'documentation')
+  assert.equal(classifyFile('templates/guide.pdf'), 'documentation')
 
   const local = loadLocalDirectory([
     localFile('Fixture/merges.txt', ''),
@@ -72,6 +74,63 @@ test('matches native file intent classification and reader-friendly ordering', a
     localFile('Fixture/tokenizer_config.json', '{}'),
   ])
   assert.deepEqual(local.files.map(item => item.path), ['tokenizer_config.json', 'tokenizer.json', 'merges.txt'])
+})
+
+test('maps exhaustive syntax extensions to exact Prism language IDs', () => {
+  assert.deepEqual(
+    ['py', 'pyw'].map(extension => syntaxLanguage(`example.${extension}`)),
+    Array<string>(2).fill('python'),
+  )
+  assert.deepEqual(
+    ['js', 'javascript', 'mjs', 'cjs'].map(extension => syntaxLanguage(`example.${extension}`)),
+    Array<string>(4).fill('javascript'),
+  )
+  assert.equal(syntaxLanguage('example.jsx'), 'jsx')
+  assert.deepEqual(
+    ['ts', 'mts', 'cts'].map(extension => syntaxLanguage(`example.${extension}`)),
+    Array<string>(3).fill('typescript'),
+  )
+  assert.equal(syntaxLanguage('example.tsx'), 'tsx')
+  assert.deepEqual(
+    ['sh', 'bash', 'zsh'].map(extension => syntaxLanguage(`example.${extension}`)),
+    Array<string>(3).fill('bash'),
+  )
+  assert.equal(syntaxLanguage('example.swift'), 'swift')
+  assert.equal(syntaxLanguage('example.rs'), 'rust')
+  assert.equal(syntaxLanguage('example.go'), 'go')
+  assert.deepEqual(
+    ['c', 'h'].map(extension => syntaxLanguage(`example.${extension}`)),
+    Array<string>(2).fill('c'),
+  )
+  assert.deepEqual(
+    ['cc', 'cpp', 'cxx', 'hpp'].map(extension => syntaxLanguage(`example.${extension}`)),
+    Array<string>(4).fill('cpp'),
+  )
+  assert.equal(syntaxLanguage('example.java'), 'java')
+  assert.deepEqual(
+    ['kt', 'kts'].map(extension => syntaxLanguage(`example.${extension}`)),
+    Array<string>(2).fill('kotlin'),
+  )
+  assert.equal(syntaxLanguage('example.rb'), 'ruby')
+  assert.equal(syntaxLanguage('example.php'), 'php')
+  assert.equal(syntaxLanguage('example.lua'), 'lua')
+  assert.deepEqual(
+    ['yaml', 'yml'].map(extension => syntaxLanguage(`example.${extension}`)),
+    Array<string>(2).fill('yaml'),
+  )
+  assert.equal(syntaxLanguage('example.json'), 'json')
+  assert.equal(syntaxLanguage('example.toml'), 'toml')
+  assert.equal(syntaxLanguage('example.sql'), 'sql')
+  assert.equal(syntaxLanguage('example.css'), 'css')
+  assert.equal(syntaxLanguage('example.scss'), 'scss')
+  assert.equal(syntaxLanguage('example.sass'), 'sass')
+  assert.equal(syntaxLanguage('example.less'), 'less')
+  assert.deepEqual(
+    ['html', 'htm', 'xml', 'svg'].map(extension => syntaxLanguage(`example.${extension}`)),
+    Array<string>(4).fill('markup'),
+  )
+  assert.equal(syntaxLanguage('example.unknown'), null)
+  assert.equal(syntaxLanguage('json'), null)
 })
 
 test('loads a public repository without credentials and pins safe files to its revision', async () => {
@@ -159,6 +218,12 @@ test('enforces whole-file limits before and after the response', async () => {
     return new Response(new Uint8Array(33))
   }, async () => {
     await assert.rejects(readWholeFile(snapshot, { ...file, size: 32 }, undefined, 32), /响应超过/)
+  })
+})
+
+test('rejects a whole-file response whose byte length differs from its size', async () => {
+  await withFetch(async () => new Response(new Uint8Array(99)), async () => {
+    await assert.rejects(readWholeFile(snapshot, { ...file, size: 100 }), /字节/)
   })
 })
 
