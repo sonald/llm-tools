@@ -1,5 +1,5 @@
 import type { RepositoryFile } from './huggingface.ts'
-import type { ChatTokenOverhead } from './tokenAttribution.ts'
+import type { ChatTokenOverhead, ChatTokenRole } from './tokenAttribution.ts'
 
 export type TokenSegment = {
   start: number
@@ -20,6 +20,7 @@ export type Tokenization = {
   mapping: 'Exact' | 'Decoded only'
   flags: TokenFlag[]
   overhead: ChatTokenOverhead | null
+  roles: ChatTokenRole[] | null
 }
 
 export type TokenizerField = { name: string; detail: string }
@@ -123,6 +124,7 @@ export function buildTokenization(
     input,
     flags,
     overhead,
+    roles: null,
   }
 }
 
@@ -145,6 +147,7 @@ function authoritativeTokenization(
     mapping: direction === 'encode' && decoded === input ? 'Exact' : 'Decoded only',
     flags,
     overhead,
+    roles: null,
   }
 }
 

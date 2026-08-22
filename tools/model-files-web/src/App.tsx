@@ -21,7 +21,7 @@ import {
   type SafeTensorsSummary,
 } from './core/inspectors.ts'
 import { decodeStrictText, validatePdfData } from './core/readers.ts'
-import { parseChatMessages } from './core/tokenAttribution.ts'
+import { parseChatMessages, type ChatTokenRole } from './core/tokenAttribution.ts'
 import type { Tokenization, TokenizerStructure } from './core/tokenizer.ts'
 import { PdfInspection, SourceInspection, TextInspection } from './Readers.tsx'
 import { TemplateWorkbench } from './TemplateWorkbench.tsx'
@@ -783,6 +783,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       setResult({
         direction: 'encode', input: '', ids: [], pieces: [], decoded: '', segments: [], mapping: 'Exact', flags: [],
         overhead: null,
+        roles: null,
       })
       setError(null)
       setPhase('ready')
@@ -1080,6 +1081,7 @@ function TokenizerResultView({
     return values
   }, [result])
   const selectedId = selectedIndex === null ? undefined : result?.ids[selectedIndex]
+  const selectedRole = selectedIndex !== null ? result?.roles?.[selectedIndex] ?? null : null
   const inputBytes = new TextEncoder().encode(authoritativeInput).byteLength
   return (
     <section className="result-panel" aria-live="polite">
@@ -1102,9 +1104,14 @@ function TokenizerResultView({
             ['Bytes / Token', result.ids.length === 0 ? '0' : (inputBytes / result.ids.length).toLocaleString('zh-CN', { maximumFractionDigits: 2 })],
             ['映射', result.mapping],
           ]} />
+          {result.overhead !== null && result.mapping === 'Decoded only' ? (
+            <p className="decoded-text">当前映射是 Decoded only，不能按原文划分角色</p>
+          ) : null}
           <h3 className="result-label">Grapheme-safe 片段</h3>
           <div className="token-pieces">
-            {result.segments.map((segment, index) => (
+            {result.segments.map((segment, index) => {
+              const role = segmentRole(result, segment)
+              return (
               <button
                 type="button"
                 className={selectedIndex !== null && selectedIndex >= segment.start && selectedIndex < segment.end ? 'selected' : ''}
@@ -1112,15 +1119,20 @@ function TokenizerResultView({
                 key={`${segment.start}-${index}`}
                 title={`Token #${segment.start + 1}–${segment.end} · ${segment.ids.length > 100 ? `${segment.ids.length.toLocaleString()} IDs` : `IDs ${segment.ids.join(', ')}`}`}
                 onClick={() => setSelectedIndex(current => current === segment.start ? null : segment.start)}
-              >{segment.ids.length > 100
+              >{role !== null ? (
+                <span className={`token-role-badge ${chatRoleClass(role)}`}>
+                  {chatRoleLabel(role)}
+                </span>
+              ) : null}{segment.ids.length > 100
                 ? `合并片段 · ${segment.ids.length.toLocaleString()} tokens（完整 Decoded 见下方）`
                 : visiblePiece(segment.text, showWhitespace)}</button>
-            ))}
+            )})}
           </div>
           {selectedId !== undefined && selectedIndex !== null ? (
             <dl className="selected-token">
               <div><dt>选中 Token</dt><dd>#{selectedIndex + 1}</dd></div>
               <div><dt>ID</dt><dd>{selectedId}</dd></div>
+              <div><dt>Role</dt><dd>{chatRoleLabel(selectedRole)}</dd></div>
               <div><dt>Piece</dt><dd>{visiblePiece(result.pieces[selectedIndex] ?? '', showWhitespace)}</dd></div>
               <button type="button" onClick={async () => {
                 try { await navigator.clipboard.writeText(String(selectedId)); setCopyLabel('已复制') } catch { setCopyLabel('复制失败') }
@@ -1140,12 +1152,13 @@ function TokenizerResultView({
           </div>
           <div className="table-scroll">
             <table aria-label="Tokenizer Tokens">
-              <thead><tr><th>#</th><th>ID</th><th>Special</th><th>Token Piece</th><th>Decoded</th><th>Mapping</th></tr></thead>
+              <thead><tr><th>#</th><th>ID</th><th>Special</th><th>Role</th><th>Token Piece</th><th>Decoded</th><th>Mapping</th></tr></thead>
               <tbody>{result.ids.slice(0, limit).map((id, index) => (
                 <tr className={selectedIndex === index ? 'selected-token-row' : ''} key={`${index}-${id}`}>
                   <td><button className="table-link" type="button" aria-pressed={selectedIndex === index} onClick={() => setSelectedIndex(current => current === index ? null : index)}>{index + 1}</button></td>
                   <td><button className="table-link" type="button" aria-pressed={selectedIndex === index} onClick={() => setSelectedIndex(current => current === index ? null : index)}>{id}</button></td>
                   <td>{result.flags[index]?.specialName ?? '—'}</td>
+                  <td>{chatRoleLabel(result.roles?.[index] ?? null)}</td>
                   <td>{visiblePiece(result.pieces[index] ?? '', showWhitespace)}</td>
                   <td>{visiblePiece(decoded.get(index) ?? '', showWhitespace)}</td><td>{result.mapping}</td>
                 </tr>
@@ -1159,6 +1172,23 @@ function TokenizerResultView({
       ) : null}
     </section>
   )
+}
+
+function segmentRole(result: Tokenization, segment: { start: number; end: number }): ChatTokenRole | null {
+  const roles = result.roles?.slice(segment.start, segment.end) ?? []
+  if (roles.length !== segment.end - segment.start || roles.some(role => JSON.stringify(role) !== JSON.stringify(roles[0]))) return null
+  return roles[0] ?? null
+}
+
+function chatRoleLabel(role: ChatTokenRole | null): string {
+  if (role === null) return '—'
+  return role.kind === 'template' ? 'template' : role.role
+}
+
+function chatRoleClass(role: ChatTokenRole | null): string {
+  if (role === null) return ''
+  if (role.kind === 'template') return 'role-template'
+  return ['system', 'user', 'assistant', 'tool'].includes(role.role) ? `role-${role.role}` : 'role-custom'
 }
 
 function ValidationStrip({ items }: { items: Array<[string, string]> }) {

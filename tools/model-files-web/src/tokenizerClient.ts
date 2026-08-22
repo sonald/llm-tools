@@ -1,5 +1,5 @@
 import { readWholeFile, type RepositoryFile, type RepositorySnapshot } from './core/huggingface.ts'
-import type { ChatAttributionMessage, ChatTokenOverhead } from './core/tokenAttribution.ts'
+import type { ChatAttributionMessage, ChatTokenOverhead, ChatTokenRole } from './core/tokenAttribution.ts'
 import {
   parseTokenIds,
   tokenizerBundleBytes,
@@ -40,7 +40,7 @@ export async function tokenize(
 ): Promise<Tokenization> {
   if (text.length === 0) return {
     direction: 'encode', input: text, ids: [], pieces: [], decoded: '', segments: [], mapping: 'Exact', flags: [],
-    overhead: null,
+    overhead: null, roles: null,
   }
   if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new Error('输入超过 64 KiB 上限。')
   await ensureLoaded(snapshot, tokenizerFile, configFile, signal)
@@ -191,6 +191,7 @@ function validateTokenization(value: unknown, requiresOverhead: boolean): Tokeni
     && typeof item.isSpecial === 'boolean' && (item.specialName === null || typeof item.specialName === 'string')
   if (!isUnknownRecord(value)
     || !('overhead' in value)
+    || !('roles' in value)
     || (value.direction !== 'encode' && value.direction !== 'decode')
     || typeof value.input !== 'string'
     || typeof value.decoded !== 'string'
@@ -206,6 +207,11 @@ function validateTokenization(value: unknown, requiresOverhead: boolean): Tokeni
     throw new Error('Tokenizer Worker 返回的 ID、piece 与 flag 数量不一致。')
   }
   const ids = value.ids as number[]
+  const roles = validateChatTokenRoles(
+    value.roles,
+    ids.length,
+    requiresOverhead && value.mapping === 'Exact',
+  )
   const overhead = validateChatTokenOverhead(value.overhead, requiresOverhead, ids.length)
   for (const segment of value.segments) {
     if (!isUnknownRecord(segment)
@@ -221,7 +227,30 @@ function validateTokenization(value: unknown, requiresOverhead: boolean): Tokeni
       throw new Error('Tokenizer Worker 返回的片段结构无效。')
     }
   }
-  return { ...(value as Tokenization), overhead }
+  return { ...(value as Tokenization), overhead, roles }
+}
+
+function validateChatTokenRoles(
+  value: unknown,
+  idCount: number,
+  required: boolean,
+): ChatTokenRole[] | null {
+  if (!Array.isArray(value)) {
+    if (required) throw new Error('Tokenizer Worker 返回的 Exact Chat 结果缺少 roles。')
+    if (value !== null) throw new Error('Tokenizer Worker 返回的 Token roles 结构无效。')
+    return null
+  }
+  if (!required) throw new Error('Tokenizer Worker 返回的结果不应包含 Token roles。')
+  if (value.length !== idCount) throw new Error('Tokenizer Worker 返回的 Token roles 与 ID 数量不一致。')
+  return value.map((role): ChatTokenRole => {
+    const keys = isUnknownRecord(role) ? Object.keys(role).toSorted() : []
+    if (isUnknownRecord(role) && role.kind === 'template' && keys.length === 1) return { kind: 'template' }
+    if (isUnknownRecord(role) && role.kind === 'message' && keys.length === 2
+      && keys.includes('kind') && keys.includes('role') && typeof role.role === 'string') {
+      return { kind: 'message', role: role.role }
+    }
+    throw new Error('Tokenizer Worker 返回的 Token role 结构无效。')
+  })
 }
 
 function validateChatTokenOverhead(value: unknown, required: boolean, idCount: number): ChatTokenOverhead | null {

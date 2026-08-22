@@ -93,18 +93,50 @@ test('Tokenizer Worker tokenizes and decodes back to the input', async ({ page }
   await page.getByRole('button', { name: '渲染并分词' }).click()
   const expectedAuthoritative = 'system=You are concise.;user=Hello;thinking=false;mode=chat;assistant='
   await expect(page.getByLabel('Chat 权威输入')).toHaveText(expectedAuthoritative)
+  await expect(page.getByText('当前映射是 Decoded only，不能按原文划分角色')).toBeVisible()
   await expect(page.getByRole('columnheader', { name: 'Special' })).toBeVisible()
   await expect(page.getByText('Token 数').locator('..').getByText('21')).toBeVisible()
   await expect(page.getByText('正文 Token').locator('..').getByText('5')).toBeVisible()
   await expect(page.getByText('模板开销（近似）').locator('..').getByText('16')).toBeVisible()
   const authoritative = await page.getByLabel('Chat 权威输入').textContent()
   await expect(page.locator('.decoded-text').filter({ hasText: '权威输入：' })).toHaveText(`权威输入：${authoritative}`)
+  const defaultChatRows = page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr')
+  for (let i = 0; i < await defaultChatRows.count(); i++) {
+    await expect(defaultChatRows.nth(i).locator('td').nth(3)).toHaveText('—')
+  }
   expect(requests.filter(request => request.path.startsWith('tokenizer'))).toHaveLength(2)
 
   await page.getByRole('textbox', { name: 'Chat Messages' }).fill('[{"role":"user","content":"{{ 7 * 7 }}"}]')
   await page.getByRole('button', { name: '渲染并分词' }).click()
   await expect(page.getByLabel('Chat 权威输入')).toContainText('{{ 7 * 7 }}')
   await expect(page.getByLabel('Chat 权威输入')).not.toContainText('49')
+  expect(errors).toEqual([])
+})
+
+test('attributes Exact Chat tokens to custom message roles', async ({ page }) => {
+  const errors = collectErrors(page)
+  await installFixtureRoutes(page, { omitIndependentChatTemplate: true })
+  await openFixture(page, 12)
+  await page.getByRole('button', { name: /tokenizer\.json/ }).click()
+  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await page.getByRole('textbox', { name: 'Chat Messages' })
+    .fill('[{"role":"critic","content":"hello worlds"}]')
+  await page.getByRole('button', { name: '渲染并分词' }).click()
+
+  await expect(page.getByLabel('Chat 权威输入')).toHaveText('hello worlds')
+  await expect(page.getByText('Token 数').locator('..').getByText('3')).toBeVisible()
+  await expect(page.getByText('映射').locator('..')).toContainText('Exact')
+  const rows = page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr')
+  await expect(rows).toHaveCount(3)
+  for (let i = 0; i < 3; i++) {
+    await expect(rows.nth(i).locator('td').nth(3)).toHaveText('critic')
+  }
+  const badges = page.locator('.token-role-badge')
+  await expect(badges).toHaveCount(1)
+  await expect(badges).toHaveText(['critic'])
+  await expect(badges).toHaveClass(/role-custom/)
+  await page.locator('.token-pieces button').first().click()
+  await expect(page.locator('.selected-token')).toContainText('critic')
   expect(errors).toEqual([])
 })
 
@@ -272,7 +304,7 @@ test('opens every supported local directory reader without network upload', asyn
   await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
   await page.getByRole('tab', { name: '试验台' }).click()
   await page.getByRole('button', { name: '渲染', exact: true }).click()
-  await expect(page.getByRole('table', { name: 'Template 输出结构' })).toContainText('mode=basic')
+  await expect(page.getByRole('table', { name: 'Template 输出结构' })).toContainText('You are concise.')
 
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
   await expect(page.getByText('Model Type').locator('..')).toContainText('WordPiece')
@@ -939,11 +971,11 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
   expect(errors).toEqual([])
 })
 
-async function openFixture(page: Page) {
+async function openFixture(page: Page, expectedFileCount = 13) {
   await page.goto('/')
   await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).fill(fixtureModelId)
   await page.getByRole('button', { name: '打开' }).click()
-  await expect(page.getByText(/公开仓库 · SHA 0123456 · 13 个文件/)).toBeVisible()
+  await expect(page.getByText(new RegExp(`公开仓库 · SHA 0123456 · ${expectedFileCount} 个文件`))).toBeVisible()
 }
 
 function collectErrors(page: Page): string[] {

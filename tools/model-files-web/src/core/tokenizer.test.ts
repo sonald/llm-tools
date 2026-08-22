@@ -27,6 +27,7 @@ test('groups partial byte decoding without losing token IDs', () => {
   assert.equal(result.direction, 'encode')
   assert.equal(result.input, '😀!')
   assert.equal(result.overhead, null)
+  assert.equal(result.roles, null)
 })
 
 test('keeps combining marks and ZWJ emoji inside grapheme-safe groups', () => {
@@ -150,6 +151,7 @@ test('keeps large tokenizations bounded without per-token decode', () => {
   assert.equal(result.mapping, 'Exact')
   assert.deepEqual(result.flags, flags)
   assert.equal(result.overhead, overhead)
+  assert.equal(result.roles, null)
 })
 
 test('rejects token piece arrays that lose ID positions', () => {

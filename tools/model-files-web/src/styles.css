@@ -289,6 +289,16 @@ tr:last-child td { border-bottom: 0; }
 .token-pieces button:nth-child(5n + 4) { background: #ddd6fe; }
 .token-pieces button:nth-child(5n + 5) { background: #fecdd3; }
 .token-pieces button.selected { outline: 2px solid var(--accent); }
+.token-role-badge {
+  display: inline-block; margin-right: 5px; padding: 1px 5px; border-radius: 99px;
+  font-size: 9px; font-weight: 700; line-height: 1.35; vertical-align: 1px;
+}
+.role-system { color: #7f1d1d; background: #fee2e2; }
+.role-user { color: #164e63; background: #cffafe; }
+.role-assistant { color: #14532d; background: #dcfce7; }
+.role-tool { color: #78350f; background: #fef3c7; }
+.role-template { color: #374151; background: #e5e7eb; }
+.role-custom { color: #4c1d95; background: #ede9fe; }
 .selected-token { display: flex; align-items: center; gap: 18px; margin: 0 20px 12px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; }
 .selected-token div { display: flex; gap: 5px; }.selected-token dt { color: var(--muted); font-size: 9px; }.selected-token dd { margin: 0; font: 10px var(--mono); }
 .selected-token button { margin-left: auto; }

@@ -48,6 +48,7 @@ type FixtureOptions = {
   manifestFailures?: number
   rangeBehavior?: 'valid' | 'http200'
   includeBoundaryFiles?: boolean
+  omitIndependentChatTemplate?: boolean
 }
 
 const tokenizer = JSON.stringify({
@@ -89,7 +90,7 @@ const tokenizerConfig = JSON.stringify({
   tokenizer_class: 'BertTokenizer',
   unk_token: '[UNK]',
   model_max_length: 128,
-  chat_template: 'embedded={{ messages | length }}',
+  chat_template: '{{ messages[0].content }}',
 })
 
 const chatTemplate = `{%- for message in messages -%}
@@ -159,7 +160,11 @@ export async function installFixtureRoutes(page: Page, options: FixtureOptions =
         return
       }
       const modelId = decodeURIComponent(url.pathname.slice('/api/models/'.length))
-      await route.fulfill({ json: manifest(modelId, options.includeBoundaryFiles ?? false) })
+      await route.fulfill({ json: manifest(
+        modelId,
+        options.includeBoundaryFiles ?? false,
+        options.omitIndependentChatTemplate ?? false,
+      ) })
       return
     }
     await fulfillFile(route, requests, options.rangeBehavior ?? 'valid')
@@ -167,12 +172,14 @@ export async function installFixtureRoutes(page: Page, options: FixtureOptions =
   return requests
 }
 
-function manifest(modelId: string, includeBoundaryFiles: boolean) {
+function manifest(modelId: string, includeBoundaryFiles: boolean, omitChatTemplate: boolean) {
   return {
     id: modelId,
     sha: modelId === fixtureModelId ? fixtureRevision : 'f'.repeat(40),
     siblings: [
-      ...[...files].map(([rfilename, body]) => ({ rfilename, size: body.byteLength, blobId: rfilename })),
+      ...[...files]
+        .filter(([rfilename]) => !(omitChatTemplate && rfilename === 'chat_template.jinja'))
+        .map(([rfilename, body]) => ({ rfilename, size: body.byteLength, blobId: rfilename })),
       ...(includeBoundaryFiles ? [
         { rfilename: 'oversized.json', size: 32 * 1024 * 1024 + 1, blobId: 'oversized' },
         { rfilename: 'pytorch_model.bin', size: 1, blobId: 'locked' },

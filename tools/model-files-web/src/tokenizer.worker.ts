@@ -9,7 +9,12 @@ import {
   tokenFlag,
   type SpecialTokenIndex,
 } from './core/tokenizer.ts'
-import { chatContentProbe, chatTokenOverhead, type ChatAttributionMessage } from './core/tokenAttribution.ts'
+import {
+  chatContentProbe,
+  chatTokenOverhead,
+  chatTokenRoles,
+  type ChatAttributionMessage,
+} from './core/tokenAttribution.ts'
 
 type Request =
   | { id: number; type: 'load'; tokenizerData: ArrayBuffer; configData: ArrayBuffer | null }
@@ -80,7 +85,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       const encoding = encodeText(activeTokenizer, rendered, 'Chat 渲染输入')
       const probeEncoding = encodeText(activeTokenizer, probe, 'Chat 正文 probe')
       const decoded = encoding.ids.length === 0 ? '' : activeTokenizer.decode(encoding.ids, { skip_special_tokens: false })
-      const result = buildTokenization(
+      const baseResult = buildTokenization(
         rendered,
         encoding.ids,
         encoding.tokens,
@@ -90,6 +95,10 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         'encode',
         chatTokenOverhead(encoding.ids.length, probeEncoding.ids.length, probe),
       )
+      const result = {
+        ...baseResult,
+        roles: chatTokenRoles(rendered, request.attribution, baseResult),
+      }
       self.postMessage({ id: request.id, ok: true, value: result })
       return
     }
