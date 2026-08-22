@@ -4,10 +4,31 @@ import { join } from 'node:path'
 
 export const fixtureModelId = 'fixture/model'
 export const fixtureRevision = '0123456789abcdef0123456789abcdef01234567'
-export const pythonReaderSource = `def greet(name):
-    return f"hello {name}"
+export const pythonReaderSource = `class Model:
+    def greet(self, name):
+        if name:
+            return f"hello {name}"
+        return "hello"
 `
+export const yamlReaderSource = `model:
+  name: demo
+  layers:
+    - conv
+    - linear
+count: 2`
+export const jsonFoldingSource = `{
+  "a": [
+    1,
+    2
+  ],
+  "b": { "ok": true }
+}`
 export const scssReaderSource = `.${'a-b-'.repeat(8000)}`
+const boundaryPrefix = `if ready:
+    pass
+`
+const boundaryPythonSource = boundaryPrefix + '#'.repeat(128 * 1024 - new TextEncoder().encode(boundaryPrefix).byteLength)
+const boundaryLargePythonSource = boundaryPythonSource + '#'
 
 export type RequestRecord = {
   path: string
@@ -107,6 +128,10 @@ const files = new Map<string, Uint8Array>([
 
 const localReaderFiles = new Map<string, Uint8Array>([
   ['reader.py', bytes(pythonReaderSource)],
+  ['reader.yaml', bytes(yamlReaderSource)],
+  ['folding.json', bytes(jsonFoldingSource)],
+  ['boundary.py', bytes(boundaryPythonSource)],
+  ['boundary-large.py', bytes(boundaryLargePythonSource)],
   ['reader.scss', bytes(scssReaderSource)],
   ['valid.pdf', pdfFixture()],
   ['invalid.pdf', bytes('This file deliberately lacks a PDF signature.')],

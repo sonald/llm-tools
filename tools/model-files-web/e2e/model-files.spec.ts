@@ -129,7 +129,7 @@ test('opens every supported local directory reader without network upload', asyn
   const picker = page.getByLabel('选择本地目录')
   await picker.setInputFiles(localFixture)
 
-  await expect(page.getByText('本地目录 · live · 18 个文件')).toBeVisible()
+  await expect(page.getByText('本地目录 · live · 22 个文件')).toBeVisible()
   await expect(page).toHaveURL('http://127.0.0.1:5173/')
   await expect(page.getByRole('link', { name: '源站' })).toBeHidden()
   await expect(page.getByRole('heading', { name: 'Model Config' })).toBeVisible()
@@ -237,6 +237,56 @@ test('dispatches local Python and PDF readers safely', async ({ page }, testInfo
   await expect(binaryError).toBeVisible()
   await expect(binaryError.locator('..')).toContainText(/NUL|二进制/)
   await expect(page.locator('.source-reader')).toHaveCount(0)
+  expect(errors).toEqual([])
+})
+
+test('folds Python YAML and JSON while preserving the full source', async ({ page }, testInfo) => {
+  const errors = collectErrors(page)
+  const localFixture = testInfo.outputPath('folding-local-fixture')
+  await writeFixtureDirectory(localFixture)
+  await page.goto('/')
+  await page.getByLabel('选择本地目录').setInputFiles(localFixture)
+
+  await page.getByRole('button', { name: /^reader\.py/ }).click()
+  await expect(page.getByRole('button', { name: '折叠第 1 行结构' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '折叠第 2 行结构' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '折叠第 3 行结构' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '全部展开' })).toBeVisible()
+  await page.getByRole('button', { name: '折叠第 1 行结构' }).click()
+  await expect(page.getByRole('button', { name: '展开第 1 行结构' })).toHaveAttribute(
+    'data-hidden-lines',
+    '4',
+  )
+  await expect(page.locator('.source-reader .source-line[hidden]')).toHaveCount(4)
+  await expect(page.getByRole('button', { name: '折叠第 2 行结构' })).toBeHidden()
+  const sourceReader = page.locator('.source-reader')
+  expect(await sourceReader.textContent()).toBe(pythonReaderSource)
+
+  await page.getByRole('button', { name: '全部展开' }).click()
+  await expect(page.locator('.source-reader .source-line[hidden]')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '折叠第 2 行结构' })).toBeVisible()
+
+  await page.getByRole('button', { name: /^reader\.yaml/ }).click()
+  await expect(page.getByRole('button', { name: '折叠第 1 行结构' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '折叠第 3 行结构' })).toBeVisible()
+  await page.getByRole('button', { name: '折叠第 3 行结构' }).click()
+  await expect(page.getByRole('button', { name: '展开第 3 行结构' })).toHaveAttribute(
+    'data-hidden-lines',
+    '2',
+  )
+
+  await page.getByRole('button', { name: /^folding\.json/ }).click()
+  await page.getByRole('button', { name: '原文' }).click()
+  await expect(page.locator('.source-reader')).toHaveAttribute('data-language', 'json')
+  await expect(page.getByRole('button', { name: '折叠第 1 行结构' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '折叠第 2 行结构' })).toBeVisible()
+
+  await page.getByRole('button', { name: /^boundary\.py/ }).click()
+  await expect(page.getByRole('button', { name: '折叠第 1 行结构' })).toBeVisible()
+  await page.getByRole('button', { name: /^boundary-large\.py/ }).click()
+  await expect(page.getByRole('button', { name: /第 \d+ 行结构/ })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '全部展开' })).toHaveCount(0)
+  await expect(page.getByRole('table', { name: '行列表' })).toBeVisible()
   expect(errors).toEqual([])
 })
 

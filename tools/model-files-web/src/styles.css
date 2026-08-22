@@ -112,8 +112,35 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .reader-layout { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.source-code-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.fold-toolbar { flex: none; display: flex; justify-content: flex-end; padding: 7px 20px; border-bottom: 1px solid var(--line); }
+.fold-toolbar button {
+  height: 25px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel);
+  font-size: 10.5px; cursor: pointer;
+}
 .source-reader { min-height: 0; margin: 0; overflow: auto; padding: 18px 20px 70px; background: #fff; color: #30343a; font: 11.5px/1.65 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-.source-reader.standalone { flex: 1; border-top: 1px solid var(--line); }
+.source-reader.standalone { flex: 1; border-top: 0; }
+.source-line { position: relative; display: block; padding-left: 34px; }
+.source-line[hidden] { display: none; }
+.fold-markers {
+  position: absolute; top: 0; left: 0; z-index: 1; display: inline-flex; gap: 2px; align-items: center;
+  width: 32px; height: 100%; transform: translateY(2px);
+}
+.fold-marker {
+  position: relative; flex: none; width: 14px; height: 17px; padding: 0; border: 0; border-radius: 4px;
+  background: transparent; cursor: pointer;
+}
+.fold-marker::before {
+  content: ""; position: absolute; top: 6px; left: 5px; width: 5px; height: 5px;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg);
+}
+.fold-marker.collapsed::before { left: 4px; top: 5px; transform: rotate(-45deg); }
+.fold-marker.collapsed::after {
+  content: attr(data-hidden-lines); position: absolute; top: -3px; left: 15px; color: var(--muted);
+  font: 650 9px/1.65 var(--mono);
+}
+.fold-marker:hover { background: var(--accent-soft); }
+.fold-marker:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .source-reader {
   --syntax-comment: #66707d;
   --syntax-string: #08743f;
@@ -317,6 +344,7 @@ tr:last-child td { border-bottom: 0; }
   .file-row.selected { color: #fff; background: #426ebd; }
   .repository-status i { box-shadow: 0 0 0 3px #22452f; }
   .format-chip { background: #343841; }
+  .fold-toolbar button { background: #191b20; }
   .source-reader, table, .input-panel, .result-panel { background: #1b1e23; color: #e4e7ec; }
   .source-reader {
     --syntax-comment: #98a2af;

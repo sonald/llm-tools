@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { formatBytes, type RepositorySnapshot } from './core/huggingface.ts'
+import { foldRanges, type FoldRange } from './core/sourceFolding.ts'
 import { jsonRows, repositoryMarkdownUrl, summarizeJson, textLines, visibleRows } from './core/readers.ts'
 
 type Props = {
@@ -47,7 +48,7 @@ function JsonInspection({ path, content, parsed, bytesRead }: Props) {
       {perspective === 'fields' ? (
         <ProgressiveRows rows={matching} query={query} setQuery={setQuery} limit={limit} setLimit={setLimit} />
       ) : null}
-      {perspective === 'raw' ? <pre className="source-reader standalone" data-language="json">{content}</pre> : null}
+      {perspective === 'raw' ? <SourceCode content={content} language="json" bytesRead={bytesRead} /> : null}
     </div>
   )
 }
@@ -129,6 +130,8 @@ export function PdfInspection({ data, bytesRead }: { data: ArrayBuffer; bytesRea
 
 type SourceSegment = { text: string; className: string }
 
+const richLimitBytes = 128 * 1024
+
 function validateReply(reply: unknown, expectedContent: string) {
   if (typeof reply !== 'object' || reply === null || !('ok' in reply) || reply.ok !== true) return null
   const segments = (reply as { segments?: unknown }).segments
@@ -154,8 +157,29 @@ export function SourceInspection({
   language: string
   bytesRead: number
 }) {
+  return (
+    <div className="reader-layout">
+      <ReaderHeader bytesRead={bytesRead} result="UTF-8 有效" />
+      <SourceCode content={content} language={language} bytesRead={bytesRead} />
+    </div>
+  )
+}
+
+function SourceCode({
+  content,
+  language,
+  bytesRead,
+}: {
+  content: string
+  language: string
+  bytesRead: number
+}) {
   const [segments, setSegments] = useState<SourceSegment[] | null>(null)
+  const rich = bytesRead <= richLimitBytes
+  const ranges = useMemo(() => (rich ? foldRanges(content, language) : []), [content, language, rich])
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   useEffect(() => {
+    if (!rich) return
     setSegments(null)
     let active = true
     let worker: Worker | null = new Worker(new URL('./sourceHighlight.worker.ts', import.meta.url), { type: 'module' })
@@ -179,21 +203,132 @@ export function SourceInspection({
       active = false
       terminate()
     }
-  }, [content, language])
+  }, [content, language, rich])
+  useEffect(() => setCollapsed(new Set()), [content, language])
+
+  const hiddenLines = useMemo(() => {
+    const hidden = new Set<number>()
+    for (const range of ranges) {
+      if (!collapsed.has(foldKey(range))) continue
+      for (let line = range.startLine + 1; line <= range.endLine; line += 1) hidden.add(line)
+    }
+    return hidden
+  }, [collapsed, ranges])
+
+  const markersByLine = useMemo(() => {
+    const markers = new Map<number, FoldRange[]>()
+    for (const range of ranges) {
+      const current = markers.get(range.startLine)
+      markers.set(range.startLine, current === undefined ? [range] : [...current, range])
+    }
+    return markers
+  }, [ranges])
+
+  const lines = useMemo(() => splitSourceLines(content, segments), [content, segments])
+  const showToolbar = ranges.length > 0
+
+  if (!rich) {
+    return (
+      <div className="source-code-panel">
+        <pre className="source-reader standalone" data-language={language} data-highlighted="false">{content}</pre>
+      </div>
+    )
+  }
+
   return (
-    <div className="reader-layout">
-      <ReaderHeader bytesRead={bytesRead} result="UTF-8 有效" />
+    <div className="source-code-panel">
+      {showToolbar ? (
+        <div className="fold-toolbar">
+          <button type="button" onClick={() => setCollapsed(new Set())}>全部展开</button>
+        </div>
+      ) : null}
       <pre
         className="source-reader standalone"
         data-language={language}
         data-highlighted={segments !== null}
-      >{segments?.map((segment, index) => (
-        <span key={index} className={segment.className}>{segment.text}</span>
-      )) ?? content}</pre>
+      >
+        {lines.map((line, index) => {
+          const lineNumber = index + 1
+          const markers = markersByLine.get(lineNumber)
+          return (
+            <span className="source-line" data-line={lineNumber} hidden={hiddenLines.has(lineNumber)} key={lineNumber}>
+              {markers !== undefined ? (
+                <span className="fold-markers">
+                  {markers.map(range => {
+                    const key = foldKey(range)
+                    const isCollapsed = collapsed.has(key)
+                    return (
+                      <button
+                        aria-label={`${isCollapsed ? '展开' : '折叠'}第 ${range.startLine} 行结构`}
+                        className={`fold-marker${isCollapsed ? ' collapsed' : ''}`}
+                        data-collapsed={isCollapsed || undefined}
+                        data-hidden-lines={range.endLine - range.startLine}
+                        key={key}
+                        onClick={() => toggleFold(setCollapsed, range)}
+                        title={`${isCollapsed ? '展开' : '折叠'}第 ${range.startLine} 行结构`}
+                        type="button"
+                      />
+                    )
+                  })}
+                </span>
+              ) : null}
+              {line.map((piece, pieceIndex) => piece.className === ''
+                ? <span key={pieceIndex}>{piece.text}</span>
+                : <span className={piece.className} key={pieceIndex}>{piece.text}</span>)}
+            </span>
+          )
+        })}
+      </pre>
     </div>
   )
 }
 
+type SourcePiece = { text: string; className: string }
+
+function foldKey(range: FoldRange) {
+  return `${range.startLine}:${range.endLine}`
+}
+
+function toggleFold(
+  setCollapsed: (update: (current: Set<string>) => Set<string>) => void,
+  range: FoldRange,
+) {
+  setCollapsed(current => {
+    const next = new Set(current)
+    const key = foldKey(range)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    return next
+  })
+}
+
+function splitSourceLines(content: string, segments: SourceSegment[] | null): Array<Array<SourcePiece>> {
+  const pieces = segments ?? [{ text: content, className: '' }]
+  const lines: Array<Array<SourcePiece>> = [[]]
+
+  const appendPiece = (text: string, className: string) => {
+    const currentLine = lines[lines.length - 1]
+    const lastPiece = currentLine[currentLine.length - 1]
+    if (lastPiece && lastPiece.className === className) lastPiece.text += text
+    else currentLine.push({ text, className })
+  }
+
+  for (const segment of pieces) {
+    let start = 0
+    while (start < segment.text.length) {
+      const newlineIndex = segment.text.indexOf('\n', start)
+      if (newlineIndex === -1) {
+        appendPiece(segment.text.slice(start), segment.className)
+        break
+      }
+      appendPiece(segment.text.slice(start, newlineIndex + 1), segment.className)
+      lines.push([])
+      start = newlineIndex + 1
+    }
+  }
+
+  return lines
+}
 
 function ReaderHeader({ bytesRead, result }: { bytesRead: number; result: string }) {
   return (
