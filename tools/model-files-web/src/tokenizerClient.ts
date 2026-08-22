@@ -15,6 +15,7 @@ import type { ChatTemplateCatalog, ChatTemplateEntry, ChatTemplateSource } from 
 type Reply = { id: number; ok: true; value: unknown } | { id: number; ok: false; error: string }
 type Request =
   | { id: number; type: 'load'; tokenizerData: ArrayBuffer; configData: ArrayBuffer | null }
+  | { id: number; type: 'inspect-structure'; tokenizerData: ArrayBuffer }
   | { id: number; type: 'tokenize'; text: string }
   | {
     id: number
@@ -90,6 +91,24 @@ export async function inspectTokenizer(
   signal?: AbortSignal,
 ): Promise<TokenizerStructure> {
   return await ensureLoaded(snapshot, tokenizerFile, configFile, signal)
+}
+
+export async function inspectTokenizerData(
+  tokenizerData: ArrayBuffer,
+  signal?: AbortSignal,
+  onStartRequest?: () => void,
+): Promise<TokenizerStructure> {
+  if (tokenizerData.byteLength > 32 * 1024 * 1024) throw new Error('Tokenizer 数据超过 32 MiB 上限。')
+  signal?.throwIfAborted()
+  const activeGeneration = generation
+  onStartRequest?.()
+  const reply = await request({
+    id: ++nextId,
+    type: 'inspect-structure',
+    tokenizerData,
+  }, [tokenizerData])
+  if (signal?.aborted || generation !== activeGeneration) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
+  return validateTokenizerStructure(reply)
 }
 
 export async function searchTokenizerVocabulary(

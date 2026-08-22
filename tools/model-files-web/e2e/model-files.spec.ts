@@ -979,6 +979,76 @@ test('fails closed when a source returns HTTP 200 for a range', async ({ page })
   await expect(page.getByText(/未确认 Range/)).toBeVisible()
 })
 
+test('consistency background acquires materials once and reports repository warnings', async ({ page }) => {
+  const errors = collectErrors(page)
+  const requests = await installFixtureRoutes(page)
+  await openFixture(page)
+  const badge = page.getByRole('button', { name: '查看仓库一致性报告' })
+
+  await expect(badge).toHaveText('2 项警告')
+  await expect(badge).toHaveAttribute('data-consistency-state', 'warnings')
+  await expect(badge).toHaveAttribute('aria-expanded', 'false')
+  await badge.click()
+  await expect(badge).toHaveAttribute('aria-expanded', 'true')
+  const report = page.getByRole('dialog', { name: '仓库一致性报告' })
+  await expect(report).toBeVisible()
+  await expect(report).toContainText('词表大小不一致')
+  await expect(report).toContainText('EOS Token 不一致')
+  await expect(report).toContainText('上下文长度声明不同')
+  const embedded = page.getByRole('region', { name: 'Config 一致性报告' })
+  await expect(embedded).toBeVisible()
+  await expect(embedded.locator('[data-material]')).toHaveCount(8)
+  const readerPerspective = page.locator('.detail-reader-stack').getByRole('group', { name: '阅读视图' })
+  await expect(readerPerspective).toBeVisible()
+  for (const button of ['概览', '全部字段', '原文']) {
+    await expect(readerPerspective.getByRole('button', { name: button, exact: true })).toBeVisible()
+  }
+  const closeButton = report.getByRole('button', { name: '关闭' })
+  await expect(closeButton).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(badge).toHaveAttribute('aria-expanded', 'false')
+  await expect(report).toHaveCount(0)
+  await expect(badge).toBeFocused()
+  await badge.click()
+
+  await page.getByRole('button', { name: /^generation_config\.json/ }).click()
+  await expect(page.getByRole('heading', { name: 'Generation Config' })).toBeVisible()
+  await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
+  await expect(page.getByRole('heading', { name: 'Tokenizer Config' })).toBeVisible()
+  await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
+  await expect(page.getByText('Model Type').locator('..')).toContainText('WordPiece')
+  for (const path of ['config.json', 'generation_config.json', 'tokenizer_config.json', 'tokenizer.json', 'chat_template.jinja']) {
+    expect(requests.filter(request => request.path === path)).toHaveLength(1)
+  }
+  expect(requests.some(request => request.path === 'model.safetensors')).toBe(false)
+  expect(requests.some(request => request.path === 'model.gguf')).toBe(false)
+
+  await badge.click()
+  await expect(report).toContainText('未在当前会话打开')
+
+  await page.getByRole('button', { name: /^model\.gguf/ }).click()
+  await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible()
+  expect(requests.filter(request => request.path === 'model.gguf')).toEqual([
+    expect.objectContaining({ range: 'bytes=0-23', responseBytes: 24, status: 206 }),
+  ])
+  await badge.click()
+  const reopened = page.getByRole('dialog', { name: '仓库一致性报告' })
+  await expect(reopened).toContainText('Web 仅读取 24-byte prefix，缺少 metadata/tensor directory。')
+  await expect(reopened.locator('[data-material="gguf"]')).toContainText('跳过：Web 仅读取 24-byte prefix，缺少 metadata/tensor directory。')
+  await expect(reopened.locator('[data-finding-id^="gguf-"]')).toHaveCount(0)
+
+  await page.getByRole('button', { name: /^generation_config\.json/ }).click()
+  await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
+  await page.getByRole('button', { name: /^model\.gguf/ }).click()
+  for (const path of ['config.json', 'generation_config.json', 'tokenizer_config.json', 'tokenizer.json', 'chat_template.jinja']) {
+    expect(requests.filter(request => request.path === path)).toHaveLength(1)
+  }
+  expect(requests.filter(request => request.path === 'model.gguf')).toEqual([
+    expect.objectContaining({ range: 'bytes=0-23', responseBytes: 24, status: 206 }),
+  ])
+  expect(errors).toEqual([])
+})
+
 test('rejects oversized readers and keeps unsupported weights locked without content requests', async ({ page }) => {
   const contentRequests: string[] = []
   page.on('request', request => {
@@ -1014,6 +1084,126 @@ test('a newer repository request cancels and wins over a slow request', async ({
 
   await expect(page.getByText(/公开仓库 · SHA 0123456 · 13 个文件/)).toBeVisible()
   await expect(repository).toHaveValue(fixtureModelId)
+})
+
+test('latest empty repository replaces delayed full consistency inspection', async ({ page }) => {
+  const errors = collectErrors(page)
+  const requests = await installFixtureRoutes(page, {
+    delayedContentModelId: fixtureModelId,
+    contentDelayMs: 250,
+  })
+  await page.goto('/')
+  const repository = page.getByRole('combobox', { name: 'Hugging Face 仓库' })
+  const open = page.getByRole('button', { name: /打开/ })
+
+  const configRequest = page.waitForRequest(request => new URL(request.url()).pathname
+    === `/${fixtureModelId}/resolve/${fixtureRevision}/config.json`)
+  await repository.fill(fixtureModelId)
+  await open.click()
+  await Promise.all([
+    configRequest,
+    expect(page.getByText(/公开仓库 · SHA 0123456 · 13 个文件/)).toBeVisible(),
+  ])
+  const initialConfig = page.getByRole('button', { name: /^config\.json/ })
+  await expect(initialConfig).toBeVisible()
+  await expect(initialConfig).toHaveAttribute('aria-current', 'true')
+  await expect(page.locator('.detail-body')).toHaveAttribute('aria-busy', 'true')
+
+  await repository.fill('fixture/empty')
+  await open.click()
+
+  await expect(page.getByText(/公开仓库 · SHA fffffff · 1 个文件/)).toBeVisible()
+  await delay(300)
+  await expect(page.getByText(/公开仓库 · SHA fffffff · 1 个文件/)).toBeVisible()
+  await expect(page.getByRole('combobox', { name: 'Hugging Face 仓库' })).toHaveValue('fixture/empty')
+  await expect(page).toHaveURL(url => url.pathname === '/'
+    && url.searchParams.get('repo') === 'fixture/empty'
+    && url.searchParams.get('file') === 'README.md')
+  await expect(page.getByRole('button', { name: /^README\.md/ })).toHaveAttribute('aria-current', 'true')
+  const badge = page.getByRole('button', { name: '查看仓库一致性报告' })
+  await expect(badge).toHaveText('材料不足')
+  await badge.click()
+  const report = page.getByRole('dialog', { name: '仓库一致性报告' })
+  await expect(report).toContainText('缺少模型配置')
+  await expect(report.locator('[data-material="config"]')).toContainText('缺失')
+  await expect(report).not.toContainText('词表大小不一致')
+  await expect(report).not.toContainText('EOS Token 不一致')
+  for (const path of ['generation_config.json', 'tokenizer_config.json', 'tokenizer.json', 'chat_template.jinja']) {
+    expect(requests.filter(request => request.path === path)).toHaveLength(0)
+  }
+  expect(requests.filter(request => request.path === 'config.json'))
+    .toEqual([expect.objectContaining({ status: 200 })])
+  expect(errors).toEqual([])
+})
+
+test('external tokenizer cancellation still publishes partial consistency', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', 'The shared Worker cleanup path is covered on Chromium.')
+  const errors = collectErrors(page)
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker
+    Object.defineProperty(window, 'Worker', {
+      configurable: true,
+      value: new Proxy(NativeWorker, {
+        construct(Target, args) {
+          const worker = Reflect.construct(Target, args) as Worker
+          const originalPostMessage = worker.postMessage.bind(worker)
+          let terminated = false
+          const pendingTimers = new Set<number>()
+
+          worker.postMessage = (message: unknown, transfer?: Transferable[] | StructuredSerializeOptions) => {
+            if (!(typeof message === 'object' && message !== null
+              && (message as { type?: unknown }).type === 'inspect-structure')) {
+              if (Array.isArray(transfer)) originalPostMessage(message, transfer)
+              else if (transfer === undefined) originalPostMessage(message)
+              else originalPostMessage(message, transfer)
+              return
+            }
+
+            document.documentElement.dataset.testInspectWorkerPending = 'true'
+            const timer = window.setTimeout(() => {
+              pendingTimers.delete(timer)
+              if (terminated) return
+              try {
+                if (Array.isArray(transfer)) originalPostMessage(message, transfer)
+                else if (transfer === undefined) originalPostMessage(message)
+                else originalPostMessage(message, transfer)
+              } catch {
+                // The real Worker may have been terminated during the delay.
+              }
+            }, 300)
+            pendingTimers.add(timer)
+          }
+
+          const originalTerminate = worker.terminate.bind(worker)
+          worker.terminate = () => {
+            terminated = true
+            for (const timer of pendingTimers) clearTimeout(timer)
+            pendingTimers.clear()
+            return originalTerminate()
+          }
+          return worker
+        },
+      }),
+    })
+  })
+  await installFixtureRoutes(page)
+  await page.goto('/')
+  await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).fill(fixtureModelId)
+  await page.getByRole('button', { name: /打开/ }).click()
+
+  await expect(page.locator('html')).toHaveAttribute('data-test-inspect-worker-pending', 'true')
+  await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
+  await page.getByRole('button', { name: /^config\.json/ }).click()
+  const badge = page.getByRole('button', { name: '查看仓库一致性报告' })
+  await expect(badge).toHaveText('1 项警告')
+  await badge.click()
+  const report = page.getByRole('dialog', { name: '仓库一致性报告' })
+  await expect(report).not.toContainText('词表大小不一致')
+  await expect(report).toContainText('EOS Token 不一致')
+  await expect(report.locator('[data-material="tokenizer"]')).toContainText('失败：Tokenizer 请求已取消。')
+  await expect(report.locator('[data-material="config"]')).toContainText('已检查')
+  await expect(report.locator('[data-material="chatTemplates"]')).toContainText('已检查')
+  expect(errors).toEqual([])
 })
 
 test('restores, refreshes, and navigates shareable repository URLs', async ({ page }) => {
@@ -1052,6 +1242,7 @@ test('filters locally, avoids duplicate reads, and retries a failed manifest', a
   await page.getByRole('button', { name: '重试' }).press('Enter')
   await expect(page.getByText(/公开仓库 · SHA 0123456 · 13 个文件/)).toBeVisible()
   await expect(page.locator(`datalist option[value="${fixtureModelId}"]`)).toHaveCount(1)
+  await expect(page.getByRole('button', { name: '查看仓库一致性报告' })).toHaveText('2 项警告')
 
   const beforeFilter = requests.length
   await page.getByPlaceholder('筛选文件').fill('config')
@@ -1069,7 +1260,7 @@ test('fails safely for invalid deep-link parameters', async ({ page }) => {
   await installFixtureRoutes(page)
   await page.goto('/?repo=invalid&file=..%2Fsecret')
   await expect(page.getByRole('alert')).toContainText('owner/model')
-  await expect(page.getByRole('heading', { name: '打开模型仓库' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 2, name: '打开模型仓库' })).toBeVisible()
 })
 
 test('keeps controls reachable across target viewports, keyboard, and dark mode', async ({ page }, testInfo) => {
@@ -1142,6 +1333,10 @@ async function openFixture(page: Page, expectedFileCount = 13) {
   await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).fill(fixtureModelId)
   await page.getByRole('button', { name: '打开' }).click()
   await expect(page.getByText(new RegExp(`公开仓库 · SHA 0123456 · ${expectedFileCount} 个文件`))).toBeVisible()
+}
+
+async function delay(milliseconds: number): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, milliseconds))
 }
 
 function collectErrors(page: Page): string[] {

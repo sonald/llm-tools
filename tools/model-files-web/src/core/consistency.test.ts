@@ -5,9 +5,13 @@ import type { ChatTemplateSource } from './chatTemplates.ts'
 import type { AddedTokenSummary, TokenizerStructure } from './tokenizer.ts'
 import {
   analyzeRepositoryConsistency,
+  chatTemplateMaterial,
+  consistencyBadgeState,
+  selectConsistencyFiles,
   type ConsistencyMaterial,
   type RepositoryConsistencyMaterials,
 } from './consistency.ts'
+import type { RepositoryFile } from './huggingface.ts'
 
 const available = <T>(value: T): ConsistencyMaterial<T> => ({ state: 'available', value })
 
@@ -51,6 +55,111 @@ const catalog = (activeId: string | null = null) => ({
   }],
   activeId,
   conflict: false,
+})
+
+const repositoryFile = (path: string): RepositoryFile => ({
+  path,
+  size: 1,
+  hash: null,
+  category: 'configuration',
+})
+
+test('selects consistency files by fixed names, root, reference directory, and path length', () => {
+  const selected = selectConsistencyFiles([
+    repositoryFile('nested/config.json'),
+    repositoryFile('nested/CONFIGURATION.JSON'),
+    repositoryFile('nested/Generation_Config.json'),
+    repositoryFile('nested/tokenizer_config.json'),
+    repositoryFile('nested/tokenizer.json'),
+    repositoryFile('nested/Processor_Config.json'),
+    repositoryFile('nested/chat_template.JINJA'),
+    repositoryFile('config.json'),
+    repositoryFile('generation_config.json'),
+    repositoryFile('tokenizer_config.json'),
+    repositoryFile('tokenizer.json'),
+    repositoryFile('preprocessor_config.json'),
+    repositoryFile('chat_template.jinja'),
+  ])
+
+  assert.deepEqual(Object.values(selected).map(file => file?.path), [
+    'config.json',
+    'generation_config.json',
+    'tokenizer_config.json',
+    'tokenizer.json',
+    undefined,
+    'preprocessor_config.json',
+    'chat_template.jinja',
+  ])
+
+  const nested = selectConsistencyFiles([
+    repositoryFile('nested/adapter_config.json'),
+    repositoryFile('other/preprocessor_config.json'),
+    repositoryFile('other/processor_config.json'),
+    repositoryFile('nested/config.json'),
+  ])
+  assert.equal(nested.adapterConfig?.path, 'nested/adapter_config.json')
+  assert.equal(nested.processorConfig?.path, 'other/processor_config.json')
+
+  const nestedWithoutTokenizerConfig = selectConsistencyFiles([
+    repositoryFile('nested/config.json'),
+    repositoryFile('nested/tokenizer.json'),
+    repositoryFile('zz/tokenizer.json'),
+    repositoryFile('nested/chat_template.jinja'),
+    repositoryFile('z/chat_template.jinja'),
+  ])
+  assert.equal(nestedWithoutTokenizerConfig.tokenizer?.path, 'nested/tokenizer.json')
+  assert.equal(nestedWithoutTokenizerConfig.chatTemplate?.path, 'nested/chat_template.jinja')
+})
+
+test('combines chat template materials with independent Jinja precedence', () => {
+  const config = available({ chat_template: 'config' })
+  const jinja = available('jinja')
+  const merged = chatTemplateMaterial(config, jinja)
+  assert.equal(merged.state, 'available')
+  assert.equal(merged.state === 'available' && merged.value.activeId, 'jinjaFile:default')
+  assert.equal(merged.state === 'available' && merged.value.conflict, true)
+
+  const failed = chatTemplateMaterial({ state: 'failed', message: '读取失败' }, jinja)
+  assert.equal(failed.state, 'available')
+  const failedWithoutJinja = chatTemplateMaterial({ state: 'failed', message: '读取失败' }, { state: 'missing' })
+  assert.deepEqual(failedWithoutJinja, { state: 'failed', message: '读取失败' })
+  assert.deepEqual(chatTemplateMaterial({ state: 'skipped', reason: '跳过' }, jinja), { state: 'skipped', reason: '跳过' })
+  const missingBoth = chatTemplateMaterial({ state: 'missing' }, { state: 'missing' })
+  assert.equal(missingBoth.state, 'available')
+  const jinjaFailure = chatTemplateMaterial(config, { state: 'failed', message: '模板失败' })
+  assert.deepEqual(jinjaFailure, { state: 'failed', message: '模板失败' })
+  const malformed = chatTemplateMaterial(available({ chat_template: 1 }), jinja)
+  assert.equal(malformed.state, 'failed')
+  const emptyJinja = chatTemplateMaterial(available({}), available(' '))
+  assert.equal(emptyJinja.state, 'available')
+  assert.equal(emptyJinja.state === 'available' && activeChatTemplate(emptyJinja.value), null)
+})
+
+test('derives exact consistency badge state and text', () => {
+  assert.deepEqual(consistencyBadgeState(null), { state: 'checking', label: '检查中' })
+  const warning = analyzeRepositoryConsistency(materials({
+    config: available({ vocab_size: 100 }),
+    tokenizerConfig: available({ tokenizer_class: 'X' }),
+    tokenizer: available(tokenizer(99)),
+    chatTemplates: { state: 'missing' },
+  }))
+  assert.deepEqual(consistencyBadgeState(warning), { state: 'warnings', label: `${warning.findings.filter(item => item.severity === 'warning').length} 项警告` })
+
+  const consistent = analyzeRepositoryConsistency(materials({
+    config: available({ vocab_size: 100 }),
+    tokenizerConfig: available({ tokenizer_class: 'X' }),
+    tokenizer: available(tokenizer(100)),
+    chatTemplates: available(catalog('jinjaFile:default')),
+  }))
+  assert.deepEqual(consistencyBadgeState(consistent), { state: 'consistent', label: '一致' })
+
+  const insufficient = analyzeRepositoryConsistency(materials({
+    config: available({}),
+    tokenizerConfig: available({ tokenizer_class: 'X' }),
+    tokenizer: available(tokenizer()),
+    chatTemplates: { state: 'missing' },
+  }))
+  assert.deepEqual(consistencyBadgeState(insufficient), { state: 'insufficient', label: '材料不足' })
 })
 
 test('builds identity fields with fixed order, aliases, adapters, and processor sizes', () => {

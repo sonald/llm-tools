@@ -190,6 +190,8 @@ export function loadLocalDirectory(selection: Iterable<File>): LocalDirectorySna
   }
 }
 
+const wholeFileCache = new WeakMap<RepositorySnapshot, Map<string, ArrayBuffer>>()
+
 export async function readWholeFile(
   snapshot: RepositorySnapshot,
   file: RepositoryFile,
@@ -198,6 +200,27 @@ export async function readWholeFile(
 ): Promise<ArrayBuffer> {
   if (file.size === null) throw new Error('来源没有提供文件大小，已拒绝全文读取。')
   if (file.size > maximumBytes) throw new Error(`文件超过 ${formatBytes(maximumBytes)} 阅读上限。`)
+  signal?.throwIfAborted()
+  const cached = wholeFileCache.get(snapshot)?.get(file.path)
+  if (cached !== undefined) {
+    signal?.throwIfAborted()
+    return cached.slice(0)
+  }
+  const data = await readUncachedWholeFile(snapshot, file, maximumBytes, signal)
+  signal?.throwIfAborted()
+  if (data.byteLength !== file.size) throw new Error(`文件响应字节数为 ${data.byteLength}，与声明的 ${file.size} 不一致。`)
+  const cache = wholeFileCache.get(snapshot) ?? new Map()
+  cache.set(file.path, data)
+  wholeFileCache.set(snapshot, cache)
+  return data.slice(0)
+}
+
+async function readUncachedWholeFile(
+  snapshot: RepositorySnapshot,
+  file: RepositoryFile,
+  maximumBytes: number,
+  signal?: AbortSignal,
+): Promise<ArrayBuffer> {
   if (snapshot.source === 'local') {
     const blob = localFile(snapshot, file)
     signal?.throwIfAborted()
@@ -208,9 +231,7 @@ export async function readWholeFile(
   }
   const response = await fetch(contentUrl(snapshot, file), requestOptions(signal))
   if (!response.ok) throw new Error(`文件请求失败：HTTP ${response.status}`)
-  const data = await readBounded(response, maximumBytes)
-  if (data.byteLength !== file.size) throw new Error(`文件响应字节数为 ${data.byteLength}，与声明的 ${file.size} 不一致。`)
-  return data
+  return await readBounded(response, maximumBytes)
 }
 
 export async function readExactRange(

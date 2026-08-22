@@ -237,6 +237,55 @@ test('rejects a whole-file response whose byte length differs from its size', as
   })
 })
 
+test('caches successful whole files and returns independent copies', async () => {
+  const isolated = { ...snapshot }
+  let requests = 0
+  const body = new Uint8Array(100)
+  body.set([1, 2, 3])
+  await withFetch(async () => {
+    requests += 1
+    return new Response(body)
+  }, async () => {
+    const first = await readWholeFile(isolated, file)
+    new Uint8Array(first).set([9], 0)
+    const second = await readWholeFile(isolated, file)
+    assert.equal(requests, 1)
+    assert.deepEqual([...new Uint8Array(second).slice(0, 3)], [1, 2, 3])
+    assert.equal(new Uint8Array(first)[0], 9)
+  })
+})
+
+test('validates the whole-file cap after caching and rejects an aborted signal', async () => {
+  const isolated = { ...snapshot }
+  await withFetch(async () => new Response(new Uint8Array(3)), async () => {
+    await readWholeFile(isolated, { ...file, size: 3 })
+    await assert.rejects(readWholeFile(isolated, { ...file, size: 3 }, undefined, 2), /阅读上限/)
+
+    const controller = new AbortController()
+    controller.abort()
+    await assert.rejects(readWholeFile(isolated, { ...file, size: 3 }, controller.signal), /abort/i)
+  })
+})
+
+test('discards a whole-file read aborted during async completion', async () => {
+  const isolated = { ...snapshot }
+  const controller = new AbortController()
+  let requests = 0
+  await withFetch(async () => {
+    requests += 1
+    await new Promise(resolve => setTimeout(resolve, 0))
+    controller.abort()
+    return new Response(new Uint8Array(100))
+  }, async () => {
+    await assert.rejects(readWholeFile(isolated, file, controller.signal), /abort/i)
+    assert.equal(requests, 1)
+
+    const second = await readWholeFile(isolated, file)
+    assert.equal(requests, 2)
+    assert.equal(second.byteLength, 100)
+  })
+})
+
 async function withFetch(
   replacement: typeof fetch,
   body: () => Promise<void>,

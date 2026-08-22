@@ -1,5 +1,6 @@
 import { activeChatTemplate } from './chatTemplates.ts'
-import type { ChatTemplateCatalog } from './chatTemplates.ts'
+import { mergeChatTemplates, parseChatTemplates, type ChatTemplateCatalog } from './chatTemplates.ts'
+import type { RepositoryFile } from './huggingface.ts'
 import type { TokenizerStructure } from './tokenizer.ts'
 
 export type ConsistencyMaterial<T> =
@@ -64,6 +65,71 @@ export type RepositoryConsistencyReport = {
   identityFields: ConsistencyField[]
   findings: ConsistencyFinding[]
   coverage: ConsistencyCoverage[]
+}
+
+export function selectConsistencyFiles(files: readonly RepositoryFile[]) {
+  const config = pick(files, ['config.json', 'configuration.json'], '')
+  const referenceDirectory = directory(config?.path ?? '')
+  const tokenizerConfig = pick(files, ['tokenizer_config.json'], referenceDirectory)
+  const tokenizer = pick(
+    files,
+    ['tokenizer.json'],
+    directory(tokenizerConfig?.path ?? config?.path ?? ''),
+  )
+  return {
+    config,
+    generationConfig: pick(files, ['generation_config.json'], referenceDirectory),
+    tokenizerConfig,
+    tokenizer,
+    adapterConfig: pick(files, ['adapter_config.json'], ''),
+    processorConfig: pick(files, ['preprocessor_config.json', 'processor_config.json'], ''),
+    chatTemplate: pick(
+      files,
+      ['chat_template.jinja'],
+      directory(tokenizerConfig?.path ?? tokenizer?.path ?? config?.path ?? ''),
+    ),
+  }
+}
+
+export function chatTemplateMaterial(
+  configMaterial: ConsistencyMaterial<unknown>,
+  jinjaMaterial: ConsistencyMaterial<string>,
+): ConsistencyMaterial<ChatTemplateCatalog> {
+  if (configMaterial.state === 'skipped') return configMaterial
+  if (configMaterial.state === 'failed' && jinjaMaterial.state !== 'available') return configMaterial
+
+  let config: ChatTemplateCatalog
+  if (configMaterial.state === 'available') {
+    if (!isRecord(configMaterial.value)) return { state: 'failed', message: 'JSON 根节点不是对象。' }
+    try {
+      config = parseChatTemplates(configMaterial.value.chat_template)
+    } catch (error) {
+      return { state: 'failed', message: error instanceof Error ? error.message : String(error) }
+    }
+  } else {
+    config = parseChatTemplates(undefined)
+  }
+
+  switch (jinjaMaterial.state) {
+    case 'missing':
+      return { state: 'available', value: config }
+    case 'available':
+      return { state: 'available', value: mergeChatTemplates(config, jinjaMaterial.value) }
+    case 'skipped':
+    case 'failed':
+      return jinjaMaterial
+  }
+}
+
+export function consistencyBadgeState(report: RepositoryConsistencyReport | null) {
+  if (report === null) return { state: 'checking' as const, label: '检查中' }
+  const warnings = report.findings.filter(finding => finding.severity === 'warning').length
+  if (warnings > 0) return { state: 'warnings' as const, label: `${warnings.toLocaleString()} 项警告` }
+  const checked = new Set(report.coverage.filter(item => item.status.state === 'checked').map(item => item.material))
+  const consistent = ['config', 'tokenizerConfig', 'tokenizer', 'chatTemplates'].every(material => checked.has(material as ConsistencyMaterialKind))
+  return consistent
+    ? { state: 'consistent' as const, label: '一致' }
+    : { state: 'insufficient' as const, label: '材料不足' }
 }
 
 export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMaterials): RepositoryConsistencyReport {
@@ -330,4 +396,28 @@ function coverage(material: ConsistencyMaterialKind, status: ConsistencyCoverage
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function directory(path: string): string {
+  return path.split('/').slice(0, -1).join('/')
+}
+
+function pick(
+  files: readonly RepositoryFile[],
+  names: readonly string[],
+  referenceDirectory: string,
+): RepositoryFile | undefined {
+  const lowerNames = new Set(names.map(name => name.toLocaleLowerCase()))
+  const candidates = files.filter(file => lowerNames.has((file.path.split('/').at(-1) ?? '').toLocaleLowerCase()))
+  return candidates.toSorted((left, right) => rank(left) - rank(right) || left.path.length - right.path.length || compare(left.path, right.path))[0]
+
+  function rank(file: RepositoryFile): number {
+    if (directory(file.path) === '') return 0
+    if (directory(file.path) === referenceDirectory) return 1
+    return 2
+  }
+}
+
+function compare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
 }

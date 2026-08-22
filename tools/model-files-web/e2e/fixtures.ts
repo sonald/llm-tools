@@ -4,6 +4,7 @@ import { join } from 'node:path'
 
 export const fixtureModelId = 'fixture/model'
 export const fixtureRevision = '0123456789abcdef0123456789abcdef01234567'
+const emptyModelId = 'fixture/empty'
 export const pythonReaderSource = `class Model:
     def greet(self, name):
         if name:
@@ -45,6 +46,8 @@ export type RequestRecord = {
 
 type FixtureOptions = {
   manifestDelayMs?: number
+  delayedContentModelId?: string
+  contentDelayMs?: number
   manifestFailures?: number
   rangeBehavior?: 'valid' | 'http200'
   includeBoundaryFiles?: boolean
@@ -91,6 +94,7 @@ const tokenizer = JSON.stringify({
 const tokenizerConfig = JSON.stringify({
   tokenizer_class: 'BertTokenizer',
   unk_token: '[UNK]',
+  eos_token_id: 1,
   model_max_length: 128,
   chat_template: '{{ messages[0].content }}',
 })
@@ -104,9 +108,10 @@ thinking={{ enable_thinking }};mode={{ mode }}
 
 const files = new Map<string, Uint8Array>([
   ['config.json', bytes(JSON.stringify({
-    model_type: 'fixture', architectures: ['FixtureModel'], hidden_size: 8, num_hidden_layers: 2, vocab_size: 1005,
+    model_type: 'fixture', architectures: ['FixtureModel'], hidden_size: 8, num_hidden_layers: 2,
+    max_position_embeddings: 4096, vocab_size: 1005,
   }))],
-  ['generation_config.json', bytes(JSON.stringify({ max_new_tokens: 64, do_sample: false, temperature: 1 }))],
+  ['generation_config.json', bytes(JSON.stringify({ max_new_tokens: 64, do_sample: false, temperature: 1, eos_token_id: 2 }))],
   ['tokenizer.json', bytes(tokenizer)],
   ['tokenizer_config.json', bytes(tokenizerConfig)],
   ['chat_template.jinja', bytes(chatTemplate)],
@@ -162,6 +167,16 @@ export async function installFixtureRoutes(page: Page, options: FixtureOptions =
         return
       }
       const modelId = decodeURIComponent(url.pathname.slice('/api/models/'.length))
+      if (modelId === emptyModelId) {
+        await route.fulfill({
+          json: {
+            id: modelId,
+            sha: 'f'.repeat(40),
+            siblings: [{ rfilename: 'README.md', size: files.get('README.md')?.byteLength ?? 0, blobId: 'readme' }],
+          },
+        })
+        return
+      }
       await route.fulfill({ json: manifest(
         modelId,
         options.includeBoundaryFiles ?? false,
@@ -172,7 +187,8 @@ export async function installFixtureRoutes(page: Page, options: FixtureOptions =
       return
     }
     await fulfillFile(route, requests, options.rangeBehavior ?? 'valid', options.configChatTemplate,
-      options.largeVocabularyWithoutConfig ?? false)
+      options.largeVocabularyWithoutConfig ?? false, options.delayedContentModelId, options.contentDelayMs,
+    )
   })
   return requests
 }
@@ -211,10 +227,20 @@ async function fulfillFile(
   rangeBehavior: NonNullable<FixtureOptions['rangeBehavior']>,
   configChatTemplate?: unknown,
   largeVocabularyWithoutConfig = false,
+  delayedContentModelId?: string,
+  contentDelayMs?: number,
 ) {
   const url = new URL(route.request().url())
-  const match = url.pathname.match(/^\/[^/]+\/[^/]+\/resolve\/[0-9a-f]{40}\/(.+)$/)
-  const path = match === null ? '' : decodeURIComponent(match[1])
+  const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/resolve\/([0-9a-f]{40})\/(.+)$/)
+  if (match === null || !/^[0-9a-f]{40}$/i.test(match[3])) {
+    await route.fulfill({ status: 404, body: 'missing fixture' })
+    return
+  }
+  const path = decodeURIComponent(match[4])
+  const requestedModelId = `${decodeURIComponent(match[1])}/${decodeURIComponent(match[2])}`
+  if (delayedContentModelId === requestedModelId && contentDelayMs !== undefined) {
+    await delay(contentDelayMs)
+  }
   const body = fixtureBodies(configChatTemplate, largeVocabularyWithoutConfig).get(path)
   if (body === undefined) {
     await route.fulfill({ status: 404, body: 'missing fixture' })

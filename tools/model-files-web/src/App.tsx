@@ -27,6 +27,16 @@ import {
   selectChatTemplate,
   type ChatTemplateEntry,
 } from './core/chatTemplates.ts'
+import {
+  analyzeRepositoryConsistency,
+  chatTemplateMaterial,
+  consistencyBadgeState,
+  selectConsistencyFiles,
+  type ConsistencyMaterial,
+  type RepositoryConsistencyMaterials,
+  type RepositoryConsistencyReport,
+} from './core/consistency.ts'
+import { cancelTokenizerRequests, inspectTokenizerData } from './tokenizerClient.ts'
 import { buildChatContext, type ChatTokenRole } from './core/tokenAttribution.ts'
 import type { Tokenization, TokenizerStructure, TokenizerVocabularyEntry } from './core/tokenizer.ts'
 import { PdfInspection, SourceInspection, TextInspection } from './Readers.tsx'
@@ -81,11 +91,21 @@ export default function App() {
   const inspectionAbort = useRef<AbortController | null>(null)
   const inspectionCache = useRef(new Map<string, Inspection>())
   const initialRouteApplied = useRef(false)
+  const consistencyAbort = useRef<AbortController | null>(null)
+  const consistencyGeneration = useRef(0)
+  const consistencySnapshotIdentity = useRef<string | null>(null)
+  const baseMaterials = useRef<RepositoryConsistencyMaterials | null>(null)
+  const consistencyInspectStarted = useRef(false)
+  const [consistencyReport, setConsistencyReport] = useState<RepositoryConsistencyReport | null>(null)
+  const [consistencyConfigPath, setConsistencyConfigPath] = useState<string | null>(null)
+  const [consistencyOpen, setConsistencyOpen] = useState(false)
 
   useEffect(() => () => {
     repositoryAbort.current?.abort()
     inspectionAbort.current?.abort()
+    resetConsistency()
   }, [])
+  useEffect(() => setConsistencyOpen(false), [selectedPath, snapshot])
 
   useEffect(() => {
     let active = true
@@ -131,6 +151,7 @@ export default function App() {
     if (selection === null || selection.length === 0) return
     repositoryAbort.current?.abort()
     inspectionAbort.current?.abort()
+    resetConsistency()
     inspectionGeneration.current += 1
     setIsLoadingRepository(false)
     setRepositoryError(null)
@@ -140,11 +161,17 @@ export default function App() {
     inspectionCache.current.clear()
     try {
       const next = loadLocalDirectory(selection)
+      consistencySnapshotIdentity.current = snapshotIdentity(next)
       setSnapshot(next)
       const preferred = next.files.find(file => file.path === 'config.json') ?? next.files.find(file => !isBlocked(file))
       if (preferred !== undefined) {
         setSelectedPath(preferred.path)
-        void inspectFile(next, preferred)
+        void (async () => {
+          await inspectFile(next, preferred)
+          if (consistencySnapshotIdentity.current === snapshotIdentity(next)) startConsistency(next)
+        })()
+      } else {
+        startConsistency(next)
       }
       clearRoute('push')
     } catch (error) {
@@ -157,6 +184,7 @@ export default function App() {
   async function loadRoute(input: string, requestedPath: string | null, replaceRoute: boolean) {
     repositoryAbort.current?.abort()
     inspectionAbort.current?.abort()
+    resetConsistency()
     const controller = new AbortController()
     repositoryAbort.current = controller
     setIsLoadingRepository(true)
@@ -169,6 +197,7 @@ export default function App() {
     try {
       const next = await loadRepository(input, controller.signal)
       if (controller.signal.aborted || repositoryAbort.current !== controller) return
+      consistencySnapshotIdentity.current = snapshotIdentity(next)
       setSnapshot(next)
       setRepositoryInput(next.modelId)
       setRepositoryHistory(current => {
@@ -182,12 +211,17 @@ export default function App() {
       if (requestedPath !== null && preferred === undefined) {
         setRepositoryError({ message: `深链接文件不存在：${requestedPath}`, retryable: false })
         if (replaceRoute) writeRoute(next.modelId, requestedPath, 'replace')
+        startConsistency(next)
         return
       }
       if (preferred !== undefined) {
         setSelectedPath(preferred.path)
-        void inspectFile(next, preferred)
+        await inspectFile(next, preferred)
+        if (consistencySnapshotIdentity.current !== snapshotIdentity(next)) return
+        startConsistency(next)
         if (replaceRoute) writeRoute(next.modelId, preferred.path, 'replace')
+      } else {
+        startConsistency(next)
       }
     } catch (error) {
       if (!controller.signal.aborted && repositoryAbort.current === controller) {
@@ -211,6 +245,7 @@ export default function App() {
   function clearRepository() {
     repositoryAbort.current?.abort()
     inspectionAbort.current?.abort()
+    resetConsistency()
     inspectionGeneration.current += 1
     setSnapshot(null)
     setSelectedPath(null)
@@ -316,6 +351,7 @@ export default function App() {
       if (!controller.signal.aborted && inspectionGeneration.current === generation) {
         inspectionCache.current.set(cacheKey, next)
         setInspection(next)
+        if (next.kind === 'gguf') refreshConsistencyGGUF(activeSnapshot)
       }
     } catch (error) {
       if (!controller.signal.aborted && inspectionGeneration.current === generation) {
@@ -324,6 +360,129 @@ export default function App() {
     } finally {
       if (inspectionAbort.current === controller) inspectionAbort.current = null
     }
+  }
+
+  function startConsistency(activeSnapshot: RepositorySnapshot) {
+    const controller = new AbortController()
+    consistencyAbort.current = controller
+    const generation = ++consistencyGeneration.current
+    void loadConsistency(activeSnapshot, controller, generation)
+  }
+
+  function resetConsistency() {
+    consistencyAbort.current?.abort()
+    consistencyAbort.current = null
+    consistencyGeneration.current += 1
+    consistencySnapshotIdentity.current = null
+    baseMaterials.current = null
+    setConsistencyReport(null)
+    setConsistencyConfigPath(null)
+    setConsistencyOpen(false)
+    if (consistencyInspectStarted.current) cancelTokenizerRequests()
+    consistencyInspectStarted.current = false
+  }
+
+  async function loadConsistency(
+    activeSnapshot: RepositorySnapshot,
+    controller: AbortController,
+    generation: number,
+  ) {
+    try {
+      const selected = selectConsistencyFiles(activeSnapshot.files)
+      setConsistencyConfigPath(selected.config?.path ?? null)
+      const json = async (file?: RepositoryFile) => {
+        if (file === undefined) return { state: 'missing' } as ConsistencyMaterial<unknown>
+        try {
+          const data = await readWholeFile(activeSnapshot, file, controller.signal)
+          return available(JSON.parse(decodeStrictText(data)) as unknown)
+        } catch (error) {
+          if (controller.signal.aborted) throw error
+          return failed(error)
+        }
+      }
+      const jinja = async (): Promise<ConsistencyMaterial<string>> => {
+        if (selected.chatTemplate === undefined) return { state: 'missing' }
+        try {
+          const data = await readWholeFile(activeSnapshot, selected.chatTemplate, controller.signal, 64 * 1024)
+          return available(decodeStrictText(data))
+        } catch (error) {
+          if (controller.signal.aborted) throw error
+          return failed(error)
+        }
+      }
+      const inspectOnlyTokenizer = async (): Promise<ConsistencyMaterial<TokenizerStructure>> => {
+        if (selected.tokenizer === undefined) return { state: 'missing' }
+        try {
+          const data = await readWholeFile(activeSnapshot, selected.tokenizer, controller.signal)
+          return available(await inspectTokenizerData(
+            data,
+            controller.signal,
+            () => { consistencyInspectStarted.current = true },
+          ))
+        } catch (error) {
+          if (controller.signal.aborted) throw error
+          return failed(error)
+        }
+      }
+
+      const [config, generationConfig, tokenizerConfig, tokenizer, adapterConfig, processorConfig, chatTemplates]
+        = await Promise.all([
+          json(selected.config),
+          json(selected.generationConfig),
+          json(selected.tokenizerConfig),
+          inspectOnlyTokenizer(),
+          json(selected.adapterConfig),
+          json(selected.processorConfig),
+          jinja(),
+        ])
+      publishConsistency(activeSnapshot, controller, generation, {
+        config,
+        generationConfig,
+        tokenizerConfig,
+        tokenizer,
+        adapterConfig,
+        processorConfig,
+        chatTemplates: chatTemplateMaterial(tokenizerConfig, chatTemplates),
+        gguf: { state: 'missing' },
+      })
+    } catch {
+      // Cancellation is the only condition that escapes per-material failure capture.
+    }
+  }
+
+  function publishConsistency(
+    activeSnapshot: RepositorySnapshot,
+    controller: AbortController,
+    generation: number,
+    materials: RepositoryConsistencyMaterials,
+  ) {
+    if (controller.signal.aborted || consistencyGeneration.current !== generation
+      || consistencySnapshotIdentity.current !== snapshotIdentity(activeSnapshot)) return
+    baseMaterials.current = materials
+    setConsistencyReport(analyzeRepositoryConsistency({
+      ...materials,
+      gguf: ggufMaterial(activeSnapshot),
+    }))
+  }
+
+  function refreshConsistencyGGUF(activeSnapshot: RepositorySnapshot) {
+    const materials = baseMaterials.current
+    if (materials === null || consistencyAbort.current?.signal.aborted
+      || consistencySnapshotIdentity.current !== snapshotIdentity(activeSnapshot)) return
+    setConsistencyReport(analyzeRepositoryConsistency({
+      ...materials,
+      gguf: ggufMaterial(activeSnapshot),
+    }))
+  }
+
+  function ggufMaterial(activeSnapshot: RepositorySnapshot): ConsistencyMaterial<never> {
+    const ggufFiles = activeSnapshot.files.filter(isGGUF)
+    if (ggufFiles.length === 0) return { state: 'missing' }
+    const opened = ggufFiles.some(file => inspectionCache.current
+      .get(`${snapshotIdentity(activeSnapshot)}/${file.path}`)?.kind === 'gguf')
+    return opened
+      ? { state: 'skipped', reason: 'Web 仅读取 24-byte prefix，缺少 metadata/tensor directory。' }
+      : { state: 'skipped', reason: '未在当前会话打开' }
   }
 
   return (
@@ -418,6 +577,7 @@ export default function App() {
                     <button
                       className={`file-row ${selectedPath === file.path ? 'selected' : ''}`}
                       type="button"
+                      aria-current={selectedPath === file.path}
                       key={file.path}
                       onClick={() => selectFile(file)}
                       title={file.path}
@@ -432,7 +592,14 @@ export default function App() {
             })}
           </nav>
         </aside>
-        <Detail inspection={inspection} snapshot={snapshot} onRetry={() => {
+        <Detail
+          inspection={inspection}
+          snapshot={snapshot}
+          report={consistencyReport}
+          reportOpen={consistencyOpen}
+          configPath={consistencyConfigPath}
+          onToggleConsistency={() => setConsistencyOpen(open => !open)}
+          onRetry={() => {
           if (snapshot !== null && inspection.kind !== 'empty') void inspectFile(snapshot, inspection.file)
         }} />
       </div>
@@ -443,20 +610,47 @@ export default function App() {
 function Detail({
   inspection,
   snapshot,
+  report,
+  reportOpen,
+  configPath,
   onRetry,
+  onToggleConsistency,
 }: {
   inspection: Inspection
   snapshot: RepositorySnapshot | null
+  report: RepositoryConsistencyReport | null
+  reportOpen: boolean
+  configPath: string | null
   onRetry(): void
+  onToggleConsistency(): void
 }) {
   const [copyLabel, setCopyLabel] = useState('复制路径')
+  const badgeRef = useRef<HTMLButtonElement>(null)
   const activePath = inspection.kind === 'empty' ? null : inspection.file.path
   useEffect(() => setCopyLabel('复制路径'), [activePath])
 
+  function closeReport() {
+    onToggleConsistency()
+    badgeRef.current?.focus()
+  }
+
   if (inspection.kind === 'empty') {
-    return snapshot === null
-      ? <EmptyState title="打开模型仓库" message="输入公开 Hugging Face 仓库，验证清单、Range 与 tokenizer 的纯 Web 数据链路。" />
-      : <EmptyState title="选择文件" message="从左侧选择当前 revision 中的文件。" />
+    return (
+      <section className="detail">
+        <header className="detail-header">
+          <div><h1>{snapshot === null ? '打开模型仓库' : '选择文件'}</h1></div>
+          {snapshot !== null ? (
+            <ConsistencyBadge ref={badgeRef} report={report} open={reportOpen} onToggle={onToggleConsistency} />
+          ) : null}
+        </header>
+        {reportOpen ? <ConsistencyDialog report={report} onClose={closeReport} /> : null}
+        <div className="detail-body">
+          {snapshot === null
+            ? <EmptyState title="打开模型仓库" message="输入公开 Hugging Face 仓库，验证清单、Range 与 tokenizer 的纯 Web 数据链路。" />
+            : <EmptyState title="选择文件" message="从左侧选择当前 revision 中的文件。" />}
+        </div>
+      </section>
+    )
   }
   const file = inspection.file
   return (
@@ -482,16 +676,38 @@ function Detail({
           rel="noreferrer"
           hidden={snapshot?.source !== 'huggingface'}
         >源站</a>
+        <ConsistencyBadge ref={badgeRef} report={report} open={reportOpen} onToggle={onToggleConsistency} />
       </header>
+      {reportOpen ? <ConsistencyDialog report={report} onClose={closeReport} /> : null}
       <div className="detail-body" aria-live="polite" aria-busy={inspection.kind === 'loading'}>
         {inspection.kind === 'loading' ? <LoadingState file={file} /> : null}
+        {inspection.kind === 'text' && snapshot !== null && report !== null
+          && configPath !== null && file.path === configPath ? (
+            <div className="detail-reader-stack">
+              <section className="inspection-section consistency-embedded" aria-label="Config 一致性报告">
+                <h2>Config 一致性报告</h2>
+                <ConsistencyReportBody report={report} />
+              </section>
+              <TextInspection
+                key={`${snapshotIdentity(snapshot)}/${file.path}`}
+                snapshot={snapshot}
+                path={file.path}
+                content={inspection.content}
+                parsed={inspection.parsed}
+                json={inspection.json}
+                bytesRead={inspection.bytesRead}
+              />
+            </div>
+          ) : null}
         {inspection.kind === 'error' ? (
           <EmptyState title="无法读取文件" message={inspection.message} action="重试" onAction={onRetry} tone="error" />
         ) : null}
         {inspection.kind === 'locked' ? (
           <EmptyState title="权重文件已锁定" message="该格式不在 Web 纵向验证范围内，不会请求文件内容。" />
         ) : null}
-        {inspection.kind === 'text' && snapshot !== null ? (
+        {inspection.kind === 'text' && snapshot !== null && !(
+          report !== null && configPath !== null && file.path === configPath
+        ) ? (
           <TextInspection
             key={`${snapshotIdentity(snapshot)}/${file.path}`}
             snapshot={snapshot}
@@ -639,6 +855,96 @@ function SafeTensorsInspection({
         </>
       ) : null}
     </div>
+  )
+}
+
+function ConsistencyBadge({
+  ref,
+  report,
+  open,
+  onToggle,
+}: {
+  ref: React.RefObject<HTMLButtonElement | null>
+  report: RepositoryConsistencyReport | null
+  open: boolean
+  onToggle(): void
+}) {
+  const state = consistencyBadgeState(report)
+  return (
+    <button
+      className="consistency-badge"
+      type="button"
+      aria-label="查看仓库一致性报告"
+      aria-expanded={open}
+      data-consistency-state={state.state}
+      ref={ref}
+      onClick={onToggle}
+    >{state.label}</button>
+  )
+}
+
+function ConsistencyDialog({ report, onClose }: {
+  report: RepositoryConsistencyReport | null
+  onClose(): void
+}) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => closeButtonRef.current?.focus(), [])
+
+  return (
+    <div className="consistency-dialog" role="dialog" aria-label="仓库一致性报告"
+      onKeyDown={event => {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          onClose()
+        }
+      }}
+    >
+      <header>
+        <h2>仓库一致性报告</h2>
+        <button ref={closeButtonRef} type="button" onClick={onClose}>关闭</button>
+      </header>
+      <ConsistencyReportBody report={report} />
+    </div>
+  )
+}
+
+function ConsistencyReportBody({ report }: { report: RepositoryConsistencyReport | null }) {
+  if (report === null) return <p>正在检查仓库材料…</p>
+  return (
+    <>
+      <dl aria-label="仓库身份" className="consistency-identity">
+        {report.identityFields.map(item => (
+          <div key={item.key} data-identity-key={item.key}>
+            <dt>{item.key}</dt>
+            <dd>{`${item.type} · ${item.value}`}</dd>
+          </div>
+        ))}
+      </dl>
+      {report.findings.map(finding => (
+        <article key={finding.id} data-finding-id={finding.id}>
+          <h3>{finding.title}</h3>
+          <p>{finding.detail}</p>
+          <dl>
+            <div><dt>{finding.left.key}</dt><dd>{finding.left.value}</dd></div>
+            <div><dt>{finding.right.key}</dt><dd>{finding.right.value}</dd></div>
+          </dl>
+        </article>
+      ))}
+      <div className="table-scroll">
+        <table aria-label="一致性 Coverage">
+          <thead><tr><th>Material</th><th>Status</th></tr></thead>
+          <tbody>
+            {report.coverage.map(item => (
+              <tr key={item.material} data-material={item.material} data-coverage-status={item.status.state}>
+                <td>{item.material}</td>
+                <td>{consistencyCoverageText(item.status)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   )
 }
 
@@ -1477,6 +1783,26 @@ function templateLabel(entry: ChatTemplateEntry): string {
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function available<T>(value: T): ConsistencyMaterial<T> {
+  return { state: 'available', value }
+}
+
+function failed(error: unknown): ConsistencyMaterial<never> {
+  return { state: 'failed', message: errorMessage(error) }
+}
+
+function isGGUF(file: RepositoryFile): boolean {
+  const name = file.path.split('/').at(-1)?.toLocaleLowerCase() ?? ''
+  return name.endsWith('.gguf') || name.endsWith('.gguf_file')
+}
+
+function consistencyCoverageText(status: RepositoryConsistencyReport['coverage'][number]['status']): string {
+  if (status.state === 'checked') return '已检查'
+  if (status.state === 'missing') return '缺失'
+  if (status.state === 'skipped') return `跳过：${status.reason}`
+  return `失败：${status.message}`
 }
 
 function readRoute(): { repo: string | null; file: string | null } {

@@ -21,6 +21,7 @@ import { parseChatTemplates } from './core/chatTemplates.ts'
 
 type Request =
   | { id: number; type: 'load'; tokenizerData: ArrayBuffer; configData: ArrayBuffer | null }
+  | { id: number; type: 'inspect-structure'; tokenizerData: ArrayBuffer }
   | { id: number; type: 'tokenize'; text: string }
   | {
     id: number
@@ -45,6 +46,12 @@ self.onmessage = async (event: MessageEvent<Request>) => {
   try {
     if (request.type === 'render-template') {
       self.postMessage({ id: request.id, ok: true, value: new Template(request.source).render(request.context) })
+      return
+    }
+    if (request.type === 'inspect-structure') {
+      const parsedTokenizer: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(request.tokenizerData))
+      if (!isRecord(parsedTokenizer)) throw new Error('tokenizer.json 根节点不是对象。')
+      self.postMessage({ id: request.id, ok: true, value: inspectTokenizerStructure(parsedTokenizer) })
       return
     }
     if (request.type === 'load') {
