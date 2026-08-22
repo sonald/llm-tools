@@ -73,8 +73,7 @@ export function classifyFile(path: string): FileCategory {
   if (blockedExtensions.has(ext)) return 'weights'
   if (name.endsWith('.pdf')) return 'documentation'
   if (name === 'config.json' || name === 'configuration.json' || name === 'generation_config.json'
-    || name.endsWith('_config.json') && !name.includes('tokenizer')
-      && !name.includes('processor') && !name.includes('preprocessor')) return 'configuration'
+    || name.endsWith('_config.json') && !name.includes('tokenizer')) return 'configuration'
   if (name.includes('tokenizer') || name === 'vocab.json' || name === 'merges.txt'
     || name === 'special_tokens_map.json' || name.startsWith('added_tokens') || name.endsWith('.model')) return 'tokenizer'
   if (name.includes('template') || name.endsWith('.jinja') || lowerPath.includes('template')) return 'templates'

@@ -61,6 +61,16 @@ test('normalizes only owner/model identifiers and Hugging Face model URLs', () =
 
 test('matches native file intent classification and reader-friendly ordering', async () => {
   assert.equal(classifyFile('tokenizer_config.json'), 'tokenizer')
+  for (const path of [
+    'adapter_config.json',
+    'nested/adapter_config.json',
+    'preprocessor_config.json',
+    'nested/preprocessor_config.json',
+    'processor_config.json',
+    'nested/processor_config.json',
+  ]) {
+    assert.equal(classifyFile(path), 'configuration')
+  }
   assert.equal(classifyFile('pytorch_model.bin.index.json'), 'weightMetadata')
   assert.equal(classifyFile('imatrix_unsloth.dat.at_00000'), 'weightMetadata')
   assert.equal(classifyFile('imatrix_unsloth.gguf_file'), 'weights')
