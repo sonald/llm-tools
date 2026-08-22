@@ -293,6 +293,9 @@ tr:last-child td { border-bottom: 0; }
 .selected-token div { display: flex; gap: 5px; }.selected-token dt { color: var(--muted); font-size: 9px; }.selected-token dd { margin: 0; font: 10px var(--mono); }
 .selected-token button { margin-left: auto; }
 .selected-token-row td { background: var(--accent-soft); }
+.token-id-chips { display: flex; flex-wrap: wrap; gap: 4px; max-width: 100%; margin: 0 20px 12px; }
+.token-id-chips button { min-width: 34px; padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-alt); font: 10.5px var(--mono); cursor: pointer; }
+.token-id-chips button[aria-pressed="true"] { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: -2px; }
 .chat-panel { grid-template-rows: 40px minmax(160px, 1fr) minmax(90px, .5fr) 46px; }
 .chat-preview { min-height: 0; margin: 0; overflow: auto; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--panel-alt); font: 10.5px/1.5 var(--mono); white-space: pre-wrap; }
 .chat-panel footer label { display: flex; align-items: center; gap: 5px; }

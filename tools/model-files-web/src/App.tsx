@@ -710,8 +710,9 @@ function ImatrixInspection({ inspection }: { inspection: Extract<Inspection, { k
 }
 
 function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot; file: RepositoryFile }) {
-  const [view, setView] = useState<'structure' | 'raw' | 'chat'>('structure')
-  const [input, setInput] = useState('Hello，世界 👋')
+  const [view, setView] = useState<'structure' | 'raw' | 'decode' | 'chat'>('structure')
+  const [rawInput, setRawInput] = useState('Hello，世界 👋')
+  const [tokenIdInput, setTokenIdInput] = useState('[1, 3, 2]')
   const [chatMessages, setChatMessages] = useState(JSON.stringify([
     { role: 'system', content: 'You are concise.' }, { role: 'user', content: 'Hello' },
   ], null, 2))
@@ -775,23 +776,25 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
 
   useEffect(() => {
     if (view !== 'raw') return
-    if (input.length === 0) {
+    if (rawInput.length === 0) {
       generation.current += 1
       controller.current?.abort()
-      setResult({ ids: [], pieces: [], decoded: '', segments: [], mapping: 'Exact' })
+      setResult({
+        direction: 'encode', input: '', ids: [], pieces: [], decoded: '', segments: [], mapping: 'Exact', flags: [],
+      })
       setError(null)
       setPhase('ready')
       return
     }
     rawTimer.current = window.setTimeout(() => {
       rawTimer.current = null
-      void runRaw(input)
+      void runRaw(rawInput)
     }, 225)
     return () => {
       if (rawTimer.current !== null) window.clearTimeout(rawTimer.current)
       rawTimer.current = null
     }
-  }, [input, view])
+  }, [rawInput, view])
 
   function resetResult() {
     generation.current += 1
@@ -807,13 +810,18 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setView(next)
   }
 
-  function changeInput(value: string) {
+  function changeRawInput(value: string) {
     resetResult()
-    setInput(value)
+    setRawInput(value)
     setInputCopyLabel('复制输入')
   }
 
-  async function runRaw(authoritativeInput = input) {
+  function changeTokenIdInput(value: string) {
+    resetResult()
+    setTokenIdInput(value)
+  }
+
+  async function runRaw(authoritativeInput = rawInput) {
     if (authoritativeInput.length === 0) return
     if (rawTimer.current !== null) window.clearTimeout(rawTimer.current)
     rawTimer.current = null
@@ -879,29 +887,80 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     }
   }
 
+  async function runDecode() {
+    controller.current?.abort()
+    const activeController = new AbortController()
+    controller.current = activeController
+    const activeGeneration = ++generation.current
+    setPhase('loading')
+    setError(null)
+    setResult(null)
+    try {
+      const module = await import('./tokenizerClient.ts')
+      cancelWorker.current = module.cancelTokenizerRequests
+      const next = await module.decodeTokenIds(snapshot, file, config, tokenIdInput, activeController.signal)
+      if (activeController.signal.aborted || generation.current !== activeGeneration) return
+      setResult(next)
+      setPhase('ready')
+    } catch (failure) {
+      if (activeController.signal.aborted || generation.current !== activeGeneration) return
+      setError(errorMessage(failure))
+      setResult(null)
+      setPhase('error')
+    } finally {
+      if (controller.current === activeController) controller.current = null
+    }
+  }
+
   return (
     <div className="tokenizer-workspace">
       <div className="tokenizer-tabs" role="tablist" aria-label="Tokenizer 视图">
         <button type="button" role="tab" aria-selected={view === 'structure'} onClick={() => changeView('structure')}>结构与词表</button>
         <button type="button" role="tab" aria-selected={view === 'raw'} onClick={() => changeView('raw')}>Raw 工作台</button>
+        <button type="button" role="tab" aria-selected={view === 'decode'} onClick={() => changeView('decode')}>Token IDs 工作台</button>
         <button type="button" role="tab" aria-selected={view === 'chat'} onClick={() => changeView('chat')}>Chat 工作台</button>
       </div>
       {view === 'structure' ? (
         <TokenizerStructureInspection structure={structure} error={structureError} configPresent={config !== undefined} />
       ) : null}
+      {view === 'decode' ? (
+        <div className="tokenizer-layout">
+          <section className="input-panel">
+            <header><h2>Token IDs</h2><span>最多 64 KiB</span></header>
+            <textarea
+              value={tokenIdInput}
+              onChange={event => changeTokenIdInput(event.target.value)}
+              aria-label="Token IDs"
+              placeholder="逗号、空白、换行或 JSON 数组，例如 [1,3,2]"
+            />
+            <footer>
+              <span>{new TextEncoder().encode(tokenIdInput).byteLength.toLocaleString()} bytes · 解析失败不会请求 Worker</span>
+              <button className="primary-button" type="button" onClick={() => void runDecode()} disabled={phase === 'loading'}>解码 ID</button>
+            </footer>
+          </section>
+          <TokenizerResultView
+            phase={phase}
+            error={error}
+            result={result}
+            authoritativeInput={tokenIdInput}
+            showWhitespace={showWhitespace}
+            setShowWhitespace={setShowWhitespace}
+          />
+        </div>
+      ) : null}
       {view === 'raw' ? (
         <div className="tokenizer-layout">
           <section className="input-panel">
             <header><h2>Raw 输入</h2><button type="button" onClick={async () => {
-              try { await navigator.clipboard.writeText(input); setInputCopyLabel('已复制') } catch { setInputCopyLabel('复制失败') }
-            }}>{inputCopyLabel}</button><button type="button" onClick={() => changeInput('')}>清空</button><span>最多 64 KiB</span></header>
-            <textarea value={input} onChange={event => changeInput(event.target.value)} aria-label="Raw 输入" />
+              try { await navigator.clipboard.writeText(rawInput); setInputCopyLabel('已复制') } catch { setInputCopyLabel('复制失败') }
+            }}>{inputCopyLabel}</button><button type="button" onClick={() => changeRawInput('')}>清空</button><span>最多 64 KiB</span></header>
+            <textarea value={rawInput} onChange={event => changeRawInput(event.target.value)} aria-label="Raw 输入" />
             <footer>
-              <span>{new TextEncoder().encode(input).byteLength.toLocaleString()} bytes · 自动等待 225 ms</span>
-              <button className="primary-button" type="button" onClick={() => void runRaw()} disabled={phase === 'loading' || input.length === 0}>立即分词</button>
+              <span>{new TextEncoder().encode(rawInput).byteLength.toLocaleString()} bytes · 自动等待 225 ms</span>
+              <button className="primary-button" type="button" onClick={() => void runRaw()} disabled={phase === 'loading' || rawInput.length === 0}>立即分词</button>
             </footer>
           </section>
-          <TokenizerResultView phase={phase} error={error} result={result} authoritativeInput={input} showWhitespace={showWhitespace} setShowWhitespace={setShowWhitespace} />
+          <TokenizerResultView phase={phase} error={error} result={result} authoritativeInput={rawInput} showWhitespace={showWhitespace} setShowWhitespace={setShowWhitespace} />
         </div>
       ) : null}
       {view === 'chat' ? (
@@ -1003,28 +1062,29 @@ function TokenizerResultView({
   showWhitespace: boolean
   setShowWhitespace(value: boolean): void
 }) {
-  const [selectedIndex, setSelectedIndex] = useState(0)
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [limit, setLimit] = useState(1000)
   const [copyLabel, setCopyLabel] = useState('复制 ID')
   useEffect(() => {
-    setSelectedIndex(0)
+    setSelectedIndex(null)
     setLimit(1000)
     setCopyLabel('复制 ID')
   }, [result])
   const decoded = useMemo(() => {
     const values = new Map<number, string>()
     for (const segment of result?.segments ?? []) {
-      values.set(segment.start, segment.ids.length > 100
+      const display = segment.ids.length > 100
         ? `合并片段（${segment.ids.length.toLocaleString()} tokens，完整 Decoded 见下方）`
-        : segment.text)
+        : segment.text
+      for (let index = segment.start; index < segment.end; index++) values.set(index, display)
     }
     return values
   }, [result])
-  const selectedId = result?.ids[selectedIndex]
+  const selectedId = selectedIndex === null ? undefined : result?.ids[selectedIndex]
   const inputBytes = new TextEncoder().encode(authoritativeInput).byteLength
   return (
     <section className="result-panel" aria-live="polite">
-      <header><h2>Token 结果</h2><label><input type="checkbox" checked={showWhitespace} onChange={event => setShowWhitespace(event.target.checked)} />显示空白符</label></header>
+      <header><h2>{result?.direction === 'decode' ? '由 Token ID 解码' : 'Token 结果'}</h2><label><input type="checkbox" checked={showWhitespace} onChange={event => setShowWhitespace(event.target.checked)} />显示空白符</label></header>
       {phase === 'idle' ? <div className="result-empty">等待输入或点击运行。</div> : null}
       {phase === 'loading' ? <div className="result-empty"><span className="spinner" />Web Worker 正在处理 latest-only 请求…</div> : null}
       {phase === 'error' ? <InlineError>{error}</InlineError> : null}
@@ -1032,7 +1092,7 @@ function TokenizerResultView({
         <>
           <ValidationStrip items={[
             ['运行位置', 'Web Worker'],
-            ['特殊 Token', 'add_special_tokens:false'],
+            ['方向', result.direction === 'decode' ? 'decode' : 'encode'],
             ['Token 数', result.ids.length.toLocaleString()],
             ['Bytes / Token', result.ids.length === 0 ? '0' : (inputBytes / result.ids.length).toLocaleString('zh-CN', { maximumFractionDigits: 2 })],
             ['映射', result.mapping],
@@ -1042,16 +1102,17 @@ function TokenizerResultView({
             {result.segments.map((segment, index) => (
               <button
                 type="button"
-                className={selectedIndex >= segment.start && selectedIndex < segment.end ? 'selected' : ''}
+                className={selectedIndex !== null && selectedIndex >= segment.start && selectedIndex < segment.end ? 'selected' : ''}
+                aria-pressed={selectedIndex !== null && selectedIndex >= segment.start && selectedIndex < segment.end}
                 key={`${segment.start}-${index}`}
                 title={`Token #${segment.start + 1}–${segment.end} · ${segment.ids.length > 100 ? `${segment.ids.length.toLocaleString()} IDs` : `IDs ${segment.ids.join(', ')}`}`}
-                onClick={() => setSelectedIndex(segment.start)}
+                onClick={() => setSelectedIndex(current => current === segment.start ? null : segment.start)}
               >{segment.ids.length > 100
                 ? `合并片段 · ${segment.ids.length.toLocaleString()} tokens（完整 Decoded 见下方）`
                 : visiblePiece(segment.text, showWhitespace)}</button>
             ))}
           </div>
-          {selectedId !== undefined ? (
+          {selectedId !== undefined && selectedIndex !== null ? (
             <dl className="selected-token">
               <div><dt>选中 Token</dt><dd>#{selectedIndex + 1}</dd></div>
               <div><dt>ID</dt><dd>{selectedId}</dd></div>
@@ -1061,21 +1122,34 @@ function TokenizerResultView({
               }}>{copyLabel}</button>
             </dl>
           ) : null}
+          <div className="token-id-chips" aria-label="Token ID 选择">
+            {result.ids.slice(0, limit).map((id, index) => (
+              <button
+                type="button"
+                key={`${index}-${id}`}
+                aria-label={`Token ID ${id}，index ${index}`}
+                aria-pressed={selectedIndex === index}
+                onClick={() => setSelectedIndex(current => current === index ? null : index)}
+              >{id}</button>
+            ))}
+          </div>
           <div className="table-scroll">
             <table aria-label="Tokenizer Tokens">
-              <thead><tr><th>#</th><th>ID</th><th>Token Piece</th><th>Decoded</th><th>Mapping</th></tr></thead>
+              <thead><tr><th>#</th><th>ID</th><th>Special</th><th>Token Piece</th><th>Decoded</th><th>Mapping</th></tr></thead>
               <tbody>{result.ids.slice(0, limit).map((id, index) => (
-                <tr className={selectedIndex === index ? 'selected-token-row' : ''} key={`${index}-${id}`} onMouseEnter={() => setSelectedIndex(index)}>
-                  <td><button className="table-link" type="button" onClick={() => setSelectedIndex(index)}>{index + 1}</button></td>
-                  <td>{id}</td><td>{visiblePiece(result.pieces[index] ?? '', showWhitespace)}</td>
+                <tr className={selectedIndex === index ? 'selected-token-row' : ''} key={`${index}-${id}`}>
+                  <td><button className="table-link" type="button" aria-pressed={selectedIndex === index} onClick={() => setSelectedIndex(current => current === index ? null : index)}>{index + 1}</button></td>
+                  <td><button className="table-link" type="button" aria-pressed={selectedIndex === index} onClick={() => setSelectedIndex(current => current === index ? null : index)}>{id}</button></td>
+                  <td>{result.flags[index]?.specialName ?? '—'}</td>
+                  <td>{visiblePiece(result.pieces[index] ?? '', showWhitespace)}</td>
                   <td>{visiblePiece(decoded.get(index) ?? '', showWhitespace)}</td><td>{result.mapping}</td>
                 </tr>
               ))}</tbody>
             </table>
           </div>
           {limit < result.ids.length ? <button className="load-more" type="button" onClick={() => setLimit(Math.min(limit + 1000, result.ids.length))}>再显示 1,000 个 Token</button> : null}
-          <p className="decoded-text">权威输入：{authoritativeInput}</p>
-          <p className="decoded-text">Decoded：{result.decoded}</p>
+          <p className="decoded-text">{result.direction === 'decode' ? `Token IDs：${result.input}` : `权威输入：${authoritativeInput}`}</p>
+          <p className="decoded-text">{result.direction === 'decode' ? '解码文本：' : 'Decoded：'}{result.decoded}</p>
         </>
       ) : null}
     </section>
@@ -1183,7 +1257,9 @@ function formatFloat(value: number): string {
 }
 
 function visiblePiece(piece: string, showWhitespace = true): string {
-  return (showWhitespace ? piece.replaceAll(' ', '␠').replaceAll('\n', '↵') : piece) || '∅'
+  return (showWhitespace
+    ? piece.replaceAll('\r\n', '↵').replaceAll('\r', '↵').replaceAll('\n', '↵').replaceAll('\t', '␉').replaceAll(' ', '␠')
+    : piece.replaceAll('\r\n', ' ').replaceAll('\r', ' ').replaceAll('\n', ' ').replaceAll('\t', ' ')) || '∅'
 }
 
 function errorMessage(error: unknown): string {

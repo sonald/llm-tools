@@ -7,12 +7,17 @@ export type TokenSegment = {
   text: string
 }
 
+export type TokenFlag = { isSpecial: boolean; specialName: string | null }
+
 export type Tokenization = {
+  direction: 'encode' | 'decode'
+  input: string
   ids: number[]
-  pieces: string[]
+  pieces: Array<string | null>
   decoded: string
   segments: TokenSegment[]
   mapping: 'Exact' | 'Decoded only'
+  flags: TokenFlag[]
 }
 
 export type TokenizerField = { name: string; detail: string }
@@ -77,13 +82,16 @@ export function inspectTokenizerStructure(value: unknown): TokenizerStructure {
 export function buildTokenization(
   input: string,
   ids: number[],
-  pieces: string[],
+  pieces: Array<string | null>,
   decoded: string,
   decode: (ids: number[]) => string,
+  flags: TokenFlag[],
+  direction: 'encode' | 'decode' = 'encode',
 ): Tokenization {
   if (ids.length !== pieces.length) throw new Error('Tokenizer 返回的 ID 与 piece 数量不一致。')
+  if (ids.length !== flags.length) throw new Error('Tokenizer 返回的 ID 与 flags 数量不一致。')
   // ponytail: Large runs stay one grapheme-safe authoritative group; chunk them only if per-token highlighting becomes necessary.
-  if (ids.length > 2_000) return authoritativeTokenization(input, ids, pieces, decoded)
+  if (ids.length > 2_000) return authoritativeTokenization(input, ids, pieces, decoded, flags, direction)
   const provisional: TokenSegment[] = []
   for (let start = 0; start < ids.length;) {
     let end = start + 1
@@ -107,18 +115,124 @@ export function buildTokenization(
     pieces,
     decoded,
     segments,
-    mapping: segments.map(segment => segment.text).join('') === input && decoded === input ? 'Exact' : 'Decoded only',
+    mapping: direction === 'encode' && segments.map(segment => segment.text).join('') === input && decoded === input ? 'Exact' : 'Decoded only',
+    direction,
+    input,
+    flags,
   }
 }
 
-function authoritativeTokenization(input: string, ids: number[], pieces: string[], decoded: string): Tokenization {
+function authoritativeTokenization(
+  input: string,
+  ids: number[],
+  pieces: Array<string | null>,
+  decoded: string,
+  flags: TokenFlag[],
+  direction: 'encode' | 'decode',
+): Tokenization {
   return {
+    direction,
+    input,
     ids,
     pieces,
     decoded,
     segments: ids.length === 0 ? [] : [{ start: 0, end: ids.length, ids: [...ids], text: decoded }],
-    mapping: decoded === input ? 'Exact' : 'Decoded only',
+    mapping: direction === 'encode' && decoded === input ? 'Exact' : 'Decoded only',
+    flags,
   }
+}
+
+export function parseTokenIds(input: string): number[] {
+  if (new TextEncoder().encode(input).byteLength > 64 * 1024) throw new Error('Token ID 输入超过 64 KiB 上限。')
+  const trimmed = input.trim()
+  if (trimmed.length === 0) throw new Error('Token ID 输入为空。')
+  let rawValues: unknown[]
+  if (trimmed.startsWith('[')) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch (error) {
+      throw new Error(`Token ID JSON 解析失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (!Array.isArray(parsed)) throw new Error('Token ID JSON 必须是数组。')
+    if (parsed.length === 0) throw new Error('Token ID 输入为空。')
+    rawValues = parsed
+  } else {
+    rawValues = trimmed.split(/[\s,]+/)
+  }
+  return rawValues.map((value, index): number => {
+    const id = typeof value === 'string' ? Number(value.trim()) : value
+    if (typeof value === 'boolean' || typeof id !== 'number' || !Number.isSafeInteger(id) || id < 0) {
+      throw new Error(`第 ${index + 1} 个 Token 无效（zero-based index ${index}）：${String(value)}。`)
+    }
+    return id
+  })
+}
+
+export type SpecialTokenIndex = {
+  byId: Map<number, string>
+  byPiece: Map<string, string>
+}
+
+export function buildSpecialTokenIndex(
+  config: Record<string, unknown>,
+  addedTokens: unknown[],
+  resolvePieceIds: (piece: string) => number[],
+): SpecialTokenIndex {
+  const index: SpecialTokenIndex = { byId: new Map(), byPiece: new Map() }
+  const candidates: Array<{ piece: string; name: string }> = []
+  for (const key of ['bos', 'eos', 'pad', 'unk', 'cls', 'sep', 'mask']) {
+    const field = `${key}_token`
+    const token = config[field]
+    const piece = typeof token === 'string' ? token : isRecord(token) && typeof token.content === 'string' ? token.content : ''
+    if (piece) candidates.push({ piece, name: field })
+  }
+  for (const token of Array.isArray(config.additional_special_tokens) ? config.additional_special_tokens : []) {
+    const piece = typeof token === 'string' ? token : isRecord(token) && typeof token.content === 'string' ? token.content : ''
+    if (piece) candidates.push({ piece, name: piece })
+  }
+  const seenPieces = new Set<string>()
+  for (const candidate of candidates) {
+    if (seenPieces.has(candidate.piece)) continue
+    seenPieces.add(candidate.piece)
+    index.byPiece.set(candidate.piece, candidate.name)
+    const ids = [...new Set(resolvePieceIds(candidate.piece))].filter((id) => safeNonNegativeInteger(id) !== null)
+    if (ids.length !== 1) continue
+    index.byId.set(ids[0], candidate.name)
+  }
+  for (const raw of addedTokens) {
+    if (!isRecord(raw) || raw.special !== true || typeof raw.content !== 'string' || raw.content === '') continue
+    const id = safeNonNegativeInteger(raw.id)
+    if (id === null) continue
+    const name = index.byPiece.get(raw.content) ?? raw.content
+    index.byId.set(id, name)
+    if (!index.byPiece.has(raw.content)) index.byPiece.set(raw.content, name)
+  }
+  return index
+}
+
+export function tokenFlag(
+  id: number,
+  piece: string | null,
+  index: SpecialTokenIndex,
+  coldFallback?: () => string | null,
+): TokenFlag {
+  const specialName = index.byId.get(id)
+  if (specialName !== undefined) return { isSpecial: true, specialName }
+  if (piece !== null && piece !== '') {
+    const byPiece = index.byPiece.get(piece)
+    return { isSpecial: byPiece !== undefined, specialName: byPiece ?? null }
+  }
+  const fallbackName = coldFallback?.() ?? null
+  if (fallbackName !== null && fallbackName !== '') {
+    const matched = index.byPiece.get(fallbackName)
+    if (matched !== undefined) return { isSpecial: true, specialName: matched }
+  }
+  return { isSpecial: false, specialName: null }
+}
+
+function safeNonNegativeInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
 }
 
 function mergeAcrossGraphemeBoundaries(segments: TokenSegment[], decoded: string): TokenSegment[] {
