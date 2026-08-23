@@ -1542,12 +1542,12 @@ export const messageCatalog = {
     en: 'Local directory · {revision} · {name} · {path}',
   },
   appComparisonRepositoryNoTokenizer: {
-    'zh-Hans': '对照仓库没有可用 tokenizer.json。',
-    en: 'The comparison repository has no usable tokenizer.json.',
+    'zh-Hans': '对照仓库没有可用 tokenizer.json 或 SentencePiece .model。',
+    en: 'The comparison repository has no usable tokenizer.json or SentencePiece .model.',
   },
   appComparisonLocalDirectoryNoTokenizer: {
-    'zh-Hans': '对照本地目录没有可用 tokenizer.json。',
-    en: 'The comparison local directory has no usable tokenizer.json.',
+    'zh-Hans': '对照本地目录没有可用 tokenizer.json 或 SentencePiece .model。',
+    en: 'The comparison local directory has no usable tokenizer.json or SentencePiece .model.',
   },
   appComparisonSourceUnavailable: {
     'zh-Hans': '对照来源不可用。',
@@ -1606,8 +1606,8 @@ export const messageCatalog = {
     en: 'Close Tokenizer comparison',
   },
   comparisonNoTargetsStatus: {
-    'zh-Hans': '当前快照没有可用 tokenizer.json 对照目标。',
-    en: 'The current snapshot has no usable tokenizer.json comparison targets.',
+    'zh-Hans': '当前快照没有可用 tokenizer.json 或 SentencePiece .model 对照目标。',
+    en: 'The current snapshot has no usable tokenizer.json or SentencePiece .model comparison targets.',
   },
   tokenizerViewsAriaLabel: {
     'zh-Hans': 'Tokenizer 视图',
@@ -1856,6 +1856,54 @@ export const messageCatalog = {
   tokenizerStructureConfigMissingRawUnsupportedValue: {
     'zh-Hans': '缺失 · Raw 不支持',
     en: 'Missing · Raw unsupported',
+  },
+  tokenizerStructureConfigMissingValue: {
+    'zh-Hans': '缺失 · Raw 与 Token IDs 可用',
+    en: 'Missing · Raw and Token IDs available',
+  },
+  sentencepieceVocabularyUnavailable: {
+    'zh-Hans': 'SentencePiece 不提供可解析的 tokenizer.json 词表；编码对照仍可用。',
+    en: 'SentencePiece does not provide a parsable tokenizer.json vocabulary; encoding comparison remains available.',
+  },
+  sentencepieceModelBytesRequired: {
+    'zh-Hans': 'SentencePiece 模型必须是 Uint8Array。',
+    en: 'SentencePiece model must be a Uint8Array.',
+  },
+  sentencepieceInputRequired: {
+    'zh-Hans': 'SentencePiece 输入必须是字符串。',
+    en: 'SentencePiece input must be a string.',
+  },
+  sentencepieceIdRange: {
+    'zh-Hans': 'SentencePiece ID 必须是 32 位有符号整数。',
+    en: 'SentencePiece ID must be an integer in the signed 32-bit range.',
+  },
+  sentencepieceReturnedIdsInvalid: {
+    'zh-Hans': 'SentencePiece 模块返回了无效 ID。',
+    en: 'SentencePiece module returned invalid IDs.',
+  },
+  sentencepieceReturnedPiecesInvalid: {
+    'zh-Hans': 'SentencePiece 模块返回了无效 pieces。',
+    en: 'SentencePiece module returned invalid pieces.',
+  },
+  sentencepieceReturnedTextInvalid: {
+    'zh-Hans': 'SentencePiece 模块返回了无效输出。',
+    en: 'SentencePiece module returned invalid output.',
+  },
+  sentencepieceIdsRequired: {
+    'zh-Hans': 'SentencePiece IDs 必须是数组。',
+    en: 'SentencePiece IDs must be an array.',
+  },
+  sentencepieceInvalidModel: {
+    'zh-Hans': 'SentencePiece 模型无效：{reason}',
+    en: 'Invalid SentencePiece model: {reason}',
+  },
+  sentencepieceOperationFailed: {
+    'zh-Hans': 'SentencePiece 操作失败：{reason}',
+    en: 'SentencePiece operation failed: {reason}',
+  },
+  sentencepieceDisposed: {
+    'zh-Hans': '已释放',
+    en: 'disposed',
   },
   tokenizerStructureAddedTokenLabel: {
     'zh-Hans': 'Added Token',

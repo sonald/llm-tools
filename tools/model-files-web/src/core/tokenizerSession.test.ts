@@ -42,6 +42,38 @@ function deliver(worker: FakeWorker, data: Record<string, unknown>) {
   worker.onmessage?.(new MessageEvent('message', { data }))
 }
 
+async function waitForSent(worker: FakeWorker, count: number) {
+  for (let attempt = 0; attempt < 1000 && worker.sent.length < count; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 1))
+  }
+  assert.ok(worker.sent.length >= count, 'FakeWorker did not receive the expected request')
+}
+
+async function waitForCreatedWorker(sentCount: number, previous?: FakeWorker): Promise<FakeWorker> {
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const worker = FakeWorker.created.find(candidate =>
+      candidate !== previous && candidate.sent.length >= sentCount
+    )
+    if (worker) return worker
+    await new Promise(resolve => setTimeout(resolve, 1))
+  }
+  assert.fail('FakeWorker was not created with the expected request')
+}
+
+function replyData(request: unknown, overrides: Record<string, unknown> = {}) {
+  const value = request as Record<string, unknown>
+  return {
+    kind: 'reply',
+    operation: value.operation,
+    requestId: value.requestId,
+    sessionId: value.sessionId,
+    generation: value.generation,
+    tokenizerIdentity: value.tokenizerIdentity,
+    ok: true,
+    ...overrides,
+  }
+}
+
 function reply(worker: FakeWorker, overrides: Record<string, unknown> = {}, index = -1) {
   const request = worker.sent.at(index)
   assert.ok(request, 'FakeWorker did not receive the expected request')
@@ -73,14 +105,49 @@ function tokenizerStructure() {
   }
 }
 
-function localSnapshot(id: string): LocalDirectorySnapshot {
+function localSnapshot(
+  id: string,
+  localFiles: Array<[string, File]> = [['tokenizer.json', new File(['{}'], 'tokenizer.json')]],
+): LocalDirectorySnapshot {
   return {
     source: 'local',
     name: id,
     revision: 'live',
     selectionId: id,
     files: [],
-    localFiles: new Map([['tokenizer.json', new File(['{}'], 'tokenizer.json')]]),
+    localFiles: new Map(localFiles),
+  }
+}
+
+function sentencepieceSnapshot(id: string) {
+  const modelBytes = new TextEncoder().encode('__SP_')
+  const modelFile = {
+    path: 'tokenizer.model',
+    size: modelBytes.byteLength,
+    hash: null,
+    category: 'tokenizer',
+  } as const
+  return {
+    ...localSnapshot(id, [['tokenizer.model', {
+      size: modelBytes.byteLength,
+      arrayBuffer: async () => modelBytes.slice().buffer,
+    } as unknown as File]]),
+    files: [modelFile],
+  }
+}
+
+function sentencepieceStructure() {
+  return {
+    addedTokenCount: 0,
+    addedTokens: [],
+    chatTemplates: { entries: [], activeId: null, conflict: false },
+    fields: [],
+    mergeCount: null,
+    modelType: 'SentencePiece',
+    vocabCount: null,
+    version: null,
+    vocabulary: null,
+    vocabularyError: '',
   }
 }
 
@@ -204,6 +271,74 @@ test('one aborted request ignores its late reply and keeps the session usable', 
     await Promise.resolve()
     reply(worker, {}, 1)
     await assert.doesNotReject(next)
+  }
+  finally {
+    cleanup(originalWorker, comparisons)
+  }
+})
+
+test('aborted SentencePiece load terminates its worker and stale replies cannot publish', { timeout: 1_000 }, async () => {
+  const originalWorker = installFakeWorker()
+  const comparisons: TokenizerSession[] = []
+  try {
+    const comparison = createComparisonTokenizerSession()
+    comparisons.push(comparison)
+    const controller = new AbortController()
+    const aborted = comparison.inspectTokenizer(sentencepieceSnapshot('sp'), {
+      path: 'tokenizer.model', size: 5, hash: null, category: 'tokenizer',
+    }, undefined, controller.signal)
+    const worker = await waitForCreatedWorker(1)
+    await waitForSent(worker, 1)
+    controller.abort()
+    await assert.rejects(aborted, isAbort)
+
+    assert.equal(worker.terminated, true)
+    const load = worker.sent[0]
+    assert.equal((load as { format?: unknown }).format, 'sentencepiece')
+    deliver(worker, replyData(worker.sent[0], { value: tokenizerStructure() }))
+    const next = comparison.inspectTokenizer(sentencepieceSnapshot('sp-next'), {
+      path: 'tokenizer.model', size: 5, hash: null, category: 'tokenizer',
+    }, undefined)
+    const replacement = await waitForCreatedWorker(1, worker)
+    assert.notEqual(replacement, worker)
+    deliver(replacement, replyData(replacement.sent[0], { value: tokenizerStructure() }))
+    await assert.doesNotReject(next)
+  }
+  finally {
+    cleanup(originalWorker, comparisons)
+  }
+})
+
+test('aborting a loaded SentencePiece operation releases its worker and blocks stale publication', { timeout: 1_000 }, async () => {
+  const originalWorker = installFakeWorker()
+  const comparisons: TokenizerSession[] = []
+  try {
+    const comparison = createComparisonTokenizerSession()
+    comparisons.push(comparison)
+    const snapshot = sentencepieceSnapshot('sp-operation')
+    const file = { path: 'tokenizer.model', size: 5, hash: null, category: 'tokenizer' } as const
+    const loaded = comparison.inspectTokenizer(snapshot, file, undefined)
+    const firstWorker = await waitForCreatedWorker(1)
+    await waitForSent(firstWorker, 1)
+    reply(firstWorker, { value: sentencepieceStructure() })
+    assert.equal((await loaded).modelType, 'SentencePiece')
+
+    const controller = new AbortController()
+    const operation = comparison.tokenize(snapshot, file, undefined, 'hello', controller.signal)
+    await waitForSent(firstWorker, 2)
+    controller.abort()
+    await assert.rejects(operation, isAbort)
+    assert.equal(firstWorker.terminated, true)
+    deliver(firstWorker, replyData(firstWorker.sent.at(-1), { value: {} }))
+
+    const retry = comparison.inspectTokenizer(sentencepieceSnapshot('sp-retry'), {
+      path: 'tokenizer.model', size: 5, hash: null, category: 'tokenizer',
+    }, undefined)
+    const replacement = await waitForCreatedWorker(1, firstWorker)
+    await waitForSent(replacement, 1)
+    assert.notEqual(replacement, firstWorker)
+    reply(replacement, { value: sentencepieceStructure() })
+    await assert.doesNotReject(retry)
   }
   finally {
     cleanup(originalWorker, comparisons)
@@ -392,6 +527,7 @@ test('comparison vocabulary diff is isolated, cleared by reload, and rejected af
     const prepareRequest = worker.sent.at(-1)!
     assert.equal(prepareRequest.operation, 'prepare-vocabulary-diff')
     assert.equal(prepareRequest.tokenizerIdentity, 'diff-right/right/tokenizer.json+right/tokenizer_config.json')
+    assert.equal(prepareRequest.leftFormat, 'json')
     assert.equal(
       new TextDecoder().decode(prepareRequest.tokenizerData as ArrayBuffer),
       '{"model":{"vocab":{"hello":3}}}',
@@ -542,6 +678,7 @@ test('isTokenizerRequest guards diff operations at the protocol boundary', () =>
     ...base,
     operation: 'prepare-vocabulary-diff',
     tokenizerIdentity: 'identity',
+    leftFormat: 'json',
     tokenizerData: new ArrayBuffer(2),
   }), true)
   assert.equal(isTokenizerRequest({
@@ -572,5 +709,21 @@ test('isTokenizerRequest guards diff operations at the protocol boundary', () =>
     tokenizerIdentity: 'identity',
     scope: 'shared',
     query: 42,
+  }), false)
+  for (const leftFormat of ['json', 'sentencepiece'] as const) {
+    assert.equal(isTokenizerRequest({
+      ...base,
+      operation: 'prepare-vocabulary-diff',
+      tokenizerIdentity: 'identity',
+      leftFormat,
+      tokenizerData: new ArrayBuffer(2),
+    }), true)
+  }
+  assert.equal(isTokenizerRequest({
+    ...base,
+    operation: 'prepare-vocabulary-diff',
+    tokenizerIdentity: 'identity',
+    leftFormat: 'unsupported',
+    tokenizerData: new ArrayBuffer(2),
   }), false)
 })

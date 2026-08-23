@@ -50,6 +50,7 @@ import {
 } from './core/tokenAttribution.ts'
 import {
   compareTokenizerTokenizations,
+  isSentencePieceFile,
   parseTokenIds,
   selectTokenizerComparisonTargets,
   type Tokenization,
@@ -306,7 +307,8 @@ export default function App() {
       } else if (lower.endsWith('.gguf') || lower.endsWith('.gguf_file')) {
         const prefix = await readExactRange(activeSnapshot, file, 0, 23, controller.signal)
         next = { kind: 'gguf', file, summary: inspectGGUFPrefix(prefix), bytesRead: prefix.byteLength }
-      } else if (file.path.split('/').at(-1)?.toLocaleLowerCase() === 'tokenizer.json') {
+      } else if (file.path.split('/').at(-1)?.toLocaleLowerCase() === 'tokenizer.json'
+        || isSentencePieceFile(file)) {
         next = { kind: 'tokenizer', file }
       } else if (lower.endsWith('.pdf')) {
         const data = await readWholeFile(activeSnapshot, file, controller.signal)
@@ -1436,7 +1438,8 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       const targets = selectTokenizerComparisonTargets(next)
       if (targets.length === 0) throw new Error(t('appComparisonRepositoryNoTokenizer'))
       setComparisonExternalSnapshot(next)
-      setComparisonTargetPath(targets.find(target => target.file.path === 'tokenizer.json')?.file.path
+      setComparisonTargetPath(targets.find(target =>
+        target.file.path.toLocaleLowerCase() === 'tokenizer.json')?.file.path
         ?? targets[0]?.file.path ?? null)
       setComparisonOpen(true)
     } catch (failure) {
@@ -1475,7 +1478,8 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       closeExternalSource()
       setComparisonExternalSnapshot(next)
       setComparisonSourceError(null)
-      setComparisonTargetPath(targets.find(target => target.file.path === 'tokenizer.json')?.file.path ?? targets[0].file.path)
+      setComparisonTargetPath(targets.find(target =>
+        target.file.path.toLocaleLowerCase() === 'tokenizer.json')?.file.path ?? targets[0].file.path)
       setComparisonOpen(true)
     } catch (failure) {
       setComparisonSourceError(errorMessage(failure))
@@ -1914,6 +1918,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
           structure={structure}
           error={structureError}
           configPresent={config !== undefined}
+          sentencePieceModel={isSentencePieceFile(file)}
           snapshot={snapshot}
           file={file}
           config={config}
@@ -2044,6 +2049,7 @@ function TokenizerStructureInspection({
   structure,
   error,
   configPresent,
+  sentencePieceModel,
   snapshot,
   file,
   config,
@@ -2051,6 +2057,7 @@ function TokenizerStructureInspection({
   structure: TokenizerStructure | null
   error: string | null
   configPresent: boolean
+  sentencePieceModel: boolean
   snapshot: RepositorySnapshot
   file: RepositoryFile
   config: RepositoryFile | undefined
@@ -2110,7 +2117,9 @@ function TokenizerStructureInspection({
     <div className="inspection-canvas tokenizer-structure">
       <ValidationStrip items={[
         [t('tokenizerStructureRunLocationLabel'), t('tokenizerStructureWebWorkerValue')],
-        [t('tokenizerStructureConfigLabel'), configPresent ? t('tokenizerStructureConfigSameDirectoryValue') : t('tokenizerStructureConfigMissingRawUnsupportedValue')],
+        [t('tokenizerStructureConfigLabel'), configPresent
+          ? t('tokenizerStructureConfigSameDirectoryValue')
+          : sentencePieceModel ? t('tokenizerStructureConfigMissingValue') : t('tokenizerStructureConfigMissingRawUnsupportedValue')],
         [t('tokenizerStructureAddedTokenLabel'), formatNumber(structure.addedTokenCount ?? 0)],
       ]} />
       {specialTokens.length > 0 ? (
@@ -2441,7 +2450,7 @@ function formatName(file: RepositoryFile): string {
   const lower = file.path.toLocaleLowerCase()
   if (lower.endsWith('.safetensors')) return 'SafeTensors'
   if (lower.endsWith('.gguf') || lower.endsWith('.gguf_file')) return 'GGUF'
-  if (file.path.split('/').at(-1)?.toLocaleLowerCase() === 'tokenizer.json') return 'Tokenizer'
+  if (file.path.split('/').at(-1)?.toLocaleLowerCase() === 'tokenizer.json' || isSentencePieceFile(file)) return 'Tokenizer'
   if (lower.endsWith('.json')) return 'JSON'
   if (lower.endsWith('.md')) return 'Markdown'
   if (isImatrixPath(file.path)) return 'Imatrix'

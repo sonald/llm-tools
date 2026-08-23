@@ -3,6 +3,7 @@ import type { ChatAttributionMessage, ChatTokenOverhead, ChatTokenRole } from '.
 import {
   parseTokenIds,
   tokenizerBundleBytes,
+  isSentencePieceFile,
   type AddedTokenSummary,
   type TokenFlag,
   type Tokenization,
@@ -16,14 +17,14 @@ import { currentLocale, translate as t } from './i18n.ts'
 import type { TokenizerOperation, TokenizerReply, TokenizerRequest } from './tokenizerProtocol.ts'
 
 type OutgoingTokenizerRequest =
-  | { operation: 'load'; tokenizerIdentity: string; tokenizerData: ArrayBuffer; configData: ArrayBuffer | null }
+  | { operation: 'load'; tokenizerIdentity: string; format: 'json' | 'sentencepiece'; tokenizerData: ArrayBuffer; configData: ArrayBuffer | null }
   | { operation: 'inspect-structure'; tokenizerIdentity: ''; tokenizerData: ArrayBuffer }
   | { operation: 'tokenize'; tokenizerIdentity: string; text: string }
   | { operation: 'chat-tokenize'; tokenizerIdentity: string; template: string; context: Record<string, unknown>; attribution: ChatAttributionMessage[] }
   | { operation: 'decode-token-ids'; tokenizerIdentity: string; ids: number[]; originalInput: string }
   | { operation: 'render-template'; tokenizerIdentity: ''; source: string; context: Record<string, unknown> }
   | { operation: 'search-vocabulary'; tokenizerIdentity: string; query: string }
-  | { operation: 'prepare-vocabulary-diff'; tokenizerIdentity: string; tokenizerData: ArrayBuffer }
+  | { operation: 'prepare-vocabulary-diff'; tokenizerIdentity: string; leftFormat: 'json' | 'sentencepiece'; tokenizerData: ArrayBuffer }
   | { operation: 'search-vocabulary-diff'; tokenizerIdentity: string; scope: VocabularyDiffScope; query: string }
 
 type PendingTokenizerRequest = {
@@ -115,6 +116,7 @@ class ClientTokenizerSession implements TokenizerSession {
   private nextId = 0
   private readonly pending = new Map<number, PendingTokenizerRequest>()
   private loadedIdentity = ''
+  private loadedFormat: 'json' | 'sentencepiece' | null = null
   private loadedStructure: TokenizerStructure | null = null
   private loading: { identity: string; promise: Promise<LoadedTokenizer> } | null = null
   private loadController: AbortController | null = null
@@ -245,6 +247,7 @@ class ClientTokenizerSession implements TokenizerSession {
     return validateTokenizerVocabularyDiffCounts(await this.request({
       operation: 'prepare-vocabulary-diff',
       tokenizerIdentity: identity,
+      leftFormat: isSentencePieceFile(leftTokenizerFile) ? 'sentencepiece' : 'json',
       tokenizerData,
     }, [tokenizerData], signal))
   }
@@ -330,7 +333,12 @@ class ClientTokenizerSession implements TokenizerSession {
     signal?: AbortSignal,
   ): Promise<LoadedTokenizer> {
     this.assertUsable()
-    tokenizerBundleBytes(tokenizerFile, configFile)
+    const directoryParts = tokenizerFile.path.split('/')
+    directoryParts.pop()
+    const templatePath = [...directoryParts, 'chat_template.jinja'].join('/')
+    const templateFile = snapshot.files.find(candidate => candidate.path === templatePath)
+    tokenizerBundleBytes(tokenizerFile, configFile, templateFile)
+    const format = isSentencePieceFile(tokenizerFile) ? 'sentencepiece' : 'json'
     if (tokenizerFile.size === null || configFile?.size === null) throw new Error(t('tokenizerResourceSizeInvalid'))
     const tokenizerSize = tokenizerFile.size
     const configSize = configFile?.size ?? 0
@@ -343,6 +351,8 @@ class ClientTokenizerSession implements TokenizerSession {
     this.generation += 1
     const activeGeneration = this.generation
     const loadController = new AbortController()
+    const onExternalLoadAbort = () => loadController.abort()
+    if (format === 'sentencepiece') signal?.addEventListener('abort', onExternalLoadAbort, { once: true })
     const runLoad = async (): Promise<LoadedTokenizer> => {
       try {
         const [tokenizerData, configData] = await Promise.all([
@@ -352,12 +362,13 @@ class ClientTokenizerSession implements TokenizerSession {
         this.assertLoadActive(activeGeneration, loadController.signal)
         const transfer = configData === null ? [tokenizerData] : [tokenizerData, configData]
         const structure = validateTokenizerStructure(await this.request(
-          { operation: 'load', tokenizerIdentity: identity, tokenizerData, configData },
+          { operation: 'load', tokenizerIdentity: identity, format, tokenizerData, configData },
           transfer,
           loadController.signal,
         ))
         this.assertLoadActive(activeGeneration, loadController.signal)
         this.loadedIdentity = identity
+        this.loadedFormat = format
         this.loadedStructure = structure
         return { identity, structure }
       }
@@ -372,7 +383,11 @@ class ClientTokenizerSession implements TokenizerSession {
     const promise = runLoad()
     this.loading = { identity, promise }
     this.loadController = loadController
-    return await awaitWithAbort(promise, signal)
+    try {
+      return await awaitWithAbort(promise, signal)
+    } finally {
+      if (format === 'sentencepiece') signal?.removeEventListener('abort', onExternalLoadAbort)
+    }
   }
 
   private request(
@@ -383,6 +398,9 @@ class ClientTokenizerSession implements TokenizerSession {
     this.assertUsable()
     if (signal?.aborted) throw new DOMException(t('tokenizerRequestCancelled'), 'AbortError')
     const requestId = ++this.nextId
+    const sentencePieceRequest = message.operation === 'load'
+      ? message.format === 'sentencepiece'
+      : this.loadedFormat === 'sentencepiece'
     let removeAbort: () => void = () => {}
     const expected: PendingTokenizerRequest = {
       operation: message.operation,
@@ -402,7 +420,10 @@ class ClientTokenizerSession implements TokenizerSession {
       removeAbort()
       complete(expected)
     }
-    const onAbort = () => settle(entry => entry.reject(new DOMException(t('tokenizerRequestCancelled'), 'AbortError')))
+    const onAbort = () => {
+      settle(entry => entry.reject(new DOMException(t('tokenizerRequestCancelled'), 'AbortError')))
+      if (sentencePieceRequest) this.invalidate(new DOMException(t('tokenizerRequestCancelled'), 'AbortError'))
+    }
     removeAbort = () => signal?.removeEventListener('abort', onAbort)
     signal?.addEventListener('abort', onAbort, { once: true })
     const activeWorker = this.getWorker()
@@ -473,6 +494,7 @@ class ClientTokenizerSession implements TokenizerSession {
     this.generation += 1
     this.loadedIdentity = ''
     this.loadedStructure = null
+    this.loadedFormat = null
     this.loading = null
     for (const entry of this.pending.values()) {
       entry.removeAbort()

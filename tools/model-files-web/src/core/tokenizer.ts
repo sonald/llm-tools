@@ -103,7 +103,8 @@ export function selectTokenizerComparisonTargets(
   snapshot: Pick<RepositorySnapshot, 'files'>,
 ): TokenizerComparisonTarget[] {
   return snapshot.files.flatMap((file): TokenizerComparisonTarget[] => {
-    if (file.path.split('/').at(-1) !== 'tokenizer.json') return []
+    const basename = file.path.split('/').at(-1)?.toLocaleLowerCase()
+    if (basename !== 'tokenizer.json' && !isSentencePieceFile(file)) return []
     const config = companion(snapshot.files, file.path, 'tokenizer_config.json')
     return [{
       file,
@@ -111,6 +112,10 @@ export function selectTokenizerComparisonTargets(
       templateFile: companion(snapshot.files, file.path, 'chat_template.jinja'),
     }]
   })
+}
+
+export function isSentencePieceFile(file: Pick<RepositoryFile, 'path'>): boolean {
+  return file.path.split('/').at(-1)?.toLocaleLowerCase().endsWith('.model') === true
 }
 
 function companion(files: RepositoryFile[], path: string, basename: string) {
@@ -152,17 +157,31 @@ export function filterTokenizerVocabularyDiff(
   return { total: pieces.length, pieces: pieces.slice(0, 1_000) }
 }
 
-export function tokenizerBundleBytes(tokenizerFile: RepositoryFile, configFile?: RepositoryFile): number {
+export function tokenizerBundleBytes(
+  tokenizerFile: RepositoryFile,
+  configFile?: RepositoryFile,
+  templateFile?: RepositoryFile,
+): number {
   const tokenizerParts = tokenizerFile.path.split('/')
   const configParts = configFile?.path.split('/')
-  if (tokenizerParts.pop() !== 'tokenizer.json' || configParts !== undefined
-    && (configParts.pop() !== 'tokenizer_config.json' || tokenizerParts.join('/') !== configParts.join('/'))) {
+  const templateParts = templateFile?.path.split('/')
+  const basename = tokenizerParts.pop()
+  const validEntry = basename?.toLocaleLowerCase() === 'tokenizer.json' || isSentencePieceFile(tokenizerFile)
+  const sameDirectory = (parts: string[] | undefined, name: string) => parts !== undefined
+    && (parts.pop()?.toLocaleLowerCase() !== name || tokenizerParts.join('/') !== parts.join('/'))
+  if (!validEntry || sameDirectory(configParts, 'tokenizer_config.json')
+    || sameDirectory(templateParts, 'chat_template.jinja')) {
     throw new Error(t('tokenizerBundleSameDirectory'))
   }
-  if (tokenizerFile.size === null || configFile?.size === null) {
+  const tokenizerSize = tokenizerFile.size
+  const configSize = configFile?.size
+  const templateSize = templateFile?.size
+  if (tokenizerSize === null || configSize === null || templateSize === null) {
     throw new Error(t('tokenizerBundleSizeMissing'))
   }
-  const total = tokenizerFile.size + (configFile?.size ?? 0)
+  const sizes = [tokenizerSize, configSize ?? 0, templateSize ?? 0]
+  if (sizes.some(size => size > 32 * 1024 * 1024)) throw new Error(t('tokenizerBundleTooLarge'))
+  const total = sizes.reduce((sum, size) => sum + size, 0)
   if (total > 32 * 1024 * 1024) throw new Error(t('tokenizerBundleTooLarge'))
   return total
 }

@@ -20,14 +20,14 @@ type TokenizerEnvelope = {
 export type TokenizerRequest =
   & TokenizerEnvelope
   & (
-    | { operation: 'load'; requestId: number; tokenizerIdentity: string; tokenizerData: ArrayBuffer; configData: ArrayBuffer | null }
+    | { operation: 'load'; requestId: number; tokenizerIdentity: string; format: 'json' | 'sentencepiece'; tokenizerData: ArrayBuffer; configData: ArrayBuffer | null }
     | { operation: 'inspect-structure'; requestId: number; tokenizerIdentity: ''; tokenizerData: ArrayBuffer }
     | { operation: 'tokenize'; requestId: number; tokenizerIdentity: string; text: string }
     | { operation: 'chat-tokenize'; requestId: number; tokenizerIdentity: string; template: string; context: Record<string, unknown>; attribution: ChatAttributionMessage[] }
   | { operation: 'decode-token-ids'; requestId: number; tokenizerIdentity: string; ids: number[]; originalInput: string }
   | { operation: 'render-template'; requestId: number; tokenizerIdentity: ''; source: string; context: Record<string, unknown> }
   | { operation: 'search-vocabulary'; requestId: number; tokenizerIdentity: string; query: string }
-  | { operation: 'prepare-vocabulary-diff'; requestId: number; tokenizerIdentity: string; tokenizerData: ArrayBuffer }
+  | { operation: 'prepare-vocabulary-diff'; requestId: number; tokenizerIdentity: string; leftFormat: 'json' | 'sentencepiece'; tokenizerData: ArrayBuffer }
   | { operation: 'search-vocabulary-diff'; requestId: number; tokenizerIdentity: string; scope: VocabularyDiffScope; query: string }
 )
 
@@ -44,6 +44,7 @@ export function isTokenizerRequest(value: unknown): value is TokenizerRequest {
   switch (value.operation) {
     case 'load':
       return value.tokenizerData instanceof ArrayBuffer
+        && (value.format === 'json' || value.format === 'sentencepiece')
         && (value.configData === null || value.configData instanceof ArrayBuffer)
     case 'inspect-structure':
       return value.tokenizerData instanceof ArrayBuffer
@@ -61,6 +62,7 @@ export function isTokenizerRequest(value: unknown): value is TokenizerRequest {
       return typeof value.query === 'string'
     case 'prepare-vocabulary-diff':
       return value.tokenizerData instanceof ArrayBuffer
+        && (value.leftFormat === 'json' || value.leftFormat === 'sentencepiece')
     case 'search-vocabulary-diff':
       return (value.scope === 'leftOnly' || value.scope === 'rightOnly' || value.scope === 'shared')
         && typeof value.query === 'string'
