@@ -4,6 +4,8 @@ import { join } from 'node:path'
 
 export const fixtureModelId = 'fixture/model'
 export const fixtureRevision = '0123456789abcdef0123456789abcdef01234567'
+export const crossRepositoryModelId = 'fixture/cross-model'
+export const crossRepositoryRevision = '89abcdef0123456789abcdef0123456789abcdef'
 const emptyModelId = 'fixture/empty'
 export const pythonReaderSource = `class Model:
     def greet(self, name):
@@ -46,6 +48,7 @@ export type RequestRecord = {
 
 type FixtureOptions = {
   manifestDelayMs?: number
+  manifestDelayForModel?: { modelId: string; delayMs: number }
   delayedContentModelId?: string
   contentDelayMs?: number
   manifestFailures?: number
@@ -193,6 +196,13 @@ const comparisonFiles = new Map<string, Uint8Array>([
   ['no-config/tokenizer.json', bytes(alternateTokenizer)],
 ])
 
+const crossRepositoryFiles = new Map<string, Uint8Array>([
+  ['tokenizer.json', bytes(alternateTokenizer)],
+  ['tokenizer_config.json', bytes(alternateTokenizerConfig)],
+  ['chat_template.jinja', bytes(alternateChatTemplate)],
+  ...comparisonFiles,
+])
+
 const localReaderFiles = new Map<string, Uint8Array>([
   ['reader.py', bytes(pythonReaderSource)],
   ['reader-copy.py', bytes(pythonReaderSource)],
@@ -213,19 +223,37 @@ export async function installFixtureRoutes(page: Page, options: FixtureOptions =
   await page.route('https://huggingface.co/**', async route => {
     const url = new URL(route.request().url())
     if (url.pathname.startsWith('/api/models/')) {
+      const requestedModelId = decodeURIComponent(url.pathname.slice('/api/models/'.length))
+      if (options.manifestDelayForModel?.modelId === requestedModelId) {
+        await delay(options.manifestDelayForModel.delayMs)
+      }
       if (options.manifestDelayMs !== undefined) await delay(options.manifestDelayMs)
       if (manifestFailures > 0) {
         manifestFailures -= 1
         await route.fulfill({ status: 503, body: 'retry fixture' })
         return
       }
-      const modelId = decodeURIComponent(url.pathname.slice('/api/models/'.length))
+      const modelId = requestedModelId
       if (modelId === emptyModelId) {
         await route.fulfill({
           json: {
             id: modelId,
             sha: 'f'.repeat(40),
             siblings: [{ rfilename: 'README.md', size: files.get('README.md')?.byteLength ?? 0, blobId: 'readme' }],
+          },
+        })
+        return
+      }
+      if (modelId === crossRepositoryModelId) {
+        await route.fulfill({
+          json: {
+            id: modelId,
+            sha: crossRepositoryRevision,
+            siblings: [...crossRepositoryFiles].map(([rfilename, body]) => ({
+              rfilename,
+              size: body.byteLength,
+              blobId: rfilename,
+            })),
           },
         })
         return
@@ -295,6 +323,17 @@ async function fulfillFile(
   }
   const path = decodeURIComponent(match[4])
   const requestedModelId = `${decodeURIComponent(match[1])}/${decodeURIComponent(match[2])}`
+  if (requestedModelId === crossRepositoryModelId) {
+    const crossBody = crossRepositoryFiles.get(path)
+    if (crossBody === undefined) {
+      await route.fulfill({ status: 404, body: 'missing fixture' })
+      return
+    }
+    const range = route.request().headers().range ?? null
+    requests.push({ path, range, responseBytes: crossBody.byteLength, status: range === null ? 200 : 206 })
+    await route.fulfill({ status: range === null ? 200 : 206, body: Buffer.from(crossBody) })
+    return
+  }
   if (delayedContentModelId === requestedModelId && contentDelayMs !== undefined) {
     await delay(contentDelayMs)
   }

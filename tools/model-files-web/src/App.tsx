@@ -1065,10 +1065,19 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
   const [showWhitespace, setShowWhitespace] = useState(true)
   const [inputCopyLabel, setInputCopyLabel] = useState('复制输入')
-  const comparisonTargets = useMemo(() => selectTokenizerComparisonTargets(snapshot), [snapshot])
+  const [comparisonRepositoryInput, setComparisonRepositoryInput] = useState('')
+  const [comparisonExternalSnapshot, setComparisonExternalSnapshot] = useState<RepositorySnapshot | null>(null)
+  const [comparisonManifestLoading, setComparisonManifestLoading] = useState(false)
+  const [comparisonSourceError, setComparisonSourceError] = useState<string | null>(null)
+  const activeRightSnapshot = comparisonExternalSnapshot ?? snapshot
+  const activeRightSnapshotIdentity = snapshotIdentity(activeRightSnapshot)
+  const comparisonTargets = useMemo(
+    () => activeRightSnapshot === null ? [] : selectTokenizerComparisonTargets(activeRightSnapshot),
+    [activeRightSnapshot],
+  )
   const [comparisonOpen, setComparisonOpen] = useState(false)
   const [comparisonTargetPath, setComparisonTargetPath] = useState<string | null>(null)
-  const selectedComparisonTarget = comparisonOpen
+  const selectedComparisonTarget = comparisonOpen && activeRightSnapshot !== null
     ? comparisonTargets.find(target => target.file.path === comparisonTargetPath) ?? null
     : null
   const [rightStructure, setRightStructure] = useState<TokenizerStructure | null>(null)
@@ -1092,6 +1101,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
   const cancelWorker = useRef<(() => void) | null>(null)
   const rawTimer = useRef<number | null>(null)
   const comparisonSession = useRef<TokenizerSession | null>(null)
+  const comparisonManifestController = useRef<AbortController | null>(null)
   const comparisonLoadController = useRef<AbortController | null>(null)
   const comparisonRequestController = useRef<AbortController | null>(null)
   const diffSearchController = useRef<AbortController | null>(null)
@@ -1123,6 +1133,11 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     ), selectedRightTemplateId)
     : null
   const activeRightTemplate = rightCatalog === null ? null : activeChatTemplate(rightCatalog)
+  const comparisonSourceLabel = selectedComparisonTarget === null ? null : comparisonExternalSnapshot === null
+    ? `当前仓库 · ${selectedComparisonTarget.file.path}`
+    : comparisonExternalSnapshot.source === 'huggingface'
+      ? `${comparisonExternalSnapshot.modelId} · SHA ${comparisonExternalSnapshot.revision.slice(0, 7)} · ${selectedComparisonTarget.file.path}`
+      : `当前仓库 · ${selectedComparisonTarget.file.path}`
   const comparisonSummary = comparisonLoaded && result !== null && rightResult !== null
     ? compareTokenizerTokenizations(result, rightResult)
     : null
@@ -1133,10 +1148,12 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     controller.current?.abort()
     cancelWorker.current?.()
     releaseComparison()
+    comparisonManifestController.current?.abort()
+    comparisonManifestController.current = null
   }, [])
 
   useEffect(() => {
-    if (!comparisonOpen || selectedComparisonTarget === null) return
+    if (!comparisonOpen || activeRightSnapshot === null || selectedComparisonTarget === null) return
     let active = true
     const loadController = new AbortController()
     const generationAtStart = ++comparisonGeneration.current
@@ -1160,13 +1177,13 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     void (async () => {
       try {
         const structure = await session.inspectTokenizer(
-          snapshot,
+          activeRightSnapshot,
           selectedComparisonTarget.file,
           selectedComparisonTarget.config,
           loadController.signal,
         )
         const templateData = selectedComparisonTarget.templateFile === undefined ? null : await readWholeFile(
-          snapshot,
+          activeRightSnapshot,
           selectedComparisonTarget.templateFile,
           loadController.signal,
           64 * 1024,
@@ -1177,7 +1194,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
         setRightIndependentTemplate(independent)
         try {
           const counts = await session.prepareVocabularyDiff(
-            snapshot,
+            activeRightSnapshot,
             selectedComparisonTarget.file,
             selectedComparisonTarget.config,
             snapshot,
@@ -1208,7 +1225,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       active = false
       releaseComparison()
     }
-  }, [comparisonOpen, selectedComparisonTarget?.file.path])
+  }, [comparisonOpen, activeRightSnapshotIdentity, selectedComparisonTarget?.file.path])
 
   useEffect(() => {
     if (!comparisonLoaded || result === null || rightStructure === null) return
@@ -1359,6 +1376,54 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setDiffError(null)
   }
 
+  function closeExternalSource() {
+    comparisonManifestController.current?.abort()
+    comparisonManifestController.current = null
+    releaseComparison()
+    setComparisonRepositoryInput('')
+    setComparisonExternalSnapshot(null)
+    setComparisonManifestLoading(false)
+    setComparisonSourceError(null)
+    setComparisonOpen(false)
+    setComparisonTargetPath(null)
+  }
+
+  async function loadComparisonRepository(event: React.FormEvent) {
+    event.preventDefault()
+    const input = comparisonRepositoryInput.trim()
+    if (input.length === 0) return
+    comparisonManifestController.current?.abort()
+    const manifestController = new AbortController()
+    comparisonManifestController.current = manifestController
+    releaseComparison()
+    setComparisonExternalSnapshot(null)
+    setComparisonSourceError(null)
+    setComparisonManifestLoading(true)
+    setComparisonOpen(true)
+    setComparisonTargetPath(null)
+    try {
+      const next = await loadRepository(input, manifestController.signal)
+      if (manifestController.signal.aborted || comparisonManifestController.current !== manifestController) return
+      const targets = selectTokenizerComparisonTargets(next)
+      if (targets.length === 0) throw new Error('对照仓库没有可用 tokenizer.json。')
+      setComparisonExternalSnapshot(next)
+      setComparisonTargetPath(targets.find(target => target.file.path === 'tokenizer.json')?.file.path
+        ?? targets[0]?.file.path ?? null)
+      setComparisonOpen(true)
+    } catch (failure) {
+      if (!manifestController.signal.aborted && comparisonManifestController.current === manifestController) {
+        setComparisonSourceError(errorMessage(failure))
+        setComparisonOpen(false)
+        setComparisonTargetPath(null)
+      }
+    } finally {
+      if (comparisonManifestController.current === manifestController) {
+        comparisonManifestController.current = null
+        setComparisonManifestLoading(false)
+      }
+    }
+  }
+
   function releaseComparison() {
     disposeComparisonSlot()
     comparisonGeneration.current += 1
@@ -1375,6 +1440,15 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setComparisonOpen(true)
   }
 
+  function closeComparison() {
+    if (comparisonExternalSnapshot !== null || comparisonManifestLoading) closeExternalSource()
+    else {
+      releaseComparison()
+      setComparisonOpen(false)
+      setComparisonTargetPath(null)
+    }
+  }
+
   function changeComparisonTemplate(id: string) {
     setSelectedRightTemplateId(id)
     clearRightResult()
@@ -1383,6 +1457,15 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
   async function runRightRaw(text: string) {
     const session = comparisonSession.current
     if (session === null || text.length === 0) return
+    if (activeRightSnapshot === null || selectedComparisonTarget === null) {
+      rightRequestGeneration.current += 1
+      comparisonRequestController.current?.abort()
+      comparisonRequestController.current = null
+      clearRightResult()
+      setRightError('对照来源不可用。')
+      setRightPhase('error')
+      return
+    }
     comparisonRequestController.current?.abort()
     const requestController = new AbortController()
     comparisonRequestController.current = requestController
@@ -1391,9 +1474,9 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setRightError(null)
     try {
       const next = await session.tokenize(
-        snapshot,
-        selectedComparisonTarget?.file ?? file,
-        selectedComparisonTarget?.config,
+        activeRightSnapshot,
+        selectedComparisonTarget.file,
+        selectedComparisonTarget.config,
         text,
         requestController.signal,
       )
@@ -1415,6 +1498,15 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
   async function runRightDecode(ids: number[], originalInput: string) {
     const session = comparisonSession.current
     if (session === null) return
+    if (activeRightSnapshot === null || selectedComparisonTarget === null) {
+      rightRequestGeneration.current += 1
+      comparisonRequestController.current?.abort()
+      comparisonRequestController.current = null
+      clearRightResult()
+      setRightError('对照来源不可用。')
+      setRightPhase('error')
+      return
+    }
     comparisonRequestController.current?.abort()
     const requestController = new AbortController()
     comparisonRequestController.current = requestController
@@ -1423,9 +1515,9 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setRightError(null)
     try {
       const next = await session.decodeTokenIdArray(
-        snapshot,
-        selectedComparisonTarget?.file ?? file,
-        selectedComparisonTarget?.config,
+        activeRightSnapshot,
+        selectedComparisonTarget.file,
+        selectedComparisonTarget.config,
         ids,
         originalInput,
         requestController.signal,
@@ -1451,6 +1543,15 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
   ) {
     const session = comparisonSession.current
     if (session === null) return
+    if (activeRightSnapshot === null || selectedComparisonTarget === null) {
+      rightRequestGeneration.current += 1
+      comparisonRequestController.current?.abort()
+      comparisonRequestController.current = null
+      clearRightResult()
+      setRightError('对照来源不可用。')
+      setRightPhase('error')
+      return
+    }
     if (view === 'chat' && activeRightTemplate === null) {
       rightRequestGeneration.current += 1
       comparisonRequestController.current?.abort()
@@ -1470,9 +1571,9 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setRightError(null)
     try {
       const next = await session.chatTokenize(
-        snapshot,
-        selectedComparisonTarget?.file ?? file,
-        selectedComparisonTarget?.config,
+        activeRightSnapshot,
+        selectedComparisonTarget.file,
+        selectedComparisonTarget.config,
         template.body,
         context,
         attribution,
@@ -1710,7 +1811,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
           <select
             aria-label="对照 Tokenizer"
             value={selectedComparisonTarget?.file.path ?? ''}
-            disabled={comparisonTargets.length === 0}
+            disabled={comparisonManifestLoading || comparisonTargets.length === 0}
             onChange={event => setComparisonTargetPath(event.target.value)}
           >
             {comparisonTargets.map(target => (
@@ -1718,8 +1819,34 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
             ))}
           </select>
         </label>
+        {comparisonSourceLabel !== null ? (
+          <span className="comparison-source">{comparisonSourceLabel}</span>
+        ) : null}
+        <details className="comparison-repository">
+          <summary>另一公开 Hugging Face…</summary>
+          <form onSubmit={loadComparisonRepository}>
+            <label>
+              <span>对照 Hugging Face 仓库</span>
+              <input
+                value={comparisonRepositoryInput}
+                placeholder="owner/model 或 Hugging Face URL"
+                onChange={event => setComparisonRepositoryInput(event.target.value)}
+              />
+            </label>
+            <div className="comparison-source-actions">
+              <button className="primary-button" type="submit">加载对照</button>
+              {comparisonManifestLoading ? (
+                <>
+                  <span aria-live="polite">正在读取对照仓库清单…</span>
+                  <button type="button" onClick={closeComparison}>取消加载</button>
+                </>
+              ) : null}
+            </div>
+            {comparisonSourceError !== null ? <InlineError>{comparisonSourceError}</InlineError> : null}
+          </form>
+        </details>
         {comparisonOpen ? (
-          <button type="button" aria-label="关闭 Tokenizer 对照" onClick={() => setComparisonOpen(false)}>关闭对照</button>
+          <button type="button" aria-label="关闭 Tokenizer 对照" onClick={closeComparison}>关闭对照</button>
         ) : null}
         {comparisonTargets.length === 0 ? <span>当前快照没有可用 tokenizer.json 对照目标。</span> : null}
       </div>

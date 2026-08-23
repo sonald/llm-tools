@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import {
+  crossRepositoryModelId,
+  crossRepositoryRevision,
   fixtureModelId,
   fixtureRevision,
   installFixtureRoutes,
@@ -538,6 +540,152 @@ test('keeps the main tokenizer usable while shared workspaces compare both sides
   expect(errors).toEqual([])
 })
 
+test('loads an isolated public Hugging Face comparison repository', async ({ page }) => {
+  const errors = collectErrors(page)
+  const requests = await installFixtureRoutes(page, { includeComparisonTokenizers: true })
+  const mainUrls: string[] = []
+  const externalUrls: string[] = []
+  page.on('request', request => {
+    const url = new URL(request.url())
+    if (url.pathname.includes(fixtureModelId)) mainUrls.push(url.pathname)
+    if (url.pathname.includes(crossRepositoryModelId)) externalUrls.push(url.pathname)
+  })
+  await openFixture(page, 18)
+  await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
+  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await page.getByRole('textbox', { name: 'Raw 输入' }).fill('hello worlds')
+  await page.getByRole('button', { name: '立即分词' }).click()
+  await expect(page.getByRole('table', { name: 'Tokenizer Tokens' })).toBeVisible()
+
+  const badge = page.getByRole('button', { name: '查看仓库一致性报告' })
+  await expect(badge).toHaveAttribute('data-consistency-state', 'warnings')
+  const initialState = {
+    url: page.url(),
+    historyLength: await page.evaluate(() => history.length),
+    repositoryInput: await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).inputValue(),
+    status: await page.locator('.repository-status').innerText(),
+    detailHeader: await page.locator('.detail-header').innerText(),
+    localStorageHistory: await page.evaluate(() => localStorage.getItem('model-files.repository-history')),
+    consistencyState: await badge.getAttribute('data-consistency-state'),
+    consistencyExpanded: await badge.getAttribute('aria-expanded'),
+    consistencyLabel: await badge.innerText(),
+  }
+  const mainUrlCount = (path: string) => mainUrls.filter(url => url.endsWith(`/${path}`)).length
+
+  await page.getByText('另一公开 Hugging Face…').click()
+  await page.getByLabel('对照 Hugging Face 仓库').fill(crossRepositoryModelId)
+  await page.getByRole('button', { name: '加载对照' }).click()
+  const source = page.locator('.comparison-source')
+  await expect(source).toHaveText(`${crossRepositoryModelId} · SHA ${crossRepositoryRevision.slice(0, 7)} · tokenizer.json`)
+  const summary = page.getByRole('region', { name: 'Tokenizer 对照摘要' })
+  await expect(summary).toContainText('#0 · 3 / 4')
+  await expect(page.getByRole('table', { name: '主 Tokenizer Tokens' })).toBeVisible()
+  await expect(page.getByRole('table', { name: '对照 Tokenizer Tokens' })).toBeVisible()
+  const diff = page.getByRole('region', { name: 'Tokenizer 词表差集统计' })
+  await diff.getByRole('button', { name: 'rightOnly · 1' }).click()
+  await diff.getByRole('textbox', { name: '对照词表搜索' }).fill('alt')
+  await expect(diff.getByText('显示 1 / 1')).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Tokenizer 词表差集' })).toContainText('alt-token')
+
+  await page.getByRole('combobox', { name: '对照 Tokenizer' }).selectOption('alternate/tokenizer.json')
+  await expect(source).toHaveText(`${crossRepositoryModelId} · SHA ${crossRepositoryRevision.slice(0, 7)} · alternate/tokenizer.json`)
+  await expect(summary).toContainText('#0 · 3 / 4')
+  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await page.getByRole('button', { name: '渲染并分词' }).click()
+  await expect(page.getByLabel('Chat 权威输入')).toContainText('system=You are concise.')
+  const rightResult = page
+    .getByRole('heading', { name: '对照 Tokenizer 结果' })
+    .locator('..')
+    .locator('..')
+  await expect(rightResult.locator('.decoded-text').filter({ hasText: '权威输入：' }))
+    .toHaveText('权威输入：ALT-JINJA You are concise.')
+
+  await page.getByRole('tab', { name: 'Token IDs 工作台' }).click()
+  await page.getByRole('textbox', { name: 'Token IDs' }).fill('[1,3,2]')
+  await page.getByRole('button', { name: '解码 ID' }).click()
+  const mainRows = page.getByRole('table', { name: '主 Tokenizer Tokens' }).locator('tbody tr')
+  const rightRows = page.getByRole('table', { name: '对照 Tokenizer Tokens' }).locator('tbody tr')
+  await expect(summary).toContainText('ID 序列相同')
+  await expect(mainRows.nth(1)).toContainText('hello')
+  await expect(rightRows.nth(1)).not.toContainText('hello')
+
+  await page.getByLabel('对照 Hugging Face 仓库').fill('fixture/empty')
+  await page.getByRole('button', { name: '加载对照' }).click()
+  const comparisonForm = page.locator('.comparison-repository form')
+  await expect(comparisonForm.getByRole('alert')).toHaveText('对照仓库没有可用 tokenizer.json。')
+  await expect(page.locator('.comparison-side')).toHaveCount(0)
+  await expect(page.getByRole('table', { name: 'Tokenizer Tokens' })).toBeVisible()
+
+  await page.getByLabel('对照 Hugging Face 仓库').fill(crossRepositoryModelId)
+  await page.getByRole('button', { name: '加载对照' }).click()
+  await expect(page.locator('.comparison-source')).toHaveText(
+    `${crossRepositoryModelId} · SHA ${crossRepositoryRevision.slice(0, 7)} · tokenizer.json`,
+  )
+  await expect(page.getByRole('table', { name: '对照 Tokenizer Tokens' })).toBeVisible()
+
+  await page.getByRole('button', { name: '关闭 Tokenizer 对照' }).click()
+  await expect(page.getByRole('heading', { name: '对照 Tokenizer 结果' })).toHaveCount(0)
+  await expect(page.locator('.comparison-source')).toHaveCount(0)
+  await expect(page.getByLabel('对照 Hugging Face 仓库')).toHaveValue('')
+  await expect(page.getByRole('table', { name: 'Tokenizer Tokens' })).toBeVisible()
+  expect({
+    url: page.url(),
+    historyLength: await page.evaluate(() => history.length),
+    repositoryInput: await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).inputValue(),
+    status: await page.locator('.repository-status').innerText(),
+    detailHeader: await page.locator('.detail-header').innerText(),
+    localStorageHistory: await page.evaluate(() => localStorage.getItem('model-files.repository-history')),
+    consistencyState: await badge.getAttribute('data-consistency-state'),
+    consistencyExpanded: await badge.getAttribute('aria-expanded'),
+    consistencyLabel: await badge.innerText(),
+  }).toEqual(initialState)
+
+  for (const path of ['config.json', 'generation_config.json', 'tokenizer_config.json', 'tokenizer.json', 'chat_template.jinja']) {
+    expect(mainUrlCount(path)).toBe(1)
+  }
+  expect(externalUrls.filter(url => url.includes('/api/models/'))).toEqual([
+    `/api/models/${crossRepositoryModelId}`,
+    `/api/models/${crossRepositoryModelId}`,
+  ])
+  expect(externalUrls.filter(url => url.includes('/resolve/')).toSorted()).toEqual([
+    `/${crossRepositoryModelId}/resolve/${crossRepositoryRevision}/alternate/chat_template.jinja`,
+    `/${crossRepositoryModelId}/resolve/${crossRepositoryRevision}/alternate/tokenizer.json`,
+    `/${crossRepositoryModelId}/resolve/${crossRepositoryRevision}/alternate/tokenizer_config.json`,
+    `/${crossRepositoryModelId}/resolve/${crossRepositoryRevision}/chat_template.jinja`,
+    `/${crossRepositoryModelId}/resolve/${crossRepositoryRevision}/chat_template.jinja`,
+    `/${crossRepositoryModelId}/resolve/${crossRepositoryRevision}/tokenizer.json`,
+    `/${crossRepositoryModelId}/resolve/${crossRepositoryRevision}/tokenizer.json`,
+    `/${crossRepositoryModelId}/resolve/${crossRepositoryRevision}/tokenizer_config.json`,
+    `/${crossRepositoryModelId}/resolve/${crossRepositoryRevision}/tokenizer_config.json`,
+  ].toSorted())
+  expect(externalUrls.some(url => /\/(model\.safetensors|model\.gguf)$/.test(url))).toBe(false)
+  expect(errors).toEqual([])
+})
+
+test('keeps the latest explicit comparison repository after a delayed manifest', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', 'Latest-only timing evidence is recorded once in Chromium.')
+  const errors = collectErrors(page)
+  await installFixtureRoutes(page, {
+    includeComparisonTokenizers: true,
+    manifestDelayForModel: { modelId: 'fixture/slow-cross', delayMs: 500 },
+  })
+  await page.goto('/')
+  await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).fill(fixtureModelId)
+  await page.getByRole('button', { name: '打开' }).click()
+  await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
+
+  await page.getByText('另一公开 Hugging Face…').click()
+  await page.getByLabel('对照 Hugging Face 仓库').fill('fixture/slow-cross')
+  await page.getByRole('button', { name: '加载对照' }).click()
+  await page.getByLabel('对照 Hugging Face 仓库').fill(crossRepositoryModelId)
+  await page.getByRole('button', { name: '加载对照' }).click()
+  await delay(650)
+  await expect(page.locator('.comparison-source')).toHaveText(
+    `${crossRepositoryModelId} · SHA ${crossRepositoryRevision.slice(0, 7)} · tokenizer.json`,
+  )
+  await expect(errors).toEqual([])
+})
+
 test('keeps comparison controls reachable without overflow at product viewports', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'chromium', 'Responsive evidence is recorded once in Chromium.')
   const errors = collectErrors(page)
@@ -567,6 +715,13 @@ test('keeps comparison controls reachable without overflow at product viewports'
     await diff.scrollIntoViewIfNeeded()
     await expect(page.getByRole('table', { name: '主 Tokenizer Tokens' })).toBeVisible()
     await expect(page.getByRole('table', { name: '对照 Tokenizer Tokens' })).toBeVisible()
+    await page.getByText('另一公开 Hugging Face…').click()
+    const comparisonInput = page.getByLabel('对照 Hugging Face 仓库')
+    const comparisonLoadButton = page.getByRole('button', { name: '加载对照' })
+    await expect(comparisonInput).toBeVisible()
+    await expect(comparisonLoadButton).toBeVisible()
+    await expect(comparisonInput).toBeInViewport()
+    await expect(comparisonLoadButton).toBeInViewport()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     if (testInfo.project.name === 'chromium') {
       const screenshot = testInfo.outputPath(`comparison-${viewport.width}x${viewport.height}.png`)

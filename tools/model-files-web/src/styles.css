@@ -274,6 +274,24 @@ tr:last-child td { border-bottom: 0; }
 .comparison-target { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .comparison-target span { flex: none; font-size: 9.5px; }
 .comparison-target select { max-width: min(340px, 42vw); height: 28px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); }
+.comparison-source { max-width: 100%; overflow: hidden; color: var(--muted); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.comparison-toolbar .comparison-source { flex: 0 1 auto; }
+.comparison-repository { min-width: 0; }
+.comparison-repository summary {
+  height: 27px; display: inline-flex; align-items: center; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+  color: var(--accent); font-size: 10px; cursor: pointer;
+}
+.comparison-repository form {
+  width: min(340px, 100%); display: grid; gap: 7px; padding-top: 7px;
+}
+.comparison-repository label { display: grid; gap: 3px; color: var(--muted); font-size: 9px; }
+.comparison-repository input, .comparison-repository button:not(.primary-button) {
+  height: 29px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel); font-size: 11px;
+}
+.comparison-source-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; color: var(--muted); font-size: 9.5px; }
+.comparison-repository .primary-button { flex: none; }
 .comparison-toolbar > button:not(.primary-button) {
   height: 27px; flex: none; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 6px;
   background: var(--panel); font-size: 10px; cursor: pointer;
@@ -401,6 +419,7 @@ tr:last-child td { border-bottom: 0; }
     grid-template-rows: minmax(220px, .65fr) minmax(320px, 1fr) minmax(360px, 1.1fr);
   }
   .comparison-side { grid-template-rows: auto minmax(0, 1fr); }
+  .comparison-toolbar .comparison-source { white-space: normal; }
   .template-playground { grid-template-columns: 1fr; grid-template-rows: minmax(500px, 1fr) minmax(360px, 1fr); overflow: auto; }
 }
 
@@ -447,7 +466,8 @@ tr:last-child td { border-bottom: 0; }
   body { background: #15171b; }
   .app-shell { border-color: #4a4f59; box-shadow: 0 24px 80px rgb(0 0 0 / 35%); }
   .topbar, .detail-header { background: #25282e; }
-  .repository-form input, .search-field input, .inspection-toolbar input, .directory-button,
+  .repository-form input, .search-field input, .inspection-toolbar input, .comparison-repository input,
+  .directory-button,
   .empty-state button, .input-panel textarea { background: #191b20; }
   .file-row { color: #dfe2e7; }
   .file-row:hover { background: rgb(255 255 255 / 7%); }
