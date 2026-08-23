@@ -1180,6 +1180,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
             snapshot,
             selectedComparisonTarget.file,
             selectedComparisonTarget.config,
+            snapshot,
             file,
             loadController.signal,
           )

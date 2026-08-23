@@ -84,9 +84,10 @@ export type TokenizerSession = {
     signal?: AbortSignal,
   ): Promise<TokenizerVocabularyEntry[]>
   prepareVocabularyDiff(
-    snapshot: RepositorySnapshot,
-    tokenizerFile: RepositoryFile,
+    rightSnapshot: RepositorySnapshot,
+    rightTokenizerFile: RepositoryFile,
     configFile: RepositoryFile | undefined,
+    leftSnapshot: RepositorySnapshot,
     leftTokenizerFile: RepositoryFile,
     signal?: AbortSignal,
   ): Promise<{ leftOnlyCount: number; rightOnlyCount: number; sharedCount: number }>
@@ -229,15 +230,16 @@ class ClientTokenizerSession implements TokenizerSession {
   }
 
   async prepareVocabularyDiff(
-    snapshot: RepositorySnapshot,
-    tokenizerFile: RepositoryFile,
+    rightSnapshot: RepositorySnapshot,
+    rightTokenizerFile: RepositoryFile,
     configFile: RepositoryFile | undefined,
+    leftSnapshot: RepositorySnapshot,
     leftTokenizerFile: RepositoryFile,
     signal?: AbortSignal,
   ) {
     this.assertUsable()
-    const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
-    const tokenizerData = await readWholeFile(snapshot, leftTokenizerFile, signal)
+    const { identity } = await this.ensureLoaded(rightSnapshot, rightTokenizerFile, configFile, signal)
+    const tokenizerData = await readWholeFile(leftSnapshot, leftTokenizerFile, signal)
     if (this.loadedIdentity !== identity) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
     return validateTokenizerVocabularyDiffCounts(await this.request({
       operation: 'prepare-vocabulary-diff',

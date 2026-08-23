@@ -85,7 +85,7 @@ function localSnapshot(id: string): LocalDirectorySnapshot {
 }
 
 function diffSnapshot(id: string): LocalDirectorySnapshot {
-    const left = new File([JSON.stringify({ model: { vocab: { hello: 3 } } })], 'tokenizer.json')
+  const left = new File([JSON.stringify({ model: { vocab: { hello: 3 } } })], 'tokenizer.json')
   const rightTokenizer = new File(['{}'], 'tokenizer.json')
   const rightConfig = new File(['{}'], 'tokenizer_config.json')
   return {
@@ -99,6 +99,13 @@ function diffSnapshot(id: string): LocalDirectorySnapshot {
       ['right/tokenizer.json', rightTokenizer],
       ['right/tokenizer_config.json', rightConfig],
     ]),
+  }
+}
+
+function diffSnapshots(id: string) {
+  return {
+    rightSnapshot: diffSnapshot(`${id}-right`),
+    leftSnapshot: diffSnapshot(`${id}-left`),
   }
 }
 
@@ -360,25 +367,35 @@ test('comparison vocabulary diff is isolated, cleared by reload, and rejected af
   try {
     const comparison = createComparisonTokenizerSession()
     comparisons.push(comparison)
-    const snapshot = diffSnapshot('diff')
     const rightFile = { path: 'right/tokenizer.json', size: 2, hash: null, category: 'tokenizer' } as const
+    const leftFile = { path: 'tokenizer.json', size: 31, hash: null, category: 'tokenizer' } as const
     const configFile = { path: 'right/tokenizer_config.json', size: 2, hash: null, category: 'tokenizer' } as const
 
     await assert.rejects(comparison.searchVocabularyDiff('shared', 'x'), /尚未准备/)
-    const loadPromise = comparison.inspectTokenizer(snapshot, rightFile, configFile)
+    const { rightSnapshot, leftSnapshot } = diffSnapshots('diff')
+    assert.notEqual(rightSnapshot.selectionId, leftSnapshot.selectionId)
+    const loadPromise = comparison.inspectTokenizer(rightSnapshot, rightFile, configFile)
     await new Promise(resolve => setTimeout(resolve, 0))
     const worker = FakeWorker.created[0]
     assert.equal(worker.sent[0].operation, 'load')
     reply(worker, {}, 0)
     await loadPromise
 
-    const leftFile = { path: 'tokenizer.json', size: 31, hash: null, category: 'tokenizer' } as const
-    const prepared = comparison.prepareVocabularyDiff(snapshot, rightFile, configFile, leftFile)
+    const prepared = comparison.prepareVocabularyDiff(
+      rightSnapshot,
+      rightFile,
+      configFile,
+      leftSnapshot,
+      leftFile,
+    )
     await new Promise(resolve => setTimeout(resolve, 0))
     const prepareRequest = worker.sent.at(-1)!
     assert.equal(prepareRequest.operation, 'prepare-vocabulary-diff')
-    assert.equal(prepareRequest.tokenizerIdentity, 'diff/right/tokenizer.json+right/tokenizer_config.json')
-    assert.ok(prepareRequest.tokenizerData instanceof ArrayBuffer)
+    assert.equal(prepareRequest.tokenizerIdentity, 'diff-right/right/tokenizer.json+right/tokenizer_config.json')
+    assert.equal(
+      new TextDecoder().decode(prepareRequest.tokenizerData as ArrayBuffer),
+      '{"model":{"vocab":{"hello":3}}}',
+    )
     reply(worker, {
       value: { leftOnlyCount: 1, rightOnlyCount: 2, sharedCount: 3 },
       operation: 'prepare-vocabulary-diff',
@@ -407,7 +424,7 @@ test('comparison vocabulary diff is isolated, cleared by reload, and rejected af
     comparison.dispose()
     const replacement = createComparisonTokenizerSession()
     comparisons.push(replacement)
-    const reloaded = replacement.inspectTokenizer(diffSnapshot('next'), rightFile, configFile)
+    const reloaded = replacement.inspectTokenizer(diffSnapshots('next').rightSnapshot, rightFile, configFile)
     await new Promise(resolve => setTimeout(resolve, 0))
     const nextWorker = FakeWorker.created.at(-1)!
     await assert.rejects(replacement.searchVocabularyDiff('shared', ''), /尚未准备|尚未加载/)
@@ -416,7 +433,7 @@ test('comparison vocabulary diff is isolated, cleared by reload, and rejected af
 
     replacement.dispose()
     await assert.rejects(replacement.prepareVocabularyDiff(
-      localSnapshot('next'), rightFile, configFile, leftFile,
+      localSnapshot('next'), rightFile, configFile, localSnapshot('next'), leftFile,
     ), /已释放/)
     await assert.rejects(replacement.searchVocabularyDiff('shared', ''), /已释放/)
   }
@@ -491,7 +508,7 @@ test('rejects malformed vocabulary diff replies without poisoning the session', 
       assert.throws(() => validateTokenizerVocabularyDiffSearch(value), /差集结果/)
     }
 
-    const badPrepare = comparison.prepareVocabularyDiff(snapshot, rightFile, undefined, rightFile)
+    const badPrepare = comparison.prepareVocabularyDiff(snapshot, rightFile, undefined, snapshot, rightFile)
     await new Promise(resolve => setTimeout(resolve, 0))
     reply(worker, {
       value: { leftOnlyCount: 1, rightOnlyCount: 2 },
