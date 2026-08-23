@@ -9,6 +9,7 @@ import {
   type TokenizerVocabularyAnalysis,
   type TokenizerVocabularyEntry,
   type TokenizerStructure,
+  type VocabularyDiffScope,
 } from './core/tokenizer.ts'
 import type { ChatTemplateCatalog, ChatTemplateEntry, ChatTemplateSource } from './core/chatTemplates.ts'
 import type { TokenizerOperation, TokenizerReply, TokenizerRequest } from './tokenizerProtocol.ts'
@@ -21,6 +22,8 @@ type OutgoingTokenizerRequest =
   | { operation: 'decode-token-ids'; tokenizerIdentity: string; ids: number[]; originalInput: string }
   | { operation: 'render-template'; tokenizerIdentity: ''; source: string; context: Record<string, unknown> }
   | { operation: 'search-vocabulary'; tokenizerIdentity: string; query: string }
+  | { operation: 'prepare-vocabulary-diff'; tokenizerIdentity: string; tokenizerData: ArrayBuffer }
+  | { operation: 'search-vocabulary-diff'; tokenizerIdentity: string; scope: VocabularyDiffScope; query: string }
 
 type PendingTokenizerRequest = {
   operation: TokenizerOperation
@@ -80,6 +83,25 @@ export type TokenizerSession = {
     query: string,
     signal?: AbortSignal,
   ): Promise<TokenizerVocabularyEntry[]>
+  prepareVocabularyDiff(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    leftTokenizerFile: RepositoryFile,
+    signal?: AbortSignal,
+  ): Promise<{ leftOnlyCount: number; rightOnlyCount: number; sharedCount: number }>
+  searchVocabularyDiff(scope: VocabularyDiffScope, query: string, signal?: AbortSignal): Promise<{
+    total: number
+    pieces: string[]
+  }>
+  decodeTokenIdArray(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    ids: number[],
+    originalInput?: string,
+    signal?: AbortSignal,
+  ): Promise<Tokenization>
   renderTemplate(source: string, context: Record<string, unknown>): Promise<string>
   cancel(): void
   dispose(): void
@@ -204,6 +226,63 @@ class ClientTokenizerSession implements TokenizerSession {
       tokenizerIdentity: identity,
       query: term,
     }, [], signal))
+  }
+
+  async prepareVocabularyDiff(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    leftTokenizerFile: RepositoryFile,
+    signal?: AbortSignal,
+  ) {
+    this.assertUsable()
+    const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
+    const tokenizerData = await readWholeFile(snapshot, leftTokenizerFile, signal)
+    if (this.loadedIdentity !== identity) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
+    return validateTokenizerVocabularyDiffCounts(await this.request({
+      operation: 'prepare-vocabulary-diff',
+      tokenizerIdentity: identity,
+      tokenizerData,
+    }, [tokenizerData], signal))
+  }
+
+  async searchVocabularyDiff(scope: VocabularyDiffScope, query: string, signal?: AbortSignal) {
+    this.assertUsable()
+    if (this.loadedIdentity === '') throw new Error('词表差集尚未准备。')
+    const term = query.trim()
+    if (new TextEncoder().encode(term).byteLength > 64 * 1024) {
+      throw new Error('词表差集搜索输入超过 64 KiB 上限。')
+    }
+    return validateTokenizerVocabularyDiffSearch(await this.request({
+      operation: 'search-vocabulary-diff',
+      tokenizerIdentity: this.loadedIdentity,
+      scope,
+      query: term,
+    }, [], signal))
+  }
+
+  async decodeTokenIdArray(
+    snapshot: RepositorySnapshot,
+    tokenizerFile: RepositoryFile,
+    configFile: RepositoryFile | undefined,
+    ids: number[],
+    originalInput = JSON.stringify(ids),
+    signal?: AbortSignal,
+  ): Promise<Tokenization> {
+    this.assertUsable()
+    if (!Array.isArray(ids) || !ids.every(isSafeNonNegativeInteger)) {
+      throw new Error('Token ID 数组必须是非负 safe integer。')
+    }
+    if (new TextEncoder().encode(originalInput).byteLength > 64 * 1024) {
+      throw new Error('Token ID 输入超过 64 KiB 上限。')
+    }
+    const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
+    return validateTokenization(await this.request({
+      operation: 'decode-token-ids',
+      tokenizerIdentity: identity,
+      ids,
+      originalInput,
+    }, [], signal), false)
   }
 
   async renderTemplate(source: string, context: Record<string, unknown>): Promise<string> {
@@ -426,7 +505,63 @@ function isReplyEnvelope(value: unknown): value is TokenizerReply & { ok: boolea
 const operations = new Set<string>([
   'load', 'inspect-structure', 'tokenize', 'chat-tokenize',
   'decode-token-ids', 'render-template', 'search-vocabulary',
+  'prepare-vocabulary-diff', 'search-vocabulary-diff',
 ] satisfies TokenizerOperation[])
+
+export function validateTokenizerVocabularyDiffCounts(value: unknown): {
+  leftOnlyCount: number
+  rightOnlyCount: number
+  sharedCount: number
+} {
+  if (!isUnknownRecord(value) || !sameKeys(value, ['leftOnlyCount', 'rightOnlyCount', 'sharedCount'])
+  ) {
+    throw new Error('词表差集统计无效。')
+  }
+  const leftOnlyCount = value.leftOnlyCount
+  const rightOnlyCount = value.rightOnlyCount
+  const sharedCount = value.sharedCount
+  if (!isSafeNonNegativeInteger(leftOnlyCount)
+    || !isSafeNonNegativeInteger(rightOnlyCount)
+    || !isSafeNonNegativeInteger(sharedCount)) {
+    throw new Error('词表差集统计无效。')
+  }
+  return {
+    leftOnlyCount,
+    rightOnlyCount,
+    sharedCount,
+  }
+}
+
+export function validateTokenizerVocabularyDiffSearch(value: unknown): { total: number; pieces: string[] } {
+  if (!isUnknownRecord(value) || !sameKeys(value, ['total', 'pieces'])
+    || !isSafeNonNegativeInteger(value.total) || !Array.isArray(value.pieces)
+    || value.pieces.length > 1_000 || value.total < value.pieces.length
+    || !value.pieces.every(piece => typeof piece === 'string')
+    || !isSortedCodePoints(value.pieces)) {
+    throw new Error('词表差集结果无效。')
+  }
+  return { total: value.total, pieces: value.pieces }
+}
+
+function sameKeys(value: Record<string, unknown>, keys: string[]) {
+  return Object.keys(value).toSorted().join(',') === keys.toSorted().join(',')
+}
+
+function isSortedCodePoints(pieces: string[]) {
+  for (let index = 1; index < pieces.length; index++) {
+    if (compareCodePoints(pieces[index - 1], pieces[index]) >= 0) return false
+  }
+  return true
+}
+
+function compareCodePoints(left: string, right: string) {
+  const leftPoints = Array.from(left)
+  const rightPoints = Array.from(right)
+  for (let index = 0; index < Math.min(leftPoints.length, rightPoints.length); index++) {
+    if (leftPoints[index] !== rightPoints[index]) return leftPoints[index] < rightPoints[index] ? -1 : 1
+  }
+  return leftPoints.length - rightPoints.length
+}
 
 export async function tokenize(
   snapshot: RepositorySnapshot,

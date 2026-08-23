@@ -51,6 +51,7 @@ type FixtureOptions = {
   manifestFailures?: number
   rangeBehavior?: 'valid' | 'http200'
   includeBoundaryFiles?: boolean
+  includeComparisonTokenizers?: boolean
   omitIndependentChatTemplate?: boolean
   configChatTemplate?: unknown
   largeVocabularyWithoutConfig?: boolean
@@ -140,6 +141,58 @@ const files = new Map<string, Uint8Array>([
   ['model.gguf', ggufFixture()],
 ])
 
+const alternateTokenizer = JSON.stringify({
+  version: '1.0',
+  truncation: null,
+  padding: null,
+  added_tokens: [
+    { id: 0, content: '[UNK]', special: true },
+    { id: 1, content: '[CLS]', special: true },
+    { id: 2, content: '[SEP]', special: true },
+  ],
+  normalizer: {
+    type: 'BertNormalizer',
+    clean_text: true,
+    handle_chinese_chars: true,
+    strip_accents: null,
+    lowercase: true,
+  },
+  pre_tokenizer: { type: 'BertPreTokenizer' },
+  post_processor: null,
+  decoder: { type: 'WordPiece', prefix: '##', cleanup: true },
+  model: {
+    type: 'WordPiece',
+    unk_token: '[UNK]',
+    continuing_subword_prefix: '##',
+    max_input_chars_per_word: 100,
+    vocab: {
+      '[UNK]': 0,
+      '[CLS]': 1,
+      '[SEP]': 2,
+      hello: 4,
+      world: 3,
+      '##s': 5,
+      'alt-token': 6,
+    },
+  },
+})
+const alternateTokenizerConfig = JSON.stringify({
+  tokenizer_class: 'BertTokenizer',
+  unk_token: '[UNK]',
+  eos_token_id: 1,
+  model_max_length: 256,
+  chat_template: 'ALT-CONFIG {{ messages[0].content }}',
+})
+const alternateChatTemplate = 'ALT-JINJA {{ messages[0].content }}'
+
+const comparisonFiles = new Map<string, Uint8Array>([
+  ['alternate/tokenizer.json', bytes(alternateTokenizer)],
+  ['alternate/tokenizer_config.json', bytes(alternateTokenizerConfig)],
+  ['alternate/chat_template.jinja', bytes(alternateChatTemplate)],
+  ['broken/tokenizer.json', bytes('{"version":"1.0"')],
+  ['no-config/tokenizer.json', bytes(alternateTokenizer)],
+])
+
 const localReaderFiles = new Map<string, Uint8Array>([
   ['reader.py', bytes(pythonReaderSource)],
   ['reader-copy.py', bytes(pythonReaderSource)],
@@ -180,6 +233,7 @@ export async function installFixtureRoutes(page: Page, options: FixtureOptions =
       await route.fulfill({ json: manifest(
         modelId,
         options.includeBoundaryFiles ?? false,
+        options.includeComparisonTokenizers ?? false,
         options.omitIndependentChatTemplate ?? false,
         options.configChatTemplate,
         options.largeVocabularyWithoutConfig ?? false,
@@ -188,6 +242,7 @@ export async function installFixtureRoutes(page: Page, options: FixtureOptions =
     }
     await fulfillFile(route, requests, options.rangeBehavior ?? 'valid', options.configChatTemplate,
       options.largeVocabularyWithoutConfig ?? false, options.delayedContentModelId, options.contentDelayMs,
+      options.includeComparisonTokenizers ?? false,
     )
   })
   return requests
@@ -196,11 +251,12 @@ export async function installFixtureRoutes(page: Page, options: FixtureOptions =
 function manifest(
   modelId: string,
   includeBoundaryFiles: boolean,
+  includeComparisonTokenizers: boolean,
   omitChatTemplate: boolean,
   configChatTemplate?: unknown,
   largeVocabularyWithoutConfig = false,
 ) {
-  const bodies = fixtureBodies(configChatTemplate, largeVocabularyWithoutConfig)
+  const bodies = comparisonBodies(configChatTemplate, largeVocabularyWithoutConfig, includeComparisonTokenizers)
   return {
     id: modelId,
     sha: modelId === fixtureModelId ? fixtureRevision : 'f'.repeat(40),
@@ -229,6 +285,7 @@ async function fulfillFile(
   largeVocabularyWithoutConfig = false,
   delayedContentModelId?: string,
   contentDelayMs?: number,
+  includeComparisonTokenizers = false,
 ) {
   const url = new URL(route.request().url())
   const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/resolve\/([0-9a-f]{40})\/(.+)$/)
@@ -241,7 +298,7 @@ async function fulfillFile(
   if (delayedContentModelId === requestedModelId && contentDelayMs !== undefined) {
     await delay(contentDelayMs)
   }
-  const body = fixtureBodies(configChatTemplate, largeVocabularyWithoutConfig).get(path)
+  const body = comparisonBodies(configChatTemplate, largeVocabularyWithoutConfig, includeComparisonTokenizers).get(path)
   if (body === undefined) {
     await route.fulfill({ status: 404, body: 'missing fixture' })
     return
@@ -274,7 +331,11 @@ async function fulfillFile(
   })
 }
 
-function fixtureBodies(configChatTemplate?: unknown, largeVocabularyWithoutConfig = false): Map<string, Uint8Array> {
+function comparisonBodies(
+  configChatTemplate?: unknown,
+  largeVocabularyWithoutConfig = false,
+  includeComparisonTokenizers = false,
+): Map<string, Uint8Array> {
   let bodies = configChatTemplate === undefined ? files : new Map(files).set('tokenizer_config.json', bytes(JSON.stringify({
     ...JSON.parse(tokenizerConfig),
     chat_template: configChatTemplate,
@@ -289,6 +350,7 @@ function fixtureBodies(configChatTemplate?: unknown, largeVocabularyWithoutConfi
     bodies.delete('tokenizer_config.json')
     bodies.set('tokenizer.json', bytes(JSON.stringify(parsed)))
   }
+  if (includeComparisonTokenizers) bodies = new Map([...bodies, ...comparisonFiles])
   return bodies
 }
 

@@ -4,9 +4,12 @@ import {
   createComparisonTokenizerSession,
   inspectTokenizerData,
   mainTokenizerSession,
+  validateTokenizerVocabularyDiffCounts,
+  validateTokenizerVocabularyDiffSearch,
   type TokenizerSession,
 } from '../tokenizerClient.ts'
 import { type LocalDirectorySnapshot } from './huggingface.ts'
+import { isTokenizerRequest } from '../tokenizerProtocol.ts'
 
 class FakeWorker {
   static created: FakeWorker[] = []
@@ -78,6 +81,24 @@ function localSnapshot(id: string): LocalDirectorySnapshot {
     selectionId: id,
     files: [],
     localFiles: new Map([['tokenizer.json', new File(['{}'], 'tokenizer.json')]]),
+  }
+}
+
+function diffSnapshot(id: string): LocalDirectorySnapshot {
+    const left = new File([JSON.stringify({ model: { vocab: { hello: 3 } } })], 'tokenizer.json')
+  const rightTokenizer = new File(['{}'], 'tokenizer.json')
+  const rightConfig = new File(['{}'], 'tokenizer_config.json')
+  return {
+    source: 'local',
+    name: id,
+    revision: 'live',
+    selectionId: id,
+    files: [],
+    localFiles: new Map([
+      ['tokenizer.json', left],
+      ['right/tokenizer.json', rightTokenizer],
+      ['right/tokenizer_config.json', rightConfig],
+    ]),
   }
 }
 
@@ -254,8 +275,8 @@ test('a newer tokenizer identity cancels the old load and the loaded identity is
   try {
     const comparison = createComparisonTokenizerSession()
     comparisons.push(comparison)
-    const oldPromise = comparison.inspectTokenizer(localSnapshot('old'), {
-      path: 'tokenizer.json', size: 2, hash: null, category: 'tokenizer',
+    const oldPromise = comparison.inspectTokenizer(diffSnapshot('old'), {
+      path: 'tokenizer.json', size: 31, hash: null, category: 'tokenizer',
     }, undefined)
     await new Promise(resolve => setTimeout(resolve, 0))
     const oldWorker = FakeWorker.created[0]
@@ -263,8 +284,8 @@ test('a newer tokenizer identity cancels the old load and the loaded identity is
     assert.equal(oldRequest.operation, 'load')
     assert.equal(oldRequest.tokenizerIdentity, 'old/tokenizer.json+no-config')
 
-    const newPromise = comparison.inspectTokenizer(localSnapshot('new'), {
-      path: 'tokenizer.json', size: 2, hash: null, category: 'tokenizer',
+    const newPromise = comparison.inspectTokenizer(diffSnapshot('new'), {
+      path: 'tokenizer.json', size: 31, hash: null, category: 'tokenizer',
     }, undefined)
     await assert.rejects(oldPromise, isAbort)
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -279,8 +300,8 @@ test('a newer tokenizer identity cancels the old load and the loaded identity is
     assert.equal(loaded.modelType, 'BPE')
 
     const loadCount = newWorker.sent.length
-    await assert.doesNotReject(comparison.inspectTokenizer(localSnapshot('new'), {
-      path: 'tokenizer.json', size: 2, hash: null, category: 'tokenizer',
+    await assert.doesNotReject(comparison.inspectTokenizer(diffSnapshot('new'), {
+      path: 'tokenizer.json', size: 31, hash: null, category: 'tokenizer',
     }, undefined))
     assert.equal(newWorker.sent.length, loadCount)
     assert.equal(FakeWorker.created.length, 2)
@@ -331,4 +352,208 @@ test('disposed sessions reject every API before input validation', { timeout: 1_
   finally {
     cleanup(originalWorker, comparisons)
   }
+})
+
+test('comparison vocabulary diff is isolated, cleared by reload, and rejected after disposal', { timeout: 1_000 }, async () => {
+  const originalWorker = installFakeWorker()
+  const comparisons: TokenizerSession[] = []
+  try {
+    const comparison = createComparisonTokenizerSession()
+    comparisons.push(comparison)
+    const snapshot = diffSnapshot('diff')
+    const rightFile = { path: 'right/tokenizer.json', size: 2, hash: null, category: 'tokenizer' } as const
+    const configFile = { path: 'right/tokenizer_config.json', size: 2, hash: null, category: 'tokenizer' } as const
+
+    await assert.rejects(comparison.searchVocabularyDiff('shared', 'x'), /尚未准备/)
+    const loadPromise = comparison.inspectTokenizer(snapshot, rightFile, configFile)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const worker = FakeWorker.created[0]
+    assert.equal(worker.sent[0].operation, 'load')
+    reply(worker, {}, 0)
+    await loadPromise
+
+    const leftFile = { path: 'tokenizer.json', size: 31, hash: null, category: 'tokenizer' } as const
+    const prepared = comparison.prepareVocabularyDiff(snapshot, rightFile, configFile, leftFile)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const prepareRequest = worker.sent.at(-1)!
+    assert.equal(prepareRequest.operation, 'prepare-vocabulary-diff')
+    assert.equal(prepareRequest.tokenizerIdentity, 'diff/right/tokenizer.json+right/tokenizer_config.json')
+    assert.ok(prepareRequest.tokenizerData instanceof ArrayBuffer)
+    reply(worker, {
+      value: { leftOnlyCount: 1, rightOnlyCount: 2, sharedCount: 3 },
+      operation: 'prepare-vocabulary-diff',
+    }, -1)
+    await prepared
+
+    const requestCountBeforeOversized = worker.sent.length
+    await assert.rejects(
+      comparison.searchVocabularyDiff('shared', 'x'.repeat(64 * 1024 + 1)),
+      /词表差集搜索输入超过 64 KiB 上限。/,
+    )
+    assert.equal(worker.sent.length, requestCountBeforeOversized)
+
+    const searched = comparison.searchVocabularyDiff('leftOnly', ' X ')
+    await Promise.resolve()
+    const searchRequest = worker.sent.at(-1)!
+    assert.equal(searchRequest.operation, 'search-vocabulary-diff')
+    assert.equal(searchRequest.scope, 'leftOnly')
+    assert.equal(searchRequest.query, 'X')
+    reply(worker, {
+      value: { total: 1, pieces: ['x'] },
+      operation: 'search-vocabulary-diff',
+    }, -1)
+    await searched
+
+    comparison.dispose()
+    const replacement = createComparisonTokenizerSession()
+    comparisons.push(replacement)
+    const reloaded = replacement.inspectTokenizer(diffSnapshot('next'), rightFile, configFile)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const nextWorker = FakeWorker.created.at(-1)!
+    await assert.rejects(replacement.searchVocabularyDiff('shared', ''), /尚未准备|尚未加载/)
+    reply(nextWorker, {}, 0)
+    await assert.doesNotReject(reloaded)
+
+    replacement.dispose()
+    await assert.rejects(replacement.prepareVocabularyDiff(
+      localSnapshot('next'), rightFile, configFile, leftFile,
+    ), /已释放/)
+    await assert.rejects(replacement.searchVocabularyDiff('shared', ''), /已释放/)
+  }
+  finally {
+    cleanup(originalWorker, comparisons)
+  }
+})
+
+test('main vocabulary search remains available beside comparison replies', { timeout: 1_000 }, async () => {
+  const originalWorker = installFakeWorker()
+  const comparisons: TokenizerSession[] = []
+  try {
+    const snapshot = localSnapshot('search')
+    const file = { path: 'tokenizer.json', size: 2, hash: null, category: 'tokenizer' } as const
+    const mainPromise = mainTokenizerSession.searchTokenizerVocabulary(snapshot, file, undefined, 'hello')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const mainWorker = FakeWorker.created[0]
+    assert.equal(mainWorker.sent[0].operation, 'load')
+    reply(mainWorker, {}, 0)
+
+    const comparison = createComparisonTokenizerSession()
+    comparisons.push(comparison)
+    assert.rejects(comparison.searchVocabularyDiff('shared', 'hello'), /尚未准备/).catch(() => {})
+    comparison.dispose()
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const searchIndex = mainWorker.sent.findIndex(request => request.operation === 'search-vocabulary')
+    assert.notEqual(searchIndex, -1)
+    reply(mainWorker, { value: [{ tokenId: 3, token: 'hello', scalarLength: 5 }] }, searchIndex)
+    assert.deepEqual(await mainPromise, [{ tokenId: 3, token: 'hello', scalarLength: 5 }])
+    assert.equal(mainWorker.terminated, false)
+  }
+  finally {
+    cleanup(originalWorker, comparisons)
+  }
+})
+
+test('rejects malformed vocabulary diff replies without poisoning the session', { timeout: 1_000 }, async () => {
+  const originalWorker = installFakeWorker()
+  const comparisons: TokenizerSession[] = []
+  try {
+    const comparison = createComparisonTokenizerSession()
+    comparisons.push(comparison)
+    const snapshot = localSnapshot('malformed')
+    const rightFile = { path: 'tokenizer.json', size: 2, hash: null, category: 'tokenizer' } as const
+    const loadPromise = comparison.inspectTokenizer(snapshot, rightFile, undefined)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const worker = FakeWorker.created[0]
+    reply(worker, {}, 0)
+    await assert.doesNotReject(loadPromise)
+
+    const malformedCounts: unknown[] = [
+      null,
+      { leftOnlyCount: 1, rightOnlyCount: 2 },
+      { leftOnlyCount: 1, rightOnlyCount: 2, sharedCount: 3, extra: true },
+      { leftOnlyCount: -1, rightOnlyCount: 2, sharedCount: 3 },
+      { leftOnlyCount: 1.2, rightOnlyCount: 2, sharedCount: 3 },
+    ]
+    for (const value of malformedCounts) {
+      assert.throws(() => validateTokenizerVocabularyDiffCounts(value), /差集统计/)
+    }
+    const malformedPages: unknown[] = [
+      null,
+      { total: 1 },
+      { total: 1, pieces: ['a'], extra: true },
+      { total: 1, pieces: Array.from({ length: 1_001 }, () => 'a') },
+      { total: 1, pieces: ['b', 'a'] },
+      { total: 0, pieces: ['a'] },
+      { total: 1, pieces: [1] },
+    ]
+    for (const value of malformedPages) {
+      assert.throws(() => validateTokenizerVocabularyDiffSearch(value), /差集结果/)
+    }
+
+    const badPrepare = comparison.prepareVocabularyDiff(snapshot, rightFile, undefined, rightFile)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    reply(worker, {
+      value: { leftOnlyCount: 1, rightOnlyCount: 2 },
+      operation: 'prepare-vocabulary-diff',
+    }, -1)
+    await assert.rejects(badPrepare, /差集统计/)
+    assert.equal(worker.terminated, false)
+
+    const goodSearch = comparison.searchVocabularyDiff('shared', '')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    reply(worker, {
+      value: { total: 0, pieces: [] },
+      operation: 'search-vocabulary-diff',
+    }, -1)
+    assert.deepEqual(await goodSearch, { total: 0, pieces: [] })
+  }
+  finally {
+    cleanup(originalWorker, comparisons)
+  }
+})
+
+test('isTokenizerRequest guards diff operations at the protocol boundary', () => {
+  const base = {
+    kind: 'request',
+    sessionId: 'session',
+    generation: 0,
+    requestId: 1,
+    tokenizerIdentity: '',
+  }
+  assert.equal(isTokenizerRequest({
+    ...base,
+    operation: 'prepare-vocabulary-diff',
+    tokenizerIdentity: 'identity',
+    tokenizerData: new ArrayBuffer(2),
+  }), true)
+  assert.equal(isTokenizerRequest({
+    ...base,
+    operation: 'prepare-vocabulary-diff',
+    tokenizerIdentity: 'identity',
+    tokenizerData: 'not-array-buffer',
+  }), false)
+  for (const scope of ['leftOnly', 'rightOnly', 'shared'] as const) {
+    assert.equal(isTokenizerRequest({
+      ...base,
+      operation: 'search-vocabulary-diff',
+      tokenizerIdentity: 'identity',
+      scope,
+      query: '',
+    }), true)
+  }
+  assert.equal(isTokenizerRequest({
+    ...base,
+    operation: 'search-vocabulary-diff',
+    tokenizerIdentity: 'identity',
+    scope: 'invalid-scope',
+    query: '',
+  }), false)
+  assert.equal(isTokenizerRequest({
+    ...base,
+    operation: 'search-vocabulary-diff',
+    tokenizerIdentity: 'identity',
+    scope: 'shared',
+    query: 42,
+  }), false)
 })

@@ -1,4 +1,4 @@
-import type { RepositoryFile } from './huggingface.ts'
+import type { RepositoryFile, RepositorySnapshot } from './huggingface.ts'
 import type { ChatTokenOverhead, ChatTokenRole } from './tokenAttribution.ts'
 import type { ChatTemplateCatalog } from './chatTemplates.ts'
 
@@ -49,6 +49,106 @@ export type TokenizerStructure = {
   vocabulary: TokenizerVocabularyAnalysis | null
   vocabularyError: string | null
   chatTemplates: ChatTemplateCatalog
+}
+
+export type TokenizerComparisonSummary = {
+  leftCount: number
+  rightCount: number
+  countDelta: number
+  idsMatch: boolean
+  firstDifference: { index: number; leftId: number | null; rightId: number | null } | null
+  leftTemplateOverhead: number | null
+  rightTemplateOverhead: number | null
+}
+
+export type TokenizerComparisonTarget = {
+  file: RepositoryFile
+  config: RepositoryFile | undefined
+  templateFile: RepositoryFile | undefined
+}
+
+export type VocabularyDiff = {
+  leftOnly: string[]
+  rightOnly: string[]
+  shared: string[]
+}
+
+export type VocabularyDiffScope = 'leftOnly' | 'rightOnly' | 'shared'
+
+export type VocabularyDiffSearch = { total: number; pieces: string[] }
+
+export function compareTokenizerTokenizations(
+  left: { ids: readonly number[]; overhead: { templateCount: number } | null },
+  right: { ids: readonly number[]; overhead: { templateCount: number } | null },
+): TokenizerComparisonSummary {
+  let index = 0
+  while (index < left.ids.length && index < right.ids.length && left.ids[index] === right.ids[index]) index += 1
+  return {
+    leftCount: left.ids.length,
+    rightCount: right.ids.length,
+    countDelta: right.ids.length - left.ids.length,
+    idsMatch: left.ids.length === right.ids.length && index === left.ids.length,
+    firstDifference: index === left.ids.length && index === right.ids.length ? null : {
+      index,
+      leftId: index < left.ids.length ? left.ids[index] : null,
+      rightId: index < right.ids.length ? right.ids[index] : null,
+    },
+    leftTemplateOverhead: left.overhead?.templateCount ?? null,
+    rightTemplateOverhead: right.overhead?.templateCount ?? null,
+  }
+}
+
+export function selectTokenizerComparisonTargets(
+  snapshot: Pick<RepositorySnapshot, 'files'>,
+): TokenizerComparisonTarget[] {
+  return snapshot.files.flatMap((file): TokenizerComparisonTarget[] => {
+    if (file.path.split('/').at(-1) !== 'tokenizer.json') return []
+    const config = companion(snapshot.files, file.path, 'tokenizer_config.json')
+    return [{
+      file,
+      config,
+      templateFile: companion(snapshot.files, file.path, 'chat_template.jinja'),
+    }]
+  })
+}
+
+function companion(files: RepositoryFile[], path: string, basename: string) {
+  const parts = path.split('/')
+  parts.pop()
+  parts.push(basename)
+  const target = parts.join('/')
+  return files.find(file => file.path === target)
+}
+
+export function buildTokenizerVocabularyDiff(
+  left: TokenizerVocabularyEntry[],
+  right: TokenizerVocabularyEntry[],
+): VocabularyDiff {
+  const leftPieces = new Set(left.map(entry => entry.token))
+  const rightPieces = new Set(right.map(entry => entry.token))
+  const compareCodePoints = (left: string, right: string) => {
+    const leftPoints = Array.from(left)
+    const rightPoints = Array.from(right)
+    for (let index = 0; index < Math.min(leftPoints.length, rightPoints.length); index++) {
+      if (leftPoints[index] !== rightPoints[index]) return leftPoints[index] < rightPoints[index] ? -1 : 1
+    }
+    return leftPoints.length - rightPoints.length
+  }
+  return {
+    leftOnly: [...leftPieces].filter(piece => !rightPieces.has(piece)).toSorted(compareCodePoints),
+    rightOnly: [...rightPieces].filter(piece => !leftPieces.has(piece)).toSorted(compareCodePoints),
+    shared: [...leftPieces].filter(piece => rightPieces.has(piece)).toSorted(compareCodePoints),
+  }
+}
+
+export function filterTokenizerVocabularyDiff(
+  diff: VocabularyDiff,
+  scope: VocabularyDiffScope,
+  query: string,
+): VocabularyDiffSearch {
+  const term = query.trim().toLocaleLowerCase()
+  const pieces = term === '' ? diff[scope] : diff[scope].filter(piece => piece.toLocaleLowerCase().includes(term))
+  return { total: pieces.length, pieces: pieces.slice(0, 1_000) }
 }
 
 export function tokenizerBundleBytes(tokenizerFile: RepositoryFile, configFile?: RepositoryFile): number {

@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  buildTokenizerVocabularyDiff,
   buildTokenizerVocabularyIndex,
   buildTokenization,
   buildSpecialTokenIndex,
+  compareTokenizerTokenizations,
+  filterTokenizerVocabularyDiff,
   filterTokenizerVocabulary,
   inspectTokenizerStructure,
   parseTokenIds,
+  selectTokenizerComparisonTargets,
   tokenFlag,
   tokenizerBundleBytes,
 } from './tokenizer.ts'
@@ -292,6 +296,97 @@ test('validates worker structure and vocabulary replies at the client boundary',
   for (const reply of invalidReplies) assert.throws(() => validateTokenizerVocabularySearch(reply), /搜索结果/)
 })
 
+test('compares token counts, common-prefix IDs, and independent overheads', () => {
+  const result = (ids: number[], overhead?: number) => ({
+    ids,
+    overhead: overhead === undefined ? null : { contentCount: 0, templateCount: overhead },
+  })
+  const equal = compareTokenizerTokenizations(result([1, 2]), result([1, 2]))
+  assert.equal(equal.leftCount, 2)
+  assert.equal(equal.rightCount, 2)
+  assert.equal(equal.countDelta, 0)
+  assert.equal(equal.idsMatch, true)
+  assert.deepEqual(equal.firstDifference, null)
+  assert.deepEqual([equal.leftTemplateOverhead, equal.rightTemplateOverhead], [null, null])
+
+  const changed = compareTokenizerTokenizations(result([1, 2, 3]), result([1, 4, 3, 5]))
+  assert.equal(changed.countDelta, 1)
+  assert.equal(changed.idsMatch, false)
+  assert.deepEqual(changed.firstDifference, { index: 1, leftId: 2, rightId: 4 })
+
+  const longerRight = compareTokenizerTokenizations(result([1, 2]), result([1, 2, 3]))
+  assert.equal(longerRight.countDelta, 1)
+  assert.deepEqual(longerRight.firstDifference, { index: 2, leftId: null, rightId: 3 })
+
+  const emptyLeft = compareTokenizerTokenizations(result([]), result([7]))
+  assert.equal(emptyLeft.countDelta, 1)
+  assert.deepEqual(emptyLeft.firstDifference, { index: 0, leftId: null, rightId: 7 })
+  const emptyRight = compareTokenizerTokenizations(result([7]), result([]))
+  assert.equal(emptyRight.countDelta, -1)
+  assert.deepEqual(emptyRight.firstDifference, { index: 0, leftId: 7, rightId: null })
+  const bothEmpty = compareTokenizerTokenizations(result([]), result([]))
+  assert.equal(bothEmpty.idsMatch, true)
+  assert.deepEqual(bothEmpty.firstDifference, null)
+
+  const overhead = compareTokenizerTokenizations(result([1], -2), result([1, 2], 4))
+  assert.equal(overhead.countDelta, 1)
+  assert.deepEqual([overhead.leftTemplateOverhead, overhead.rightTemplateOverhead], [-2, 4])
+})
+
+test('selects same-snapshot tokenizer targets in stable display order with local companions only', () => {
+  const files = [
+    file('nested/tokenizer_config.json', 10),
+    file('tokenizer.json', 20),
+    file('nested/tokenizer.json', 30),
+    file('nested/chat_template.jinja', 50),
+    file('tokenizer_config.json', 60),
+    file('chat_template.jinja', 70),
+  ]
+  const targets = selectTokenizerComparisonTargets({ files } as never)
+  assert.deepEqual(targets.map(target => target.file.path), ['tokenizer.json', 'nested/tokenizer.json'])
+  const nested = targets[1]
+  assert.equal(nested.config?.path, 'nested/tokenizer_config.json')
+  assert.equal(nested.templateFile?.path, 'nested/chat_template.jinja')
+  assert.equal(targets[0].config?.path, 'tokenizer_config.json')
+  assert.equal(targets[0].templateFile?.path, 'chat_template.jinja')
+})
+
+test('allows tokenizer targets without same-directory config or template', () => {
+  const main = file('nested/tokenizer.json', 20)
+  const targets = selectTokenizerComparisonTargets({ files: [main, file('tokenizer_config.json', 10)] } as never)
+  assert.deepEqual(targets.map(target => target.file.path), ['nested/tokenizer.json'])
+  assert.equal(targets[0].config, undefined)
+  assert.equal(targets[0].templateFile, undefined)
+})
+
+test('builds piece-only vocabulary diffs with dedupe and stable code-point order', () => {
+  const left = [entry('中文', 9), entry('shared', 1), entry('left', 2), entry('left', 3)]
+  const right = [entry('shared', 99), entry('中文', 98), entry('right', 97), entry('right', 96)]
+  const diff = buildTokenizerVocabularyDiff(left, right)
+  assert.deepEqual(diff.leftOnly, ['left'])
+  assert.deepEqual(diff.rightOnly, ['right'])
+  assert.deepEqual(diff.shared, ['shared', '中文'])
+})
+
+test('filters complete vocabulary diffs before capping and reaches needles past 1000', () => {
+  const left = Array.from({ length: 1_002 }, (_, index) => entry(`left-${index}`, index))
+  const right = Array.from({ length: 1_002 }, (_, index) => entry(`right-${index}`, index))
+  const diff = buildTokenizerVocabularyDiff(left, right)
+  assert.deepEqual(filterTokenizerVocabularyDiff(diff, 'leftOnly', ''), {
+    total: 1_002,
+    pieces: diff.leftOnly.slice(0, 1_000),
+  })
+  assert.deepEqual(filterTokenizerVocabularyDiff(diff, 'leftOnly', ' LEFT-1001 '), {
+    total: 1,
+    pieces: ['left-1001'],
+  })
+  assert.deepEqual(filterTokenizerVocabularyDiff(diff, 'shared', ''), { total: 0, pieces: [] })
+})
+
 function file(path: string, size: number): RepositoryFile {
   return { path, size, hash: null, category: 'tokenizer' }
+}
+
+function entry(token: string, tokenId: number) {
+  return { tokenId, token, scalarLength: Array.from(token).length }
 }

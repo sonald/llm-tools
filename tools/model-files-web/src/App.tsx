@@ -36,9 +36,27 @@ import {
   type RepositoryConsistencyMaterials,
   type RepositoryConsistencyReport,
 } from './core/consistency.ts'
-import { cancelTokenizerRequests, inspectTokenizerData } from './tokenizerClient.ts'
-import { buildChatContext, type ChatTokenRole } from './core/tokenAttribution.ts'
-import type { Tokenization, TokenizerStructure, TokenizerVocabularyEntry } from './core/tokenizer.ts'
+import {
+  cancelTokenizerRequests,
+  createComparisonTokenizerSession,
+  inspectTokenizerData,
+  mainTokenizerSession,
+  type TokenizerSession,
+} from './tokenizerClient.ts'
+import {
+  buildChatContext,
+  type ChatAttributionMessage,
+  type ChatTokenRole,
+} from './core/tokenAttribution.ts'
+import {
+  compareTokenizerTokenizations,
+  parseTokenIds,
+  selectTokenizerComparisonTargets,
+  type Tokenization,
+  type TokenizerStructure,
+  type TokenizerVocabularyEntry,
+  type VocabularyDiffScope,
+} from './core/tokenizer.ts'
 import { PdfInspection, SourceInspection, TextInspection } from './Readers.tsx'
 import { TemplateWorkbench } from './TemplateWorkbench.tsx'
 
@@ -76,6 +94,7 @@ type Inspection =
   }
 
 type RepositoryError = { message: string; retryable: boolean }
+const comparisonDiffScopes: VocabularyDiffScope[] = ['leftOnly', 'rightOnly', 'shared']
 
 export default function App() {
   const [repositoryInput, setRepositoryInput] = useState('Qwen/Qwen3-0.6B')
@@ -1046,10 +1065,43 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
   const [showWhitespace, setShowWhitespace] = useState(true)
   const [inputCopyLabel, setInputCopyLabel] = useState('复制输入')
+  const comparisonTargets = useMemo(() => selectTokenizerComparisonTargets(snapshot), [snapshot])
+  const [comparisonOpen, setComparisonOpen] = useState(false)
+  const [comparisonTargetPath, setComparisonTargetPath] = useState<string | null>(null)
+  const selectedComparisonTarget = comparisonOpen
+    ? comparisonTargets.find(target => target.file.path === comparisonTargetPath) ?? null
+    : null
+  const [rightStructure, setRightStructure] = useState<TokenizerStructure | null>(null)
+  const [rightStructureError, setRightStructureError] = useState<string | null>(null)
+  const [rightIndependentTemplate, setRightIndependentTemplate] = useState<string | null>(null)
+  const [selectedRightTemplateId, setSelectedRightTemplateId] = useState<string | null>(null)
+  const [rightResult, setRightResult] = useState<Tokenization | null>(null)
+  const [rightPhase, setRightPhase] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [rightError, setRightError] = useState<string | null>(null)
+  const [rightChatPreview, setRightChatPreview] = useState('')
+  type ComparisonDiffCounts = Awaited<ReturnType<TokenizerSession['prepareVocabularyDiff']>>
+  const [diffCounts, setDiffCounts] = useState<ComparisonDiffCounts | null>(null)
+  const [diffStatus, setDiffStatus] = useState<'waiting' | 'preparing' | 'searching' | 'ready' | 'error'>('waiting')
+  const [diffScope, setDiffScope] = useState<VocabularyDiffScope>('shared')
+  const [diffQuery, setDiffQuery] = useState('')
+  const [diffPage, setDiffPage] = useState<string[]>([])
+  const [diffTotal, setDiffTotal] = useState(0)
+  const [diffError, setDiffError] = useState<string | null>(null)
   const generation = useRef(0)
   const controller = useRef<AbortController | null>(null)
   const cancelWorker = useRef<(() => void) | null>(null)
   const rawTimer = useRef<number | null>(null)
+  const comparisonSession = useRef<TokenizerSession | null>(null)
+  const comparisonLoadController = useRef<AbortController | null>(null)
+  const comparisonRequestController = useRef<AbortController | null>(null)
+  const diffSearchController = useRef<AbortController | null>(null)
+  const comparisonGeneration = useRef(0)
+  const rightRequestGeneration = useRef(0)
+  const lastDecodedIds = useRef<number[] | null>(null)
+  const lastChatContext = useRef<{
+    context: Record<string, unknown>
+    attribution: ChatAttributionMessage[]
+  } | null>(null)
   const directory = file.path.split('/').slice(0, -1).join('/')
   const configPath = directory === '' ? 'tokenizer_config.json' : `${directory}/tokenizer_config.json`
   const templatePath = directory === '' ? 'chat_template.jinja' : `${directory}/chat_template.jinja`
@@ -1061,13 +1113,146 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     templateFile === undefined ? null : independentTemplate,
   ), selectedTemplateId)
   const activeTemplate = chatCatalog === null ? null : activeChatTemplate(chatCatalog)
+  const rightTemplateLoading = rightStructure !== null && selectedComparisonTarget?.templateFile !== undefined
+    && rightIndependentTemplate === null
+  const comparisonLoaded = rightStructure !== null && !rightTemplateLoading
+  const rightCatalog = comparisonLoaded && rightStructure !== null
+    ? selectChatTemplate(mergeChatTemplates(
+      rightStructure.chatTemplates,
+      selectedComparisonTarget?.templateFile === undefined ? null : rightIndependentTemplate,
+    ), selectedRightTemplateId)
+    : null
+  const activeRightTemplate = rightCatalog === null ? null : activeChatTemplate(rightCatalog)
+  const comparisonSummary = comparisonLoaded && result !== null && rightResult !== null
+    ? compareTokenizerTokenizations(result, rightResult)
+    : null
 
   useEffect(() => () => {
     generation.current += 1
     if (rawTimer.current !== null) window.clearTimeout(rawTimer.current)
     controller.current?.abort()
     cancelWorker.current?.()
+    releaseComparison()
   }, [])
+
+  useEffect(() => {
+    if (!comparisonOpen || selectedComparisonTarget === null) return
+    let active = true
+    const loadController = new AbortController()
+    const generationAtStart = ++comparisonGeneration.current
+    let session: TokenizerSession
+    try {
+      session = createComparisonTokenizerSession()
+      comparisonSession.current = session
+    } catch (failure) {
+      setRightStructureError(errorMessage(failure))
+      return
+    }
+    comparisonLoadController.current = loadController
+    setRightStructure(null)
+    setRightStructureError(null)
+    setRightIndependentTemplate(null)
+    setSelectedRightTemplateId(null)
+    clearRightResult()
+    clearDiff()
+    setDiffStatus('preparing')
+
+    void (async () => {
+      try {
+        const structure = await session.inspectTokenizer(
+          snapshot,
+          selectedComparisonTarget.file,
+          selectedComparisonTarget.config,
+          loadController.signal,
+        )
+        const templateData = selectedComparisonTarget.templateFile === undefined ? null : await readWholeFile(
+          snapshot,
+          selectedComparisonTarget.templateFile,
+          loadController.signal,
+          64 * 1024,
+        )
+        if (!active || loadController.signal.aborted || comparisonGeneration.current !== generationAtStart) return
+        const independent = templateData === null ? null : decodeStrictText(templateData)
+        setRightStructure(structure)
+        setRightIndependentTemplate(independent)
+        try {
+          const counts = await session.prepareVocabularyDiff(
+            snapshot,
+            selectedComparisonTarget.file,
+            selectedComparisonTarget.config,
+            file,
+            loadController.signal,
+          )
+          if (!active || loadController.signal.aborted || comparisonGeneration.current !== generationAtStart) return
+          setDiffCounts(counts)
+          setDiffStatus('ready')
+        } catch (diffFailure) {
+          if (!active || loadController.signal.aborted || comparisonGeneration.current !== generationAtStart) return
+          setDiffCounts(null)
+          setDiffPage([])
+          setDiffTotal(0)
+          setDiffError(errorMessage(diffFailure))
+          setDiffStatus('error')
+        }
+      } catch (failure) {
+        if (!active || loadController.signal.aborted || comparisonGeneration.current !== generationAtStart) return
+        setRightStructure(null)
+        setRightIndependentTemplate(null)
+        setRightStructureError(errorMessage(failure))
+        disposeComparisonSlot()
+      }
+    })()
+
+    return () => {
+      active = false
+      releaseComparison()
+    }
+  }, [comparisonOpen, selectedComparisonTarget?.file.path])
+
+  useEffect(() => {
+    if (!comparisonLoaded || result === null || rightStructure === null) return
+    if (view === 'raw') void runRightRaw(rawInput)
+    else if (view === 'decode' && lastDecodedIds.current !== null) {
+      void runRightDecode(lastDecodedIds.current, tokenIdInput)
+    } else if (view === 'chat' && lastChatContext.current !== null) {
+      void runRightChat(lastChatContext.current.context, lastChatContext.current.attribution)
+    }
+  }, [
+    activeRightTemplate?.id,
+    comparisonLoaded,
+    rawInput,
+    result,
+    rightStructure,
+    tokenIdInput,
+    view,
+  ])
+
+  useEffect(() => {
+    if (!comparisonLoaded || diffCounts === null) return
+    let active = true
+    const searchController = new AbortController()
+    diffSearchController.current?.abort()
+    diffSearchController.current = searchController
+    setDiffStatus('searching')
+    setDiffError(null)
+    void comparisonSession.current?.searchVocabularyDiff(diffScope, diffQuery, searchController.signal).then(search => {
+      if (!active || searchController.signal.aborted) return
+      setDiffPage(search.pieces.slice(0, 1000))
+      setDiffTotal(search.total)
+      setDiffStatus('ready')
+    }).catch(failure => {
+      if (!active || searchController.signal.aborted) return
+      setDiffPage([])
+      setDiffTotal(0)
+      setDiffError(errorMessage(failure))
+      setDiffStatus('error')
+    })
+    return () => {
+      active = false
+      searchController.abort()
+      if (diffSearchController.current === searchController) diffSearchController.current = null
+    }
+  }, [comparisonLoaded, diffCounts, diffQuery, diffScope])
 
   useEffect(() => {
     const activeController = new AbortController()
@@ -1114,6 +1299,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       })
       setError(null)
       setPhase('ready')
+      clearRightResult()
       return
     }
     rawTimer.current = window.setTimeout(() => {
@@ -1133,6 +1319,177 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setChatPreview('')
     setError(null)
     setPhase('idle')
+    lastDecodedIds.current = null
+    lastChatContext.current = null
+    clearRightResult()
+  }
+
+  function disposeComparisonSlot() {
+    comparisonLoadController.current?.abort()
+    comparisonLoadController.current = null
+    comparisonRequestController.current?.abort()
+    comparisonRequestController.current = null
+    diffSearchController.current?.abort()
+    diffSearchController.current = null
+    const session = comparisonSession.current
+    comparisonSession.current = null
+    session?.dispose()
+  }
+
+  function clearRightResult() {
+    rightRequestGeneration.current += 1
+    comparisonRequestController.current?.abort()
+    comparisonRequestController.current = null
+    setRightResult(null)
+    setRightPhase('idle')
+    setRightError(null)
+    setRightChatPreview('')
+  }
+
+  function clearDiff() {
+    diffSearchController.current?.abort()
+    diffSearchController.current = null
+    setDiffCounts(null)
+    setDiffStatus('waiting')
+    setDiffScope('shared')
+    setDiffQuery('')
+    setDiffPage([])
+    setDiffTotal(0)
+    setDiffError(null)
+  }
+
+  function releaseComparison() {
+    disposeComparisonSlot()
+    comparisonGeneration.current += 1
+    setRightStructure(null)
+    setRightStructureError(null)
+    setRightIndependentTemplate(null)
+    setSelectedRightTemplateId(null)
+    clearRightResult()
+    clearDiff()
+  }
+
+  function openComparison() {
+    setComparisonTargetPath(current => current ?? comparisonTargets[0]?.file.path ?? null)
+    setComparisonOpen(true)
+  }
+
+  function changeComparisonTemplate(id: string) {
+    setSelectedRightTemplateId(id)
+    clearRightResult()
+  }
+
+  async function runRightRaw(text: string) {
+    const session = comparisonSession.current
+    if (session === null || text.length === 0) return
+    comparisonRequestController.current?.abort()
+    const requestController = new AbortController()
+    comparisonRequestController.current = requestController
+    const requestGeneration = ++rightRequestGeneration.current
+    setRightPhase('loading')
+    setRightError(null)
+    try {
+      const next = await session.tokenize(
+        snapshot,
+        selectedComparisonTarget?.file ?? file,
+        selectedComparisonTarget?.config,
+        text,
+        requestController.signal,
+      )
+      if (requestController.signal.aborted || rightRequestGeneration.current !== requestGeneration) return
+      setRightResult(next)
+      setRightChatPreview(next.input)
+      setRightPhase('ready')
+    } catch (failure) {
+      if (requestController.signal.aborted || rightRequestGeneration.current !== requestGeneration) return
+      setRightResult(null)
+      setRightChatPreview('')
+      setRightError(errorMessage(failure))
+      setRightPhase('error')
+    } finally {
+      if (comparisonRequestController.current === requestController) comparisonRequestController.current = null
+    }
+  }
+
+  async function runRightDecode(ids: number[], originalInput: string) {
+    const session = comparisonSession.current
+    if (session === null) return
+    comparisonRequestController.current?.abort()
+    const requestController = new AbortController()
+    comparisonRequestController.current = requestController
+    const requestGeneration = ++rightRequestGeneration.current
+    setRightPhase('loading')
+    setRightError(null)
+    try {
+      const next = await session.decodeTokenIdArray(
+        snapshot,
+        selectedComparisonTarget?.file ?? file,
+        selectedComparisonTarget?.config,
+        ids,
+        originalInput,
+        requestController.signal,
+      )
+      if (requestController.signal.aborted || rightRequestGeneration.current !== requestGeneration) return
+      setRightResult(next)
+      setRightChatPreview(next.input)
+      setRightPhase('ready')
+    } catch (failure) {
+      if (requestController.signal.aborted || rightRequestGeneration.current !== requestGeneration) return
+      setRightResult(null)
+      setRightChatPreview('')
+      setRightError(errorMessage(failure))
+      setRightPhase('error')
+    } finally {
+      if (comparisonRequestController.current === requestController) comparisonRequestController.current = null
+    }
+  }
+
+  async function runRightChat(
+    context: Record<string, unknown>,
+    attribution: ChatAttributionMessage[],
+  ) {
+    const session = comparisonSession.current
+    if (session === null) return
+    if (view === 'chat' && activeRightTemplate === null) {
+      rightRequestGeneration.current += 1
+      comparisonRequestController.current?.abort()
+      comparisonRequestController.current = null
+      setRightResult(null)
+      setRightChatPreview('')
+      setRightError('对照 Tokenizer 没有可用的 Chat Template。')
+      setRightPhase('error')
+      return
+    }
+    const template = activeRightTemplate!
+    comparisonRequestController.current?.abort()
+    const requestController = new AbortController()
+    comparisonRequestController.current = requestController
+    const requestGeneration = ++rightRequestGeneration.current
+    setRightPhase('loading')
+    setRightError(null)
+    try {
+      const next = await session.chatTokenize(
+        snapshot,
+        selectedComparisonTarget?.file ?? file,
+        selectedComparisonTarget?.config,
+        template.body,
+        context,
+        attribution,
+        requestController.signal,
+      )
+      if (requestController.signal.aborted || rightRequestGeneration.current !== requestGeneration) return
+      setRightResult(next)
+      setRightChatPreview(next.input)
+      setRightPhase('ready')
+    } catch (failure) {
+      if (requestController.signal.aborted || rightRequestGeneration.current !== requestGeneration) return
+      setRightResult(null)
+      setRightChatPreview('')
+      setRightError(errorMessage(failure))
+      setRightPhase('error')
+    } finally {
+      if (comparisonRequestController.current === requestController) comparisonRequestController.current = null
+    }
   }
 
   function changeView(next: typeof view) {
@@ -1174,7 +1531,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setError(null)
     try {
       if (activeTemplate === null) throw new Error(templateLoading ? '正在读取独立 Chat Template。' : '模板不可用。')
-      const { context, attribution } = buildChatContext(
+      const chatContext = buildChatContext(
         JSON.parse(chatMessages),
         JSON.parse(chatTools),
         JSON.parse(chatVariables),
@@ -1183,8 +1540,9 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       )
       const module = await import('./tokenizerClient.ts')
       cancelWorker.current = module.cancelTokenizerRequests
+      lastChatContext.current = chatContext
       const next = await module.chatTokenize(
-        snapshot, file, config, activeTemplate.body, context, attribution, activeController.signal,
+        snapshot, file, config, activeTemplate.body, chatContext.context, chatContext.attribution, activeController.signal,
       )
       if (activeController.signal.aborted || generation.current !== activeGeneration) return
       setChatPreview(next.input)
@@ -1234,9 +1592,11 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setError(null)
     setResult(null)
     try {
+      const ids = parseTokenIds(tokenIdInput)
       const module = await import('./tokenizerClient.ts')
       cancelWorker.current = module.cancelTokenizerRequests
-      const next = await module.decodeTokenIds(snapshot, file, config, tokenIdInput, activeController.signal)
+      lastDecodedIds.current = ids
+      const next = await mainTokenizerSession.decodeTokenIdArray(snapshot, file, config, ids, tokenIdInput, activeController.signal)
       if (activeController.signal.aborted || generation.current !== activeGeneration) return
       setResult(next)
       setPhase('ready')
@@ -1250,8 +1610,118 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     }
   }
 
+  const comparisonPanel = comparisonOpen ? (
+    <aside className="comparison-side">
+      <header>
+        <h2>对照</h2>
+        {rightCatalog !== null ? (
+          <select
+            aria-label="对照 Chat Template"
+            value={rightCatalog.activeId ?? ''}
+            onChange={event => changeComparisonTemplate(event.target.value)}
+          >
+            {rightCatalog.entries.map(entry => (
+              <option key={entry.id} value={entry.id} disabled={!entry.usable}>{templateLabel(entry)}</option>
+            ))}
+          </select>
+        ) : null}
+      </header>
+      <div className="comparison-status" aria-live="polite">
+        {rightStructure === null && rightStructureError === null ? '正在加载对照 Tokenizer…' : null}
+        {rightTemplateLoading ? '正在读取对照 chat_template.jinja…' : null}
+        {comparisonSummary !== null ? (
+          <section className="inspection-section" aria-label="Tokenizer 对照摘要">
+            <h2>对照摘要</h2>
+            <dl>
+              <div><dt>Left / Right Count</dt><dd>{comparisonSummary.leftCount.toLocaleString()} / {comparisonSummary.rightCount.toLocaleString()}</dd></div>
+              <div><dt>Delta</dt><dd>{comparisonSummary.countDelta >= 0 ? '+' : ''}{comparisonSummary.countDelta.toLocaleString()}</dd></div>
+              <div><dt>ID 序列</dt><dd>{comparisonSummary.idsMatch ? '相同' : '不同'}</dd></div>
+              <div><dt>First Difference（zero-based）</dt><dd>{comparisonSummary.firstDifference === null ? '—' : `#${comparisonSummary.firstDifference.index} · ${comparisonSummary.firstDifference.leftId ?? '—'} / ${comparisonSummary.firstDifference.rightId ?? '—'}`}</dd></div>
+              {comparisonSummary.leftTemplateOverhead !== null && comparisonSummary.rightTemplateOverhead !== null ? (
+                <div><dt>模板开销（左 / 右）</dt><dd>{formatTemplateOverhead(comparisonSummary.leftTemplateOverhead)} / {formatTemplateOverhead(comparisonSummary.rightTemplateOverhead)}</dd></div>
+              ) : null}
+            </dl>
+          </section>
+        ) : null}
+        <section className="inspection-section" aria-label="Tokenizer 词表差集统计">
+          <h2>词表差集</h2>
+          <div role="group" aria-label="词表差集范围">
+            {comparisonDiffScopes.map(scope => (
+              <button
+                key={scope}
+                type="button"
+                aria-pressed={diffScope === scope}
+                disabled={diffCounts === null}
+                onClick={() => setDiffScope(scope)}
+              >{scope} · {diffCounts?.[`${scope}Count` as const].toLocaleString() ?? '—'}</button>
+            ))}
+          </div>
+          <label className="comparison-search">
+            <span>搜索</span>
+            <input
+              aria-label="对照词表搜索"
+              value={diffQuery}
+              onChange={event => setDiffQuery(event.target.value)}
+              placeholder="包含匹配…"
+            />
+          </label>
+          <span aria-live="polite">
+            {diffStatus === 'waiting' || diffStatus === 'preparing' ? '正在准备差集索引…'
+              : diffStatus === 'searching' ? '正在搜索…'
+              : diffStatus === 'error' ? '差集不可用'
+              : `显示 ${diffPage.length.toLocaleString()} / ${diffTotal.toLocaleString()}`}
+          </span>
+          {diffError !== null ? <InlineError>{diffError}</InlineError> : null}
+          {diffStatus === 'ready' ? (
+            <div className="table-scroll comparison-diff-table">
+              <table aria-label="Tokenizer 词表差集">
+                <thead><tr><th>Token Piece</th></tr></thead>
+                <tbody>{diffPage.map(piece => <tr key={piece}><td>{piece}</td></tr>)}</tbody>
+              </table>
+            </div>
+          ) : null}
+        </section>
+      </div>
+      {rightStructureError !== null ? <InlineError>{rightStructureError}</InlineError> : null}
+      <TokenizerResultView
+        heading="对照 Tokenizer 结果"
+        phase={rightPhase}
+        error={rightError}
+        result={rightResult}
+        authoritativeInput={rightChatPreview}
+        showWhitespace={showWhitespace}
+        setShowWhitespace={setShowWhitespace}
+        tableLabel="对照 Tokenizer Tokens"
+      />
+    </aside>
+  ) : null
+
   return (
-    <div className="tokenizer-workspace">
+    <div className={`tokenizer-workspace ${comparisonOpen ? 'comparison-open' : ''}`}>
+      <div className="comparison-toolbar">
+        {comparisonOpen ? null : (
+          <button className="primary-button" type="button" onClick={openComparison} disabled={comparisonTargets.length === 0}>
+            打开对照
+          </button>
+        )}
+        <label className="comparison-target">
+          <span>对照 Tokenizer</span>
+          <select
+            aria-label="对照 Tokenizer"
+            value={selectedComparisonTarget?.file.path ?? ''}
+            disabled={comparisonTargets.length === 0}
+            onChange={event => setComparisonTargetPath(event.target.value)}
+          >
+            {comparisonTargets.map(target => (
+              <option key={target.file.path} value={target.file.path}>{target.file.path}</option>
+            ))}
+          </select>
+        </label>
+        {comparisonOpen ? (
+          <button type="button" aria-label="关闭 Tokenizer 对照" onClick={() => setComparisonOpen(false)}>关闭对照</button>
+        ) : null}
+        {comparisonTargets.length === 0 ? <span>当前快照没有可用 tokenizer.json 对照目标。</span> : null}
+      </div>
       <div className="tokenizer-tabs" role="tablist" aria-label="Tokenizer 视图">
         <button type="button" role="tab" aria-selected={view === 'structure'} onClick={() => changeView('structure')}>结构与词表</button>
         <button type="button" role="tab" aria-selected={view === 'raw'} onClick={() => changeView('raw')}>Raw 工作台</button>
@@ -1269,7 +1739,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
         />
       ) : null}
       {view === 'decode' ? (
-        <div className="tokenizer-layout">
+        <div className={`tokenizer-layout ${comparisonOpen ? 'comparison-open' : ''}`}>
           <section className="input-panel">
             <header><h2>Token IDs</h2><span>最多 64 KiB</span></header>
             <textarea
@@ -1284,17 +1754,20 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
             </footer>
           </section>
           <TokenizerResultView
+            heading={comparisonOpen ? '主 Tokenizer 结果' : undefined}
             phase={phase}
             error={error}
             result={result}
             authoritativeInput={tokenIdInput}
             showWhitespace={showWhitespace}
             setShowWhitespace={setShowWhitespace}
+            tableLabel={comparisonOpen ? '主 Tokenizer Tokens' : undefined}
           />
+          {comparisonPanel}
         </div>
       ) : null}
       {view === 'raw' ? (
-        <div className="tokenizer-layout">
+        <div className={`tokenizer-layout ${comparisonOpen ? 'comparison-open' : ''}`}>
           <section className="input-panel">
             <header><h2>Raw 输入</h2><button type="button" onClick={async () => {
               try { await navigator.clipboard.writeText(rawInput); setInputCopyLabel('已复制') } catch { setInputCopyLabel('复制失败') }
@@ -1305,11 +1778,21 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
               <button className="primary-button" type="button" onClick={() => void runRaw()} disabled={phase === 'loading' || rawInput.length === 0}>立即分词</button>
             </footer>
           </section>
-          <TokenizerResultView phase={phase} error={error} result={result} authoritativeInput={rawInput} showWhitespace={showWhitespace} setShowWhitespace={setShowWhitespace} />
+          <TokenizerResultView
+            heading={comparisonOpen ? '主 Tokenizer 结果' : undefined}
+            phase={phase}
+            error={error}
+            result={result}
+            authoritativeInput={rawInput}
+            showWhitespace={showWhitespace}
+            setShowWhitespace={setShowWhitespace}
+            tableLabel={comparisonOpen ? '主 Tokenizer Tokens' : undefined}
+          />
+          {comparisonPanel}
         </div>
       ) : null}
       {view === 'chat' ? (
-        <div className="tokenizer-layout">
+        <div className={`tokenizer-layout ${comparisonOpen ? 'comparison-open' : ''}`}>
           <section className="input-panel chat-panel">
             <header>
               <h2>Chat Messages</h2>
@@ -1359,7 +1842,17 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
               <button className="primary-button" type="button" onClick={() => void runChat()} disabled={phase === 'loading' || activeTemplate === null}>渲染并分词</button>
             </footer>
           </section>
-          <TokenizerResultView phase={phase} error={error} result={result} authoritativeInput={chatPreview} showWhitespace={showWhitespace} setShowWhitespace={setShowWhitespace} />
+          <TokenizerResultView
+            heading={comparisonOpen ? '主 Tokenizer 结果' : undefined}
+            phase={phase}
+            error={error}
+            result={result}
+            authoritativeInput={chatPreview}
+            showWhitespace={showWhitespace}
+            setShowWhitespace={setShowWhitespace}
+            tableLabel={comparisonOpen ? '主 Tokenizer Tokens' : undefined}
+          />
+          {comparisonPanel}
         </div>
       ) : null}
     </div>
@@ -1521,6 +2014,10 @@ function TokenizerStructureInspection({
   )
 }
 
+function formatTemplateOverhead(value: number): string {
+  return value < 0 ? '无法拆分' : value.toLocaleString()
+}
+
 function TokenizerResultView({
   phase,
   error,
@@ -1528,6 +2025,8 @@ function TokenizerResultView({
   authoritativeInput,
   showWhitespace,
   setShowWhitespace,
+  heading,
+  tableLabel,
 }: {
   phase: 'idle' | 'loading' | 'ready' | 'error'
   error: string | null
@@ -1535,6 +2034,8 @@ function TokenizerResultView({
   authoritativeInput: string
   showWhitespace: boolean
   setShowWhitespace(value: boolean): void
+  heading?: string
+  tableLabel?: string
 }) {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [limit, setLimit] = useState(1000)
@@ -1559,7 +2060,7 @@ function TokenizerResultView({
   const inputBytes = new TextEncoder().encode(authoritativeInput).byteLength
   return (
     <section className="result-panel" aria-live="polite">
-      <header><h2>{result?.direction === 'decode' ? '由 Token ID 解码' : 'Token 结果'}</h2><label><input type="checkbox" checked={showWhitespace} onChange={event => setShowWhitespace(event.target.checked)} />显示空白符</label></header>
+      <header><h2>{heading ?? (result?.direction === 'decode' ? '由 Token ID 解码' : 'Token 结果')}</h2><label><input type="checkbox" checked={showWhitespace} onChange={event => setShowWhitespace(event.target.checked)} />显示空白符</label></header>
       {phase === 'idle' ? <div className="result-empty">等待输入或点击运行。</div> : null}
       {phase === 'loading' ? <div className="result-empty"><span className="spinner" />Web Worker 正在处理 latest-only 请求…</div> : null}
       {phase === 'error' ? <InlineError>{error}</InlineError> : null}
@@ -1625,7 +2126,7 @@ function TokenizerResultView({
             ))}
           </div>
           <div className="table-scroll">
-            <table aria-label="Tokenizer Tokens">
+            <table aria-label={tableLabel ?? 'Tokenizer Tokens'}>
               <thead><tr><th>#</th><th>ID</th><th>Special</th><th>Role</th><th>Token Piece</th><th>Decoded</th><th>Mapping</th></tr></thead>
               <tbody>{result.ids.slice(0, limit).map((id, index) => (
                 <tr className={selectedIndex === index ? 'selected-token-row' : ''} key={`${index}-${id}`}>

@@ -1,3 +1,5 @@
+import type { VocabularyDiffScope } from './core/tokenizer.ts'
+
 export type TokenizerOperation =
   | 'load'
   | 'inspect-structure'
@@ -6,6 +8,8 @@ export type TokenizerOperation =
   | 'decode-token-ids'
   | 'render-template'
   | 'search-vocabulary'
+  | 'prepare-vocabulary-diff'
+  | 'search-vocabulary-diff'
 
 type TokenizerEnvelope = {
   kind: 'request'
@@ -20,9 +24,11 @@ export type TokenizerRequest =
     | { operation: 'inspect-structure'; requestId: number; tokenizerIdentity: ''; tokenizerData: ArrayBuffer }
     | { operation: 'tokenize'; requestId: number; tokenizerIdentity: string; text: string }
     | { operation: 'chat-tokenize'; requestId: number; tokenizerIdentity: string; template: string; context: Record<string, unknown>; attribution: ChatAttributionMessage[] }
-    | { operation: 'decode-token-ids'; requestId: number; tokenizerIdentity: string; ids: number[]; originalInput: string }
-    | { operation: 'render-template'; requestId: number; tokenizerIdentity: ''; source: string; context: Record<string, unknown> }
-    | { operation: 'search-vocabulary'; requestId: number; tokenizerIdentity: string; query: string }
+  | { operation: 'decode-token-ids'; requestId: number; tokenizerIdentity: string; ids: number[]; originalInput: string }
+  | { operation: 'render-template'; requestId: number; tokenizerIdentity: ''; source: string; context: Record<string, unknown> }
+  | { operation: 'search-vocabulary'; requestId: number; tokenizerIdentity: string; query: string }
+  | { operation: 'prepare-vocabulary-diff'; requestId: number; tokenizerIdentity: string; tokenizerData: ArrayBuffer }
+  | { operation: 'search-vocabulary-diff'; requestId: number; tokenizerIdentity: string; scope: VocabularyDiffScope; query: string }
 )
 
 type ChatAttributionMessage = import('./core/tokenAttribution.ts').ChatAttributionMessage
@@ -53,6 +59,11 @@ export function isTokenizerRequest(value: unknown): value is TokenizerRequest {
       return typeof value.source === 'string' && isRecord(value.context)
     case 'search-vocabulary':
       return typeof value.query === 'string'
+    case 'prepare-vocabulary-diff':
+      return value.tokenizerData instanceof ArrayBuffer
+    case 'search-vocabulary-diff':
+      return (value.scope === 'leftOnly' || value.scope === 'rightOnly' || value.scope === 'shared')
+        && typeof value.query === 'string'
     default:
       return false
   }

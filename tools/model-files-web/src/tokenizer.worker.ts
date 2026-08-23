@@ -10,6 +10,9 @@ import {
   inspectTokenizerStructure,
   tokenFlag,
   type SpecialTokenIndex,
+  buildTokenizerVocabularyDiff,
+  filterTokenizerVocabularyDiff,
+  type VocabularyDiff,
 } from './core/tokenizer.ts'
 import {
   chatContentProbe,
@@ -27,6 +30,7 @@ let vocabularySource: unknown = null
 let vocabularyAvailable = false
 let vocabularyIndex: ReturnType<typeof buildTokenizerVocabularyIndex> | null = null
 let loadedTokenizerIdentity = ''
+let vocabularyDiff: VocabularyDiff | null = null
 
 self.onmessage = async (event: MessageEvent<unknown>) => {
   const request = event.data
@@ -50,6 +54,7 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
       vocabularyAvailable = false
       vocabularyIndex = null
       loadedTokenizerIdentity = ''
+      vocabularyDiff = null
       const decoder = new TextDecoder('utf-8', { fatal: true })
       const parsedTokenizer: unknown = JSON.parse(decoder.decode(request.tokenizerData))
       if (!isRecord(parsedTokenizer)) throw new Error('tokenizer.json 根节点不是对象。')
@@ -91,6 +96,32 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
         throw new Error(`当前 vocab 结构无法搜索：${vocabularyIndex.error}`)
       }
       self.postMessage(reply(request, true, filterTokenizerVocabulary(vocabularyIndex.entries, request.query)))
+      return
+    }
+    if (request.operation === 'prepare-vocabulary-diff') {
+      if (request.tokenizerIdentity !== loadedTokenizerIdentity) throw new Error('Tokenizer 身份已变化，请重新加载。')
+      const leftParsed: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(request.tokenizerData))
+      if (!isRecord(leftParsed)) throw new Error('左侧 tokenizer.json 根节点不是对象。')
+      const leftModel = isRecord(leftParsed.model) ? leftParsed.model : null
+      if (leftModel === null) throw new Error('左侧 tokenizer.json 缺少 model 节点。')
+      const leftIndex = buildTokenizerVocabularyIndex(leftModel.vocab)
+      if (leftIndex.entries === null) throw new Error(`左侧 vocab 结构无法比较：${leftIndex.error}`)
+      if (!vocabularyAvailable) throw new Error(tokenizerError)
+      vocabularyIndex ??= buildTokenizerVocabularyIndex(vocabularySource)
+      if (vocabularyIndex.entries === null) throw new Error(`右侧 vocab 结构无法比较：${vocabularyIndex.error}`)
+      vocabularyDiff = buildTokenizerVocabularyDiff(leftIndex.entries, vocabularyIndex.entries)
+      self.postMessage(reply(request, true, {
+        leftOnlyCount: vocabularyDiff.leftOnly.length,
+        rightOnlyCount: vocabularyDiff.rightOnly.length,
+        sharedCount: vocabularyDiff.shared.length,
+      }))
+      return
+    }
+    if (request.operation === 'search-vocabulary-diff') {
+      if (request.tokenizerIdentity !== loadedTokenizerIdentity || vocabularyDiff === null) {
+        throw new Error('词表差集尚未准备。')
+      }
+      self.postMessage(reply(request, true, filterTokenizerVocabularyDiff(vocabularyDiff, request.scope, request.query)))
       return
     }
     if (tokenizer === null || specialIndex === null) throw new Error(tokenizerError)
