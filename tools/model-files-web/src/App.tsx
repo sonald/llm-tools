@@ -1137,7 +1137,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     ? `当前仓库 · ${selectedComparisonTarget.file.path}`
     : comparisonExternalSnapshot.source === 'huggingface'
       ? `${comparisonExternalSnapshot.modelId} · SHA ${comparisonExternalSnapshot.revision.slice(0, 7)} · ${selectedComparisonTarget.file.path}`
-      : `当前仓库 · ${selectedComparisonTarget.file.path}`
+      : `本地目录 · ${comparisonExternalSnapshot.revision} · ${comparisonExternalSnapshot.name} · ${selectedComparisonTarget.file.path}`
   const comparisonSummary = comparisonLoaded && result !== null && rightResult !== null
     ? compareTokenizerTokenizations(result, rightResult)
     : null
@@ -1433,6 +1433,26 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setSelectedRightTemplateId(null)
     clearRightResult()
     clearDiff()
+  }
+
+  function loadComparisonLocalDirectory(event: React.ChangeEvent<HTMLInputElement>) {
+    const selection = event.currentTarget.files
+    if (selection === null || selection.length === 0) return
+
+    try {
+      const next = loadLocalDirectory(selection)
+      const targets = selectTokenizerComparisonTargets(next)
+      if (targets.length === 0) throw new Error('对照本地目录没有可用 tokenizer.json。')
+      closeExternalSource()
+      setComparisonExternalSnapshot(next)
+      setComparisonSourceError(null)
+      setComparisonTargetPath(targets.find(target => target.file.path === 'tokenizer.json')?.file.path ?? targets[0].file.path)
+      setComparisonOpen(true)
+    } catch (failure) {
+      setComparisonSourceError(errorMessage(failure))
+    } finally {
+      event.currentTarget.value = ''
+    }
   }
 
   function openComparison() {
@@ -1844,6 +1864,10 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
             </div>
             {comparisonSourceError !== null ? <InlineError>{comparisonSourceError}</InlineError> : null}
           </form>
+          <label className="comparison-directory-label">
+            <span>选择第二个本地目录</span>
+            <input type="file" multiple onChange={loadComparisonLocalDirectory} {...{ webkitdirectory: '' }} />
+          </label>
         </details>
         {comparisonOpen ? (
           <button type="button" aria-label="关闭 Tokenizer 对照" onClick={closeComparison}>关闭对照</button>

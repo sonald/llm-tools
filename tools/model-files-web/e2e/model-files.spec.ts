@@ -6,6 +6,8 @@ import {
   fixtureRevision,
   installFixtureRoutes,
   pythonReaderSource,
+  writeNoTokenizerFixtureDirectory,
+  writeComparisonFixtureDirectory,
   writeFixtureDirectory,
 } from './fixtures.ts'
 
@@ -686,6 +688,162 @@ test('keeps the latest explicit comparison repository after a delayed manifest',
   await expect(errors).toEqual([])
 })
 
+test('loads a second local comparison directory without external requests', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', 'Directory picker behavior is covered once in Chromium.')
+  const errors = collectErrors(page)
+  const requests = await installFixtureRoutes(page, { includeComparisonTokenizers: true })
+  const localFixture = testInfo.outputPath('comparison-local-fixture')
+  await writeComparisonFixtureDirectory(localFixture)
+  const noTokenizerFixture = testInfo.outputPath('comparison-local-no-tokenizer-fixture')
+  await writeNoTokenizerFixtureDirectory(noTokenizerFixture)
+  await openFixture(page, 18)
+  await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
+  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await page.getByRole('textbox', { name: 'Raw 输入' }).fill('hello worlds')
+  await page.getByRole('button', { name: '立即分词' }).click()
+  await expect(page.getByRole('table', { name: 'Tokenizer Tokens' })).toBeVisible()
+
+  const badge = page.getByRole('button', { name: '查看仓库一致性报告' })
+  await expect(badge).toHaveAttribute('data-consistency-state', 'warnings')
+  const externalRequests: string[] = []
+  page.on('request', request => {
+    const url = new URL(request.url())
+    if (url.hostname !== '127.0.0.1') externalRequests.push(request.url())
+  })
+  const initialState = {
+    url: page.url(),
+    historyLength: await page.evaluate(() => history.length),
+    repositoryInput: await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).inputValue(),
+    status: await page.locator('.repository-status').innerText(),
+    localStorageHistory: await page.evaluate(() => localStorage.getItem('model-files.repository-history')),
+    consistencyState: await badge.getAttribute('data-consistency-state'),
+    consistencyExpanded: await badge.getAttribute('aria-expanded'),
+    consistencyLabel: await badge.innerText(),
+  }
+
+  await page.getByText('另一公开 Hugging Face…').click()
+  await page.getByLabel('对照 Hugging Face 仓库').fill(crossRepositoryModelId)
+  await page.getByRole('button', { name: '加载对照' }).click()
+  await expect(page.locator('.comparison-source')).toHaveText(
+    `${crossRepositoryModelId} · SHA ${crossRepositoryRevision.slice(0, 7)} · tokenizer.json`,
+  )
+  await expect(page.getByRole('region', { name: 'Tokenizer 对照摘要' })).toContainText('#0 · 3 / 4')
+  externalRequests.length = 0
+  const picker = page.getByLabel('选择第二个本地目录')
+  await expect(picker).toBeVisible()
+  await picker.dispatchEvent("change")
+  await expect(page.locator('.comparison-side')).toHaveCount(1)
+  await expect(page.locator('.comparison-source')).toHaveText(
+    `${crossRepositoryModelId} · SHA ${crossRepositoryRevision.slice(0, 7)} · tokenizer.json`,
+  )
+  await picker.setInputFiles(localFixture)
+
+  const source = page.locator('.comparison-source')
+  await expect(source).toHaveText('本地目录 · live · comparison-local-fixture · tokenizer.json')
+  const summary = page.getByRole('region', { name: 'Tokenizer 对照摘要' })
+  await expect(summary).toContainText('#0 · 3 / 4')
+  await page.getByRole('textbox', { name: 'Raw 输入' }).fill('hello worlds')
+  await page.getByRole('button', { name: '立即分词' }).click()
+  await expect(page.getByRole('table', { name: '主 Tokenizer Tokens' })).toBeVisible()
+  await expect(page.getByRole('table', { name: '对照 Tokenizer Tokens' })).toBeVisible()
+  const diff = page.getByRole('region', { name: 'Tokenizer 词表差集统计' })
+  await diff.getByRole('button', { name: 'rightOnly · 1' }).click()
+  await diff.getByRole('textbox', { name: '对照词表搜索' }).fill('alt')
+  await expect(diff.getByText('显示 1 / 1')).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Tokenizer 词表差集' })).toContainText('alt-token')
+
+  await picker.setInputFiles(noTokenizerFixture)
+  await expect(page.locator('.comparison-repository form').getByRole('alert'))
+    .toHaveText('对照本地目录没有可用 tokenizer.json。')
+  await expect(source).toHaveText('本地目录 · live · comparison-local-fixture · tokenizer.json')
+  await expect(page.getByRole('table', { name: '主 Tokenizer Tokens' })).toBeVisible()
+  await expect(page.getByRole('table', { name: '对照 Tokenizer Tokens' })).toBeVisible()
+  expect(externalRequests).toEqual([])
+
+  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await page.getByRole('button', { name: '渲染并分词' }).click()
+  await expect(page.getByLabel('Chat 权威输入')).toContainText('system=You are concise.')
+  const rightResult = page
+    .getByRole('heading', { name: '对照 Tokenizer 结果' })
+    .locator('..')
+    .locator('..')
+  await expect(rightResult.locator('.decoded-text').filter({ hasText: '权威输入：' }))
+    .toHaveText('权威输入：ALT-JINJA You are concise.')
+
+  await page.getByRole('tab', { name: 'Token IDs 工作台' }).click()
+  await page.getByRole('textbox', { name: 'Token IDs' }).fill('[1,3,2]')
+  await page.getByRole('button', { name: '解码 ID' }).click()
+  await expect(summary).toContainText('ID 序列相同')
+  const mainRows = page.getByRole('table', { name: '主 Tokenizer Tokens' }).locator('tbody tr')
+  const rightRows = page.getByRole('table', { name: '对照 Tokenizer Tokens' }).locator('tbody tr')
+  await expect(mainRows.nth(1)).toContainText('hello')
+  await expect(rightRows.nth(1)).not.toContainText('hello')
+
+  await page.getByRole('button', { name: '关闭 Tokenizer 对照' }).click()
+  await expect(page.locator('.comparison-side')).toHaveCount(0)
+  await expect(source).toHaveCount(0)
+  await expect(picker).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Tokenizer Tokens' })).toBeVisible()
+  await picker.setInputFiles(localFixture)
+  await expect(source).toHaveText('本地目录 · live · comparison-local-fixture · tokenizer.json')
+  await expect(page.getByRole('table', { name: '主 Tokenizer Tokens' })).toBeVisible()
+  await expect(page.getByRole('table', { name: '对照 Tokenizer Tokens' })).toBeVisible()
+
+  expect({
+    url: page.url(),
+    historyLength: await page.evaluate(() => history.length),
+    repositoryInput: await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).inputValue(),
+    status: await page.locator('.repository-status').innerText(),
+    localStorageHistory: await page.evaluate(() => localStorage.getItem('model-files.repository-history')),
+    consistencyState: await badge.getAttribute('data-consistency-state'),
+    consistencyExpanded: await badge.getAttribute('aria-expanded'),
+    consistencyLabel: await badge.innerText(),
+  }).toEqual(initialState)
+
+  await page.getByRole('button', { name: '关闭 Tokenizer 对照' }).click()
+  await page.getByRole('combobox', { name: '对照 Tokenizer' }).selectOption('tokenizer.json')
+  await page.getByRole('button', { name: '打开对照' }).click()
+  const repositorySource = page.locator('.comparison-source')
+  await expect(repositorySource).toHaveText('当前仓库 · tokenizer.json')
+  expect(externalRequests).toEqual([])
+  await page.getByRole('button', { name: '关闭 Tokenizer 对照' }).click()
+
+  expect(requests.filter(request => request.path.startsWith('alternate') || request.path === 'no-config/tokenizer.json'))
+    .toEqual([])
+  expect(externalRequests).toEqual([])
+  expect(errors).toEqual([])
+})
+
+test('keeps a valid local comparison after a delayed remote manifest', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', 'Latest-only timing evidence is recorded once in Chromium.')
+  const errors = collectErrors(page)
+  const localFixture = testInfo.outputPath('latest-local-fixture')
+  await writeComparisonFixtureDirectory(localFixture)
+  await installFixtureRoutes(page, {
+    includeComparisonTokenizers: true,
+    manifestDelayForModel: { modelId: 'fixture/slow-cross', delayMs: 500 },
+  })
+  await openFixture(page, 18)
+  await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
+  await page.getByText('另一公开 Hugging Face…').click()
+  await page.getByLabel('对照 Hugging Face 仓库').fill('fixture/slow-cross')
+  await page.getByRole('button', { name: '加载对照' }).click()
+  await expect(page.getByText('正在读取对照仓库清单…')).toBeVisible()
+  await page.getByLabel('选择第二个本地目录').setInputFiles(localFixture)
+  await expect(page.locator('.comparison-source')).toHaveText(
+    '本地目录 · live · latest-local-fixture · tokenizer.json',
+  )
+  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await page.getByRole('textbox', { name: 'Raw 输入' }).fill('hello worlds')
+  await page.getByRole('button', { name: '立即分词' }).click()
+  await delay(650)
+  await expect(page.locator('.comparison-source')).toHaveText(
+    '本地目录 · live · latest-local-fixture · tokenizer.json',
+  )
+  await expect(page.getByRole('table', { name: '对照 Tokenizer Tokens' })).toBeVisible()
+  await expect(errors).toEqual([])
+})
+
 test('keeps comparison controls reachable without overflow at product viewports', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'chromium', 'Responsive evidence is recorded once in Chromium.')
   const errors = collectErrors(page)
@@ -722,6 +880,11 @@ test('keeps comparison controls reachable without overflow at product viewports'
     await expect(comparisonLoadButton).toBeVisible()
     await expect(comparisonInput).toBeInViewport()
     await expect(comparisonLoadButton).toBeInViewport()
+    if (viewport.width === 768 || viewport.width === 390) {
+      const localPicker = page.getByLabel('选择第二个本地目录')
+      await expect(localPicker).toBeVisible()
+      await expect(localPicker).toBeInViewport()
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     if (testInfo.project.name === 'chromium') {
       const screenshot = testInfo.outputPath(`comparison-${viewport.width}x${viewport.height}.png`)

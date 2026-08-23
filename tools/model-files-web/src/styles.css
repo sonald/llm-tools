@@ -291,6 +291,7 @@ tr:last-child td { border-bottom: 0; }
   background: var(--panel); font-size: 11px;
 }
 .comparison-source-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; color: var(--muted); font-size: 9.5px; }
+.comparison-directory-label { margin-top: 7px; }
 .comparison-repository .primary-button { flex: none; }
 .comparison-toolbar > button:not(.primary-button) {
   height: 27px; flex: none; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 6px;

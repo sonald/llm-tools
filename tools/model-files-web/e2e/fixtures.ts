@@ -1,6 +1,6 @@
 import type { Page, Route } from '@playwright/test'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 export const fixtureModelId = 'fixture/model'
 export const fixtureRevision = '0123456789abcdef0123456789abcdef01234567'
@@ -303,6 +303,20 @@ function manifest(
 export async function writeFixtureDirectory(directory: string): Promise<void> {
   await mkdir(directory, { recursive: true })
   await Promise.all([...files, ...localReaderFiles].map(([path, body]) => writeFile(join(directory, path), body)))
+}
+
+export async function writeComparisonFixtureDirectory(directory: string): Promise<void> {
+  await mkdir(directory, { recursive: true })
+  await Promise.all([...crossRepositoryFiles].map(async ([path, body]) => {
+    const target = join(directory, path)
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(target, body)
+  }))
+}
+
+export async function writeNoTokenizerFixtureDirectory(directory: string): Promise<void> {
+  await mkdir(directory, { recursive: true })
+  await Promise.all([...localReaderFiles].map(([path, body]) => writeFile(join(directory, path), body)))
 }
 
 async function fulfillFile(
