@@ -21,11 +21,15 @@ import {
   type ChatAttributionMessage,
 } from './core/tokenAttribution.ts'
 import { parseChatTemplates } from './core/chatTemplates.ts'
+import { initializeLocalization, translate as t } from './i18n.ts'
 import { isTokenizerRequest, type TokenizerReply, type TokenizerRequest } from './tokenizerProtocol.ts'
+
+const workerLocale = self.name
+initializeLocalization(workerLocale === 'zh-Hans' || workerLocale === 'en' ? [workerLocale] : undefined)
 
 let tokenizer: Tokenizer | null = null
 let specialIndex: SpecialTokenIndex | null = null
-let tokenizerError = 'Tokenizer 尚未加载。'
+let tokenizerError = t('tokenizerNotLoaded')
 let vocabularySource: unknown = null
 let vocabularyAvailable = false
 let vocabularyIndex: ReturnType<typeof buildTokenizerVocabularyIndex> | null = null
@@ -42,14 +46,14 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
     }
     if (request.operation === 'inspect-structure') {
       const parsedTokenizer: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(request.tokenizerData))
-      if (!isRecord(parsedTokenizer)) throw new Error('tokenizer.json 根节点不是对象。')
+      if (!isRecord(parsedTokenizer)) throw new Error(t('tokenizerRootNotObject'))
       self.postMessage(reply(request, true, inspectTokenizerStructure(parsedTokenizer)))
       return
     }
     if (request.operation === 'load') {
       tokenizer = null
       specialIndex = null
-      tokenizerError = 'Tokenizer 尚未加载。'
+      tokenizerError = t('tokenizerNotLoaded')
       vocabularySource = null
       vocabularyAvailable = false
       vocabularyIndex = null
@@ -57,16 +61,16 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
       vocabularyDiff = null
       const decoder = new TextDecoder('utf-8', { fatal: true })
       const parsedTokenizer: unknown = JSON.parse(decoder.decode(request.tokenizerData))
-      if (!isRecord(parsedTokenizer)) throw new Error('tokenizer.json 根节点不是对象。')
+      if (!isRecord(parsedTokenizer)) throw new Error(t('tokenizerRootNotObject'))
       const structure = inspectTokenizerStructure(parsedTokenizer)
       const model = isRecord(parsedTokenizer.model) ? parsedTokenizer.model : null
       vocabularySource = model?.vocab ?? null
       vocabularyAvailable = true
       if (request.configData === null) {
-        tokenizerError = '缺少 tokenizer_config.json，当前运行时无法严格构造 Tokenizer。'
+        tokenizerError = t('missingTokenizerConfigRuntime')
       } else {
         const parsedConfig: unknown = JSON.parse(decoder.decode(request.configData))
-        if (!isRecord(parsedConfig)) throw new Error('tokenizer_config.json 根节点不是对象。')
+        if (!isRecord(parsedConfig)) throw new Error(t('tokenizerConfigRootNotObject'))
         structure.chatTemplates = parseChatTemplates(parsedConfig.chat_template)
         try {
           tokenizer = new Tokenizer(parsedTokenizer, parsedConfig)
@@ -85,7 +89,7 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
       return
     }
     if (request.operation === 'search-vocabulary') {
-      if (request.tokenizerIdentity !== loadedTokenizerIdentity) throw new Error('Tokenizer 身份已变化，请重新加载。')
+      if (request.tokenizerIdentity !== loadedTokenizerIdentity) throw new Error(t('tokenizerIdentityChanged'))
       if (request.query.trim().length === 0) {
         self.postMessage(reply(request, true, []))
         return
@@ -93,22 +97,22 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
       if (!vocabularyAvailable) throw new Error(tokenizerError)
       vocabularyIndex ??= buildTokenizerVocabularyIndex(vocabularySource)
       if (vocabularyIndex.entries === null) {
-        throw new Error(`当前 vocab 结构无法搜索：${vocabularyIndex.error}`)
+        throw new Error(t('vocabularySearchUnsupported', { reason: vocabularyIndex.error }))
       }
       self.postMessage(reply(request, true, filterTokenizerVocabulary(vocabularyIndex.entries, request.query)))
       return
     }
     if (request.operation === 'prepare-vocabulary-diff') {
-      if (request.tokenizerIdentity !== loadedTokenizerIdentity) throw new Error('Tokenizer 身份已变化，请重新加载。')
+      if (request.tokenizerIdentity !== loadedTokenizerIdentity) throw new Error(t('tokenizerIdentityChanged'))
       const leftParsed: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(request.tokenizerData))
-      if (!isRecord(leftParsed)) throw new Error('左侧 tokenizer.json 根节点不是对象。')
+      if (!isRecord(leftParsed)) throw new Error(t('leftTokenizerRootNotObject'))
       const leftModel = isRecord(leftParsed.model) ? leftParsed.model : null
-      if (leftModel === null) throw new Error('左侧 tokenizer.json 缺少 model 节点。')
+      if (leftModel === null) throw new Error(t('leftTokenizerMissingModel'))
       const leftIndex = buildTokenizerVocabularyIndex(leftModel.vocab)
-      if (leftIndex.entries === null) throw new Error(`左侧 vocab 结构无法比较：${leftIndex.error}`)
+      if (leftIndex.entries === null) throw new Error(t('leftVocabularyCompareUnsupported', { reason: leftIndex.error }))
       if (!vocabularyAvailable) throw new Error(tokenizerError)
       vocabularyIndex ??= buildTokenizerVocabularyIndex(vocabularySource)
-      if (vocabularyIndex.entries === null) throw new Error(`右侧 vocab 结构无法比较：${vocabularyIndex.error}`)
+      if (vocabularyIndex.entries === null) throw new Error(t('rightVocabularyCompareUnsupported', { reason: vocabularyIndex.error }))
       vocabularyDiff = buildTokenizerVocabularyDiff(leftIndex.entries, vocabularyIndex.entries)
       self.postMessage(reply(request, true, {
         leftOnlyCount: vocabularyDiff.leftOnly.length,
@@ -119,20 +123,20 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
     }
     if (request.operation === 'search-vocabulary-diff') {
       if (request.tokenizerIdentity !== loadedTokenizerIdentity || vocabularyDiff === null) {
-        throw new Error('词表差集尚未准备。')
+        throw new Error(t('vocabularyDiffNotPrepared'))
       }
       self.postMessage(reply(request, true, filterTokenizerVocabularyDiff(vocabularyDiff, request.scope, request.query)))
       return
     }
     if (tokenizer === null || specialIndex === null) throw new Error(tokenizerError)
-    if (request.tokenizerIdentity !== loadedTokenizerIdentity) throw new Error('Tokenizer 身份已变化，请重新加载。')
+    if (request.tokenizerIdentity !== loadedTokenizerIdentity) throw new Error(t('tokenizerIdentityChanged'))
     const activeTokenizer = tokenizer
     const activeSpecialIndex = specialIndex
     if (request.operation === 'chat-tokenize') {
       const rendered = new Template(request.template).render(request.context)
       const probe = chatContentProbe(request.attribution)
-      const encoding = encodeText(activeTokenizer, rendered, 'Chat 渲染输入')
-      const probeEncoding = encodeText(activeTokenizer, probe, 'Chat 正文 probe')
+      const encoding = encodeText(activeTokenizer, rendered, t('chatRenderedInputLabel'))
+      const probeEncoding = encodeText(activeTokenizer, probe, t('chatProbeInputLabel'))
       const decoded = encoding.ids.length === 0 ? '' : activeTokenizer.decode(encoding.ids, { skip_special_tokens: false })
       const baseResult = buildTokenization(
         rendered,
@@ -166,7 +170,7 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
       self.postMessage(reply(request, true, result))
       return
     }
-    const encoding = encodeText(activeTokenizer, request.text, '输入')
+    const encoding = encodeText(activeTokenizer, request.text, t('inputLabel'))
     const decoded = encoding.ids.length === 0 ? '' : activeTokenizer.decode(encoding.ids, { skip_special_tokens: false })
     const result = buildTokenization(
       request.text,
@@ -201,7 +205,7 @@ function reply(
 }
 
 function encodeText(tokenizer: Tokenizer, text: string, label: string) {
-  if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new Error(`${label}超过 64 KiB 上限。`)
+  if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new Error(t('encodedInputTooLarge', { label }))
   return tokenizer.encode(text, { add_special_tokens: false })
 }
 

@@ -1,3 +1,5 @@
+import { formatNumber, translate as t } from '../i18n.ts'
+
 import type { RepositorySnapshot } from './huggingface.ts'
 
 export type JsonSummary = { title: string; facts: Array<[string, string]> }
@@ -7,35 +9,38 @@ export function decodeStrictText(data: ArrayBuffer): string {
   try {
     text = new TextDecoder('utf-8', { fatal: true }).decode(data)
   } catch {
-    throw new Error('文本不是有效的 UTF-8。')
+    throw new Error(t('invalidUtf8Text'))
   }
-  if (text.includes('\0')) throw new Error('文本包含 NUL 字节。')
+  if (text.includes('\0')) throw new Error(t('textContainsNulByte'))
   return text
 }
 
 export function validatePdfData(data: ArrayBuffer): void {
   const bytes = new Uint8Array(data, 0, Math.min(5, data.byteLength))
   if (bytes.length !== 5 || bytes[0] !== 37 || bytes[1] !== 80 || bytes[2] !== 68
-    || bytes[3] !== 70 || bytes[4] !== 45) throw new Error('不是有效的 PDF 文件签名。')
+    || bytes[3] !== 70 || bytes[4] !== 45) throw new Error(t('invalidPdfSignature'))
 }
 
 export function summarizeJson(path: string, value: unknown): JsonSummary {
   const name = path.split('/').at(-1)?.toLocaleLowerCase() ?? ''
-  if (!isRecord(value)) return { title: 'JSON', facts: [['根类型', Array.isArray(value) ? '数组' : typeof value]] }
+  if (!isRecord(value)) return {
+    title: 'JSON',
+    facts: [[t('jsonRootType'), Array.isArray(value) ? t('arrayTypeLabel') : typeof value]],
+  }
   if (name === 'config.json' || name === 'configuration.json') {
     return { title: 'Model Config', facts: compactFacts([
-      ['模型类型', scalar(value.model_type)],
-      ['架构', stringList(value.architectures)],
+      [t('modelTypeLabel'), scalar(value.model_type)],
+      [t('architectureLabel'), stringList(value.architectures)],
       ['Hidden Size', scalar(value.hidden_size)],
-      ['层数', scalar(value.num_hidden_layers ?? value.n_layer)],
-      ['词表大小', scalar(value.vocab_size)],
-      ['数据类型', scalar(value.torch_dtype ?? value.dtype)],
+      [t('layerCountLabel'), scalar(value.num_hidden_layers ?? value.n_layer)],
+      [t('vocabularySizeLabel'), scalar(value.vocab_size)],
+      [t('dataTypeLabel'), scalar(value.torch_dtype ?? value.dtype)],
     ]) }
   }
   if (name === 'generation_config.json') {
     return { title: 'Generation Config', facts: compactFacts([
-      ['最大长度', scalar(value.max_new_tokens ?? value.max_length)],
-      ['采样', scalar(value.do_sample)],
+      [t('maxLengthLabel'), scalar(value.max_new_tokens ?? value.max_length)],
+      [t('samplingLabel'), scalar(value.do_sample)],
       ['Temperature', scalar(value.temperature)],
       ['Top P', scalar(value.top_p)],
       ['BOS Token ID', scalar(value.bos_token_id)],
@@ -45,7 +50,7 @@ export function summarizeJson(path: string, value: unknown): JsonSummary {
   if (name === 'tokenizer_config.json') {
     return { title: 'Tokenizer Config', facts: compactFacts([
       ['Tokenizer Class', scalar(value.tokenizer_class)],
-      ['最大长度', scalar(value.model_max_length)],
+      [t('maxLengthLabel'), scalar(value.model_max_length)],
       ['BOS Token', tokenText(value.bos_token)],
       ['EOS Token', tokenText(value.eos_token)],
       ['Chat Template', typeof value.chat_template === 'string' ? `${new TextEncoder().encode(value.chat_template).byteLength} bytes` : undefined],
@@ -56,13 +61,13 @@ export function summarizeJson(path: string, value: unknown): JsonSummary {
     const shards = new Set(Object.values(weightMap).filter((item): item is string => typeof item === 'string'))
     const metadata = isRecord(value.metadata) ? value.metadata : {}
     return { title: 'Weight Index', facts: compactFacts([
-      ['Tensor 条目', Object.keys(weightMap).length.toLocaleString()],
-      ['分片数量', shards.size.toLocaleString()],
-      ['声明总大小', scalar(metadata.total_size)],
-      ['Metadata 字段', Object.keys(metadata).length.toLocaleString()],
+      [t('tensorEntryCountLabel'), formatNumber(Object.keys(weightMap).length)],
+      [t('shardCountLabel'), formatNumber(shards.size)],
+      [t('declaredTotalSizeLabel'), scalar(metadata.total_size)],
+      [t('metadataFieldCountLabel'), formatNumber(Object.keys(metadata).length)],
     ]) }
   }
-  return { title: 'JSON', facts: [['根字段', Object.keys(value).length.toLocaleString()]] }
+  return { title: 'JSON', facts: [[t('jsonRootFieldCount'), formatNumber(Object.keys(value).length)]] }
 }
 
 export function jsonRows(path: string, value: unknown): Array<[string, string]> {

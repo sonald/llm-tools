@@ -59,15 +59,16 @@ import {
 } from './core/tokenizer.ts'
 import { PdfInspection, SourceInspection, TextInspection } from './Readers.tsx'
 import { TemplateWorkbench } from './TemplateWorkbench.tsx'
+import { formatNumber, translate as t, type MessageKey } from './i18n.ts'
 
-const categoryLabels: Record<FileCategory, string> = {
-  configuration: '配置',
-  tokenizer: 'Tokenizer',
-  templates: '模板',
-  weightMetadata: '权重元数据',
-  documentation: '文档',
-  other: '其他',
-  weights: '权重文件',
+const categoryLabels: Record<FileCategory, MessageKey> = {
+  configuration: 'appCategoryConfiguration',
+  tokenizer: 'tokenizer',
+  templates: 'appCategoryTemplates',
+  weightMetadata: 'appCategoryWeightMetadata',
+  documentation: 'appCategoryDocumentation',
+  other: 'appCategoryOther',
+  weights: 'appCategoryWeights',
 }
 
 const historyKey = 'model-files.repository-history'
@@ -228,7 +229,7 @@ export default function App() {
         ? next.files.find(file => file.path === 'config.json') ?? next.files.find(file => !isBlocked(file))
         : next.files.find(file => file.path === requestedPath)
       if (requestedPath !== null && preferred === undefined) {
-        setRepositoryError({ message: `深链接文件不存在：${requestedPath}`, retryable: false })
+        setRepositoryError({ message: t('appDeepLinkFileMissing', { path: requestedPath }), retryable: false })
         if (replaceRoute) writeRoute(next.modelId, requestedPath, 'replace')
         startConsistency(next)
         return
@@ -291,10 +292,10 @@ export default function App() {
       const lower = file.path.toLocaleLowerCase()
       let next: Inspection
       if (lower.endsWith('.safetensors')) {
-        if (file.size === null) throw new Error('仓库没有提供文件大小，已拒绝 SafeTensors 检查。')
+        if (file.size === null) throw new Error(t('appSafeTensorsSizeUnavailable'))
         const prefix = await readExactRange(activeSnapshot, file, 0, 7, controller.signal)
         const headerLength = safeTensorsHeaderLength(prefix)
-        if (headerLength + 8 > file.size) throw new Error('SafeTensors Header 超过文件大小。')
+        if (headerLength + 8 > file.size) throw new Error(t('appSafeTensorsHeaderTooLarge'))
         const header = await readExactRange(activeSnapshot, file, 8, 7 + headerLength, controller.signal)
         next = {
           kind: 'safetensors',
@@ -500,8 +501,8 @@ export default function App() {
     const opened = ggufFiles.some(file => inspectionCache.current
       .get(`${snapshotIdentity(activeSnapshot)}/${file.path}`)?.kind === 'gguf')
     return opened
-      ? { state: 'skipped', reason: 'Web 仅读取 24-byte prefix，缺少 metadata/tensor directory。' }
-      : { state: 'skipped', reason: '未在当前会话打开' }
+      ? { state: 'skipped', reason: t('ggufWebSkippedReason') }
+      : { state: 'skipped', reason: t('appGgufNotOpenedThisSession') }
   }
 
   return (
@@ -513,7 +514,7 @@ export default function App() {
           <span className="web-label">Web</span>
         </div>
         <form className="repository-form" onSubmit={openRepository}>
-          <label className="sr-only" htmlFor="repository">Hugging Face 仓库</label>
+          <label className="sr-only" htmlFor="repository">{t('appHuggingFaceRepositoryLabel')}</label>
           <input
             id="repository"
             list="repository-examples"
@@ -525,7 +526,7 @@ export default function App() {
                 event.currentTarget.form?.requestSubmit()
               }
             }}
-            placeholder="owner/model 或 Hugging Face URL"
+            placeholder={t('appRepositoryPlaceholder')}
             spellCheck={false}
           />
           <datalist id="repository-examples">
@@ -534,14 +535,14 @@ export default function App() {
             <option value="bartowski/Qwen_Qwen3-0.6B-GGUF" />
           </datalist>
           <button className="primary-button" type="submit">
-            {isLoadingRepository ? '打开中…' : '打开'}
+            {isLoadingRepository ? t('appRepositoryOpeningAction') : t('appRepositoryOpenAction')}
           </button>
           <label className="directory-button">
-            选择本地目录
+            {t('appSelectLocalDirectory')}
             <input
               type="file"
               multiple
-              aria-label="选择本地目录"
+              aria-label={t('appSelectLocalDirectory')}
               onChange={openLocalDirectory}
               {...{ webkitdirectory: '' }}
             />
@@ -554,16 +555,18 @@ export default function App() {
                 // History remains cleared for this session when storage is unavailable.
               }
               setRepositoryHistory([])
-            }}>清除历史</button>
+            }}>{t('appClearHistoryAction')}</button>
           ) : null}
         </form>
         <div className="repository-status" aria-live="polite">
           {snapshot !== null ? (
             snapshot.source === 'huggingface'
-              ? <><i />公开仓库 · SHA {snapshot.revision.slice(0, 7)} · {snapshot.files.length} 个文件</>
-              : <><i />本地目录 · live · {snapshot.files.length} 个文件</>
-          ) : isLoadingRepository ? '正在读取清单…' : '纯浏览器 · 只读'
-          }
+              ? <><i />{t('appPublicRepositoryStatus', {
+                revision: snapshot.revision.slice(0, 7),
+                count: formatNumber(snapshot.files.length),
+              })}</>
+              : <><i />{t('appLocalDirectoryStatus', { count: formatNumber(snapshot.files.length) })}</>
+          ) : isLoadingRepository ? t('appLoadingManifestStatus') : t('appBrowserReadonlyStatus')}
         </div>
       </header>
 
@@ -571,27 +574,27 @@ export default function App() {
         <aside className="sidebar">
           <label className="search-field">
             <SearchIcon />
-            <span className="sr-only">筛选文件</span>
-            <input value={filter} onChange={event => setFilter(event.target.value)} placeholder="筛选文件" />
+            <span className="sr-only">{t('appFilterFilesLabel')}</span>
+            <input value={filter} onChange={event => setFilter(event.target.value)} placeholder={t('appFilterFilesLabel')} />
           </label>
           {repositoryError !== null ? (
             <div className="repository-error">
               <InlineError>{repositoryError.message}</InlineError>
               {repositoryError.retryable
-                ? <button type="button" onClick={() => void loadRoute(repositoryInput, readRoute().file, true)}>重试</button>
+                ? <button type="button" onClick={() => void loadRoute(repositoryInput, readRoute().file, true)}>{t('appRetryAction')}</button>
                 : null}
             </div>
           ) : null}
           {snapshot === null && repositoryError === null ? (
-            <div className="sidebar-empty">打开公开仓库或选择本地目录后，这里显示真实文件清单。</div>
+            <div className="sidebar-empty">{t('appRepositoryEmptyHint')}</div>
           ) : null}
-          <nav aria-label="仓库文件">
-            {Object.entries(categoryLabels).map(([category, label]) => {
+          <nav aria-label={t('appRepositoryFilesAriaLabel')}>
+            {Object.entries(categoryLabels).map(([category, messageKey]) => {
               const files = visibleFiles.filter(file => file.category === category)
               if (files.length === 0) return null
               return (
                 <section className="file-group" key={category}>
-                  <h2>{label}</h2>
+                  <h2>{t(messageKey)}</h2>
                   {files.map(file => (
                     <button
                       className={`file-row ${selectedPath === file.path ? 'selected' : ''}`}
@@ -643,10 +646,10 @@ function Detail({
   onRetry(): void
   onToggleConsistency(): void
 }) {
-  const [copyLabel, setCopyLabel] = useState('复制路径')
+  const [copyLabel, setCopyLabel] = useState(() => t('appCopyPathAction'))
   const badgeRef = useRef<HTMLButtonElement>(null)
   const activePath = inspection.kind === 'empty' ? null : inspection.file.path
-  useEffect(() => setCopyLabel('复制路径'), [activePath])
+  useEffect(() => setCopyLabel(t('appCopyPathAction')), [activePath])
 
   function closeReport() {
     onToggleConsistency()
@@ -657,7 +660,7 @@ function Detail({
     return (
       <section className="detail">
         <header className="detail-header">
-          <div><h1>{snapshot === null ? '打开模型仓库' : '选择文件'}</h1></div>
+          <div><h1>{snapshot === null ? t('appOpenModelRepositoryTitle') : t('appSelectFileTitle')}</h1></div>
           {snapshot !== null ? (
             <ConsistencyBadge ref={badgeRef} report={report} open={reportOpen} onToggle={onToggleConsistency} />
           ) : null}
@@ -665,8 +668,8 @@ function Detail({
         {reportOpen ? <ConsistencyDialog report={report} onClose={closeReport} /> : null}
         <div className="detail-body">
           {snapshot === null
-            ? <EmptyState title="打开模型仓库" message="输入公开 Hugging Face 仓库，验证清单、Range 与 tokenizer 的纯 Web 数据链路。" />
-            : <EmptyState title="选择文件" message="从左侧选择当前 revision 中的文件。" />}
+            ? <EmptyState title={t('appOpenModelRepositoryTitle')} message={t('appOpenModelRepositoryMessage')} />
+            : <EmptyState title={t('appSelectFileTitle')} message={t('appSelectFileMessage')} />}
         </div>
       </section>
     )
@@ -677,15 +680,15 @@ function Detail({
       <header className="detail-header">
         <div>
           <h1>{file.path.split('/').at(-1)}</h1>
-          <p>{categoryLabels[file.category]} · {file.size === null ? '未知大小' : formatBytes(file.size)}</p>
+          <p>{t(categoryLabels[file.category])} · {file.size === null ? t('appUnknownSize') : formatBytes(file.size)}</p>
         </div>
         <span className="format-chip">{formatName(file)}</span>
         <button className="path-copy" type="button" onClick={async () => {
           try {
             await navigator.clipboard.writeText(file.path)
-            setCopyLabel('已复制')
+            setCopyLabel(t('templateCopiedState'))
           } catch {
-            setCopyLabel('复制失败')
+            setCopyLabel(t('templateCopyFailedState'))
           }
         }}>{copyLabel}</button>
         <a
@@ -694,7 +697,7 @@ function Detail({
           target="_blank"
           rel="noreferrer"
           hidden={snapshot?.source !== 'huggingface'}
-        >源站</a>
+        >{t('appSourceLinkAction')}</a>
         <ConsistencyBadge ref={badgeRef} report={report} open={reportOpen} onToggle={onToggleConsistency} />
       </header>
       {reportOpen ? <ConsistencyDialog report={report} onClose={closeReport} /> : null}
@@ -703,8 +706,8 @@ function Detail({
         {inspection.kind === 'text' && snapshot !== null && report !== null
           && configPath !== null && file.path === configPath ? (
             <div className="detail-reader-stack">
-              <section className="inspection-section consistency-embedded" aria-label="Config 一致性报告">
-                <h2>Config 一致性报告</h2>
+              <section className="inspection-section consistency-embedded" aria-label={t('appConfigConsistencyReportTitle')}>
+                <h2>{t('appConfigConsistencyReportTitle')}</h2>
                 <ConsistencyReportBody report={report} />
               </section>
               <TextInspection
@@ -719,10 +722,10 @@ function Detail({
             </div>
           ) : null}
         {inspection.kind === 'error' ? (
-          <EmptyState title="无法读取文件" message={inspection.message} action="重试" onAction={onRetry} tone="error" />
+          <EmptyState title={t('appUnableToReadFileTitle')} message={inspection.message} action={t('appRetryAction')} onAction={onRetry} tone="error" />
         ) : null}
         {inspection.kind === 'locked' ? (
-          <EmptyState title="权重文件已锁定" message="该格式不在 Web 纵向验证范围内，不会请求文件内容。" />
+          <EmptyState title={t('appLockedWeightsTitle')} message={t('appLockedWeightsMessage')} />
         ) : null}
         {inspection.kind === 'text' && snapshot !== null && !(
           report !== null && configPath !== null && file.path === configPath
@@ -797,12 +800,12 @@ function SafeTensorsInspection({
   return (
     <div className="inspection-canvas">
       <ValidationStrip items={[
-        ['读取方式', snapshot.source === 'local' ? '2 次 File.slice()' : '2 次 HTTP 206 Range'],
-        ['实际读取', formatBytes(inspection.bytesRead)],
-        ['Tensor 数据', '0 bytes'],
+        [t('readerReadMethod'), snapshot.source === 'local' ? t('appReadMethodTwoLocalSlices') : t('appReadMethodTwoHttpRanges')],
+        [t('readerActualRead'), formatBytes(inspection.bytesRead)],
+        [t('appTensorDataLabel'), t('appZeroBytesValue')],
       ]} />
-      <div className="perspective" role="group" aria-label="SafeTensors 视图">
-        {([['overview', '概览'], ['metadata', 'Metadata'], ['tensors', 'Tensors']] as const).map(([value, label]) => (
+      <div className="perspective" role="group" aria-label={t('appSafeTensorsViewAriaLabel')}>
+        {([['overview', t('readerOverview')], ['metadata', t('appMetadataTab')], ['tensors', t('appTensorsTab')]] as const).map(([value, label]) => (
           <button type="button" aria-pressed={perspective === value} onClick={() => {
             setPerspective(value)
             setFilter('')
@@ -813,34 +816,41 @@ function SafeTensorsInspection({
       {perspective === 'overview' ? (
         <>
           <MetricGrid items={[
-            ['Tensor 数量', summary.tensors.length.toLocaleString()],
-            ['参数总数', summary.parameterCount.toLocaleString()],
-            ['数据区大小', formatBigBytes(summary.dataBytes)],
-            ['Metadata 字段', metadata.length.toLocaleString()],
+            [t('appTensorCountLabel'), formatNumber(summary.tensors.length)],
+            [t('appParameterTotalLabel'), formatNumber(summary.parameterCount)],
+            [t('appDataRegionSizeLabel'), formatBigBytes(summary.dataBytes)],
+            [t('metadataFieldCountLabel'), formatNumber(metadata.length)],
           ]} />
-          <p className="scope-note">名称、dtype、shape、offset 与 Metadata 来自 Header；参数量和字节数为浏览器推导。Tensor 数据保持 0 bytes。</p>
+          <p className="scope-note">{t('appSafeTensorsScopeNote')}</p>
         </>
       ) : null}
       {perspective !== 'overview' ? (
         <div className="inspection-toolbar">
           <label>
-            <span>{perspective === 'metadata' ? '筛选 Metadata' : '筛选 Tensor'}</span>
+            <span>{perspective === 'metadata' ? t('appFilterMetadataLabel') : t('appFilterTensorLabel')}</span>
             <input value={filter} onChange={event => {
               setFilter(event.target.value)
               setLimit(100)
-            }} placeholder={perspective === 'metadata' ? 'Key 或 Value 包含…' : '名称或 dtype 包含…'} />
+            }} placeholder={perspective === 'metadata' ? t('appKeyOrValueContainsPlaceholder') : t('appNameOrDtypeContainsPlaceholder')} />
           </label>
           <span>{perspective === 'metadata'
-            ? `显示 ${matchingMetadata.length} / ${metadata.length}`
-            : `显示 ${visible.length} / ${matchingTensors.length}（总计 ${summary.tensors.length}）`}</span>
+            ? t('readerShowingCount', {
+              visible: formatNumber(matchingMetadata.length),
+              total: formatNumber(metadata.length),
+            })
+            : t('appShowingTensorCount', {
+              visible: formatNumber(visible.length),
+              matching: formatNumber(matchingTensors.length),
+              total: formatNumber(summary.tensors.length),
+            })}</span>
         </div>
       ) : null}
       {perspective === 'metadata' ? (
         <section className="inspection-section">
-          <h2>Metadata</h2>
+          <h2>{t('appMetadataTab')}</h2>
           <DataTable
-            label="SafeTensors Metadata"
-            columns={['Key', 'Value']}
+            label={t('appSafeTensorsMetadataTableAriaLabel')}
+            columns={[t('appKeyColumn'), t('appValueColumn')]}
             rows={matchingMetadata}
           />
         </section>
@@ -848,26 +858,30 @@ function SafeTensorsInspection({
       {perspective === 'tensors' ? (
         <>
           <div className="table-scroll">
-            <table aria-label="SafeTensors Tensors">
-              <thead><tr><th>Tensor</th><th>DType</th><th>Shape</th><th>参数</th><th>Bytes</th></tr></thead>
+            <table aria-label={t('appSafeTensorsTensorsTableAriaLabel')}>
+              <thead><tr>
+                <th>{t('appTensorColumn')}</th><th>{t('appDTypeColumn')}</th><th>{t('appShapeColumn')}</th>
+                <th>{t('appParametersColumn')}</th><th>{t('appBytesColumn')}</th>
+              </tr></thead>
               <tbody>{visible.map(tensor => (
                 <tr key={tensor.name}>
                   <td><button className="table-link" type="button" onClick={() => setSelectedName(tensor.name)}>{tensor.name}</button></td>
                   <td>{tensor.dtype}</td><td>{`[${tensor.shape.join(', ')}]`}</td>
-                  <td>{tensor.parameters.toLocaleString()}</td><td>{tensor.bytes.toLocaleString()}</td>
+                  <td>{formatNumber(tensor.parameters)}</td><td>{formatNumber(tensor.bytes)}</td>
                 </tr>
               ))}</tbody>
             </table>
           </div>
           {visible.length < matchingTensors.length ? (
-            <button className="load-more" type="button" onClick={() => setLimit(Math.min(limit + 100, matchingTensors.length))}>再显示 100 个 Tensor</button>
+            <button className="load-more" type="button" onClick={() => setLimit(Math.min(limit + 100, matchingTensors.length))}>{t('appShowMoreTensorsAction')}</button>
           ) : null}
           {selected !== null ? (
             <section className="inspection-section">
-              <h2>选中 Tensor · {selected.name}</h2>
+              <h2>{t('appSelectedTensorTitle', { name: selected.name })}</h2>
               <MetricGrid items={[
-                ['DType', selected.dtype], ['Shape', `[${selected.shape.join(', ')}]`],
-                ['Data Offsets', `${selected.dataStart}–${selected.dataEnd}`], ['Bytes', selected.bytes.toLocaleString()],
+                [t('appDTypeColumn'), selected.dtype], [t('appShapeColumn'), `[${selected.shape.join(', ')}]`],
+                [t('appDataOffsetsLabel'), `${selected.dataStart}–${selected.dataEnd}`],
+                [t('appBytesColumn'), formatNumber(selected.bytes)],
               ]} />
             </section>
           ) : null}
@@ -893,7 +907,7 @@ function ConsistencyBadge({
     <button
       className="consistency-badge"
       type="button"
-      aria-label="查看仓库一致性报告"
+      aria-label={t('appViewConsistencyReportAriaLabel')}
       aria-expanded={open}
       data-consistency-state={state.state}
       ref={ref}
@@ -911,7 +925,7 @@ function ConsistencyDialog({ report, onClose }: {
   useEffect(() => closeButtonRef.current?.focus(), [])
 
   return (
-    <div className="consistency-dialog" role="dialog" aria-label="仓库一致性报告"
+    <div className="consistency-dialog" role="dialog" aria-label={t('appRepositoryConsistencyReportAriaLabel')}
       onKeyDown={event => {
         if (event.key === 'Escape') {
           event.preventDefault()
@@ -920,8 +934,8 @@ function ConsistencyDialog({ report, onClose }: {
       }}
     >
       <header>
-        <h2>仓库一致性报告</h2>
-        <button ref={closeButtonRef} type="button" onClick={onClose}>关闭</button>
+        <h2>{t('appRepositoryConsistencyReportAriaLabel')}</h2>
+        <button ref={closeButtonRef} type="button" onClick={onClose}>{t('appCloseAction')}</button>
       </header>
       <ConsistencyReportBody report={report} />
     </div>
@@ -929,10 +943,10 @@ function ConsistencyDialog({ report, onClose }: {
 }
 
 function ConsistencyReportBody({ report }: { report: RepositoryConsistencyReport | null }) {
-  if (report === null) return <p>正在检查仓库材料…</p>
+  if (report === null) return <p>{t('appCheckingRepositoryMaterials')}</p>
   return (
     <>
-      <dl aria-label="仓库身份" className="consistency-identity">
+      <dl aria-label={t('appRepositoryIdentityAriaLabel')} className="consistency-identity">
         {report.identityFields.map(item => (
           <div key={item.key} data-identity-key={item.key}>
             <dt>{item.key}</dt>
@@ -951,8 +965,8 @@ function ConsistencyReportBody({ report }: { report: RepositoryConsistencyReport
         </article>
       ))}
       <div className="table-scroll">
-        <table aria-label="一致性 Coverage">
-          <thead><tr><th>Material</th><th>Status</th></tr></thead>
+        <table aria-label={t('appConsistencyCoverageAriaLabel')}>
+          <thead><tr><th>{t('appMaterialColumn')}</th><th>{t('appStatusColumn')}</th></tr></thead>
           <tbody>
             {report.coverage.map(item => (
               <tr key={item.material} data-material={item.material} data-coverage-status={item.status.state}>
@@ -978,17 +992,17 @@ function GGUFInspection({
   return (
     <div className="inspection-canvas">
       <ValidationStrip items={[
-        ['读取方式', snapshot.source === 'local' ? '1 次 File.slice()' : '1 次 HTTP 206 Range'],
-        ['实际读取', `${inspection.bytesRead} bytes`],
-        ['模型数据', '0 bytes'],
+        [t('readerReadMethod'), snapshot.source === 'local' ? t('appReadMethodOneLocalSlice') : t('appReadMethodOneHttpRange')],
+        [t('readerActualRead'), t('appActualReadBytesValue', { count: formatNumber(inspection.bytesRead) })],
+        [t('appModelDataLabel'), t('appZeroBytesValue')],
       ]} />
       <MetricGrid items={[
-        ['GGUF 版本', `v${summary.version}`],
-        ['Tensor 数量', summary.tensorCount.toLocaleString()],
-        ['Metadata 数量', summary.metadataCount.toLocaleString()],
-        ['字节序', summary.endianness === 'little' ? 'Little-endian' : 'Big-endian'],
+        [t('appGgufVersionLabel'), `v${summary.version}`],
+        [t('appTensorCountLabel'), formatNumber(summary.tensorCount)],
+        [t('appGgufMetadataCountLabel'), formatNumber(summary.metadataCount)],
+        [t('appEndiannessLabel'), summary.endianness === 'little' ? t('appLittleEndianValue') : t('appBigEndianValue')],
       ]} />
-      <p className="scope-note">v0.1 仅提供 GGUF 基础摘要。完整 metadata/tensor directory 因无法保证 0 bytes tensor 数据而未启用。</p>
+      <p className="scope-note">{t('appGgufScopeNote')}</p>
     </div>
   )
 }
@@ -1002,27 +1016,36 @@ function ImatrixInspection({ inspection }: { inspection: Extract<Inspection, { k
   return (
     <div className="inspection-canvas">
       <ValidationStrip items={[
-        ['读取方式', '受限全文'],
-        ['实际读取', formatBytes(inspection.bytesRead)],
-        ['格式', 'llama.cpp legacy imatrix'],
+        [t('readerReadMethod'), t('readerLimitedFullText')],
+        [t('readerActualRead'), formatBytes(inspection.bytesRead)],
+        [t('appFormatLabel'), t('appLlamaCppLegacyImatrixValue')],
       ]} />
       <MetricGrid items={[
-        ['Entry 数量', inspection.summary.entries.length.toLocaleString()],
-        ['Chunk 数量', inspection.summary.chunkCount?.toLocaleString() ?? '无'],
-        ['数据集', inspection.summary.dataset ?? '无'],
-        ['文件大小', formatBytes(inspection.summary.byteCount)],
+        [t('appEntryCountLabel'), formatNumber(inspection.summary.entries.length)],
+        [t('appChunkCountLabel'), inspection.summary.chunkCount === null ? t('appNoneValue') : formatNumber(inspection.summary.chunkCount)],
+        [t('appDatasetLabel'), inspection.summary.dataset ?? t('appNoneValue')],
+        [t('appFileSizeLabel'), formatBytes(inspection.summary.byteCount)],
       ]} />
       <div className="inspection-toolbar">
-        <label><span>筛选 Entry</span><input value={filter} onChange={event => setFilter(event.target.value)} placeholder="Tensor 名称包含…" /></label>
-        <span>显示 {entries.length.toLocaleString()} / {inspection.summary.entries.length.toLocaleString()}</span>
+        <label>
+          <span>{t('appFilterEntryLabel')}</span>
+          <input value={filter} onChange={event => setFilter(event.target.value)} placeholder={t('appTensorNameContainsPlaceholder')} />
+        </label>
+        <span>{t('readerShowingCount', {
+          visible: formatNumber(entries.length),
+          total: formatNumber(inspection.summary.entries.length),
+        })}</span>
       </div>
       <div className="table-scroll">
-        <table aria-label="Imatrix Entries">
-          <thead><tr><th>Tensor</th><th>Calls</th><th>Values</th><th>Min</th><th>Max</th><th>Mean</th></tr></thead>
+        <table aria-label={t('appImatrixEntriesTableAriaLabel')}>
+          <thead><tr>
+            <th>{t('appTensorColumn')}</th><th>{t('appCallsColumn')}</th><th>{t('appValuesColumn')}</th>
+            <th>{t('appMinColumn')}</th><th>{t('appMaxColumn')}</th><th>{t('appMeanColumn')}</th>
+          </tr></thead>
           <tbody>{entries.map(entry => (
             <tr key={entry.name}>
               <td><button className="table-link" type="button" onClick={() => setSelectedName(entry.name)}>{entry.name}</button></td>
-              <td>{entry.callCount.toLocaleString()}</td><td>{entry.valueCount.toLocaleString()}</td>
+              <td>{formatNumber(entry.callCount)}</td><td>{formatNumber(entry.valueCount)}</td>
               <td>{formatFloat(entry.minimum)}</td><td>{formatFloat(entry.maximum)}</td><td>{formatFloat(entry.mean)}</td>
             </tr>
           ))}</tbody>
@@ -1030,10 +1053,12 @@ function ImatrixInspection({ inspection }: { inspection: Extract<Inspection, { k
       </div>
       {selected !== null ? (
         <section className="inspection-section">
-          <h2>选中项 · {selected.name}</h2>
+          <h2>{t('appSelectedItemTitle', { name: selected.name })}</h2>
           <MetricGrid items={[
-            ['Call Count', selected.callCount.toLocaleString()], ['Value Count', selected.valueCount.toLocaleString()],
-            ['Min / Max', `${formatFloat(selected.minimum)} / ${formatFloat(selected.maximum)}`], ['Mean', formatFloat(selected.mean)],
+            [t('appCallCountLabel'), formatNumber(selected.callCount)],
+            [t('appValueCountLabel'), formatNumber(selected.valueCount)],
+            [t('appMinMaxLabel'), `${formatFloat(selected.minimum)} / ${formatFloat(selected.maximum)}`],
+            [t('appMeanLabel'), formatFloat(selected.mean)],
           ]} />
         </section>
       ) : null}
@@ -1043,7 +1068,7 @@ function ImatrixInspection({ inspection }: { inspection: Extract<Inspection, { k
 
 function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot; file: RepositoryFile }) {
   const [view, setView] = useState<'structure' | 'raw' | 'decode' | 'chat'>('structure')
-  const [rawInput, setRawInput] = useState('Hello，世界 👋')
+  const [rawInput, setRawInput] = useState(() => t('appTokenizerRawSample'))
   const [tokenIdInput, setTokenIdInput] = useState('[1, 3, 2]')
   const [chatMessages, setChatMessages] = useState(JSON.stringify([
     { role: 'system', content: 'You are concise.' }, { role: 'user', content: 'Hello' },
@@ -1064,7 +1089,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
   const [independentTemplate, setIndependentTemplate] = useState<string | null>(null)
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
   const [showWhitespace, setShowWhitespace] = useState(true)
-  const [inputCopyLabel, setInputCopyLabel] = useState('复制输入')
+  const [inputCopyLabel, setInputCopyLabel] = useState(() => t('appCopyInputAction'))
   const [comparisonRepositoryInput, setComparisonRepositoryInput] = useState('')
   const [comparisonExternalSnapshot, setComparisonExternalSnapshot] = useState<RepositorySnapshot | null>(null)
   const [comparisonManifestLoading, setComparisonManifestLoading] = useState(false)
@@ -1134,10 +1159,14 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     : null
   const activeRightTemplate = rightCatalog === null ? null : activeChatTemplate(rightCatalog)
   const comparisonSourceLabel = selectedComparisonTarget === null ? null : comparisonExternalSnapshot === null
-    ? `当前仓库 · ${selectedComparisonTarget.file.path}`
+    ? t('appComparisonCurrentRepositorySource', { path: selectedComparisonTarget.file.path })
     : comparisonExternalSnapshot.source === 'huggingface'
       ? `${comparisonExternalSnapshot.modelId} · SHA ${comparisonExternalSnapshot.revision.slice(0, 7)} · ${selectedComparisonTarget.file.path}`
-      : `本地目录 · ${comparisonExternalSnapshot.revision} · ${comparisonExternalSnapshot.name} · ${selectedComparisonTarget.file.path}`
+      : t('appComparisonLocalDirectorySource', {
+        revision: comparisonExternalSnapshot.revision,
+        name: comparisonExternalSnapshot.name,
+        path: selectedComparisonTarget.file.path,
+      })
   const comparisonSummary = comparisonLoaded && result !== null && rightResult !== null
     ? compareTokenizerTokenizations(result, rightResult)
     : null
@@ -1405,7 +1434,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       const next = await loadRepository(input, manifestController.signal)
       if (manifestController.signal.aborted || comparisonManifestController.current !== manifestController) return
       const targets = selectTokenizerComparisonTargets(next)
-      if (targets.length === 0) throw new Error('对照仓库没有可用 tokenizer.json。')
+      if (targets.length === 0) throw new Error(t('appComparisonRepositoryNoTokenizer'))
       setComparisonExternalSnapshot(next)
       setComparisonTargetPath(targets.find(target => target.file.path === 'tokenizer.json')?.file.path
         ?? targets[0]?.file.path ?? null)
@@ -1442,7 +1471,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     try {
       const next = loadLocalDirectory(selection)
       const targets = selectTokenizerComparisonTargets(next)
-      if (targets.length === 0) throw new Error('对照本地目录没有可用 tokenizer.json。')
+      if (targets.length === 0) throw new Error(t('appComparisonLocalDirectoryNoTokenizer'))
       closeExternalSource()
       setComparisonExternalSnapshot(next)
       setComparisonSourceError(null)
@@ -1482,7 +1511,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       comparisonRequestController.current?.abort()
       comparisonRequestController.current = null
       clearRightResult()
-      setRightError('对照来源不可用。')
+      setRightError(t('appComparisonSourceUnavailable'))
       setRightPhase('error')
       return
     }
@@ -1523,7 +1552,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       comparisonRequestController.current?.abort()
       comparisonRequestController.current = null
       clearRightResult()
-      setRightError('对照来源不可用。')
+      setRightError(t('appComparisonSourceUnavailable'))
       setRightPhase('error')
       return
     }
@@ -1568,7 +1597,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       comparisonRequestController.current?.abort()
       comparisonRequestController.current = null
       clearRightResult()
-      setRightError('对照来源不可用。')
+      setRightError(t('appComparisonSourceUnavailable'))
       setRightPhase('error')
       return
     }
@@ -1578,7 +1607,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       comparisonRequestController.current = null
       setRightResult(null)
       setRightChatPreview('')
-      setRightError('对照 Tokenizer 没有可用的 Chat Template。')
+      setRightError(t('appComparisonMissingChatTemplate'))
       setRightPhase('error')
       return
     }
@@ -1622,7 +1651,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
   function changeRawInput(value: string) {
     resetResult()
     setRawInput(value)
-    setInputCopyLabel('复制输入')
+    setInputCopyLabel(t('appCopyInputAction'))
   }
 
   function changeTokenIdInput(value: string) {
@@ -1652,7 +1681,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setChatPreview('')
     setError(null)
     try {
-      if (activeTemplate === null) throw new Error(templateLoading ? '正在读取独立 Chat Template。' : '模板不可用。')
+      if (activeTemplate === null) throw new Error(templateLoading ? t('appChatTemplateLoading') : t('appChatTemplateUnavailable'))
       const chatContext = buildChatContext(
         JSON.parse(chatMessages),
         JSON.parse(chatTools),
@@ -1735,10 +1764,10 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
   const comparisonPanel = comparisonOpen ? (
     <aside className="comparison-side">
       <header>
-        <h2>对照</h2>
+        <h2>{t('comparisonTitle')}</h2>
         {rightCatalog !== null ? (
           <select
-            aria-label="对照 Chat Template"
+            aria-label={t('comparisonChatTemplateAria')}
             value={rightCatalog.activeId ?? ''}
             onChange={event => changeComparisonTemplate(event.target.value)}
           >
@@ -1749,25 +1778,25 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
         ) : null}
       </header>
       <div className="comparison-status" aria-live="polite">
-        {rightStructure === null && rightStructureError === null ? '正在加载对照 Tokenizer…' : null}
-        {rightTemplateLoading ? '正在读取对照 chat_template.jinja…' : null}
+        {rightStructure === null && rightStructureError === null ? t('comparisonLoadingTokenizer') : null}
+        {rightTemplateLoading ? t('comparisonLoadingTemplate') : null}
         {comparisonSummary !== null ? (
-          <section className="inspection-section" aria-label="Tokenizer 对照摘要">
-            <h2>对照摘要</h2>
+          <section className="inspection-section" aria-label={t('comparisonSummaryAria')}>
+            <h2>{t('comparisonSummaryTitle')}</h2>
             <dl>
-              <div><dt>Left / Right Count</dt><dd>{comparisonSummary.leftCount.toLocaleString()} / {comparisonSummary.rightCount.toLocaleString()}</dd></div>
-              <div><dt>Delta</dt><dd>{comparisonSummary.countDelta >= 0 ? '+' : ''}{comparisonSummary.countDelta.toLocaleString()}</dd></div>
-              <div><dt>ID 序列</dt><dd>{comparisonSummary.idsMatch ? '相同' : '不同'}</dd></div>
-              <div><dt>First Difference（zero-based）</dt><dd>{comparisonSummary.firstDifference === null ? '—' : `#${comparisonSummary.firstDifference.index} · ${comparisonSummary.firstDifference.leftId ?? '—'} / ${comparisonSummary.firstDifference.rightId ?? '—'}`}</dd></div>
+              <div><dt>{t('comparisonLeftRightCountLabel')}</dt><dd>{formatNumber(comparisonSummary.leftCount)} / {formatNumber(comparisonSummary.rightCount)}</dd></div>
+              <div><dt>{t('comparisonDeltaLabel')}</dt><dd>{formatNumber(comparisonSummary.countDelta, { signDisplay: 'always' })}</dd></div>
+              <div><dt>{t('comparisonIdSequenceLabel')}</dt><dd>{comparisonSummary.idsMatch ? t('comparisonIdsSame') : t('comparisonIdsDifferent')}</dd></div>
+              <div><dt>{t('comparisonFirstDifferenceLabel')}</dt><dd>{comparisonSummary.firstDifference === null ? t('comparisonEmDashValue') : `#${formatNumber(comparisonSummary.firstDifference.index)} · ${comparisonSummary.firstDifference.leftId ?? t('comparisonEmDashValue')} / ${comparisonSummary.firstDifference.rightId ?? t('comparisonEmDashValue')}`}</dd></div>
               {comparisonSummary.leftTemplateOverhead !== null && comparisonSummary.rightTemplateOverhead !== null ? (
-                <div><dt>模板开销（左 / 右）</dt><dd>{formatTemplateOverhead(comparisonSummary.leftTemplateOverhead)} / {formatTemplateOverhead(comparisonSummary.rightTemplateOverhead)}</dd></div>
+                <div><dt>{t('comparisonTemplateOverheadLabel')}</dt><dd>{formatTemplateOverhead(comparisonSummary.leftTemplateOverhead)} / {formatTemplateOverhead(comparisonSummary.rightTemplateOverhead)}</dd></div>
               ) : null}
             </dl>
           </section>
         ) : null}
-        <section className="inspection-section" aria-label="Tokenizer 词表差集统计">
-          <h2>词表差集</h2>
-          <div role="group" aria-label="词表差集范围">
+        <section className="inspection-section" aria-label={t('comparisonVocabularyDiffStatsAria')}>
+          <h2>{t('comparisonVocabularyDiffTitle')}</h2>
+          <div role="group" aria-label={t('comparisonVocabularyDiffScopeAria')}>
             {comparisonDiffScopes.map(scope => (
               <button
                 key={scope}
@@ -1775,29 +1804,29 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
                 aria-pressed={diffScope === scope}
                 disabled={diffCounts === null}
                 onClick={() => setDiffScope(scope)}
-              >{scope} · {diffCounts?.[`${scope}Count` as const].toLocaleString() ?? '—'}</button>
+              >{t('comparisonVocabularyDiffScopeButton', { scope, count: diffCounts === null ? t('comparisonEmDashValue') : formatNumber(diffCounts[`${scope}Count` as const]) })}</button>
             ))}
           </div>
           <label className="comparison-search">
-            <span>搜索</span>
+            <span>{t('readerSearchFieldsAndContent')}</span>
             <input
-              aria-label="对照词表搜索"
+              aria-label={t('comparisonVocabularySearchAria')}
               value={diffQuery}
               onChange={event => setDiffQuery(event.target.value)}
-              placeholder="包含匹配…"
+              placeholder={t('comparisonVocabularySearchPlaceholder')}
             />
           </label>
           <span aria-live="polite">
-            {diffStatus === 'waiting' || diffStatus === 'preparing' ? '正在准备差集索引…'
-              : diffStatus === 'searching' ? '正在搜索…'
-              : diffStatus === 'error' ? '差集不可用'
-              : `显示 ${diffPage.length.toLocaleString()} / ${diffTotal.toLocaleString()}`}
+            {diffStatus === 'waiting' || diffStatus === 'preparing' ? t('comparisonPreparingDiffIndex')
+              : diffStatus === 'searching' ? t('comparisonSearchingDiff')
+              : diffStatus === 'error' ? t('comparisonDiffUnavailable')
+              : t('readerShowingCount', { visible: formatNumber(diffPage.length), total: formatNumber(diffTotal) })}
           </span>
           {diffError !== null ? <InlineError>{diffError}</InlineError> : null}
           {diffStatus === 'ready' ? (
             <div className="table-scroll comparison-diff-table">
-              <table aria-label="Tokenizer 词表差集">
-                <thead><tr><th>Token Piece</th></tr></thead>
+              <table aria-label={t('comparisonVocabularyDiffTableAria')}>
+                <thead><tr><th>{t('comparisonTokenPieceColumn')}</th></tr></thead>
                 <tbody>{diffPage.map(piece => <tr key={piece}><td>{piece}</td></tr>)}</tbody>
               </table>
             </div>
@@ -1806,14 +1835,14 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       </div>
       {rightStructureError !== null ? <InlineError>{rightStructureError}</InlineError> : null}
       <TokenizerResultView
-        heading="对照 Tokenizer 结果"
+        heading={t('comparisonTokenizerResultHeading')}
         phase={rightPhase}
         error={rightError}
         result={rightResult}
         authoritativeInput={rightChatPreview}
         showWhitespace={showWhitespace}
         setShowWhitespace={setShowWhitespace}
-        tableLabel="对照 Tokenizer Tokens"
+        tableLabel={t('comparisonTokenizerTokensTableLabel')}
       />
     </aside>
   ) : null
@@ -1823,13 +1852,13 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       <div className="comparison-toolbar">
         {comparisonOpen ? null : (
           <button className="primary-button" type="button" onClick={openComparison} disabled={comparisonTargets.length === 0}>
-            打开对照
+            {t('comparisonOpenAction')}
           </button>
         )}
         <label className="comparison-target">
-          <span>对照 Tokenizer</span>
+          <span>{t('comparisonTokenizerLabel')}</span>
           <select
-            aria-label="对照 Tokenizer"
+            aria-label={t('comparisonTokenizerLabel')}
             value={selectedComparisonTarget?.file.path ?? ''}
             disabled={comparisonManifestLoading || comparisonTargets.length === 0}
             onChange={event => setComparisonTargetPath(event.target.value)}
@@ -1843,42 +1872,42 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
           <span className="comparison-source">{comparisonSourceLabel}</span>
         ) : null}
         <details className="comparison-repository">
-          <summary>另一公开 Hugging Face…</summary>
+          <summary>{t('comparisonOtherPublicRepositoryAction')}</summary>
           <form onSubmit={loadComparisonRepository}>
             <label>
-              <span>对照 Hugging Face 仓库</span>
+              <span>{t('comparisonRepositoryLabel')}</span>
               <input
                 value={comparisonRepositoryInput}
-                placeholder="owner/model 或 Hugging Face URL"
+                placeholder={t('appRepositoryPlaceholder')}
                 onChange={event => setComparisonRepositoryInput(event.target.value)}
               />
             </label>
             <div className="comparison-source-actions">
-              <button className="primary-button" type="submit">加载对照</button>
+              <button className="primary-button" type="submit">{t('comparisonLoadAction')}</button>
               {comparisonManifestLoading ? (
                 <>
-                  <span aria-live="polite">正在读取对照仓库清单…</span>
-                  <button type="button" onClick={closeComparison}>取消加载</button>
+                  <span aria-live="polite">{t('comparisonRepositoryLoadingStatus')}</span>
+                  <button type="button" onClick={closeComparison}>{t('comparisonCancelLoadAction')}</button>
                 </>
               ) : null}
             </div>
             {comparisonSourceError !== null ? <InlineError>{comparisonSourceError}</InlineError> : null}
           </form>
           <label className="comparison-directory-label">
-            <span>选择第二个本地目录</span>
+            <span>{t('comparisonSecondLocalDirectoryLabel')}</span>
             <input type="file" multiple onChange={loadComparisonLocalDirectory} {...{ webkitdirectory: '' }} />
           </label>
         </details>
         {comparisonOpen ? (
-          <button type="button" aria-label="关闭 Tokenizer 对照" onClick={closeComparison}>关闭对照</button>
+          <button type="button" aria-label={t('comparisonCloseAriaLabel')} onClick={closeComparison}>{t('comparisonCloseAction')}</button>
         ) : null}
-        {comparisonTargets.length === 0 ? <span>当前快照没有可用 tokenizer.json 对照目标。</span> : null}
+        {comparisonTargets.length === 0 ? <span>{t('comparisonNoTargetsStatus')}</span> : null}
       </div>
-      <div className="tokenizer-tabs" role="tablist" aria-label="Tokenizer 视图">
-        <button type="button" role="tab" aria-selected={view === 'structure'} onClick={() => changeView('structure')}>结构与词表</button>
-        <button type="button" role="tab" aria-selected={view === 'raw'} onClick={() => changeView('raw')}>Raw 工作台</button>
-        <button type="button" role="tab" aria-selected={view === 'decode'} onClick={() => changeView('decode')}>Token IDs 工作台</button>
-        <button type="button" role="tab" aria-selected={view === 'chat'} onClick={() => changeView('chat')}>Chat 工作台</button>
+      <div className="tokenizer-tabs" role="tablist" aria-label={t('tokenizerViewsAriaLabel')}>
+        <button type="button" role="tab" aria-selected={view === 'structure'} onClick={() => changeView('structure')}>{t('tokenizerStructureTab')}</button>
+        <button type="button" role="tab" aria-selected={view === 'raw'} onClick={() => changeView('raw')}>{t('tokenizerRawTab')}</button>
+        <button type="button" role="tab" aria-selected={view === 'decode'} onClick={() => changeView('decode')}>{t('tokenizerDecodeTab')}</button>
+        <button type="button" role="tab" aria-selected={view === 'chat'} onClick={() => changeView('chat')}>{t('tokenizerChatTab')}</button>
       </div>
       {view === 'structure' ? (
         <TokenizerStructureInspection
@@ -1893,27 +1922,27 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       {view === 'decode' ? (
         <div className={`tokenizer-layout ${comparisonOpen ? 'comparison-open' : ''}`}>
           <section className="input-panel">
-            <header><h2>Token IDs</h2><span>最多 64 KiB</span></header>
+            <header><h2>{t('tokenIdsLabel')}</h2><span>{t('inputMaxSizeStatus')}</span></header>
             <textarea
               value={tokenIdInput}
               onChange={event => changeTokenIdInput(event.target.value)}
-              aria-label="Token IDs"
-              placeholder="逗号、空白、换行或 JSON 数组，例如 [1,3,2]"
+              aria-label={t('tokenIdsLabel')}
+              placeholder={t('tokenIdsInputPlaceholder')}
             />
             <footer>
-              <span>{new TextEncoder().encode(tokenIdInput).byteLength.toLocaleString()} bytes · 解析失败不会请求 Worker</span>
-              <button className="primary-button" type="button" onClick={() => void runDecode()} disabled={phase === 'loading'}>解码 ID</button>
+              <span>{t('tokenIdsByteStatus', { count: formatNumber(new TextEncoder().encode(tokenIdInput).byteLength) })}</span>
+              <button className="primary-button" type="button" onClick={() => void runDecode()} disabled={phase === 'loading'}>{t('tokenIdsDecodeAction')}</button>
             </footer>
           </section>
           <TokenizerResultView
-            heading={comparisonOpen ? '主 Tokenizer 结果' : undefined}
+            heading={comparisonOpen ? t('mainTokenizerResultHeading') : undefined}
             phase={phase}
             error={error}
             result={result}
             authoritativeInput={tokenIdInput}
             showWhitespace={showWhitespace}
             setShowWhitespace={setShowWhitespace}
-            tableLabel={comparisonOpen ? '主 Tokenizer Tokens' : undefined}
+            tableLabel={comparisonOpen ? t('mainTokenizerTokensTableLabel') : undefined}
           />
           {comparisonPanel}
         </div>
@@ -1921,24 +1950,24 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       {view === 'raw' ? (
         <div className={`tokenizer-layout ${comparisonOpen ? 'comparison-open' : ''}`}>
           <section className="input-panel">
-            <header><h2>Raw 输入</h2><button type="button" onClick={async () => {
-              try { await navigator.clipboard.writeText(rawInput); setInputCopyLabel('已复制') } catch { setInputCopyLabel('复制失败') }
-            }}>{inputCopyLabel}</button><button type="button" onClick={() => changeRawInput('')}>清空</button><span>最多 64 KiB</span></header>
-            <textarea value={rawInput} onChange={event => changeRawInput(event.target.value)} aria-label="Raw 输入" />
+            <header><h2>{t('rawInputLabel')}</h2><button type="button" onClick={async () => {
+              try { await navigator.clipboard.writeText(rawInput); setInputCopyLabel(t('templateCopiedState')) } catch { setInputCopyLabel(t('templateCopyFailedState')) }
+            }}>{inputCopyLabel}</button><button type="button" onClick={() => changeRawInput('')}>{t('rawInputClearAction')}</button><span>{t('inputMaxSizeStatus')}</span></header>
+            <textarea value={rawInput} onChange={event => changeRawInput(event.target.value)} aria-label={t('rawInputLabel')} />
             <footer>
-              <span>{new TextEncoder().encode(rawInput).byteLength.toLocaleString()} bytes · 自动等待 225 ms</span>
-              <button className="primary-button" type="button" onClick={() => void runRaw()} disabled={phase === 'loading' || rawInput.length === 0}>立即分词</button>
+              <span>{t('rawInputByteStatus', { count: formatNumber(new TextEncoder().encode(rawInput).byteLength) })}</span>
+              <button className="primary-button" type="button" onClick={() => void runRaw()} disabled={phase === 'loading' || rawInput.length === 0}>{t('rawInputTokenizeAction')}</button>
             </footer>
           </section>
           <TokenizerResultView
-            heading={comparisonOpen ? '主 Tokenizer 结果' : undefined}
+            heading={comparisonOpen ? t('mainTokenizerResultHeading') : undefined}
             phase={phase}
             error={error}
             result={result}
             authoritativeInput={rawInput}
             showWhitespace={showWhitespace}
             setShowWhitespace={setShowWhitespace}
-            tableLabel={comparisonOpen ? '主 Tokenizer Tokens' : undefined}
+            tableLabel={comparisonOpen ? t('mainTokenizerTokensTableLabel') : undefined}
           />
           {comparisonPanel}
         </div>
@@ -1947,10 +1976,10 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
         <div className={`tokenizer-layout ${comparisonOpen ? 'comparison-open' : ''}`}>
           <section className="input-panel chat-panel">
             <header>
-              <h2>Chat Messages</h2>
+              <h2>{t('chatMessagesLabel')}</h2>
               {chatCatalog !== null && chatCatalog.entries.length > 1 ? (
                 <select
-                  aria-label="Chat Template"
+                  aria-label={t('chatTemplateLabel')}
                   value={chatCatalog.activeId ?? ''}
                   onChange={event => changeChatTemplate(event.target.value)}
                 >
@@ -1960,8 +1989,8 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
                 </select>
               ) : null}
               {templateLoading
-                ? <span>正在读取 chat_template.jinja</span>
-                : activeTemplate === null ? <span>模板不可用</span> : null}
+                ? <span>{t('chatTemplateLoadingStatus')}</span>
+                : activeTemplate === null ? <span>{t('chatTemplateUnavailableStatus')}</span> : null}
               {!templateLoading && chatCatalog !== null && chatCatalog.entries.length === 1 ? (
                 <span className="chat-template-badge">{templateLabel(chatCatalog.entries[0])}</span>
               ) : null}
@@ -1969,19 +1998,19 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
             <textarea value={chatMessages} onChange={event => {
               resetResult()
               setChatMessages(event.target.value)
-            }} aria-label="Chat Messages" />
+            }} aria-label={t('chatMessagesLabel')} />
             <details className="chat-context-details">
-              <summary>Tools 与 Variables</summary>
-              <label>Tools<textarea aria-label="Chat Tools" value={chatTools} onChange={event => {
+              <summary>{t('chatToolsAndVariablesLabel')}</summary>
+              <label>{t('templateToolsLabel')}<textarea aria-label={t('chatToolsInputAriaLabel')} value={chatTools} onChange={event => {
                 resetResult()
                 setChatTools(event.target.value)
               }} /></label>
-              <label>Typed Variables<textarea aria-label="Chat Typed Variables" value={chatVariables} onChange={event => {
+              <label>{t('templateVariablesLabel')}<textarea aria-label={t('chatVariablesInputAriaLabel')} value={chatVariables} onChange={event => {
                 resetResult()
                 setChatVariables(event.target.value)
               }} /></label>
             </details>
-            <pre className="chat-preview" aria-label="Chat 权威输入">{chatPreview || '渲染后，这里显示唯一权威编码输入。'}</pre>
+            <pre className="chat-preview" aria-label={t('chatAuthoritativeInputLabel')}>{chatPreview || t('chatPreviewEmptyStatus')}</pre>
             <footer>
               <label><input type="checkbox" checked={includeTools} onChange={event => {
                 resetResult()
@@ -1991,18 +2020,18 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
                 resetResult()
                 setAddGenerationPrompt(event.target.checked)
               }} />add_generation_prompt</label>
-              <button className="primary-button" type="button" onClick={() => void runChat()} disabled={phase === 'loading' || activeTemplate === null}>渲染并分词</button>
+              <button className="primary-button" type="button" onClick={() => void runChat()} disabled={phase === 'loading' || activeTemplate === null}>{t('chatRenderAndTokenizeAction')}</button>
             </footer>
           </section>
           <TokenizerResultView
-            heading={comparisonOpen ? '主 Tokenizer 结果' : undefined}
+            heading={comparisonOpen ? t('mainTokenizerResultHeading') : undefined}
             phase={phase}
             error={error}
             result={result}
             authoritativeInput={chatPreview}
             showWhitespace={showWhitespace}
             setShowWhitespace={setShowWhitespace}
-            tableLabel={comparisonOpen ? '主 Tokenizer Tokens' : undefined}
+            tableLabel={comparisonOpen ? t('mainTokenizerTokensTableLabel') : undefined}
           />
           {comparisonPanel}
         </div>
@@ -2073,61 +2102,61 @@ function TokenizerStructureInspection({
   }
 
   if (error !== null) return <div className="inspection-canvas"><InlineError>{error}</InlineError></div>
-  if (structure === null) return <div className="loading-state" role="status"><span className="spinner" /><h2>正在 Worker 中分析 Tokenizer…</h2></div>
+  if (structure === null) return <div className="loading-state" role="status"><span className="spinner" /><h2>{t('tokenizerStructureLoadingStatus')}</h2></div>
   const vocabulary = structure.vocabulary
   const longest = vocabulary?.longestTokens.slice(0, showsTop50 ? 50 : 20) ?? []
   const specialTokens = structure.addedTokens.filter(token => token.special)
   return (
     <div className="inspection-canvas tokenizer-structure">
       <ValidationStrip items={[
-        ['运行位置', 'Web Worker'],
-        ['Tokenizer Config', configPresent ? '同目录' : '缺失 · Raw 不支持'],
-        ['Added Token', (structure.addedTokenCount ?? 0).toLocaleString()],
+        [t('tokenizerStructureRunLocationLabel'), t('tokenizerStructureWebWorkerValue')],
+        [t('tokenizerStructureConfigLabel'), configPresent ? t('tokenizerStructureConfigSameDirectoryValue') : t('tokenizerStructureConfigMissingRawUnsupportedValue')],
+        [t('tokenizerStructureAddedTokenLabel'), formatNumber(structure.addedTokenCount ?? 0)],
       ]} />
       {specialTokens.length > 0 ? (
         <section className="inspection-section">
-          <h2>Special Added Tokens</h2>
+          <h2>{t('tokenizerStructureSpecialAddedTokensLabel')}</h2>
           <DataTable
-            label="Special Added Tokens"
-            columns={['ID', 'Token']}
-            rows={specialTokens.map(token => [token.id === null ? '—' : token.id.toLocaleString(), token.content])}
+            label={t('tokenizerStructureSpecialAddedTokensLabel')}
+            columns={[t('tokenizerStructureIdColumn'), t('tokenizerStructureTokenColumn')]}
+            rows={specialTokens.map(token => [token.id === null ? t('comparisonEmDashValue') : formatNumber(token.id), token.content])}
           />
         </section>
       ) : null}
       <MetricGrid items={[
-        ['格式版本', structure.version ?? '未知'],
-        ['Model Type', structure.modelType ?? '未知'],
-        ['基础词表', structure.vocabCount?.toLocaleString() ?? '未知'],
-        ['Merge 数量', structure.mergeCount?.toLocaleString() ?? '不适用'],
+        [t('tokenizerStructureFormatVersionLabel'), structure.version ?? t('tokenizerStructureUnknownValue')],
+        [t('tokenizerStructureModelTypeLabel'), structure.modelType ?? t('tokenizerStructureUnknownValue')],
+        [t('tokenizerStructureBaseVocabularyLabel'), structure.vocabCount === null ? t('tokenizerStructureUnknownValue') : formatNumber(structure.vocabCount)],
+        [t('tokenizerStructureMergeCountLabel'), structure.mergeCount === null ? t('tokenizerStructureNotApplicableValue') : formatNumber(structure.mergeCount)],
       ]} />
       <section className="inspection-section">
-        <h2>根字段</h2>
-        <DataTable label="Tokenizer 根字段" columns={['Field', 'Detail']} rows={structure.fields.map(field => [field.name, field.detail])} />
+        <h2>{t('jsonRootFieldCount')}</h2>
+        <DataTable label={t('tokenizerStructureRootFieldsTableLabel')} columns={[t('readerFieldColumn'), t('tokenizerStructureDetailColumn')]} rows={structure.fields.map(field => [field.name, field.detail])} />
       </section>
       {vocabulary === null && !(structure.vocabCount === 0 && structure.vocabularyError === null)
-        ? <InlineError>{structure.vocabularyError ?? '词表不可分析。'}</InlineError>
+        ? <InlineError>{structure.vocabularyError ?? t('tokenizerStructureVocabularyUnavailable')}</InlineError>
         : (
         <>
-          {vocabulary === null ? <p className="scope-note">model.vocab 为空，没有可分析的 Token。</p> : (
+          {vocabulary === null ? <p className="scope-note">{t('tokenizerStructureVocabularyEmpty')}</p> : (
             <>
           <MetricGrid items={[
-            ['平均标量长度', vocabulary.averageScalarLength.toLocaleString('zh-CN', { maximumFractionDigits: 2 })],
-            ['P50 / P90', `${vocabulary.p50ScalarLength} / ${vocabulary.p90ScalarLength}`],
-            ['P95 / P99', `${vocabulary.p95ScalarLength} / ${vocabulary.p99ScalarLength}`],
-            ['最大标量长度', vocabulary.maximumScalarLength.toLocaleString()],
+            [t('tokenizerStructureAverageScalarLengthLabel'), formatNumber(vocabulary.averageScalarLength, { maximumFractionDigits: 2 })],
+            [t('tokenizerStructureP50P90Label'), `${vocabulary.p50ScalarLength} / ${vocabulary.p90ScalarLength}`],
+            [t('tokenizerStructureP95P99Label'), `${vocabulary.p95ScalarLength} / ${vocabulary.p99ScalarLength}`],
+            [t('tokenizerStructureMaximumScalarLengthLabel'), formatNumber(vocabulary.maximumScalarLength)],
           ]} />
           <section className="inspection-section">
-            <h2>长度分布（Unicode 标量）</h2>
-            <DataTable label="Tokenizer 长度分布" columns={['长度', 'Token 数']} rows={vocabulary.buckets.map(bucket => [bucket.label, bucket.count.toLocaleString()])} />
+            <h2>{t('tokenizerStructureLengthDistributionLabel')}</h2>
+            <DataTable label={t('tokenizerStructureLengthDistributionTableLabel')} columns={[t('tokenizerStructureLengthColumn'), t('tokenizerStructureTokenCountColumn')]} rows={vocabulary.buckets.map(bucket => [bucket.label, formatNumber(bucket.count)])} />
           </section>
           <section className="inspection-section">
-            <h2>最长 Token</h2>
-            <DataTable label="最长 Token" columns={['ID', 'Token', 'Unicode 标量']} rows={longest.map(entry => [
-              entry.tokenId.toLocaleString(), visiblePiece(entry.token), entry.scalarLength.toLocaleString(),
+            <h2>{t('tokenizerStructureLongestTokensLabel')}</h2>
+            <DataTable label={t('tokenizerStructureLongestTokensLabel')} columns={[t('tokenizerStructureIdColumn'), t('tokenizerStructureTokenColumn'), t('tokenizerStructureUnicodeScalarColumn')]} rows={longest.map(entry => [
+              formatNumber(entry.tokenId), visiblePiece(entry.token), formatNumber(entry.scalarLength),
             ])} />
             {vocabulary.longestTokens.length > 20 ? (
               <button className="load-more" type="button" onClick={() => setShowsTop50(!showsTop50)}>
-                {showsTop50 ? '收起到 Top 20' : `展开 Top ${vocabulary.longestTokens.length}`}
+                {showsTop50 ? t('tokenizerStructureCollapseTop20Action') : t('tokenizerStructureExpandTopAction', { count: formatNumber(vocabulary.longestTokens.length) })}
               </button>
             ) : null}
           </section>
@@ -2135,28 +2164,28 @@ function TokenizerStructureInspection({
           )}
           <div className="inspection-toolbar">
             <label>
-              <span>词表搜索</span>
+              <span>{t('tokenizerStructureSearchLabel')}</span>
               <input
                 value={searchQuery}
                 onChange={event => void searchVocabulary(event.target.value)}
-                aria-label="词表搜索"
-                placeholder="搜索 token 或十进制 ID"
+                aria-label={t('tokenizerStructureSearchLabel')}
+                placeholder={t('tokenizerStructureSearchPlaceholder')}
               />
             </label>
             <span aria-live="polite">
-              {searchStatus === 'empty' ? '输入 token 或十进制 ID 开始搜索'
-                : searchStatus === 'searching' ? '正在准备词表索引'
-                : searchStatus === 'ready' ? `匹配 ${searchResults.length.toLocaleString()} 条`
-                : '词表搜索失败'}
+              {searchStatus === 'empty' ? t('tokenizerStructureSearchEmptyStatus')
+                : searchStatus === 'searching' ? t('tokenizerStructureSearchPreparingStatus')
+                : searchStatus === 'ready' ? t('tokenizerStructureSearchMatchCountStatus', { count: formatNumber(searchResults.length) })
+                : t('tokenizerStructureSearchFailedStatus')}
             </span>
           </div>
           {searchStatus === 'error' && searchError !== null ? <InlineError>{searchError}</InlineError> : null}
           {searchStatus === 'ready' ? (
             <DataTable
-              label="词表搜索结果"
-              columns={['ID', 'Token', 'Unicode 标量']}
+              label={t('tokenizerStructureSearchResultsTableLabel')}
+              columns={[t('tokenizerStructureIdColumn'), t('tokenizerStructureTokenColumn'), t('tokenizerStructureUnicodeScalarColumn')]}
               rows={searchResults.map(entry => [
-                entry.tokenId.toLocaleString(), visiblePiece(entry.token), Array.from(entry.token).length.toLocaleString(),
+                formatNumber(entry.tokenId), visiblePiece(entry.token), formatNumber(Array.from(entry.token).length),
               ])}
             />
           ) : null}
@@ -2167,7 +2196,7 @@ function TokenizerStructureInspection({
 }
 
 function formatTemplateOverhead(value: number): string {
-  return value < 0 ? '无法拆分' : value.toLocaleString()
+  return value < 0 ? t('tokenizerResultUnableToSplitValue') : formatNumber(value)
 }
 
 function TokenizerResultView({
@@ -2191,17 +2220,17 @@ function TokenizerResultView({
 }) {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [limit, setLimit] = useState(1000)
-  const [copyLabel, setCopyLabel] = useState('复制 ID')
+  const [copyLabel, setCopyLabel] = useState(() => t('tokenizerResultCopyIdAction'))
   useEffect(() => {
     setSelectedIndex(null)
     setLimit(1000)
-    setCopyLabel('复制 ID')
+    setCopyLabel(t('tokenizerResultCopyIdAction'))
   }, [result])
   const decoded = useMemo(() => {
     const values = new Map<number, string>()
     for (const segment of result?.segments ?? []) {
       const display = segment.ids.length > 100
-        ? `合并片段（${segment.ids.length.toLocaleString()} tokens，完整 Decoded 见下方）`
+        ? t('tokenizerResultMergedSegmentDecodedSummary', { count: formatNumber(segment.ids.length) })
         : segment.text
       for (let index = segment.start; index < segment.end; index++) values.set(index, display)
     }
@@ -2212,29 +2241,29 @@ function TokenizerResultView({
   const inputBytes = new TextEncoder().encode(authoritativeInput).byteLength
   return (
     <section className="result-panel" aria-live="polite">
-      <header><h2>{heading ?? (result?.direction === 'decode' ? '由 Token ID 解码' : 'Token 结果')}</h2><label><input type="checkbox" checked={showWhitespace} onChange={event => setShowWhitespace(event.target.checked)} />显示空白符</label></header>
-      {phase === 'idle' ? <div className="result-empty">等待输入或点击运行。</div> : null}
-      {phase === 'loading' ? <div className="result-empty"><span className="spinner" />Web Worker 正在处理 latest-only 请求…</div> : null}
+      <header><h2>{heading ?? (result?.direction === 'decode' ? t('tokenizerResultDecodeHeading') : t('tokenizerResultHeading'))}</h2><label><input type="checkbox" checked={showWhitespace} onChange={event => setShowWhitespace(event.target.checked)} />{t('tokenizerResultShowWhitespaceAction')}</label></header>
+      {phase === 'idle' ? <div className="result-empty">{t('tokenizerResultIdleStatus')}</div> : null}
+      {phase === 'loading' ? <div className="result-empty"><span className="spinner" />{t('tokenizerResultLoadingStatus')}</div> : null}
       {phase === 'error' ? <InlineError>{error}</InlineError> : null}
       {result !== null ? (
         <>
           <ValidationStrip items={[
-            ['运行位置', 'Web Worker'],
-            ['方向', result.direction === 'decode' ? 'decode' : 'encode'],
-            ['Token 数', result.ids.length.toLocaleString()],
+            [t('tokenizerStructureRunLocationLabel'), t('tokenizerStructureWebWorkerValue')],
+            [t('tokenizerResultDirectionLabel'), result.direction === 'decode' ? 'decode' : 'encode'],
+            [t('tokenizerStructureTokenCountColumn'), formatNumber(result.ids.length)],
             ...(result.overhead === null ? [] : [
-              ['正文 Token', result.overhead.contentCount.toLocaleString()],
-              ['模板开销（近似）', result.overhead.templateCount < 0
-                ? '无法拆分'
-                : result.overhead.templateCount.toLocaleString()],
+              [t('tokenizerResultContentTokenLabel'), formatNumber(result.overhead.contentCount)],
+              [t('tokenizerResultApproximateTemplateOverheadLabel'), result.overhead.templateCount < 0
+                ? t('tokenizerResultUnableToSplitValue')
+                : formatNumber(result.overhead.templateCount)],
             ] as Array<[string, string]>),
-            ['Bytes / Token', result.ids.length === 0 ? '0' : (inputBytes / result.ids.length).toLocaleString('zh-CN', { maximumFractionDigits: 2 })],
-            ['映射', result.mapping],
+            [t('tokenizerResultBytesPerTokenLabel'), formatNumber(result.ids.length === 0 ? 0 : inputBytes / result.ids.length, { maximumFractionDigits: 2 })],
+            [t('tokenizerResultMappingLabel'), result.mapping],
           ]} />
           {result.overhead !== null && result.mapping === 'Decoded only' ? (
-            <p className="decoded-text">当前映射是 Decoded only，不能按原文划分角色</p>
+            <p className="decoded-text">{t('tokenizerResultDecodedOnlyWarning', { mapping: result.mapping })}</p>
           ) : null}
-          <h3 className="result-label">Grapheme-safe 片段</h3>
+          <h3 className="result-label">{t('tokenizerResultGraphemeHeading')}</h3>
           <div className="token-pieces">
             {result.segments.map((segment, index) => {
               const role = segmentRole(result, segment)
@@ -2244,47 +2273,57 @@ function TokenizerResultView({
                 className={selectedIndex !== null && selectedIndex >= segment.start && selectedIndex < segment.end ? 'selected' : ''}
                 aria-pressed={selectedIndex !== null && selectedIndex >= segment.start && selectedIndex < segment.end}
                 key={`${segment.start}-${index}`}
-                title={`Token #${segment.start + 1}–${segment.end} · ${segment.ids.length > 100 ? `${segment.ids.length.toLocaleString()} IDs` : `IDs ${segment.ids.join(', ')}`}`}
+                title={segment.ids.length > 100
+                  ? t('tokenizerResultSegmentTitleCount', {
+                    count: formatNumber(segment.ids.length),
+                    end: segment.end,
+                    start: segment.start + 1,
+                  })
+                  : t('tokenizerResultSegmentTitleIds', {
+                    end: segment.end,
+                    ids: segment.ids.join(', '),
+                    start: segment.start + 1,
+                  })}
                 onClick={() => setSelectedIndex(current => current === segment.start ? null : segment.start)}
               >{role !== null ? (
                 <span className={`token-role-badge ${chatRoleClass(role)}`}>
                   {chatRoleLabel(role)}
                 </span>
               ) : null}{segment.ids.length > 100
-                ? `合并片段 · ${segment.ids.length.toLocaleString()} tokens（完整 Decoded 见下方）`
+                ? t('tokenizerResultMergedSegmentChip', { count: formatNumber(segment.ids.length) })
                 : visiblePiece(segment.text, showWhitespace)}</button>
             )})}
           </div>
           {selectedId !== undefined && selectedIndex !== null ? (
             <dl className="selected-token">
-              <div><dt>选中 Token</dt><dd>#{selectedIndex + 1}</dd></div>
-              <div><dt>ID</dt><dd>{selectedId}</dd></div>
-              <div><dt>Role</dt><dd>{chatRoleLabel(selectedRole)}</dd></div>
-              <div><dt>Piece</dt><dd>{visiblePiece(result.pieces[selectedIndex] ?? '', showWhitespace)}</dd></div>
+              <div><dt>{t('tokenizerResultSelectedTokenLabel')}</dt><dd>#{selectedIndex + 1}</dd></div>
+              <div><dt>{t('tokenizerStructureIdColumn')}</dt><dd>{selectedId}</dd></div>
+              <div><dt>{t('tokenizerResultSelectedRoleLabel')}</dt><dd>{chatRoleLabel(selectedRole)}</dd></div>
+              <div><dt>{t('tokenizerResultSelectedPieceLabel')}</dt><dd>{visiblePiece(result.pieces[selectedIndex] ?? '', showWhitespace)}</dd></div>
               <button type="button" onClick={async () => {
-                try { await navigator.clipboard.writeText(String(selectedId)); setCopyLabel('已复制') } catch { setCopyLabel('复制失败') }
+                try { await navigator.clipboard.writeText(String(selectedId)); setCopyLabel(t('templateCopiedState')) } catch { setCopyLabel(t('templateCopyFailedState')) }
               }}>{copyLabel}</button>
             </dl>
           ) : null}
-          <div className="token-id-chips" aria-label="Token ID 选择">
+          <div className="token-id-chips" aria-label={t('tokenizerResultTokenIdChipsAria')}>
             {result.ids.slice(0, limit).map((id, index) => (
               <button
                 type="button"
                 key={`${index}-${id}`}
-                aria-label={`Token ID ${id}，index ${index}`}
+                aria-label={t('tokenizerResultTokenIdChipAria', { id, index })}
                 aria-pressed={selectedIndex === index}
                 onClick={() => setSelectedIndex(current => current === index ? null : index)}
               >{id}</button>
             ))}
           </div>
           <div className="table-scroll">
-            <table aria-label={tableLabel ?? 'Tokenizer Tokens'}>
-              <thead><tr><th>#</th><th>ID</th><th>Special</th><th>Role</th><th>Token Piece</th><th>Decoded</th><th>Mapping</th></tr></thead>
+            <table aria-label={tableLabel ?? t('tokenizerResultTokensTableLabel')}>
+              <thead><tr><th>{t('tokenizerResultPositionColumn')}</th><th>{t('tokenizerStructureIdColumn')}</th><th>{t('tokenizerResultSpecialColumn')}</th><th>{t('tokenizerResultSelectedRoleLabel')}</th><th>{t('comparisonTokenPieceColumn')}</th><th>{t('tokenizerResultDecodedColumn')}</th><th>{t('tokenizerResultMappingColumn')}</th></tr></thead>
               <tbody>{result.ids.slice(0, limit).map((id, index) => (
                 <tr className={selectedIndex === index ? 'selected-token-row' : ''} key={`${index}-${id}`}>
                   <td><button className="table-link" type="button" aria-pressed={selectedIndex === index} onClick={() => setSelectedIndex(current => current === index ? null : index)}>{index + 1}</button></td>
                   <td><button className="table-link" type="button" aria-pressed={selectedIndex === index} onClick={() => setSelectedIndex(current => current === index ? null : index)}>{id}</button></td>
-                  <td>{result.flags[index]?.specialName ?? '—'}</td>
+                  <td>{result.flags[index]?.specialName ?? t('comparisonEmDashValue')}</td>
                   <td>{chatRoleLabel(result.roles?.[index] ?? null)}</td>
                   <td>{visiblePiece(result.pieces[index] ?? '', showWhitespace)}</td>
                   <td>{visiblePiece(decoded.get(index) ?? '', showWhitespace)}</td><td>{result.mapping}</td>
@@ -2292,9 +2331,9 @@ function TokenizerResultView({
               ))}</tbody>
             </table>
           </div>
-          {limit < result.ids.length ? <button className="load-more" type="button" onClick={() => setLimit(Math.min(limit + 1000, result.ids.length))}>再显示 1,000 个 Token</button> : null}
-          <p className="decoded-text">{result.direction === 'decode' ? `Token IDs：${result.input}` : `权威输入：${authoritativeInput}`}</p>
-          <p className="decoded-text">{result.direction === 'decode' ? '解码文本：' : 'Decoded：'}{result.decoded}</p>
+          {limit < result.ids.length ? <button className="load-more" type="button" onClick={() => setLimit(Math.min(limit + 1000, result.ids.length))}>{t('tokenizerResultLoadMoreAction', { count: formatNumber(1000) })}</button> : null}
+          <p className="decoded-text">{result.direction === 'decode' ? t('tokenizerResultTokenIdsPrefix') + result.input : t('tokenizerResultAuthoritativeInputPrefix') + authoritativeInput}</p>
+          <p className="decoded-text">{result.direction === 'decode' ? t('tokenizerResultDecodedTextPrefix') : t('tokenizerResultDecodedPrefix')}{result.decoded}</p>
         </>
       ) : null}
     </section>
@@ -2308,7 +2347,7 @@ function segmentRole(result: Tokenization, segment: { start: number; end: number
 }
 
 function chatRoleLabel(role: ChatTokenRole | null): string {
-  if (role === null) return '—'
+  if (role === null) return t('comparisonEmDashValue')
   return role.kind === 'template' ? 'template' : role.role
 }
 
@@ -2348,7 +2387,7 @@ function DataTable({ columns, rows, label }: { columns: string[]; rows: string[]
 }
 
 function LoadingState({ file }: { file: RepositoryFile }) {
-  return <div className="loading-state" role="status"><span className="spinner" /><h2>正在读取 {file.path.split('/').at(-1)}…</h2><p>切换文件会取消并丢弃旧结果。</p></div>
+  return <div className="loading-state" role="status"><span className="spinner" /><h2>{t('appLoadingFileTitle', { name: file.path.split('/').at(-1) })}</h2><p>{t('appLoadingSwitchHint')}</p></div>
 }
 
 function EmptyState({
@@ -2411,11 +2450,11 @@ function formatName(file: RepositoryFile): string {
 
 function formatBigBytes(bytes: bigint): string {
   const value = Number(bytes)
-  return Number.isSafeInteger(value) ? formatBytes(value) : `${bytes.toLocaleString()} bytes`
+  return Number.isSafeInteger(value) ? formatBytes(value) : t('appActualReadBytesValue', { count: formatNumber(bytes) })
 }
 
 function formatFloat(value: number): string {
-  return value.toLocaleString('zh-CN', { maximumFractionDigits: 6 })
+  return formatNumber(value, { maximumFractionDigits: 6 })
 }
 
 function visiblePiece(piece: string, showWhitespace = true): string {
@@ -2452,10 +2491,10 @@ function isGGUF(file: RepositoryFile): boolean {
 }
 
 function consistencyCoverageText(status: RepositoryConsistencyReport['coverage'][number]['status']): string {
-  if (status.state === 'checked') return '已检查'
-  if (status.state === 'missing') return '缺失'
-  if (status.state === 'skipped') return `跳过：${status.reason}`
-  return `失败：${status.message}`
+  if (status.state === 'checked') return t('consistencyCoverageChecked')
+  if (status.state === 'missing') return t('statusMissing')
+  if (status.state === 'skipped') return t('consistencyCoverageSkipped', { reason: status.reason })
+  return t('consistencyCoverageFailed', { message: status.message })
 }
 
 function readRoute(): { repo: string | null; file: string | null } {

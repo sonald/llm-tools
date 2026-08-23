@@ -1,3 +1,5 @@
+import { translate as t } from '../i18n.ts'
+
 import type { TokenSegment, Tokenization } from './tokenizer.ts'
 
 export type ChatAttributionMessage = {
@@ -22,19 +24,19 @@ export function parseChatMessages(value: unknown): {
   messages: unknown[]
   attribution: ChatAttributionMessage[]
 } {
-  if (!Array.isArray(value)) throw new Error('Messages 必须是 JSON 数组。')
+  if (!Array.isArray(value)) throw new Error(t('messagesMustBeJsonArray'))
   const attribution = value.map((item, index): ChatAttributionMessage => {
     if (!isRecord(item) || typeof item.role !== 'string' || !('content' in item)) {
-      throw new Error(`第 ${index + 1} 项必须是非数组对象，且 role 是字符串、content 存在。`)
+      throw new Error(t('chatMessageInvalidShape', { index: index + 1 }))
     }
     if (typeof item.content === 'string') return { role: item.role, content: item.content, contentKind: 'text' }
     let content: string | undefined
     try {
       content = JSON.stringify(item.content)
     } catch {
-      throw new Error(`第 ${index + 1} 项 content 不可序列化为 JSON。`)
+      throw new Error(t('chatContentNotSerializable', { index: index + 1 }))
     }
-    if (content === undefined) throw new Error(`第 ${index + 1} 项 content 不可序列化为 JSON。`)
+    if (content === undefined) throw new Error(t('chatContentNotSerializable', { index: index + 1 }))
     return { role: item.role, content, contentKind: 'json' }
   })
   return { messages: value, attribution }
@@ -51,10 +53,10 @@ export function buildChatContext(
   attribution: ChatAttributionMessage[]
 } {
   const parsedMessages = parseChatMessages(messages)
-  if (!Array.isArray(tools)) throw new Error('Tools 必须是 JSON 数组。')
-  if (!isRecord(variables)) throw new Error('Typed Variables 必须是 JSON 对象。')
+  if (!Array.isArray(tools)) throw new Error(t('toolsMustBeJsonArray'))
+  if (!isRecord(variables)) throw new Error(t('typedVariablesMustBeJsonObject'))
   for (const key of ['messages', 'tools', 'add_generation_prompt']) {
-    if (key in variables) throw new Error(`Typed Variables 不能使用保留键：${key}。`)
+    if (key in variables) throw new Error(t('typedVariablesReservedKey', { key }))
   }
   const context: Record<string, unknown> = { ...variables, messages: parsedMessages.messages, add_generation_prompt: addGenerationPrompt }
   if (includeTools) context.tools = tools
@@ -74,7 +76,7 @@ export function chatTokenOverhead(
   contentProbe: string,
 ): ChatTokenOverhead {
   for (const count of [totalCount, contentCount]) {
-    if (!Number.isSafeInteger(count) || count < 0) throw new Error('Token overhead count 必须是非负安全整数。')
+    if (!Number.isSafeInteger(count) || count < 0) throw new Error(t('tokenOverheadCountInvalid'))
   }
   return { totalCount, contentCount, templateCount: totalCount - contentCount, isApproximate: true, contentProbe }
 }

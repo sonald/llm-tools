@@ -1,3 +1,5 @@
+import { formatNumber, translate as t } from '../i18n.ts'
+
 export type TensorSummary = {
   name: string
   dtype: string
@@ -50,20 +52,20 @@ const dtypeBits: Record<string, bigint> = {
 }
 
 export function safeTensorsHeaderLength(prefix: ArrayBuffer): number {
-  if (prefix.byteLength !== 8) throw new Error('SafeTensors 长度前缀必须为 8 bytes。')
+  if (prefix.byteLength !== 8) throw new Error(t('safeTensorsPrefixLengthInvalid'))
   const length = new DataView(prefix).getBigUint64(0, true)
   if (length < 2n || length > maximumSafeTensorsHeader || length > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new Error('SafeTensors Header 长度无效或超过安全上限。')
+    throw new Error(t('safeTensorsHeaderLengthInvalid'))
   }
   return Number(length)
 }
 
 export function inspectSafeTensorsHeader(header: ArrayBuffer, expectedDataBytes?: bigint): SafeTensorsSummary {
   const root = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(header)) as unknown
-  if (!isRecord(root)) throw new Error('SafeTensors header 根节点不是对象。')
+  if (!isRecord(root)) throw new Error(t('safeTensorsRootNotObject'))
   const rawMetadata = root.__metadata__
   const metadata = isStringRecord(rawMetadata) ? rawMetadata : rawMetadata === undefined ? {} : null
-  if (metadata === null) throw new Error('SafeTensors __metadata__ 必须是字符串字典。')
+  if (metadata === null) throw new Error(t('safeTensorsMetadataNotStringDictionary'))
 
   const parsed: Array<{ summary: TensorSummary; start: bigint; end: bigint }> = []
   let parameterCount = 0n
@@ -71,28 +73,28 @@ export function inspectSafeTensorsHeader(header: ArrayBuffer, expectedDataBytes?
     if (name === '__metadata__') continue
     if (!isRecord(value) || typeof value.dtype !== 'string' || !isNumberArray(value.shape)
       || !isNumberArray(value.data_offsets) || value.data_offsets.length !== 2) {
-      throw new Error(`SafeTensors tensor ${name} 的结构无效。`)
+      throw new Error(t('safeTensorsTensorShapeInvalid', { name }))
     }
     const bits = dtypeBits[value.dtype]
-    if (bits === undefined) throw new Error(`SafeTensors tensor ${name} 的 dtype ${value.dtype} 不受支持。`)
+    if (bits === undefined) throw new Error(t('safeTensorsDtypeUnsupported', { name, dtype: value.dtype }))
     const [rawStart, rawEnd] = value.data_offsets
     const start = BigInt(rawStart)
     const end = BigInt(rawEnd)
-    if (end < start) throw new Error(`SafeTensors tensor ${name} 的 data_offsets 无效。`)
+    if (end < start) throw new Error(t('safeTensorsTensorOffsetsInvalid', { name }))
     let parameters = 1n
     for (const dimension of value.shape) {
       parameters *= BigInt(dimension)
-      if (parameters > maximumUInt64) throw new Error(`SafeTensors tensor ${name} 的 shape 溢出。`)
+      if (parameters > maximumUInt64) throw new Error(t('safeTensorsShapeOverflow', { name }))
     }
     const bitCount = parameters * bits
-    if (bitCount > maximumUInt64 * 8n) throw new Error(`SafeTensors tensor ${name} 的 shape 溢出。`)
-    if (bitCount % 8n !== 0n) throw new Error(`SafeTensors tensor ${name} 的 dtype 无法按完整字节对齐。`)
+    if (bitCount > maximumUInt64 * 8n) throw new Error(t('safeTensorsShapeOverflow', { name }))
+    if (bitCount % 8n !== 0n) throw new Error(t('safeTensorsByteAlignmentInvalid', { name }))
     const bytes = end - start
     if (bytes !== bitCount / 8n) {
-      throw new Error(`SafeTensors tensor ${name} 的 shape、dtype 与 data_offsets 不匹配。`)
+      throw new Error(t('safeTensorsTensorLayoutMismatch', { name }))
     }
     parameterCount += parameters
-    if (parameterCount > maximumUInt64) throw new Error('SafeTensors 参数汇总值溢出。')
+    if (parameterCount > maximumUInt64) throw new Error(t('safeTensorsParameterTotalOverflow'))
     parsed.push({ summary: {
       name, dtype: value.dtype, shape: value.shape, parameters, bytes, dataStart: start, dataEnd: end,
     }, start, end })
@@ -101,12 +103,15 @@ export function inspectSafeTensorsHeader(header: ArrayBuffer, expectedDataBytes?
   let dataBytes = 0n
   for (const tensor of parsed) {
     if (tensor.start !== dataBytes) {
-      throw new Error(`SafeTensors tensor ${tensor.summary.name} 的 data_offsets 不连续。`)
+      throw new Error(t('safeTensorsTensorOffsetsNonContiguous', { name: tensor.summary.name }))
     }
     dataBytes = tensor.end
   }
   if (expectedDataBytes !== undefined && dataBytes !== expectedDataBytes) {
-    throw new Error(`SafeTensors 数据区大小无效：Header 索引 ${dataBytes} bytes，文件包含 ${expectedDataBytes} bytes。`)
+    throw new Error(t('safeTensorsDataSizeMismatch', {
+      actual: formatNumber(dataBytes),
+      expected: formatNumber(expectedDataBytes),
+    }))
   }
   const tensors = parsed.map(item => item.summary)
   tensors.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
@@ -114,19 +119,19 @@ export function inspectSafeTensorsHeader(header: ArrayBuffer, expectedDataBytes?
 }
 
 export function inspectGGUFPrefix(prefix: ArrayBuffer): GGUFPrefix {
-  if (prefix.byteLength < 16) throw new Error('GGUF 前缀不足。')
+  if (prefix.byteLength < 16) throw new Error(t('ggufPrefixTooShort'))
   const view = new DataView(prefix)
   const magic = new TextDecoder().decode(prefix.slice(0, 4))
-  if (magic !== 'GGUF') throw new Error('GGUF magic 无效。')
+  if (magic !== 'GGUF') throw new Error(t('ggufMagicInvalid'))
   const littleVersion = view.getUint32(4, true)
   const bigVersion = view.getUint32(4, false)
   const endianness = littleVersion >= 1 && littleVersion <= 3 ? 'little' : bigVersion === 3 ? 'big' : null
-  if (endianness === null) throw new Error('不支持的 GGUF 版本。')
+  if (endianness === null) throw new Error(t('ggufVersionUnsupported'))
   const version = endianness === 'little' ? littleVersion : bigVersion
   const little = endianness === 'little'
   const tensorCount = version === 1 ? BigInt(view.getUint32(8, little)) : view.getBigUint64(8, little)
   const metadataCount = version === 1 ? BigInt(view.getUint32(12, little)) : view.getBigUint64(16, little)
-  if (tensorCount > 1_000_000n || metadataCount > 100_000n) throw new Error('GGUF 计数超过安全上限。')
+  if (tensorCount > 1_000_000n || metadataCount > 100_000n) throw new Error(t('ggufCountExceeded'))
   return { version, endianness, tensorCount, metadataCount }
 }
 

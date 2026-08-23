@@ -1,3 +1,5 @@
+import { translate as t } from '../i18n.ts'
+
 export type ChatTemplateSource = 'tokenizerConfig' | 'jinjaFile'
 
 export type ChatTemplateEntry = {
@@ -22,26 +24,26 @@ export function parseChatTemplates(value: unknown): ChatTemplateCatalog {
   else if (isRecord(value)) {
     entries = Object.keys(value).toSorted().map(name => {
       const body = value[name]
-      if (typeof body !== 'string') throw new Error('chat_template 不支持的形态：对象值必须是字符串。')
+      if (typeof body !== 'string') throw new Error(t('chatTemplateUnsupportedObjectValue'))
       return entry('tokenizerConfig', name, body)
     })
   }
   else if (Array.isArray(value)) {
     entries = value.map((item, index) => {
       if (!isRecord(item)) {
-        throw new Error(`chat_template 的第 ${index} 个 named 条目无效：必须是包含 name 和 template 的对象。`)
+        throw new Error(t('chatTemplateNamedItemInvalidShape', { index }))
       }
       if (typeof item.name !== 'string' || item.name === '') {
-        throw new Error(`chat_template 的第 ${index} 个 named 条目无效：name 必须是非空字符串。`)
+        throw new Error(t('chatTemplateNamedItemInvalidName', { index }))
       }
       if (typeof item.template !== 'string') {
-        throw new Error(`chat_template 的第 ${index} 个 named 条目无效：template 必须是字符串。`)
+        throw new Error(t('chatTemplateNamedItemInvalidTemplate', { index }))
       }
       return entry('tokenizerConfig', item.name, item.template)
     })
   }
   else if (value !== undefined) {
-    throw new Error('chat_template 不支持的形态：null、数字或布尔值。支持字符串、对象字典或 named 数组。')
+    throw new Error(t('chatTemplateUnsupportedValue'))
   }
   return build(entries)
 }

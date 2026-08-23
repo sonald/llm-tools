@@ -1,3 +1,5 @@
+import { formatNumber, translate as t } from '../i18n.ts'
+
 export type RepositoryFile = {
   path: string
   size: number | null
@@ -58,7 +60,7 @@ export function normalizeModelId(input: string): string {
     if (modelIdPattern.test(modelId)) return modelId
   }
   if (modelIdPattern.test(trimmed)) return trimmed
-  throw new Error('请输入 owner/model 或公开 Hugging Face 仓库 URL。')
+  throw new Error(t('huggingfaceModelIdRequired'))
 }
 
 export function classifyFile(path: string): FileCategory {
@@ -143,11 +145,11 @@ export function isImatrixPath(path: string): boolean {
 export async function loadRepository(input: string, signal?: AbortSignal): Promise<HuggingFaceSnapshot> {
   const modelId = normalizeModelId(input)
   const response = await fetch(`https://huggingface.co/api/models/${encodePath(modelId)}?blobs=true`, requestOptions(signal))
-  if (!response.ok) throw new Error(`Hugging Face 清单请求失败：HTTP ${response.status}`)
+  if (!response.ok) throw new Error(t('huggingfaceManifestRequestFailed', { status: response.status }))
   const payload = await response.json() as HubResponse
   if (typeof payload.id !== 'string' || normalizeModelId(payload.id).toLocaleLowerCase() !== modelId.toLocaleLowerCase()
     || typeof payload.sha !== 'string' || !revisionPattern.test(payload.sha) || !Array.isArray(payload.siblings)) {
-    throw new Error('Hugging Face 清单格式无效。')
+    throw new Error(t('huggingfaceManifestInvalid'))
   }
   const files = payload.siblings.map((file): RepositoryFile => ({
     path: safeRepositoryPath(file.rfilename),
@@ -161,21 +163,21 @@ export async function loadRepository(input: string, signal?: AbortSignal): Promi
 export function loadLocalDirectory(selection: Iterable<File>): LocalDirectorySnapshot {
   const selected = []
   for (const file of selection) {
-    if (selected.length === 100_000) throw new Error('本地目录超过 100,000 个文件上限。')
+    if (selected.length === 100_000) throw new Error(t('localDirectoryFileLimitExceeded', { limit: "100,000" }))
     selected.push(file)
   }
-  if (selected.length === 0) throw new Error('没有选择本地目录。')
+  if (selected.length === 0) throw new Error(t('localDirectoryNotSelected'))
 
   const relativePaths = selected.map(file => safeRepositoryPath(file.webkitRelativePath))
   const name = relativePaths[0].split('/')[0]
-  if (relativePaths.some(path => !path.startsWith(`${name}/`))) throw new Error('本地目录清单包含多个根目录。')
+  if (relativePaths.some(path => !path.startsWith(`${name}/`))) throw new Error(t('localDirectoryMultipleRoots'))
 
   const localFiles = new Map<string, File>()
   const files = selected.map((blob, index): RepositoryFile => {
     const path = safeRepositoryPath(relativePaths[index].slice(name.length + 1))
-    if (new TextEncoder().encode(path).byteLength > 4096) throw new Error('本地文件路径超过 4 KiB 上限。')
-    if (!Number.isSafeInteger(blob.size) || blob.size < 0) throw new Error('本地文件大小无效。')
-    if (localFiles.has(path)) throw new Error(`本地目录包含重复路径：${path}`)
+    if (new TextEncoder().encode(path).byteLength > 4096) throw new Error(t('localFilePathTooLarge', { limit: '4 KiB' }))
+    if (!Number.isSafeInteger(blob.size) || blob.size < 0) throw new Error(t('localFileSizeInvalid'))
+    if (localFiles.has(path)) throw new Error(t('duplicateRepositoryPath', { path }))
     localFiles.set(path, blob)
     return { path, size: blob.size, hash: null, category: classifyFile(path) }
   })
@@ -198,8 +200,8 @@ export async function readWholeFile(
   signal?: AbortSignal,
   maximumBytes = 32 * 1024 * 1024,
 ): Promise<ArrayBuffer> {
-  if (file.size === null) throw new Error('来源没有提供文件大小，已拒绝全文读取。')
-  if (file.size > maximumBytes) throw new Error(`文件超过 ${formatBytes(maximumBytes)} 阅读上限。`)
+  if (file.size === null) throw new Error(t('fileSizeUnavailableForWholeRead'))
+  if (file.size > maximumBytes) throw new Error(t('wholeFileLimitExceeded', { limit: formatBytes(maximumBytes) }))
   signal?.throwIfAborted()
   const cached = wholeFileCache.get(snapshot)?.get(file.path)
   if (cached !== undefined) {
@@ -208,7 +210,9 @@ export async function readWholeFile(
   }
   const data = await readUncachedWholeFile(snapshot, file, maximumBytes, signal)
   signal?.throwIfAborted()
-  if (data.byteLength !== file.size) throw new Error(`文件响应字节数为 ${data.byteLength}，与声明的 ${file.size} 不一致。`)
+  if (data.byteLength !== file.size) {
+    throw new Error(t('wholeFileSizeMismatch', { actual: data.byteLength, expected: file.size }))
+  }
   const cache = wholeFileCache.get(snapshot) ?? new Map()
   cache.set(file.path, data)
   wholeFileCache.set(snapshot, cache)
@@ -226,11 +230,11 @@ async function readUncachedWholeFile(
     signal?.throwIfAborted()
     const data = await blob.arrayBuffer()
     signal?.throwIfAborted()
-    if (data.byteLength !== file.size) throw new Error('本地文件已变化，请重新选择目录。')
+    if (data.byteLength !== file.size) throw new Error(t('changedLocalFile'))
     return data
   }
   const response = await fetch(contentUrl(snapshot, file), requestOptions(signal))
-  if (!response.ok) throw new Error(`文件请求失败：HTTP ${response.status}`)
+  if (!response.ok) throw new Error(t('fileRequestFailed', { status: response.status }))
   return await readBounded(response, maximumBytes)
 }
 
@@ -242,17 +246,17 @@ export async function readExactRange(
   signal?: AbortSignal,
 ): Promise<ArrayBuffer> {
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start) {
-    throw new Error('Range 无效。')
+    throw new Error(t('rangeInvalid'))
   }
-  if (file.size === null) throw new Error('来源没有提供文件大小，已拒绝 Range 读取。')
-  if (end >= file.size) throw new Error('Range 超过来源声明的文件大小。')
+  if (file.size === null) throw new Error(t('fileSizeUnavailableForRangeRead'))
+  if (end >= file.size) throw new Error(t('rangeExceedsDeclaredSize'))
   const expected = end - start + 1
   if (snapshot.source === 'local') {
     const blob = localFile(snapshot, file)
     signal?.throwIfAborted()
     const data = await blob.slice(start, end + 1).arrayBuffer()
     signal?.throwIfAborted()
-    if (data.byteLength !== expected) throw new Error(`Range 短读：期望 ${expected}，收到 ${data.byteLength} bytes。`)
+    if (data.byteLength !== expected) throw new Error(t('rangeShortRead', { actual: data.byteLength, expected }))
     return data
   }
   const response = await fetch(contentUrl(snapshot, file), {
@@ -262,27 +266,27 @@ export async function readExactRange(
     signal,
   })
   if (response.status !== 206) {
-    throw new Error(`源站未确认 Range（HTTP ${response.status}），已停止以避免完整下载。`)
+    throw new Error(t('rangeNotConfirmed', { status: response.status }))
   }
   const contentRange = response.headers.get('Content-Range')
   if (contentRange !== `bytes ${start}-${end}/${file.size}`) {
-    throw new Error(`源站 Content-Range 无效：${contentRange ?? '缺失'}。`)
+    throw new Error(t('contentRangeInvalid', { contentRange: contentRange ?? t('statusMissing') }))
   }
   const data = await readBounded(response, expected)
-  if (data.byteLength !== expected) throw new Error(`Range 短读：期望 ${expected}，收到 ${data.byteLength} bytes。`)
+  if (data.byteLength !== expected) throw new Error(t('rangeShortRead', { actual: data.byteLength, expected }))
   return data
 }
 
 export function contentUrl(snapshot: HuggingFaceSnapshot, file: RepositoryFile): string {
   const modelId = normalizeModelId(snapshot.modelId)
-  if (!revisionPattern.test(snapshot.revision)) throw new Error('仓库 revision 无效。')
+  if (!revisionPattern.test(snapshot.revision)) throw new Error(t('repositoryRevisionInvalid'))
   return `https://huggingface.co/${encodePath(modelId)}/resolve/${snapshot.revision}/${encodePath(safeRepositoryPath(file.path))}`
 }
 
 export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes.toLocaleString()} bytes`
+  if (bytes < 1024) return `${formatNumber(bytes)} bytes`
   const units = bytes < 1024 ** 2 ? ['KiB', 1024] : bytes < 1024 ** 3 ? ['MiB', 1024 ** 2] : ['GiB', 1024 ** 3]
-  return `${(bytes / Number(units[1])).toLocaleString('zh-CN', { maximumFractionDigits: 1 })} ${units[0]}`
+  return `${formatNumber(bytes / Number(units[1]), { maximumFractionDigits: 1 })} ${units[0]}`
 }
 
 function encodePath(path: string): string {
@@ -294,32 +298,32 @@ function requestOptions(signal?: AbortSignal): RequestInit {
 }
 
 function safeRepositoryPath(path: unknown): string {
-  if (typeof path !== 'string' || path === '' || path.includes('\\')) throw new Error('仓库文件路径无效。')
+  if (typeof path !== 'string' || path === '' || path.includes('\\')) throw new Error(t('invalidRepositoryPath'))
   const parts = path.split('/')
-  if (parts.some(part => part === '' || part === '.' || part === '..')) throw new Error('仓库文件路径无效。')
+  if (parts.some(part => part === '' || part === '.' || part === '..')) throw new Error(t('invalidRepositoryPath'))
   return path
 }
 
 function safeSize(value: unknown): number | null {
   if (value === undefined) return null
-  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new Error('仓库文件大小无效。')
+  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new Error(t('repositoryFileSizeInvalid'))
   return Number(value)
 }
 
 function localFile(snapshot: LocalDirectorySnapshot, file: RepositoryFile): File {
   const blob = snapshot.localFiles.get(file.path)
-  if (blob === undefined || blob.size !== file.size) throw new Error('本地文件已变化，请重新选择目录。')
+  if (blob === undefined || blob.size !== file.size) throw new Error(t('changedLocalFile'))
   return blob
 }
 
 async function readBounded(response: Response, maximumBytes: number): Promise<ArrayBuffer> {
   const declared = response.headers.get('Content-Length')
   if (declared !== null && Number(declared) > maximumBytes) {
-    throw new Error(`响应超过 ${formatBytes(maximumBytes)} 阅读上限。`)
+    throw new Error(t('responseOverLimit', { limit: formatBytes(maximumBytes) }))
   }
   if (response.body === null) {
     const data = await response.arrayBuffer()
-    if (data.byteLength > maximumBytes) throw new Error(`响应超过 ${formatBytes(maximumBytes)} 阅读上限。`)
+    if (data.byteLength > maximumBytes) throw new Error(t('responseOverLimit', { limit: formatBytes(maximumBytes) }))
     return data
   }
   const reader = response.body.getReader()
@@ -331,7 +335,7 @@ async function readBounded(response: Response, maximumBytes: number): Promise<Ar
     total += value.byteLength
     if (total > maximumBytes) {
       await reader.cancel()
-      throw new Error(`响应超过 ${formatBytes(maximumBytes)} 阅读上限。`)
+      throw new Error(t('responseOverLimit', { limit: formatBytes(maximumBytes) }))
     }
     chunks.push(value)
   }

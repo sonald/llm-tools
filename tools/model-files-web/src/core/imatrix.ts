@@ -1,3 +1,5 @@
+import { translate as t } from '../i18n.ts'
+
 export type ImatrixEntry = {
   name: string
   callCount: number
@@ -15,23 +17,23 @@ export type ImatrixSummary = {
 }
 
 export function inspectImatrix(data: ArrayBuffer): ImatrixSummary {
-  if (data.byteLength > 32 * 1024 * 1024) throw new Error('Imatrix 文件超过 32 MiB 上限。')
+  if (data.byteLength > 32 * 1024 * 1024) throw new Error(t('imatrixFileTooLarge'))
   const cursor = new Cursor(data)
   const entryCount = cursor.int32()
-  if (entryCount < 1 || entryCount > 100_000) throw new Error('Imatrix 条目数量无效或超过安全上限。')
+  if (entryCount < 1 || entryCount > 100_000) throw new Error(t('imatrixEntryCountInvalid'))
   const entries: ImatrixEntry[] = []
   const names = new Set<string>()
   let totalValueCount = 0
   for (let index = 0; index < entryCount; index += 1) {
     const nameLength = cursor.int32()
-    if (nameLength < 1 || nameLength > 1024) throw new Error('Imatrix tensor 名称无效或重复。')
+    if (nameLength < 1 || nameLength > 1024) throw new Error(t('imatrixTensorNameInvalid'))
     const name = cursor.text(nameLength)
-    if (names.has(name)) throw new Error('Imatrix tensor 名称无效或重复。')
+    if (names.has(name)) throw new Error(t('imatrixTensorNameInvalid'))
     names.add(name)
     const callCount = cursor.int32()
     const valueCount = cursor.int32()
     if (callCount < 0 || valueCount < 1 || valueCount > 10_000_000 - totalValueCount) {
-      throw new Error(`Imatrix ${name} 的计数无效或超过安全上限。`)
+      throw new Error(t('imatrixCountsInvalid', { name }))
     }
     totalValueCount += valueCount
     let minimum = Number.POSITIVE_INFINITY
@@ -39,7 +41,7 @@ export function inspectImatrix(data: ArrayBuffer): ImatrixSummary {
     let sum = 0
     for (let valueIndex = 0; valueIndex < valueCount; valueIndex += 1) {
       const value = cursor.float32()
-      if (!Number.isFinite(value)) throw new Error(`Imatrix ${name} 包含非有限数值。`)
+      if (!Number.isFinite(value)) throw new Error(t('imatrixNonFiniteValues', { name }))
       minimum = Math.min(minimum, value)
       maximum = Math.max(maximum, value)
       sum += value
@@ -51,12 +53,12 @@ export function inspectImatrix(data: ArrayBuffer): ImatrixSummary {
   let dataset: string | null = null
   if (cursor.remaining > 0) {
     chunkCount = cursor.int32()
-    if (chunkCount < 0) throw new Error('Imatrix chunk 数量无效。')
+    if (chunkCount < 0) throw new Error(t('imatrixChunkCountInvalid'))
     if (cursor.remaining > 0) {
       const length = cursor.int32()
-      if (length < 0 || length > cursor.remaining) throw new Error('Imatrix dataset 长度无效。')
+      if (length < 0 || length > cursor.remaining) throw new Error(t('imatrixDatasetLengthInvalid'))
       dataset = cursor.text(length) || null
-      if (cursor.remaining !== 0) throw new Error('Imatrix dataset 无效。')
+      if (cursor.remaining !== 0) throw new Error(t('imatrixDatasetInvalid'))
     }
   }
   return {
@@ -98,11 +100,13 @@ class Cursor {
     try {
       return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
     } catch {
-      throw new Error('Imatrix tensor 名称或 dataset 不是有效 UTF-8。')
+      throw new Error(t('imatrixUtf8Invalid'))
     }
   }
 
   #require(length: number): void {
-    if (!Number.isSafeInteger(length) || length < 0 || length > this.remaining) throw new Error('Imatrix 文件提前结束。')
+    if (!Number.isSafeInteger(length) || length < 0 || length > this.remaining) {
+      throw new Error(t('imatrixFileTruncated'))
+    }
   }
 }

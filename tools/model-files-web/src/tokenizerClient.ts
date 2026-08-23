@@ -12,6 +12,7 @@ import {
   type VocabularyDiffScope,
 } from './core/tokenizer.ts'
 import type { ChatTemplateCatalog, ChatTemplateEntry, ChatTemplateSource } from './core/chatTemplates.ts'
+import { currentLocale, translate as t } from './i18n.ts'
 import type { TokenizerOperation, TokenizerReply, TokenizerRequest } from './tokenizerProtocol.ts'
 
 type OutgoingTokenizerRequest =
@@ -134,7 +135,7 @@ class ClientTokenizerSession implements TokenizerSession {
     onStartRequest?: () => void,
   ): Promise<TokenizerStructure> {
     this.assertUsable()
-    if (tokenizerData.byteLength > 32 * 1024 * 1024) throw new Error('Tokenizer 数据超过 32 MiB 上限。')
+    if (tokenizerData.byteLength > 32 * 1024 * 1024) throw new Error(t('tokenizerDataTooLarge'))
     signal?.throwIfAborted()
     onStartRequest?.()
     const reply = await this.request({
@@ -142,7 +143,7 @@ class ClientTokenizerSession implements TokenizerSession {
       tokenizerIdentity: '',
       tokenizerData,
     }, [tokenizerData], signal)
-    if (signal?.aborted) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
+    if (signal?.aborted) throw new DOMException(t('tokenizerRequestCancelled'), 'AbortError')
     return validateTokenizerStructure(reply)
   }
 
@@ -158,7 +159,7 @@ class ClientTokenizerSession implements TokenizerSession {
       direction: 'encode', input: text, ids: [], pieces: [], decoded: '', segments: [], mapping: 'Exact', flags: [],
       overhead: null, roles: null,
     }
-    if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new Error('输入超过 64 KiB 上限。')
+    if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new Error(t('textTooLarge'))
     const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
     return validateTokenization(await this.request({
       operation: 'tokenize',
@@ -177,10 +178,10 @@ class ClientTokenizerSession implements TokenizerSession {
     signal?: AbortSignal,
   ): Promise<Tokenization> {
     this.assertUsable()
-    if (new TextEncoder().encode(template).byteLength > 64 * 1024) throw new Error('模板源码超过 64 KiB 上限。')
+    if (new TextEncoder().encode(template).byteLength > 64 * 1024) throw new Error(t('templateSourceTooLarge'))
     const serializedContext = JSON.stringify(context)
     if (serializedContext === undefined || new TextEncoder().encode(serializedContext).byteLength > 64 * 1024) {
-      throw new Error('模板输入超过 64 KiB 上限。')
+      throw new Error(t('templateContextTooLarge'))
     }
     const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
     return validateTokenization(await this.request({
@@ -220,7 +221,7 @@ class ClientTokenizerSession implements TokenizerSession {
     this.assertUsable()
     const term = query.trim()
     if (term.length === 0) return []
-    if (new TextEncoder().encode(term).byteLength > 64 * 1024) throw new Error('词表搜索输入超过 64 KiB 上限。')
+    if (new TextEncoder().encode(term).byteLength > 64 * 1024) throw new Error(t('vocabularySearchInputTooLarge'))
     const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
     return validateTokenizerVocabularySearch(await this.request({
       operation: 'search-vocabulary',
@@ -240,7 +241,7 @@ class ClientTokenizerSession implements TokenizerSession {
     this.assertUsable()
     const { identity } = await this.ensureLoaded(rightSnapshot, rightTokenizerFile, configFile, signal)
     const tokenizerData = await readWholeFile(leftSnapshot, leftTokenizerFile, signal)
-    if (this.loadedIdentity !== identity) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
+    if (this.loadedIdentity !== identity) throw new DOMException(t('tokenizerRequestCancelled'), 'AbortError')
     return validateTokenizerVocabularyDiffCounts(await this.request({
       operation: 'prepare-vocabulary-diff',
       tokenizerIdentity: identity,
@@ -250,10 +251,10 @@ class ClientTokenizerSession implements TokenizerSession {
 
   async searchVocabularyDiff(scope: VocabularyDiffScope, query: string, signal?: AbortSignal) {
     this.assertUsable()
-    if (this.loadedIdentity === '') throw new Error('词表差集尚未准备。')
+    if (this.loadedIdentity === '') throw new Error(t('vocabularyDiffNotPrepared'))
     const term = query.trim()
     if (new TextEncoder().encode(term).byteLength > 64 * 1024) {
-      throw new Error('词表差集搜索输入超过 64 KiB 上限。')
+      throw new Error(t('vocabularyDiffSearchInputTooLarge'))
     }
     return validateTokenizerVocabularyDiffSearch(await this.request({
       operation: 'search-vocabulary-diff',
@@ -273,10 +274,10 @@ class ClientTokenizerSession implements TokenizerSession {
   ): Promise<Tokenization> {
     this.assertUsable()
     if (!Array.isArray(ids) || !ids.every(isSafeNonNegativeInteger)) {
-      throw new Error('Token ID 数组必须是非负 safe integer。')
+      throw new Error(t('tokenIdArrayInvalid'))
     }
     if (new TextEncoder().encode(originalInput).byteLength > 64 * 1024) {
-      throw new Error('Token ID 输入超过 64 KiB 上限。')
+      throw new Error(t('tokenIdInputTooLarge'))
     }
     const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
     return validateTokenization(await this.request({
@@ -289,9 +290,9 @@ class ClientTokenizerSession implements TokenizerSession {
 
   async renderTemplate(source: string, context: Record<string, unknown>): Promise<string> {
     this.assertUsable()
-    if (new TextEncoder().encode(source).byteLength > 64 * 1024) throw new Error('模板源码超过 64 KiB 上限。')
+    if (new TextEncoder().encode(source).byteLength > 64 * 1024) throw new Error(t('templateSourceTooLarge'))
     const serialized = JSON.stringify(context)
-    if (new TextEncoder().encode(serialized).byteLength > 64 * 1024) throw new Error('模板输入超过 64 KiB 上限。')
+    if (new TextEncoder().encode(serialized).byteLength > 64 * 1024) throw new Error(t('templateContextTooLarge'))
     return await this.request({
       operation: 'render-template',
       tokenizerIdentity: '',
@@ -302,23 +303,23 @@ class ClientTokenizerSession implements TokenizerSession {
 
   cancel(): void {
     if (this.isDisposed) return
-    this.invalidate(new DOMException('Tokenizer 请求已取消。', 'AbortError'))
+    this.invalidate(new DOMException(t('tokenizerRequestCancelled'), 'AbortError'))
   }
 
   dispose(): void {
     if (this.isDisposed) return
     this.isDisposed = true
-    this.invalidate(new DOMException('Tokenizer session 已释放。', 'AbortError'))
+    this.invalidate(new DOMException(t('tokenizerSessionReleased'), 'AbortError'))
     if (comparisonSession === this) comparisonSession = null
   }
 
   private assertUsable() {
-    if (this.isDisposed) throw new DOMException('Tokenizer session 已释放。', 'InvalidStateError')
+    if (this.isDisposed) throw new DOMException(t('tokenizerSessionReleased'), 'InvalidStateError')
   }
 
   private assertLoadActive(generation: number, signal: AbortSignal) {
     if (this.generation !== generation || signal.aborted) {
-      throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
+      throw new DOMException(t('tokenizerRequestCancelled'), 'AbortError')
     }
   }
 
@@ -330,7 +331,7 @@ class ClientTokenizerSession implements TokenizerSession {
   ): Promise<LoadedTokenizer> {
     this.assertUsable()
     tokenizerBundleBytes(tokenizerFile, configFile)
-    if (tokenizerFile.size === null || configFile?.size === null) throw new Error('Tokenizer 资源大小无效。')
+    if (tokenizerFile.size === null || configFile?.size === null) throw new Error(t('tokenizerResourceSizeInvalid'))
     const tokenizerSize = tokenizerFile.size
     const configSize = configFile?.size ?? 0
     const identity = tokenizerIdentity(snapshot, tokenizerFile, configFile)
@@ -338,7 +339,7 @@ class ClientTokenizerSession implements TokenizerSession {
       return { identity, structure: this.loadedStructure }
     }
     if (this.loading?.identity === identity) return await awaitWithAbort(this.loading.promise, signal)
-    this.invalidate(new DOMException('Tokenizer 请求已取消。', 'AbortError'))
+    this.invalidate(new DOMException(t('tokenizerRequestCancelled'), 'AbortError'))
     this.generation += 1
     const activeGeneration = this.generation
     const loadController = new AbortController()
@@ -380,7 +381,7 @@ class ClientTokenizerSession implements TokenizerSession {
     signal?: AbortSignal,
   ): Promise<unknown> {
     this.assertUsable()
-    if (signal?.aborted) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
+    if (signal?.aborted) throw new DOMException(t('tokenizerRequestCancelled'), 'AbortError')
     const requestId = ++this.nextId
     let removeAbort: () => void = () => {}
     const expected: PendingTokenizerRequest = {
@@ -401,7 +402,7 @@ class ClientTokenizerSession implements TokenizerSession {
       removeAbort()
       complete(expected)
     }
-    const onAbort = () => settle(entry => entry.reject(new DOMException('Tokenizer 请求已取消。', 'AbortError')))
+    const onAbort = () => settle(entry => entry.reject(new DOMException(t('tokenizerRequestCancelled'), 'AbortError')))
     removeAbort = () => signal?.removeEventListener('abort', onAbort)
     signal?.addEventListener('abort', onAbort, { once: true })
     const activeWorker = this.getWorker()
@@ -427,10 +428,13 @@ class ClientTokenizerSession implements TokenizerSession {
 
   private getWorker(): Worker {
     if (this.worker !== null) return this.worker
-    const worker = new Worker(new URL('./tokenizer.worker.ts', import.meta.url), { type: 'module' })
+    const worker = new Worker(new URL('./tokenizer.worker.ts', import.meta.url), {
+      type: 'module',
+      name: currentLocale(),
+    })
     worker.onmessage = event => this.receiveReply(event.data)
     worker.onerror = event => {
-      this.invalidate(new Error(event.message || 'Tokenizer Worker 失败。'))
+      this.invalidate(new Error(event.message || t('tokenizerWorkerFailed')))
     }
     this.worker = worker
     return worker
@@ -438,7 +442,7 @@ class ClientTokenizerSession implements TokenizerSession {
 
   private receiveReply(data: unknown) {
     if (!isReplyEnvelope(data)) {
-      this.invalidate(new Error('Tokenizer Worker 协议无效。'))
+      this.invalidate(new Error(t('tokenizerWorkerProtocolInvalid')))
       return
     }
     const expected = this.pending.get(data.requestId)
@@ -448,7 +452,7 @@ class ClientTokenizerSession implements TokenizerSession {
       || data.operation !== expected.operation
       || data.generation !== expected.generation
       || data.tokenizerIdentity !== expected.tokenizerIdentity) {
-      this.invalidate(new Error('Tokenizer Worker 协议不一致。'))
+      this.invalidate(new Error(t('tokenizerWorkerProtocolMismatch')))
       return
     }
     this.pending.delete(data.requestId)
@@ -517,7 +521,7 @@ export function validateTokenizerVocabularyDiffCounts(value: unknown): {
 } {
   if (!isUnknownRecord(value) || !sameKeys(value, ['leftOnlyCount', 'rightOnlyCount', 'sharedCount'])
   ) {
-    throw new Error('词表差集统计无效。')
+    throw new Error(t('vocabularyDiffCountsInvalid'))
   }
   const leftOnlyCount = value.leftOnlyCount
   const rightOnlyCount = value.rightOnlyCount
@@ -525,7 +529,7 @@ export function validateTokenizerVocabularyDiffCounts(value: unknown): {
   if (!isSafeNonNegativeInteger(leftOnlyCount)
     || !isSafeNonNegativeInteger(rightOnlyCount)
     || !isSafeNonNegativeInteger(sharedCount)) {
-    throw new Error('词表差集统计无效。')
+    throw new Error(t('vocabularyDiffCountsInvalid'))
   }
   return {
     leftOnlyCount,
@@ -540,7 +544,7 @@ export function validateTokenizerVocabularyDiffSearch(value: unknown): { total: 
     || value.pieces.length > 1_000 || value.total < value.pieces.length
     || !value.pieces.every(piece => typeof piece === 'string')
     || !isSortedCodePoints(value.pieces)) {
-    throw new Error('词表差集结果无效。')
+    throw new Error(t('vocabularyDiffSearchResultInvalid'))
   }
   return { total: value.total, pieces: value.pieces }
 }
@@ -635,7 +639,7 @@ export function cancelTokenizerRequests(): void {
 export const mainTokenizerSession: TokenizerSession = new ClientTokenizerSession()
 
 export function createComparisonTokenizerSession(): TokenizerSession {
-  if (comparisonSession !== null) throw new Error('Tokenizer comparison session 已存在。')
+  if (comparisonSession !== null) throw new Error(t('comparisonSessionExists'))
   comparisonSession = new ClientTokenizerSession()
   return comparisonSession
 }
@@ -652,10 +656,10 @@ function tokenizerIdentity(
 }
 
 async function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (signal?.aborted) throw new DOMException('Tokenizer 请求已取消。', 'AbortError')
+  if (signal?.aborted) throw new DOMException(t('tokenizerRequestCancelled'), 'AbortError')
   if (!signal) return await promise
   return await new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new DOMException('Tokenizer 请求已取消。', 'AbortError'))
+    const onAbort = () => reject(new DOMException(t('tokenizerRequestCancelled'), 'AbortError'))
     signal.addEventListener('abort', onAbort, { once: true })
     promise.then(resolve, reject).finally(() => {
       signal.removeEventListener('abort', onAbort)
@@ -683,10 +687,10 @@ function validateTokenization(value: unknown, requiresOverhead: boolean): Tokeni
     || (value.mapping !== 'Exact' && value.mapping !== 'Decoded only')
     || (value.direction === 'decode' && value.mapping !== 'Decoded only')
     || !Array.isArray(value.flags) || !value.flags.every(isFlag)) {
-    throw new Error('Tokenizer Worker 返回的结果结构无效。')
+    throw new Error(t('tokenizerWorkerReturnedResultInvalid'))
   }
   if (value.pieces.length !== value.ids.length || value.flags.length !== value.ids.length) {
-    throw new Error('Tokenizer Worker 返回的 ID、piece 与 flag 数量不一致。')
+    throw new Error(t('tokenizerWorkerReturnedPieceCountMismatch'))
   }
   const ids = value.ids as number[]
   const roles = validateChatTokenRoles(
@@ -706,7 +710,7 @@ function validateTokenization(value: unknown, requiresOverhead: boolean): Tokeni
       || typeof segment.text !== 'string'
       || segment.ids.length !== segment.end - segment.start
       || segment.ids.some((id, index) => id !== ids[Number(segment.start) + index])) {
-      throw new Error('Tokenizer Worker 返回的片段结构无效。')
+      throw new Error(t('tokenizerWorkerReturnedSegmentInvalid'))
     }
   }
   return { ...(value as Tokenization), overhead, roles }
@@ -716,7 +720,7 @@ export function validateTokenizerStructure(value: unknown): TokenizerStructure {
   if (!hasExactKeys(value, [
     'addedTokenCount', 'addedTokens', 'chatTemplates', 'fields', 'mergeCount',
     'modelType', 'vocabCount', 'version', 'vocabulary', 'vocabularyError',
-  ])) throw new Error('Tokenizer Worker 返回的结构无效。')
+  ])) throw new Error(t('tokenizerWorkerReturnedStructureInvalid'))
   const structure = value as TokenizerStructure
   if (!(structure.version === null || typeof structure.version === 'string')
     || !(structure.modelType === null || typeof structure.modelType === 'string')
@@ -726,16 +730,16 @@ export function validateTokenizerStructure(value: unknown): TokenizerStructure {
     || !Array.isArray(structure.fields)
     || !structure.fields.every(item => hasExactKeys(item, ['detail', 'name'])
       && typeof item.name === 'string' && typeof item.detail === 'string')) {
-    throw new Error('Tokenizer Worker 返回的结构字段无效。')
+    throw new Error(t('tokenizerWorkerReturnedFieldsInvalid'))
   }
   if (!Array.isArray(structure.addedTokens)
     || (structure.addedTokenCount === null ? structure.addedTokens.length !== 0 : structure.addedTokens.length > structure.addedTokenCount)
     || !structure.addedTokens.every(isAddedTokenSummary)) {
-    throw new Error('Tokenizer Worker 返回的 added tokens 摘要无效。')
+    throw new Error(t('tokenizerWorkerReturnedAddedTokensInvalid'))
   }
   if (!(structure.vocabulary === null || isTokenizerVocabularyAnalysis(structure.vocabulary))
     || !(structure.vocabularyError === null || typeof structure.vocabularyError === 'string')) {
-    throw new Error('Tokenizer Worker 返回的词表摘要无效。')
+    throw new Error(t('tokenizerWorkerReturnedVocabularySummaryInvalid'))
   }
   return { ...(value as TokenizerStructure), chatTemplates: validateChatTemplateCatalog(value.chatTemplates) }
 }
@@ -771,14 +775,14 @@ function isTokenizerVocabularyAnalysis(value: unknown): value is TokenizerVocabu
       && typeof item.label === 'string' && isSafeNonNegativeInteger(item.count))
     || !Array.isArray(value.longestTokens) || value.longestTokens.length > 50
     || !value.longestTokens.every(isTokenizerVocabularyEntry)) {
-    throw new Error('Tokenizer Worker 返回的最长 Token 或词表统计无效。')
+    throw new Error(t('tokenizerWorkerReturnedLongestOrStatisticsInvalid'))
   }
   return true
 }
 
 export function validateTokenizerVocabularySearch(value: unknown): TokenizerVocabularyEntry[] {
   if (!Array.isArray(value) || value.length > 1_000 || !value.every(isSearchReplyItem)) {
-    throw new Error('Tokenizer Worker 返回的搜索结果结构无效。')
+    throw new Error(t('tokenizerWorkerReturnedSearchResultInvalid'))
   }
   const result = value.map((item): TokenizerVocabularyEntry => ({
     tokenId: item.tokenId,
@@ -786,7 +790,7 @@ export function validateTokenizerVocabularySearch(value: unknown): TokenizerVoca
     scalarLength: item.scalarLength,
   }))
   for (let index = 1; index < result.length; index += 1) {
-    if (result[index].tokenId <= result[index - 1].tokenId) throw new Error('Tokenizer Worker 返回的搜索结果排序无效。')
+    if (result[index].tokenId <= result[index - 1].tokenId) throw new Error(t('tokenizerWorkerReturnedSearchOrderInvalid'))
   }
   return result
 }
@@ -811,20 +815,20 @@ function validateChatTemplateCatalog(value: unknown): ChatTemplateCatalog {
     || !Array.isArray(value.entries)
     || typeof value.conflict !== 'boolean'
     || !(value.activeId === null || typeof value.activeId === 'string')) {
-    throw new Error('Tokenizer Worker 返回的 Chat Template catalog 结构无效。')
+    throw new Error(t('tokenizerWorkerReturnedChatTemplateCatalogInvalid'))
   }
   const entries = value.entries.map((item): ChatTemplateEntry => {
     if (!isUnknownRecord(item) || typeof item.id !== 'string' || typeof item.name !== 'string'
       || (item.source !== 'tokenizerConfig' && item.source !== 'jinjaFile')
       || typeof item.body !== 'string' || typeof item.usable !== 'boolean'
       || item.id !== `${item.source}:${item.name}` || item.usable !== (item.body.trim().length > 0)) {
-      throw new Error('Tokenizer Worker 返回的 Chat Template entry 结构无效。')
+      throw new Error(t('tokenizerWorkerReturnedChatTemplateEntryInvalid'))
     }
     return { id: item.id, name: item.name, source: item.source as ChatTemplateSource, body: item.body, usable: item.usable }
   })
   const activeId = value.activeId
   if (activeId !== null && !entries.some(entry => entry.id === activeId && entry.usable)) {
-    throw new Error('Tokenizer Worker 返回的 active Chat Template 无效。')
+    throw new Error(t('tokenizerWorkerReturnedActiveChatTemplateInvalid'))
   }
   return { entries, activeId, conflict: value.conflict }
 }
@@ -835,12 +839,12 @@ function validateChatTokenRoles(
   required: boolean,
 ): ChatTokenRole[] | null {
   if (!Array.isArray(value)) {
-    if (required) throw new Error('Tokenizer Worker 返回的 Exact Chat 结果缺少 roles。')
-    if (value !== null) throw new Error('Tokenizer Worker 返回的 Token roles 结构无效。')
+    if (required) throw new Error(t('tokenizerWorkerReturnedExactChatMissingRoles'))
+    if (value !== null) throw new Error(t('tokenizerWorkerReturnedRolesInvalid'))
     return null
   }
-  if (!required) throw new Error('Tokenizer Worker 返回的结果不应包含 Token roles。')
-  if (value.length !== idCount) throw new Error('Tokenizer Worker 返回的 Token roles 与 ID 数量不一致。')
+  if (!required) throw new Error(t('tokenizerWorkerReturnedUnexpectedRoles'))
+  if (value.length !== idCount) throw new Error(t('tokenizerWorkerReturnedRolesCountMismatch'))
   return value.map((role): ChatTokenRole => {
     const keys = isUnknownRecord(role) ? Object.keys(role).toSorted() : []
     if (isUnknownRecord(role) && role.kind === 'template' && keys.length === 1) return { kind: 'template' }
@@ -848,7 +852,7 @@ function validateChatTokenRoles(
       && keys.includes('kind') && keys.includes('role') && typeof role.role === 'string') {
       return { kind: 'message', role: role.role }
     }
-    throw new Error('Tokenizer Worker 返回的 Token role 结构无效。')
+    throw new Error(t('tokenizerWorkerReturnedRoleInvalid'))
   })
 }
 
@@ -864,14 +868,14 @@ function validateChatTokenOverhead(value: unknown, required: boolean, idCount: n
       || typeof value.templateCount !== 'number' || !Number.isSafeInteger(value.templateCount)
       || typeof value.contentProbe !== 'string'
       || value.templateCount !== value.totalCount - value.contentCount) {
-      throw new Error('Tokenizer Worker 返回的 Chat overhead 结构无效。')
+      throw new Error(t('tokenizerWorkerReturnedOverheadInvalid'))
     }
     const overhead = value as ChatTokenOverhead
-    if (!required) throw new Error('Tokenizer Worker 返回的结果不应包含 Chat overhead。')
-    if (overhead.totalCount !== idCount) throw new Error('Tokenizer Worker 返回的 Chat overhead 与 Token ID 数量不一致。')
+    if (!required) throw new Error(t('tokenizerWorkerReturnedUnexpectedOverhead'))
+    if (overhead.totalCount !== idCount) throw new Error(t('tokenizerWorkerReturnedOverheadCountMismatch'))
     return overhead
   }
-  else if (required) throw new Error('Tokenizer Worker 返回的 Chat 结果缺少 overhead。')
+  else if (required) throw new Error(t('tokenizerWorkerReturnedChatMissingOverhead'))
   return null
 }
 

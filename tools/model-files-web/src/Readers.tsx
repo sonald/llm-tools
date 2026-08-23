@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { formatBytes, type RepositorySnapshot } from './core/huggingface.ts'
 import { foldRanges, type FoldRange } from './core/sourceFolding.ts'
+import { formatNumber, translate as t } from './i18n.ts'
 import {
   forEachTextMatch,
   jsonRows,
@@ -45,9 +46,9 @@ function JsonInspection({ path, content, parsed, bytesRead }: Props) {
 
   return (
     <div className="reader-canvas">
-      <ReaderHeader bytesRead={bytesRead} result="JSON 有效" />
+      <ReaderHeader bytesRead={bytesRead} result={t('readerJsonValid')} />
       <Perspective<'overview' | 'fields' | 'raw'> value={perspective} onChange={setPerspective} values={[
-        ['overview', '概览'], ['fields', '全部字段'], ['raw', '原文'],
+        ['overview', t('readerOverview')], ['fields', t('readerAllFields')], ['raw', t('readerRawSource')],
       ]} />
       {perspective === 'overview' ? (
         <section className="reader-section">
@@ -93,15 +94,15 @@ function LineInspection({ content, bytesRead }: Props) {
 
   return (
     <div className="reader-canvas">
-      <ReaderHeader bytesRead={bytesRead} result="UTF-8 有效" />
+      <ReaderHeader bytesRead={bytesRead} result={t('readerUtf8Valid')} />
       <ProgressiveRows
         rows={matching}
         query={query}
         setQuery={setQuery}
         limit={limit}
         setLimit={setLimit}
-        firstColumn="行"
-        secondColumn="内容"
+        firstColumn={t('readerLineColumn')}
+        secondColumn={t('readerContentColumn')}
         find={{ open: find.open, query: find.query, total: result.total, current: result.current }}
         onNavigate={navigateFind}
         onFindChange={(open, nextQuery) => setFind(state => {
@@ -125,15 +126,15 @@ function MarkdownInspection(props: Props) {
     : ''
   return (
     <div className="reader-canvas">
-      <ReaderHeader bytesRead={props.bytesRead} result="Markdown · raw HTML 已禁用" />
+      <ReaderHeader bytesRead={props.bytesRead} result={t('readerMarkdownHtmlDisabled')} />
       <div className="reader-controls">
-        <Perspective<'rendered' | 'raw'> value={mode} onChange={setMode} values={[["rendered", '渲染'], ['raw', '原文']]} />
+        <Perspective<'rendered' | 'raw'> value={mode} onChange={setMode} values={[['rendered', t('readerRenderedView')], ['raw', t('readerRawSource')]]} />
         {mode === 'rendered' ? (
-          <label>排版
+          <label>{t('readerLayoutLabel')}
             <select value={theme} onChange={event => setTheme(event.target.value as typeof theme)}>
               <option value="github">GitHub</option>
-              <option value="default">默认</option>
-              <option value="compact">紧凑</option>
+              <option value="default">{t('readerDefaultLayout')}</option>
+              <option value="compact">{t('readerCompactLayout')}</option>
             </select>
           </label>
         ) : null}
@@ -150,7 +151,7 @@ function MarkdownInspection(props: Props) {
                 : <a href={href} target="_blank" rel="noreferrer">{children}</a>,
               img: ({ src, alt }) => src !== undefined && embeddedPrefix !== '' && src.startsWith(embeddedPrefix)
                 ? <img src={src} alt={alt ?? ''} loading="lazy" referrerPolicy="no-referrer" />
-                : <span className="external-image">图片：{alt ?? '无说明'}{src === undefined ? null : <> · <a href={src} target="_blank" rel="noreferrer">打开链接</a></>}</span>,
+                : <span className="external-image">{t('readerExternalImage', { alt: alt ?? t('readerNoImageAlt') })}{src === undefined ? null : <> · <a href={src} target="_blank" rel="noreferrer">{t('readerOpenLink')}</a></>}</span>,
             }}
           >{props.content}</ReactMarkdown>
         </article>
@@ -169,10 +170,10 @@ export function PdfInspection({ data, bytesRead }: { data: ArrayBuffer; bytesRea
 
   return (
     <div className="reader-canvas pdf-reader">
-      <ReaderHeader bytesRead={bytesRead} result="PDF 签名有效" />
-      {url !== '' ? <iframe className="pdf-frame" title="PDF 文档" src={url} /> : null}
+      <ReaderHeader bytesRead={bytesRead} result={t('readerPdfValid')} />
+      {url !== '' ? <iframe className="pdf-frame" title={t('readerPdfDocumentTitle')} src={url} /> : null}
       {url !== ''
-        ? <a className="pdf-open" href={url} target="_blank" rel="noreferrer">在新标签页打开 PDF</a>
+        ? <a className="pdf-open" href={url} target="_blank" rel="noreferrer">{t('readerOpenPdfNewTab')}</a>
         : null}
     </div>
   )
@@ -213,7 +214,7 @@ export function SourceInspection({
 }) {
   return (
     <div className="reader-layout">
-      <ReaderHeader bytesRead={bytesRead} result="UTF-8 有效" />
+      <ReaderHeader bytesRead={bytesRead} result={t('readerUtf8Valid')} />
       <SourceCode content={content} language={language} bytesRead={bytesRead} />
     </div>
   )
@@ -337,13 +338,13 @@ function SourceCode({
     <div className="source-code-panel">
       {showToolbar ? (
         <div className="fold-toolbar">
-          <button type="button" onClick={() => setCollapsed(new Set())}>全部展开</button>
+          <button type="button" onClick={() => setCollapsed(new Set())}>{t('readerExpandAllFolds')}</button>
         </div>
       ) : null}
       {find.open ? (
-        <section aria-label="当前文件查找" className="source-find" role="search">
+        <section aria-label={t('readerCurrentFileFind')} className="source-find" role="search">
           <input
-            aria-label="当前文件查找"
+            aria-label={t('readerCurrentFileFind')}
             autoFocus
             onChange={event => setFind({ ...closedFind, open: true, query: event.target.value })}
             onKeyDown={event => {
@@ -357,9 +358,9 @@ function SourceCode({
             }}
             value={find.query}
           />
-          <span>{current.toLocaleString()} / {matches.length.toLocaleString()}</span>
-          <button disabled={matches.length === 0} onClick={() => navigateFind('previous')} type="button">上一个命中</button>
-          <button disabled={matches.length === 0} onClick={() => navigateFind('next')} type="button">下一个命中</button>
+          <span>{formatNumber(current)} / {formatNumber(matches.length)}</span>
+          <button disabled={matches.length === 0} onClick={() => navigateFind('previous')} type="button">{t('readerPreviousMatch')}</button>
+          <button disabled={matches.length === 0} onClick={() => navigateFind('next')} type="button">{t('readerNextMatch')}</button>
         </section>
       ) : null}
       <pre
@@ -387,13 +388,19 @@ function SourceCode({
                     const isCollapsed = collapsed.has(key)
                     return (
                       <button
-                        aria-label={`${isCollapsed ? '展开' : '折叠'}第 ${range.startLine} 行结构`}
+                        aria-label={t('readerFoldStructureLine', {
+                          action: isCollapsed ? t('readerExpandAction') : t('readerCollapseAction'),
+                          line: formatNumber(range.startLine),
+                        })}
                         className={`fold-marker${isCollapsed ? ' collapsed' : ''}`}
                         data-collapsed={isCollapsed || undefined}
                         data-hidden-lines={range.endLine - range.startLine}
                         key={key}
                         onClick={() => toggleFold(setCollapsed, range)}
-                        title={`${isCollapsed ? '展开' : '折叠'}第 ${range.startLine} 行结构`}
+                        title={t('readerFoldStructureLine', {
+                          action: isCollapsed ? t('readerExpandAction') : t('readerCollapseAction'),
+                          line: formatNumber(range.startLine),
+                        })}
                         type="button"
                       />
                     )
@@ -500,9 +507,9 @@ function splitSourceLines(
 function ReaderHeader({ bytesRead, result }: { bytesRead: number; result: string }) {
   return (
     <dl className="validation-strip">
-      <div><dt>读取方式</dt><dd>受限全文</dd></div>
-      <div><dt>实际读取</dt><dd>{formatBytes(bytesRead)}</dd></div>
-      <div><dt>解析结果</dt><dd>{result}</dd></div>
+      <div><dt>{t('readerReadMethod')}</dt><dd>{t('readerLimitedFullText')}</dd></div>
+      <div><dt>{t('readerActualRead')}</dt><dd>{formatBytes(bytesRead)}</dd></div>
+      <div><dt>{t('readerParseResult')}</dt><dd>{result}</dd></div>
     </dl>
   )
 }
@@ -517,7 +524,7 @@ function Perspective<T extends string>({
   values: Array<[T, string]>
 }) {
   return (
-    <div className="perspective" role="group" aria-label="阅读视图">
+    <div className="perspective" role="group" aria-label={t('readerReadingView')}>
       {values.map(([item, label]) => (
         <button type="button" aria-pressed={value === item} onClick={() => onChange(item)} key={item}>{label}</button>
       ))}
@@ -531,8 +538,8 @@ function ProgressiveRows({
   setQuery,
   limit,
   setLimit,
-  firstColumn = '字段',
-  secondColumn = '值',
+  firstColumn = t('readerFieldColumn'),
+  secondColumn = t('readerValueColumn'),
   find,
   onNavigate,
   onFindChange,
@@ -572,9 +579,9 @@ function ProgressiveRows({
   return (
     <section className="reader-section">
       {canFind && find!.open ? (
-        <section aria-label="当前文件查找" className="source-find" role="search">
+        <section aria-label={t('readerCurrentFileFind')} className="source-find" role="search">
           <input
-            aria-label="当前文件查找"
+            aria-label={t('readerCurrentFileFind')}
             autoFocus
             onChange={event => onFindChange!(true, event.target.value)}
             onKeyDown={event => {
@@ -588,14 +595,14 @@ function ProgressiveRows({
             }}
             value={find!.query}
           />
-          <span>{find!.current.toLocaleString()} / {find!.total.toLocaleString()}</span>
-          <button disabled={find!.total === 0} onClick={() => onNavigate!('previous')} type="button">上一个命中</button>
-          <button disabled={find!.total === 0} onClick={() => onNavigate!('next')} type="button">下一个命中</button>
+          <span>{formatNumber(find!.current)} / {formatNumber(find!.total)}</span>
+          <button disabled={find!.total === 0} onClick={() => onNavigate!('previous')} type="button">{t('readerPreviousMatch')}</button>
+          <button disabled={find!.total === 0} onClick={() => onNavigate!('next')} type="button">{t('readerNextMatch')}</button>
         </section>
       ) : null}
       <div className="inspection-toolbar">
-        <label><span>搜索</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="字段或内容包含…" /></label>
-        <span>显示 {visible.length.toLocaleString()} / {rows.length.toLocaleString()}</span>
+        <label><span>{t('readerSearchFieldsAndContent')}</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder={t('readerFieldOrContentContainsPlaceholder')} /></label>
+        <span>{t('readerShowingCount', { visible: formatNumber(visible.length), total: formatNumber(rows.length) })}</span>
       </div>
       <div
         ref={tableRef}
@@ -608,7 +615,7 @@ function ProgressiveRows({
         }}
         tabIndex={canFind ? 0 : undefined}
       >
-        <table aria-label={`${firstColumn}列表`}>
+        <table aria-label={t('readerListAriaLabel', { column: firstColumn })}>
           <thead><tr><th>{firstColumn}</th><th>{secondColumn}</th></tr></thead>
           <tbody>{visible.map(([key, value]) => (
             <tr key={key}>
@@ -631,7 +638,7 @@ function ProgressiveRows({
         </table>
       </div>
       {visible.length < rows.length ? (
-        <button className="load-more" type="button" onClick={() => setLimit(Math.min(limit + 1000, rows.length))}>再显示 1,000 项</button>
+        <button className="load-more" type="button" onClick={() => setLimit(Math.min(limit + 1000, rows.length))}>{t('readerShowMoreItems', { count: formatNumber(1000) })}</button>
       ) : null}
     </section>
   )

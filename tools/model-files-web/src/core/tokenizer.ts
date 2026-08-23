@@ -1,6 +1,7 @@
 import type { RepositoryFile, RepositorySnapshot } from './huggingface.ts'
 import type { ChatTokenOverhead, ChatTokenRole } from './tokenAttribution.ts'
 import type { ChatTemplateCatalog } from './chatTemplates.ts'
+import { formatNumber, translate as t } from '../i18n.ts'
 
 export type TokenSegment = {
   start: number
@@ -156,18 +157,18 @@ export function tokenizerBundleBytes(tokenizerFile: RepositoryFile, configFile?:
   const configParts = configFile?.path.split('/')
   if (tokenizerParts.pop() !== 'tokenizer.json' || configParts !== undefined
     && (configParts.pop() !== 'tokenizer_config.json' || tokenizerParts.join('/') !== configParts.join('/'))) {
-    throw new Error('Tokenizer 资源必须是同目录的 tokenizer.json 与 tokenizer_config.json。')
+    throw new Error(t('tokenizerBundleSameDirectory'))
   }
   if (tokenizerFile.size === null || configFile?.size === null) {
-    throw new Error('仓库未提供完整的 tokenizer 资源大小，已拒绝加载。')
+    throw new Error(t('tokenizerBundleSizeMissing'))
   }
   const total = tokenizerFile.size + (configFile?.size ?? 0)
-  if (total > 32 * 1024 * 1024) throw new Error('Tokenizer 资源超过 32 MiB 上限。')
+  if (total > 32 * 1024 * 1024) throw new Error(t('tokenizerBundleTooLarge'))
   return total
 }
 
 export function inspectTokenizerStructure(value: unknown): TokenizerStructure {
-  if (!isRecord(value)) throw new Error('tokenizer.json 根节点不是对象。')
+  if (!isRecord(value)) throw new Error(t('tokenizerRootNotObject'))
   const model = isRecord(value.model) ? value.model : null
   const rawVocabulary = model?.vocab
   const vocabCount = isRecord(rawVocabulary) || Array.isArray(rawVocabulary) ? Object.keys(rawVocabulary).length : null
@@ -196,8 +197,8 @@ export function buildTokenization(
   direction: 'encode' | 'decode' = 'encode',
   overhead: ChatTokenOverhead | null = null,
 ): Tokenization {
-  if (ids.length !== pieces.length) throw new Error('Tokenizer 返回的 ID 与 piece 数量不一致。')
-  if (ids.length !== flags.length) throw new Error('Tokenizer 返回的 ID 与 flags 数量不一致。')
+  if (ids.length !== pieces.length) throw new Error(t('tokenizerIdPieceCountMismatch'))
+  if (ids.length !== flags.length) throw new Error(t('tokenizerIdFlagCountMismatch'))
   // ponytail: Large runs stay one grapheme-safe authoritative group; chunk them only if per-token highlighting becomes necessary.
   if (ids.length > 2_000) return authoritativeTokenization(input, ids, pieces, decoded, flags, direction, overhead)
   const provisional: TokenSegment[] = []
@@ -256,19 +257,19 @@ function authoritativeTokenization(
 }
 
 export function parseTokenIds(input: string): number[] {
-  if (new TextEncoder().encode(input).byteLength > 64 * 1024) throw new Error('Token ID 输入超过 64 KiB 上限。')
+  if (new TextEncoder().encode(input).byteLength > 64 * 1024) throw new Error(t('tokenIdInputTooLarge'))
   const trimmed = input.trim()
-  if (trimmed.length === 0) throw new Error('Token ID 输入为空。')
+  if (trimmed.length === 0) throw new Error(t('tokenIdInputEmpty'))
   let rawValues: unknown[]
   if (trimmed.startsWith('[')) {
     let parsed: unknown
     try {
       parsed = JSON.parse(trimmed)
     } catch (error) {
-      throw new Error(`Token ID JSON 解析失败：${error instanceof Error ? error.message : String(error)}`)
+      throw new Error(t('tokenIdJsonParseFailed', { reason: error instanceof Error ? error.message : String(error) }))
     }
-    if (!Array.isArray(parsed)) throw new Error('Token ID JSON 必须是数组。')
-    if (parsed.length === 0) throw new Error('Token ID 输入为空。')
+    if (!Array.isArray(parsed)) throw new Error(t('tokenIdJsonMustBeArray'))
+    if (parsed.length === 0) throw new Error(t('tokenIdInputEmpty'))
     rawValues = parsed
   } else {
     rawValues = trimmed.split(/[\s,]+/)
@@ -276,7 +277,11 @@ export function parseTokenIds(input: string): number[] {
   return rawValues.map((value, index): number => {
     const id = typeof value === 'string' ? Number(value.trim()) : value
     if (typeof value === 'boolean' || typeof id !== 'number' || !Number.isSafeInteger(id) || id < 0) {
-      throw new Error(`第 ${index + 1} 个 Token 无效（zero-based index ${index}）：${String(value)}。`)
+      throw new Error(t('tokenInvalid', {
+        index: index + 1,
+        zeroBasedIndex: index,
+        token: String(value),
+      }))
     }
     return id
   })
@@ -424,7 +429,7 @@ function vocabularyEntries(value: unknown): {
     const ids = new Set<number>()
     for (const [token, rawId] of Object.entries(value)) {
       if (!Number.isSafeInteger(rawId) || Number(rawId) < 0 || ids.has(Number(rawId))) {
-        return { entries: null, error: '词表包含重复或无效 Token ID，无法分析。' }
+        return { entries: null, error: t('vocabularyInvalidTokenId') }
       }
       ids.add(Number(rawId))
       entries.push({ id: Number(rawId), token })
@@ -436,13 +441,13 @@ function vocabularyEntries(value: unknown): {
     for (const [id, item] of value.entries()) {
       if (!Array.isArray(item) || item.length < 2 || typeof item[0] !== 'string'
         || typeof item[1] !== 'number' || !Number.isFinite(item[1])) {
-        return { entries: null, error: 'Unigram 词表结构无效，无法分析。' }
+        return { entries: null, error: t('vocabularyUnigramInvalid') }
       }
       entries.push({ id, token: item[0] })
     }
     return { entries, error: null }
   }
-  return { entries: null, error: '未识别 model.vocab，无法分析。' }
+  return { entries: null, error: t('vocabularyUnrecognized') }
 }
 
 function analyzeVocabulary(entries: Array<{ id: number; token: string }>): TokenizerVocabularyAnalysis | null {
@@ -490,12 +495,14 @@ function bucketIndex(length: number): number {
 
 function describeValue(value: unknown): string {
   if (value === null) return 'null'
-  if (Array.isArray(value)) return `数组 · ${value.length.toLocaleString()} 项`
+  if (Array.isArray(value)) return t('arrayValueSummary', { count: formatNumber(value.length) })
   if (isRecord(value)) {
-    const suffix = typeof value.type === 'string' ? ` · type: ${value.type}` : ''
-    return `对象 · ${Object.keys(value).length.toLocaleString()} 字段${suffix}`
+    const suffix = typeof value.type === 'string' ? t('valueTypeSuffix', { type: value.type }) : ''
+    return t('objectValueSummary', { count: formatNumber(Object.keys(value).length), suffix })
   }
-  if (typeof value === 'string') return Array.from(value).length > 80 ? `字符串 · ${Array.from(value).length.toLocaleString()} 字符` : value
+  if (typeof value === 'string') {
+    return Array.from(value).length > 80 ? t('stringValueSummary', { count: formatNumber(Array.from(value).length) }) : value
+  }
   return String(value)
 }
 

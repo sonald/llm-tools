@@ -1,3 +1,5 @@
+import { formatNumber, translate as t } from '../i18n.ts'
+
 export type GGUFMetadataEntry = {
   key: string
   type: string
@@ -43,7 +45,7 @@ export function inspectGGUF(data: ArrayBufferLike): GGUFInspection {
   } catch (error) {
     if (error instanceof NeedsMoreData) return { kind: 'needs-more-data' }
     if (error instanceof InvalidGGUF) return { kind: 'invalid', message: error.message }
-    return { kind: 'invalid', message: `GGUF 解析失败：${error instanceof Error ? error.message : String(error)}` }
+    return { kind: 'invalid', message: t('ggufParseFailed', { reason: error instanceof Error ? error.message : String(error) }) }
   }
 }
 
@@ -66,7 +68,7 @@ class Parser {
   constructor(data: ArrayBufferLike) {
     this.bytes = new Uint8Array(data)
     if (this.bytes.byteLength < 4) throw new NeedsMoreData()
-    if (new TextDecoder().decode(this.bytes.slice(0, 4)) !== 'GGUF') throw new InvalidGGUF('GGUF magic 无效。')
+    if (new TextDecoder().decode(this.bytes.slice(0, 4)) !== 'GGUF') throw new InvalidGGUF(t('ggufMagicInvalid'))
     if (this.bytes.byteLength < 8) throw new NeedsMoreData()
     const littleVersion = uint32At(this.bytes, 4, true)
     const bigVersion = uint32At(this.bytes, 4, false)
@@ -77,7 +79,7 @@ class Parser {
       this.version = bigVersion
       this.endianness = 'big'
     } else {
-      throw new InvalidGGUF('不支持的 GGUF 版本。')
+      throw new InvalidGGUF(t('ggufVersionUnsupported'))
     }
     this.cursor = new Cursor(this.bytes, 8, this.endianness)
   }
@@ -85,15 +87,15 @@ class Parser {
   parse(): GGUFOverview {
     const tensorCount = this.readCount()
     const metadataCount = this.readCount()
-    if (tensorCount > maximumTensorCount) throw new InvalidGGUF('GGUF tensor 数量超过安全上限。')
-    if (metadataCount > maximumMetadataCount) throw new InvalidGGUF('GGUF metadata 数量超过安全上限。')
+    if (tensorCount > maximumTensorCount) throw new InvalidGGUF(t('ggufTensorCountExceeded'))
+    if (metadataCount > maximumMetadataCount) throw new InvalidGGUF(t('ggufMetadataCountExceeded'))
 
     const metadata: GGUFMetadataEntry[] = []
     const metadataKeys = new Set<string>()
     for (let index = 0n; index < metadataCount; index += 1n) {
       const key = this.readString(65_535n)
       if (!/^[a-z0-9_]+(?:\.[a-z0-9_]+)*$/.test(key) || metadataKeys.has(key)) {
-        throw new InvalidGGUF('GGUF metadata key 无效或重复。')
+        throw new InvalidGGUF(t('ggufMetadataKeyInvalidOrDuplicate'))
       }
       metadataKeys.add(key)
       const typeCode = this.cursor.readUint32()
@@ -102,26 +104,26 @@ class Parser {
     }
 
     const alignment = metadata.find(entry => entry.key === 'general.alignment')?.unsignedValue ?? 32n
-    if (alignment <= 0n || alignment % 8n !== 0n) throw new InvalidGGUF('GGUF general.alignment 无效。')
+    if (alignment <= 0n || alignment % 8n !== 0n) throw new InvalidGGUF(t('ggufAlignmentInvalid'))
 
     const tensors: GGUFTensor[] = []
     const tensorNames = new Set<string>()
     let parameterCount = 0n
     for (let index = 0n; index < tensorCount; index += 1n) {
       const name = this.readString(64n)
-      if (name === '' || tensorNames.has(name)) throw new InvalidGGUF('GGUF tensor 名称无效或重复。')
+      if (name === '' || tensorNames.has(name)) throw new InvalidGGUF(t('ggufTensorNameInvalidOrDuplicate'))
       tensorNames.add(name)
       const dimensions = this.cursor.readUint32()
-      if (dimensions > maximumDimensions) throw new InvalidGGUF(`GGUF tensor ${name} 的维数超过安全上限。`)
+      if (dimensions > maximumDimensions) throw new InvalidGGUF(t('ggufTensorDimensionCountExceeded', { name }))
       const shape: bigint[] = []
       for (let dimension = 0; dimension < dimensions; dimension += 1) {
         shape.push(this.version === 1 ? BigInt(this.cursor.readUint32()) : this.cursor.readUint64())
       }
       const typeCode = this.cursor.readUint32()
       const offset = this.cursor.readUint64()
-      if (offset % alignment !== 0n) throw new InvalidGGUF(`GGUF tensor ${name} 的 offset 未按 alignment 对齐。`)
-      const parameters = checkedProduct(shape, `tensor ${name} shape`)
-      parameterCount = checkedAdd(parameterCount, parameters, '参数总数')
+      if (offset % alignment !== 0n) throw new InvalidGGUF(t('ggufTensorOffsetMisaligned', { name }))
+      const parameters = checkedProduct(shape, t('ggufTensorShapeContext', { name }))
+      parameterCount = checkedAdd(parameterCount, parameters, t('ggufParameterTotalOverflowContext'))
       tensors.push({ name, type: tensorTypeName(typeCode), shape, parameters, offset })
     }
 
@@ -136,17 +138,17 @@ class Parser {
 
   private readString(maximum = maximumStringLength): string {
     const length = this.readCount()
-    if (length > maximum || length > BigInt(Number.MAX_SAFE_INTEGER)) throw new InvalidGGUF('GGUF 字符串超过安全上限。')
+    if (length > maximum || length > BigInt(Number.MAX_SAFE_INTEGER)) throw new InvalidGGUF(t('ggufStringLimitExceeded'))
     const value = this.cursor.readBytes(Number(length))
     try {
       return new TextDecoder('utf-8', { fatal: true }).decode(value)
     } catch {
-      throw new InvalidGGUF('GGUF 字符串不是有效 UTF-8。')
+      throw new InvalidGGUF(t('ggufStringUtf8Invalid'))
     }
   }
 
   private readValue(typeCode: number, depth: number, capture: boolean): ParsedValue {
-    if (this.version === 1 && typeCode > 9) throw new InvalidGGUF(`GGUF v1 包含不支持的 metadata 类型 ${typeCode}。`)
+    if (this.version === 1 && typeCode > 9) throw new InvalidGGUF(t('ggufV1MetadataTypeUnsupported', { typeCode }))
     const hidden = (): ParsedValue => ({ display: '', stringValue: null, unsignedValue: null })
     switch (typeCode) {
       case 0: {
@@ -179,7 +181,7 @@ class Parser {
       }
       case 7: {
         const value = this.cursor.readUint8()
-        if (value !== 0 && value !== 1) throw new InvalidGGUF('GGUF bool 值必须为 0 或 1。')
+        if (value !== 0 && value !== 1) throw new InvalidGGUF(t('ggufBoolValueInvalid'))
         return capture ? signed(value === 1) : hidden()
       }
       case 8: {
@@ -187,13 +189,13 @@ class Parser {
         return capture ? { display: value, stringValue: value, unsignedValue: null } : hidden()
       }
       case 9: {
-        if (depth >= maximumArrayDepth) throw new InvalidGGUF('GGUF metadata array 嵌套超过安全上限。')
+        if (depth >= maximumArrayDepth) throw new InvalidGGUF(t('ggufArrayDepthExceeded'))
         const elementType = this.cursor.readUint32()
-        if (elementType > 12) throw new InvalidGGUF('GGUF metadata array 类型无效。')
+        if (elementType > 12) throw new InvalidGGUF(t('ggufArrayElementTypeInvalid'))
         const count = this.readCount()
         this.arrayElementsRead += count
         if (this.arrayElementsRead > maximumArrayElements) {
-          throw new InvalidGGUF('GGUF metadata array 元素数量超过安全上限。')
+          throw new InvalidGGUF(t('ggufArrayElementCountExceeded'))
         }
         const preview: string[] = []
         for (let index = 0n; index < count; index += 1n) {
@@ -203,7 +205,10 @@ class Parser {
         }
         if (!capture) return hidden()
         return {
-          display: `[${preview.join(', ')}${count > 16n ? ', …' : ''}] · ${count.toLocaleString('zh-CN')} 项`,
+          display: t('ggufArrayPreviewDisplay', {
+            preview: `${preview.join(', ')}${count > 16n ? ', …' : ''}`,
+            count: formatNumber(count),
+          }),
           stringValue: null,
           unsignedValue: null,
         }
@@ -221,7 +226,7 @@ class Parser {
         return capture ? signed(value) : hidden()
       }
       default:
-        throw new InvalidGGUF(`GGUF metadata 类型 ${typeCode} 无效。`)
+        throw new InvalidGGUF(t('ggufMetadataTypeInvalid', { typeCode }))
     }
   }
 }
@@ -314,21 +319,21 @@ function checkedProduct(values: bigint[], context: string): bigint {
   let result = 1n
   for (const value of values) {
     result *= value
-    if (result > maximumUInt64) throw new InvalidGGUF(`GGUF ${context} 溢出。`)
+    if (result > maximumUInt64) throw new InvalidGGUF(t('ggufShapeOverflow', { context }))
   }
   return result
 }
 
 function checkedAdd(left: bigint, right: bigint, context: string): bigint {
   const result = left + right
-  if (result > maximumUInt64) throw new InvalidGGUF(`GGUF ${context} 溢出。`)
+  if (result > maximumUInt64) throw new InvalidGGUF(t('ggufShapeOverflow', { context }))
   return result
 }
 
 function alignedOffset(offset: number, alignment: bigint): number {
   const value = BigInt(offset)
   const result = value + (alignment - value % alignment) % alignment
-  if (result > BigInt(Number.MAX_SAFE_INTEGER)) throw new InvalidGGUF('GGUF tensor data offset 溢出。')
+  if (result > BigInt(Number.MAX_SAFE_INTEGER)) throw new InvalidGGUF(t('ggufTensorDataOffsetOverflow'))
   return Number(result)
 }
 

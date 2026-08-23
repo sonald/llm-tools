@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { formatBytes, type RepositorySnapshot } from './core/huggingface.ts'
 import { forEachTextMatch, navigateTextMatches } from './core/readers.ts'
+import { formatNumber, translate as t } from './i18n.ts'
 import { TextInspection } from './Readers.tsx'
 
 type ConfigView = { path: string; content: string; parsed: unknown; bytesRead: number }
@@ -32,7 +33,7 @@ export function TemplateWorkbench({
   const [error, setError] = useState<string | null>(null)
   const [outputView, setOutputView] = useState<'structure' | 'raw'>('structure')
   const [selectedLine, setSelectedLine] = useState(0)
-  const [copyLabel, setCopyLabel] = useState('复制输出')
+  const [copyLabel, setCopyLabel] = useState(() => t('templateCopyOutputAction'))
   const [find, setFind] = useState({ open: false, query: '', current: 0 })
   const generation = useRef(0)
   const sourceRef = useRef<HTMLTextAreaElement | null>(null)
@@ -95,9 +96,9 @@ export function TemplateWorkbench({
       const parsedMessages: unknown = JSON.parse(messages)
       const parsedTools: unknown = JSON.parse(tools)
       const parsedVariables: unknown = JSON.parse(variables)
-      if (!Array.isArray(parsedMessages)) throw new Error('Messages 必须是 JSON 数组。')
-      if (!Array.isArray(parsedTools)) throw new Error('Tools 必须是 JSON 数组。')
-      if (!isRecord(parsedVariables)) throw new Error('Typed Variables 必须是 JSON 对象。')
+      if (!Array.isArray(parsedMessages)) throw new Error(t('messagesMustBeJsonArray'))
+      if (!Array.isArray(parsedTools)) throw new Error(t('toolsMustBeJsonArray'))
+      if (!isRecord(parsedVariables)) throw new Error(t('typedVariablesMustBeJsonObject'))
       const module = await import('./tokenizerClient.ts')
       const rendered = await module.renderTemplate(source, {
         ...parsedVariables,
@@ -108,7 +109,7 @@ export function TemplateWorkbench({
       if (generation.current !== activeGeneration) return
       setOutput(rendered)
       setSelectedLine(0)
-      setCopyLabel('复制输出')
+      setCopyLabel(t('templateCopyOutputAction'))
       setPhase('ready')
     } catch (failure) {
       if (generation.current !== activeGeneration) return
@@ -119,11 +120,11 @@ export function TemplateWorkbench({
   }
 
   const views: Array<[typeof view, string]> = config === null
-    ? [['overview', '概览'], ['source', '源码'], ['playground', '试验台']]
-    : [['config', '配置'], ['overview', '模板概览'], ['source', '源码'], ['playground', '试验台']]
+    ? [['overview', t('templateOverviewTab')], ['source', t('templateSourceTab')], ['playground', t('templatePlaygroundTab')]]
+    : [['config', t('templateConfigTab')], ['overview', t('templateOverviewTabWithConfig')], ['source', t('templateSourceTab')], ['playground', t('templatePlaygroundTab')]]
   return (
     <div className="template-workspace">
-      <div className="tokenizer-tabs" role="tablist" aria-label="Template 视图">
+      <div className="tokenizer-tabs" role="tablist" aria-label={t('templateViewsAriaLabel')}>
         {views.map(([value, label]) => <button type="button" role="tab" aria-selected={view === value} onClick={() => setView(value)} key={value}>{label}</button>)}
       </div>
       {view === 'config' && config !== null ? (
@@ -132,24 +133,24 @@ export function TemplateWorkbench({
       {view === 'overview' ? (
         <div className="inspection-canvas">
           <dl className="validation-strip">
-            <div><dt>模板来源</dt><dd>{sourceOrigin}</dd></div>
-            <div><dt>源码大小</dt><dd>{formatBytes(sourceBytes)}</dd></div>
-            <div><dt>读取总量</dt><dd>{formatBytes(bytesRead)}</dd></div>
+            <div><dt>{t('templateOriginLabel')}</dt><dd>{sourceOrigin}</dd></div>
+            <div><dt>{t('templateSourceSizeLabel')}</dt><dd>{formatBytes(sourceBytes)}</dd></div>
+            <div><dt>{t('templateBytesReadLabel')}</dt><dd>{formatBytes(bytesRead)}</dd></div>
           </dl>
           <dl className="metric-grid">
-            <div><dt>行数</dt><dd>{source.split('\n').length.toLocaleString()}</dd></div>
-            <div><dt>Jinja 表达式</dt><dd>{(source.match(/{{/g) ?? []).length.toLocaleString()}</dd></div>
-            <div><dt>Jinja 语句</dt><dd>{(source.match(/{%/g) ?? []).length.toLocaleString()}</dd></div>
-            <div><dt>修改状态</dt><dd>{source === initialSource ? '来源原文' : '临时修改'}</dd></div>
+            <div><dt>{t('templateLineCountLabel')}</dt><dd>{formatNumber(source.split('\n').length)}</dd></div>
+            <div><dt>{t('templateJinjaExpressionsLabel')}</dt><dd>{formatNumber((source.match(/{{/g) ?? []).length)}</dd></div>
+            <div><dt>{t('templateJinjaStatementsLabel')}</dt><dd>{formatNumber((source.match(/{%/g) ?? []).length)}</dd></div>
+            <div><dt>{t('templateModificationStatusLabel')}</dt><dd>{source === initialSource ? t('templateOriginalSourceState') : t('templateTemporaryChangesState')}</dd></div>
           </dl>
-          <p className="scope-note">模板只在 Web Worker 中执行；不支持 include，不执行 JavaScript，不写回仓库。</p>
+          <p className="scope-note">{t('templateScopeNote')}</p>
         </div>
       ) : null}
       {view === 'source' ? (
         <div className="template-source">
-          <header><span>{sourceOrigin} · {source.split('\n').length} 行 · {formatBytes(sourceBytes)} · {source === initialSource ? '来源原文' : '已修改'}</span><button type="button" onClick={() => changeSource(initialSource)} disabled={source === initialSource}>恢复来源</button></header>
+          <header><span>{sourceOrigin} · {t('templateLineCountSuffix', { count: formatNumber(source.split('\n').length) })} · {formatBytes(sourceBytes)} · {source === initialSource ? t('templateOriginalSourceState') : t('templateModifiedState')}</span><button type="button" onClick={() => changeSource(initialSource)} disabled={source === initialSource}>{t('templateRestoreSourceAction')}</button></header>
           <textarea
-            aria-label="Jinja 源码"
+            aria-label={t('templateJinjaSourceAriaLabel')}
             value={source}
             onChange={event => changeSource(event.target.value)}
             onKeyDown={event => {
@@ -162,9 +163,9 @@ export function TemplateWorkbench({
             spellCheck={false}
           />
           {find.open ? (
-            <section aria-label="当前文件查找" className="source-find" role="search">
+            <section aria-label={t('readerCurrentFileFind')} className="source-find" role="search">
               <input
-                aria-label="当前文件查找"
+                aria-label={t('readerCurrentFileFind')}
                 autoFocus
                 onChange={event => setFind({ open: true, query: event.target.value, current: 0 })}
                 onKeyDown={event => {
@@ -178,12 +179,12 @@ export function TemplateWorkbench({
                 }}
                 value={find.query}
               />
-              <span>{activeMatch.current.toLocaleString()} / {activeMatch.total.toLocaleString()}</span>
-              <button disabled={activeMatch.total === 0} onClick={() => navigateFind('previous')} type="button">上一个命中</button>
-              <button disabled={activeMatch.total === 0} onClick={() => navigateFind('next')} type="button">下一个命中</button>
+              <span>{formatNumber(activeMatch.current)} / {formatNumber(activeMatch.total)}</span>
+              <button disabled={activeMatch.total === 0} onClick={() => navigateFind('previous')} type="button">{t('readerPreviousMatch')}</button>
+              <button disabled={activeMatch.total === 0} onClick={() => navigateFind('next')} type="button">{t('readerNextMatch')}</button>
             </section>
           ) : null}
-          <pre className="jinja-highlight" aria-label="Jinja 高亮预览">
+          <pre className="jinja-highlight" aria-label={t('templateJinjaHighlightAriaLabel')}>
             <HighlightedJinja
               activeEnd={activeMatch.end}
               activeStart={activeMatch.start}
@@ -196,31 +197,31 @@ export function TemplateWorkbench({
       {view === 'playground' ? (
         <div className="template-playground">
           <section className="template-inputs">
-            <label>Preset<select value={preset} onChange={event => choosePreset(event.target.value as keyof typeof presets)}>
-              <option value="basic">基础对话</option><option value="tools">Tools</option><option value="multimodal">多模态</option>
+            <label>{t('templatePresetLabel')}<select value={preset} onChange={event => choosePreset(event.target.value as keyof typeof presets)}>
+              <option value="basic">{t('templateBasicConversationOption')}</option><option value="tools">{t('templateToolsLabel')}</option><option value="multimodal">{t('templateMultimodalOption')}</option>
             </select></label>
-            <label>Messages<textarea aria-label="Template Messages" value={messages} onChange={event => changePlaygroundInput(() => setMessages(event.target.value))} /></label>
-            <label>Tools<textarea aria-label="Template Tools" value={tools} onChange={event => changePlaygroundInput(() => setTools(event.target.value))} /></label>
-            <label>Typed Variables<textarea aria-label="Template Variables" value={variables} onChange={event => changePlaygroundInput(() => setVariables(event.target.value))} /></label>
-            <footer><label className="checkbox"><input type="checkbox" checked={addGenerationPrompt} onChange={event => changePlaygroundInput(() => setAddGenerationPrompt(event.target.checked))} />add_generation_prompt</label><button className="primary-button" type="button" onClick={render} disabled={phase === 'loading'}>{phase === 'loading' ? '渲染中…' : '渲染'}</button></footer>
+            <label>{t('templateMessagesLabel')}<textarea aria-label={t('templateMessagesInputAriaLabel')} value={messages} onChange={event => changePlaygroundInput(() => setMessages(event.target.value))} /></label>
+            <label>{t('templateToolsLabel')}<textarea aria-label={t('templateToolsInputAriaLabel')} value={tools} onChange={event => changePlaygroundInput(() => setTools(event.target.value))} /></label>
+            <label>{t('templateVariablesLabel')}<textarea aria-label={t('templateVariablesInputAriaLabel')} value={variables} onChange={event => changePlaygroundInput(() => setVariables(event.target.value))} /></label>
+            <footer><label className="checkbox"><input type="checkbox" checked={addGenerationPrompt} onChange={event => changePlaygroundInput(() => setAddGenerationPrompt(event.target.checked))} />add_generation_prompt</label><button className="primary-button" type="button" onClick={render} disabled={phase === 'loading'}>{phase === 'loading' ? t('templateRenderingState') : t('templateRenderAction')}</button></footer>
           </section>
           <section className="template-output" aria-live="polite">
             <header>
-              <h2>渲染输出</h2>
-              <button type="button" aria-pressed={outputView === 'structure'} onClick={() => setOutputView('structure')}>结构索引</button>
-              <button type="button" aria-pressed={outputView === 'raw'} onClick={() => setOutputView('raw')}>原始输出</button>
+              <h2>{t('templateOutputTitle')}</h2>
+              <button type="button" aria-pressed={outputView === 'structure'} onClick={() => setOutputView('structure')}>{t('templateStructureIndexAction')}</button>
+              <button type="button" aria-pressed={outputView === 'raw'} onClick={() => setOutputView('raw')}>{t('templateRawOutputAction')}</button>
               <button type="button" disabled={phase !== 'ready'} onClick={async () => {
-                try { await navigator.clipboard.writeText(output); setCopyLabel('已复制') } catch { setCopyLabel('复制失败') }
+                try { await navigator.clipboard.writeText(output); setCopyLabel(t('templateCopiedState')) } catch { setCopyLabel(t('templateCopyFailedState')) }
               }}>{copyLabel}</button>
             </header>
-            {phase === 'idle' ? <div className="result-empty">编辑 JSON 后点击“渲染”。</div> : null}
-            {phase === 'loading' ? <div className="result-empty"><span className="spinner" />Worker 正在渲染…</div> : null}
+            {phase === 'idle' ? <div className="result-empty">{t('templateEditJsonHint')}</div> : null}
+            {phase === 'loading' ? <div className="result-empty"><span className="spinner" />{t('templateWorkerRenderingState')}</div> : null}
             {phase === 'error' ? <p className="inline-error" role="alert">{error}</p> : null}
             {phase === 'ready' && outputView === 'raw' ? <pre className="source-reader standalone">{output}</pre> : null}
             {phase === 'ready' && outputView === 'structure' ? (
               <div className="template-structure">
-                <div className="table-scroll"><table aria-label="Template 输出结构"><thead><tr><th>#</th><th>内容</th></tr></thead><tbody>{outputLines.map((line, index) => <tr key={index}><td>{index + 1}</td><td><button className="table-link" type="button" onClick={() => setSelectedLine(index)}>{line || '∅'}</button></td></tr>)}</tbody></table></div>
-                <dl className="reader-facts"><div><dt>选中行</dt><dd>{selectedLine + 1}</dd></div><div><dt>字符</dt><dd>{Array.from(outputLines[selectedLine] ?? '').length}</dd></div><div><dt>UTF-8 Bytes</dt><dd>{new TextEncoder().encode(outputLines[selectedLine] ?? '').byteLength}</dd></div></dl>
+                <div className="table-scroll"><table aria-label={t('templateOutputStructureTableAriaLabel')}><thead><tr><th>#</th><th>{t('readerContentColumn')}</th></tr></thead><tbody>{outputLines.map((line, index) => <tr key={index}><td>{formatNumber(index + 1)}</td><td><button className="table-link" type="button" onClick={() => setSelectedLine(index)}>{line || '∅'}</button></td></tr>)}</tbody></table></div>
+                <dl className="reader-facts"><div><dt>{t('templateSelectedRowFact')}</dt><dd>{formatNumber(selectedLine + 1)}</dd></div><div><dt>{t('templateCharacterCountFact')}</dt><dd>{formatNumber(Array.from(outputLines[selectedLine] ?? '').length)}</dd></div><div><dt>{t('templateUtf8BytesFact')}</dt><dd>{formatNumber(new TextEncoder().encode(outputLines[selectedLine] ?? '').byteLength)}</dd></div></dl>
               </div>
             ) : null}
           </section>

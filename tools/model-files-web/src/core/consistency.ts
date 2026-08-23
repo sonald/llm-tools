@@ -2,6 +2,7 @@ import { activeChatTemplate } from './chatTemplates.ts'
 import { mergeChatTemplates, parseChatTemplates, type ChatTemplateCatalog } from './chatTemplates.ts'
 import type { RepositoryFile } from './huggingface.ts'
 import type { TokenizerStructure } from './tokenizer.ts'
+import { formatNumber, translate as t } from '../i18n.ts'
 
 export type ConsistencyMaterial<T> =
   | { state: 'missing' }
@@ -100,7 +101,7 @@ export function chatTemplateMaterial(
 
   let config: ChatTemplateCatalog
   if (configMaterial.state === 'available') {
-    if (!isRecord(configMaterial.value)) return { state: 'failed', message: 'JSON 根节点不是对象。' }
+    if (!isRecord(configMaterial.value)) return { state: 'failed', message: t('jsonRootNotObject') }
     try {
       config = parseChatTemplates(configMaterial.value.chat_template)
     } catch (error) {
@@ -122,14 +123,14 @@ export function chatTemplateMaterial(
 }
 
 export function consistencyBadgeState(report: RepositoryConsistencyReport | null) {
-  if (report === null) return { state: 'checking' as const, label: '检查中' }
+  if (report === null) return { state: 'checking' as const, label: t('consistencyChecking') }
   const warnings = report.findings.filter(finding => finding.severity === 'warning').length
-  if (warnings > 0) return { state: 'warnings' as const, label: `${warnings.toLocaleString()} 项警告` }
+  if (warnings > 0) return { state: 'warnings' as const, label: t('consistencyWarningCount', { count: formatNumber(warnings) }) }
   const checked = new Set(report.coverage.filter(item => item.status.state === 'checked').map(item => item.material))
   const consistent = ['config', 'tokenizerConfig', 'tokenizer', 'chatTemplates'].every(material => checked.has(material as ConsistencyMaterialKind))
   return consistent
-    ? { state: 'consistent' as const, label: '一致' }
-    : { state: 'insufficient' as const, label: '材料不足' }
+    ? { state: 'consistent' as const, label: t('consistencyConsistent') }
+    : { state: 'insufficient' as const, label: t('consistencyInsufficientMaterials') }
 }
 
 export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMaterials): RepositoryConsistencyReport {
@@ -183,10 +184,10 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
     findings.push({
       id: 'vocab-mismatch',
       severity: 'warning',
-      title: '词表大小不一致',
+      title: t('vocabularyMismatchTitle'),
       left: field('config.vocab_size', 'count', String(configVocab), 'embedded'),
       right: field('tokenizer.vocab_count', 'count', String(tokenizerVocab), 'derived'),
-      detail: 'config.json 与 tokenizer.json 的词表项数不同。',
+      detail: t('vocabularyMismatchDetail'),
     })
   }
 
@@ -194,10 +195,10 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
     findings.push({
       id: 'missing-tokenizer-class',
       severity: 'warning',
-      title: '缺少 tokenizer_class',
-      left: field('tokenizer_config.json', 'file', '已读取', 'repository'),
-      right: field('tokenizer_class', 'string', '缺失', 'embedded'),
-      detail: '严格 tokenizer runtime 无法在未显式指定 class 时构造。',
+      title: t('missingTokenizerClassTitle'),
+      left: field('tokenizer_config.json', 'file', t('statusRead'), 'repository'),
+      right: field('tokenizer_class', 'string', t('statusMissing'), 'embedded'),
+      detail: t('missingTokenizerClassDetail'),
     })
   }
 
@@ -205,10 +206,10 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
     findings.push({
       id: 'missing-chat-template',
       severity: 'info',
-      title: '缺少可用 Chat Template',
-      left: field('chat_template.jinja', 'template', '未发现', 'repository'),
-      right: field('tokenizer_config.chat_template', 'template', '不可用', 'derived'),
-      detail: '仓库中没有可用的独立或内嵌 Chat Template。',
+      title: t('missingChatTemplateTitle'),
+      left: field('chat_template.jinja', 'template', t('statusNotFound'), 'repository'),
+      right: field('tokenizer_config.chat_template', 'template', t('statusUnavailable'), 'derived'),
+      detail: t('missingChatTemplateDetail'),
     })
   }
 
@@ -218,10 +219,10 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
     findings.push({
       id: 'eos-mismatch',
       severity: 'warning',
-      title: 'EOS Token 不一致',
+      title: t('eosMismatchTitle'),
       left: field('generation_config.eos_token_id', 'token IDs', tokenIDDisplay(generationEos), 'embedded'),
       right: tokenizerEos.field,
-      detail: 'generation_config 与 tokenizer 的可靠 EOS ID 不同。',
+      detail: t('eosMismatchDetail'),
     })
   }
 
@@ -231,10 +232,10 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
     findings.push({
       id: 'context-info',
       severity: 'info',
-      title: '上下文长度声明不同',
+      title: t('contextLengthMismatchTitle'),
       left: field('config.context', 'count', String(configContext), 'embedded'),
       right: field('tokenizer_config.model_max_length', 'count', String(tokenizerContext), 'embedded'),
-      detail: '模型与 tokenizer 的长度上限经常承担不同语义，请人工确认。',
+      detail: t('contextLengthMismatchDetail'),
     })
   }
 
@@ -242,10 +243,10 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
     findings.push({
       id: 'missing-config',
       severity: 'info',
-      title: '缺少模型配置',
-      left: field('repository', 'source', '当前仓库', 'repository'),
-      right: field('config.json', 'file', '缺失', 'repository'),
-      detail: '仓库中没有 config.json 或 configuration.json。',
+      title: t('missingModelConfigTitle'),
+      left: field('repository', 'source', t('currentRepository'), 'repository'),
+      right: field('config.json', 'file', t('statusMissing'), 'repository'),
+      detail: t('missingConfigDetail'),
     })
   }
 
@@ -282,7 +283,7 @@ function jsonObject(material: ConsistencyMaterial<unknown>): ParsedJSON {
     case 'available':
       return isRecord(material.value)
         ? { object: material.value, checked: true, status: { state: 'checked' } }
-        : { object: {}, checked: false, status: { state: 'failed', message: 'JSON 根节点不是对象。' } }
+        : { object: {}, checked: false, status: { state: 'failed', message: t('jsonRootNotObject') } }
   }
 }
 
@@ -304,7 +305,7 @@ function materialStatus(material: ConsistencyMaterial<unknown>): ConsistencyCove
 // ponytail: GGUF is intentionally unavailable in this web slice; add a parser before widening this union.
 function ggufStatus(material: ConsistencyMaterial<never>): ConsistencyCoverage['status'] {
   return material.state === 'available'
-    ? { state: 'skipped', reason: 'Web 仅读取 24-byte prefix，缺少 metadata/tensor directory。' }
+    ? { state: 'skipped', reason: t('ggufWebSkippedReason') }
     : material
 }
 
