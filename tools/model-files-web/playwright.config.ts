@@ -7,9 +7,9 @@ export default defineConfig({
   outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR ?? join(tmpdir(), 'model-files-web-playwright'),
   reporter: 'list',
   projects: [
-    { name: 'chromium', use: { browserName: 'chromium' } },
-    { name: 'firefox', use: { browserName: 'firefox' } },
-    { name: 'webkit', use: { browserName: 'webkit' } },
+    { name: 'chromium', use: { browserName: 'chromium', locale: 'zh-CN' } },
+    { name: 'firefox', use: { browserName: 'firefox', locale: 'zh-CN' } },
+    { name: 'webkit', use: { browserName: 'webkit', locale: 'zh-CN' } },
   ],
   use: {
     baseURL: 'http://127.0.0.1:5173',

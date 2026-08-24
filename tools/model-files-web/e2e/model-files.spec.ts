@@ -462,7 +462,9 @@ test('compares same-snapshot Raw tokenizers and isolates a failed right target',
     .getByRole('heading', { name: '对照 Tokenizer 结果' })
     .locator('..')
     .locator('..')
-  await expect(rightRawResult.getByRole('alert')).toContainText('缺少 tokenizer_config.json', { timeout: 5_000 })
+  await expect(rightRawResult.getByRole('alert')).toContainText('缺少 tokenizer_config.json', {
+    timeout: 5_000,
+  })
   await expect(diff.getByRole('button', { name: 'leftOnly · 0' })).toBeEnabled()
   await expect(page.getByRole('heading', { name: '主 Tokenizer 结果' })).toBeVisible()
   await expect(page.getByRole('table', { name: '主 Tokenizer Tokens' })).toBeVisible()
@@ -614,7 +616,8 @@ test('loads an isolated public Hugging Face comparison repository', async ({ pag
   await page.getByLabel('对照 Hugging Face 仓库').fill('fixture/empty')
   await page.getByRole('button', { name: '加载对照' }).click()
   const comparisonForm = page.locator('.comparison-repository form')
-  await expect(comparisonForm.getByRole('alert')).toHaveText('对照仓库没有可用 tokenizer.json。')
+  await expect(comparisonForm.getByRole('alert'))
+    .toHaveText('对照仓库没有可用 tokenizer.json 或 SentencePiece .model。')
   await expect(page.locator('.comparison-side')).toHaveCount(0)
   await expect(page.getByRole('table', { name: 'Tokenizer Tokens' })).toBeVisible()
 
@@ -754,7 +757,7 @@ test('loads a second local comparison directory without external requests', asyn
 
   await picker.setInputFiles(noTokenizerFixture)
   await expect(page.locator('.comparison-repository form').getByRole('alert'))
-    .toHaveText('对照本地目录没有可用 tokenizer.json。')
+    .toHaveText('对照本地目录没有可用 tokenizer.json 或 SentencePiece .model。')
   await expect(source).toHaveText('本地目录 · live · comparison-local-fixture · tokenizer.json')
   await expect(page.getByRole('table', { name: '主 Tokenizer Tokens' })).toBeVisible()
   await expect(page.getByRole('table', { name: '对照 Tokenizer Tokens' })).toBeVisible()
@@ -910,6 +913,120 @@ test('renders CR and LF as visible single-line tokens', async ({ page }) => {
   for (const piece of pieces) {
     expect(piece).not.toMatch(/[\r\n]/)
   }
+  expect(errors).toEqual([])
+})
+
+test('runs official SentencePiece models through Raw IDs Chat comparison and recovery', async ({ page }) => {
+  const errors = collectErrors(page)
+  const requests = await installFixtureRoutes(page, { includeSentencePieceTokenizers: true })
+  await openFixture(page, 20)
+
+  await page.getByRole('button', { name: /^bpe\/tokenizer\.model/ }).click()
+  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  const rawInput = page.getByRole('textbox', { name: 'Raw 输入' })
+  await rawInput.fill('Hello world.')
+  await expect(page.getByText('Token 数').locator('..').getByText('6')).toBeVisible({ timeout: 10_000 })
+  const table = page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr')
+  await expect(table).toHaveCount(6)
+  await expect(table.nth(0).locator('td').nth(1)).toContainText('285')
+  await expect(table.nth(0).locator('td').nth(4)).toContainText('▁He')
+  await expect(table.nth(5).locator('td').nth(4)).toContainText('.')
+  await expect(page.getByText('Decoded：Hello world.')).toBeVisible()
+
+  await page.getByRole('tab', { name: 'Token IDs 工作台' }).click()
+  await page.getByRole('textbox', { name: 'Token IDs' }).fill('[285,35,934,178,54,951]')
+  await page.getByRole('button', { name: '解码 ID' }).click()
+  await expect(page.getByText('解码文本：Hello world.')).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr')).toHaveCount(6)
+
+  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await page.getByRole('button', { name: '渲染并分词' }).click()
+  await expect(page.getByLabel('Chat 权威输入')).toHaveText('SP-JINJA You are concise.')
+  await expect(page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr').first())
+    .toBeVisible()
+  await expect(page.getByText('Decoded：SP-JINJA You are concise.')).toBeVisible()
+
+  await page.getByRole('combobox', { name: '对照 Tokenizer' }).selectOption('unigram/tokenizer.model')
+  await page.getByRole('button', { name: '打开对照' }).click()
+  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await page.getByRole('textbox', { name: 'Raw 输入' }).fill('I saw a girl with a telescope.')
+  const comparisonSummary = page.getByRole('region', { name: 'Tokenizer 对照摘要' })
+  await expect(comparisonSummary).toContainText('Left / Right Count14 / 14', {
+    timeout: 10_000,
+  })
+  await expect(comparisonSummary).toContainText('ID 序列不同', { timeout: 10_000 })
+  await expect(comparisonSummary).toContainText('#0 · 16 / 9', { timeout: 10_000 })
+  const diff = page.getByRole('region', { name: 'Tokenizer 词表差集统计' })
+  await expect(diff).toContainText('搜索差集不可用')
+  await expect(diff).toContainText('SentencePiece 不提供可解析的 tokenizer.json 词表；编码对照仍可用。')
+
+  await page.getByRole('combobox', { name: '对照 Tokenizer' }).selectOption('invalid-config/tokenizer.model')
+  const rightResult = page.locator('.comparison-side')
+  await expect(rightResult.getByRole('alert')).toBeVisible({
+    timeout: 10_000,
+  })
+  await expect(rightResult.getByRole('alert')).toHaveText(/\S/)
+  await expect(page.getByRole('heading', { name: '主 Tokenizer 结果' })).toBeVisible()
+  await page.getByRole('combobox', { name: '对照 Tokenizer' }).selectOption('bpe/tokenizer.model')
+  await page.getByRole('textbox', { name: 'Raw 输入' }).fill('Hello world.')
+  await expect(page.getByRole('region', { name: 'Tokenizer 对照摘要' })).toContainText('ID 序列相同', {
+    timeout: 10_000,
+  })
+
+  await page.getByRole('button', { name: /^unigram\/tokenizer\.model/ }).click()
+  await expect(
+    page.getByText('Tokenizer Config').locator('..'),
+  ).toContainText('缺失 · Raw 与 Token IDs 可用')
+  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await rawInput.fill('I saw a girl with a telescope.')
+  await expect(page.getByText('Token 数').locator('..').getByText('14')).toBeVisible({ timeout: 10_000 })
+  await expect(page.getByText('Decoded：I saw a girl with a telescope.')).toBeVisible()
+  await page.getByRole('tab', { name: 'Token IDs 工作台' }).click()
+  await page.getByRole('textbox', { name: 'Token IDs' })
+    .fill('[9,459,11,939,44,11,4,142,82,8,28,21,132,6]')
+  await page.getByRole('button', { name: '解码 ID' }).click()
+  await expect(page.getByText('解码文本：I saw a girl with a telescope.')).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr')).toHaveCount(14)
+  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await expect(page.getByRole('button', { name: '渲染并分词' })).toBeDisabled()
+
+  const modelRequestCountBeforeOversize = requests.filter(request => request.path.endsWith('/tokenizer.model')).length
+  await page.getByRole('button', { name: /^oversized\/tokenizer\.model/ }).click()
+  await expect(page.getByRole('alert')).toHaveText('Tokenizer 资源超过 32 MiB 上限。', {
+    timeout: 10_000,
+  })
+  expect(requests.filter(request => request.path.endsWith('/tokenizer.model')))
+    .toHaveLength(modelRequestCountBeforeOversize)
+  expect(requests.filter(request => request.path === 'oversized/tokenizer.model')).toHaveLength(0)
+
+  for (const path of ['bpe/tokenizer.model', 'bpe/tokenizer_config.json', 'bpe/chat_template.jinja']) {
+    expect(requests.filter(request => request.path === path)).toHaveLength(1)
+  }
+  expect(errors).toEqual([])
+})
+
+test('cancels a delayed SentencePiece load and keeps only the latest tokenizer session', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', 'Shared Worker cancellation timing is covered once in Chromium.')
+  const errors = collectErrors(page)
+  await installFixtureRoutes(page, {
+    includeSentencePieceTokenizers: true,
+    delayedContentModelId: fixtureModelId,
+    contentDelayMs: 250,
+    delayedContentPath: 'bpe/tokenizer.model',
+  })
+  await openFixture(page, 20)
+  const bpeRequest = page.waitForRequest(request => request.url().endsWith('/bpe/tokenizer.model'))
+  await page.getByRole('button', { name: /^bpe\/tokenizer\.model/ }).click()
+  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await page.getByRole('textbox', { name: 'Raw 输入' }).fill('Hello world.')
+  await bpeRequest
+
+  await page.getByRole('button', { name: /^unigram\/tokenizer\.model/ }).click()
+  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await page.getByRole('textbox', { name: 'Raw 输入' }).fill('I saw a girl with a telescope.')
+  await delay(350)
+  await expect(page.getByText('Decoded：I saw a girl with a telescope.')).toBeVisible({ timeout: 10_000 })
+  await expect(page.getByText('Decoded：Hello world.')).toHaveCount(0)
   expect(errors).toEqual([])
 })
 

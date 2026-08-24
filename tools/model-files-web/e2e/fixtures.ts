@@ -1,5 +1,5 @@
 import type { Page, Route } from '@playwright/test'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 export const fixtureModelId = 'fixture/model'
@@ -50,11 +50,13 @@ type FixtureOptions = {
   manifestDelayMs?: number
   manifestDelayForModel?: { modelId: string; delayMs: number }
   delayedContentModelId?: string
+  delayedContentPath?: string
   contentDelayMs?: number
   manifestFailures?: number
   rangeBehavior?: 'valid' | 'http200'
   includeBoundaryFiles?: boolean
   includeComparisonTokenizers?: boolean
+  includeSentencePieceTokenizers?: boolean
   omitIndependentChatTemplate?: boolean
   configChatTemplate?: unknown
   largeVocabularyWithoutConfig?: boolean
@@ -216,6 +218,25 @@ const localReaderFiles = new Map<string, Uint8Array>([
   ['unknown.dat', Uint8Array.from([0x61, 0x00])],
 ])
 
+const sentencePieceModelDir = new URL('../src/core/fixtures/sentencepiece/', import.meta.url)
+const bpeModel = await readFile(new URL('test_bpe_model.model', sentencePieceModelDir))
+const unigramModel = await readFile(new URL('test_model.model', sentencePieceModelDir))
+const bpeTokenizerConfig = JSON.stringify({
+  tokenizer_class: 'BertTokenizer',
+  unk_token: '[UNK]',
+  eos_token_id: 1,
+  chat_template: 'SP {{ messages[0].content }}',
+})
+
+const sentencePieceBodies = new Map<string, Uint8Array>([
+  ['bpe/tokenizer.model', new Uint8Array(bpeModel)],
+  ['bpe/tokenizer_config.json', bytes(bpeTokenizerConfig)],
+  ['bpe/chat_template.jinja', bytes('SP-JINJA {{ messages[0].content }}')],
+  ['unigram/tokenizer.model', new Uint8Array(unigramModel)],
+  ['invalid-config/tokenizer.model', new Uint8Array(bpeModel)],
+  ['invalid-config/tokenizer_config.json', bytes('{invalid')],
+])
+
 export async function installFixtureRoutes(page: Page, options: FixtureOptions = {}): Promise<RequestRecord[]> {
   const requests: RequestRecord[] = []
   let manifestFailures = options.manifestFailures ?? 0
@@ -262,6 +283,7 @@ export async function installFixtureRoutes(page: Page, options: FixtureOptions =
         modelId,
         options.includeBoundaryFiles ?? false,
         options.includeComparisonTokenizers ?? false,
+        options.includeSentencePieceTokenizers ?? false,
         options.omitIndependentChatTemplate ?? false,
         options.configChatTemplate,
         options.largeVocabularyWithoutConfig ?? false,
@@ -270,7 +292,9 @@ export async function installFixtureRoutes(page: Page, options: FixtureOptions =
     }
     await fulfillFile(route, requests, options.rangeBehavior ?? 'valid', options.configChatTemplate,
       options.largeVocabularyWithoutConfig ?? false, options.delayedContentModelId, options.contentDelayMs,
+      options.delayedContentPath,
       options.includeComparisonTokenizers ?? false,
+      options.includeSentencePieceTokenizers ?? false,
     )
   })
   return requests
@@ -280,6 +304,7 @@ function manifest(
   modelId: string,
   includeBoundaryFiles: boolean,
   includeComparisonTokenizers: boolean,
+  includeSentencePieceTokenizers: boolean,
   omitChatTemplate: boolean,
   configChatTemplate?: unknown,
   largeVocabularyWithoutConfig = false,
@@ -296,8 +321,19 @@ function manifest(
         { rfilename: 'oversized.json', size: 32 * 1024 * 1024 + 1, blobId: 'oversized' },
         { rfilename: 'pytorch_model.bin', size: 1, blobId: 'locked' },
       ] : []),
+      ...(includeSentencePieceTokenizers ? sentencePieceManifest() : []),
     ],
   }
+}
+
+function sentencePieceManifest() {
+  return [...sentencePieceBodies].map(([rfilename, body]) => ({
+    rfilename,
+    size: body.byteLength,
+    blobId: `sp-${rfilename}`,
+  })).concat([
+    { rfilename: 'oversized/tokenizer.model', size: 32 * 1024 * 1024 + 1, blobId: 'sp-oversized' },
+  ])
 }
 
 export async function writeFixtureDirectory(directory: string): Promise<void> {
@@ -327,7 +363,9 @@ async function fulfillFile(
   largeVocabularyWithoutConfig = false,
   delayedContentModelId?: string,
   contentDelayMs?: number,
+  delayedContentPath?: string,
   includeComparisonTokenizers = false,
+  includeSentencePieceTokenizers = false,
 ) {
   const url = new URL(route.request().url())
   const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/resolve\/([0-9a-f]{40})\/(.+)$/)
@@ -348,10 +386,16 @@ async function fulfillFile(
     await route.fulfill({ status: range === null ? 200 : 206, body: Buffer.from(crossBody) })
     return
   }
-  if (delayedContentModelId === requestedModelId && contentDelayMs !== undefined) {
+  if (delayedContentModelId === requestedModelId && contentDelayMs !== undefined &&
+    (delayedContentPath === undefined || path === delayedContentPath)) {
     await delay(contentDelayMs)
   }
-  const body = comparisonBodies(configChatTemplate, largeVocabularyWithoutConfig, includeComparisonTokenizers).get(path)
+  const body = comparisonBodies(
+    configChatTemplate,
+    largeVocabularyWithoutConfig,
+    includeComparisonTokenizers,
+    includeSentencePieceTokenizers,
+  ).get(path)
   if (body === undefined) {
     await route.fulfill({ status: 404, body: 'missing fixture' })
     return
@@ -388,6 +432,7 @@ function comparisonBodies(
   configChatTemplate?: unknown,
   largeVocabularyWithoutConfig = false,
   includeComparisonTokenizers = false,
+  includeSentencePieceTokenizers = false,
 ): Map<string, Uint8Array> {
   let bodies = configChatTemplate === undefined ? files : new Map(files).set('tokenizer_config.json', bytes(JSON.stringify({
     ...JSON.parse(tokenizerConfig),
@@ -404,6 +449,7 @@ function comparisonBodies(
     bodies.set('tokenizer.json', bytes(JSON.stringify(parsed)))
   }
   if (includeComparisonTokenizers) bodies = new Map([...bodies, ...comparisonFiles])
+  if (includeSentencePieceTokenizers) bodies = new Map([...bodies, ...sentencePieceBodies])
   return bodies
 }
 
