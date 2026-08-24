@@ -1,4 +1,5 @@
 import type { Page, Route } from '@playwright/test'
+import { Buffer } from 'node:buffer'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
@@ -353,6 +354,23 @@ export async function writeComparisonFixtureDirectory(directory: string): Promis
 export async function writeNoTokenizerFixtureDirectory(directory: string): Promise<void> {
   await mkdir(directory, { recursive: true })
   await Promise.all([...localReaderFiles].map(([path, body]) => writeFile(join(directory, path), body)))
+}
+
+export async function writePerformanceFindFixture(directory: string): Promise<number> {
+  await mkdir(directory, { recursive: true })
+  const needle = 'PERF_TAIL_NEEDLE'
+  const targetBytes = 32 * 1024 * 1024 - 1
+  const line = Buffer.from(`${'.'.repeat(511)}\n`, 'utf8')
+  const prefixBytes = targetBytes - Buffer.byteLength(needle)
+  const paddingBytes = prefixBytes % line.byteLength
+  const fullLines = Array.from({ length: (prefixBytes - paddingBytes) / line.byteLength }, () => line)
+  const body = Buffer.concat([
+    ...fullLines,
+    Buffer.alloc(paddingBytes, 0x2e),
+    Buffer.from(needle, 'utf8'),
+  ])
+  await writeFile(join(directory, 'performance-find.txt'), body)
+  return body.byteLength
 }
 
 async function fulfillFile(

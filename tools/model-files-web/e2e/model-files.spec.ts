@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test'
+import { Buffer } from 'node:buffer'
+import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import {
   crossRepositoryModelId,
   crossRepositoryRevision,
@@ -9,6 +10,7 @@ import {
   writeNoTokenizerFixtureDirectory,
   writeComparisonFixtureDirectory,
   writeFixtureDirectory,
+  writePerformanceFindFixture,
 } from './fixtures.ts'
 
 test('inspects SafeTensors through two exact ranges without tensor data', async ({ page }) => {
@@ -296,7 +298,9 @@ test('keeps 10k-token Raw results progressive and latest-only', async ({ page },
   const started = Date.now()
   await input.fill('hello '.repeat(10_000))
   await expect(page.getByText('Token 数').locator('..').getByText('10,000')).toBeVisible({ timeout: 10_000 })
-  expect(Date.now() - started).toBeLessThan(10_000)
+  const tokenizationMs = Date.now() - started
+  expect(tokenizationMs).toBeLessThan(10_000)
+  console.log(`PERF 10k-token tokenizationMs=${tokenizationMs}`)
   await expect(page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr')).toHaveCount(1000)
   await page.getByRole('button', { name: '再显示 1,000 个 Token' }).click()
   await expect(page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr')).toHaveCount(2000)
@@ -916,16 +920,18 @@ test('renders CR and LF as visible single-line tokens', async ({ page }) => {
   expect(errors).toEqual([])
 })
 
-test('runs official SentencePiece models through Raw IDs Chat comparison and recovery', async ({ page }) => {
+test('runs official SentencePiece models through Raw IDs Chat comparison and recovery', async ({ page }, testInfo) => {
   const errors = collectErrors(page)
   const requests = await installFixtureRoutes(page, { includeSentencePieceTokenizers: true })
   await openFixture(page, 20)
 
+  const firstResultStarted = Date.now()
   await page.getByRole('button', { name: /^bpe\/tokenizer\.model/ }).click()
   await page.getByRole('tab', { name: 'Raw 工作台' }).click()
   const rawInput = page.getByRole('textbox', { name: 'Raw 输入' })
   await rawInput.fill('Hello world.')
   await expect(page.getByText('Token 数').locator('..').getByText('6')).toBeVisible({ timeout: 10_000 })
+  const firstResultMs = Date.now() - firstResultStarted
   const table = page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr')
   await expect(table).toHaveCount(6)
   await expect(table.nth(0).locator('td').nth(1)).toContainText('285')
@@ -947,6 +953,7 @@ test('runs official SentencePiece models through Raw IDs Chat comparison and rec
   await expect(page.getByText('Decoded：SP-JINJA You are concise.')).toBeVisible()
 
   await page.getByRole('combobox', { name: '对照 Tokenizer' }).selectOption('unigram/tokenizer.model')
+  const dualSessionStarted = Date.now()
   await page.getByRole('button', { name: '打开对照' }).click()
   await page.getByRole('tab', { name: 'Raw 工作台' }).click()
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill('I saw a girl with a telescope.')
@@ -954,6 +961,7 @@ test('runs official SentencePiece models through Raw IDs Chat comparison and rec
   await expect(comparisonSummary).toContainText('Left / Right Count14 / 14', {
     timeout: 10_000,
   })
+  const dualSessionFirstComparisonMs = Date.now() - dualSessionStarted
   await expect(comparisonSummary).toContainText('ID 序列不同', { timeout: 10_000 })
   await expect(comparisonSummary).toContainText('#0 · 16 / 9', { timeout: 10_000 })
   const diff = page.getByRole('region', { name: 'Tokenizer 词表差集统计' })
@@ -1001,6 +1009,13 @@ test('runs official SentencePiece models through Raw IDs Chat comparison and rec
 
   for (const path of ['bpe/tokenizer.model', 'bpe/tokenizer_config.json', 'bpe/chat_template.jinja']) {
     expect(requests.filter(request => request.path === path)).toHaveLength(1)
+  }
+  if (testInfo.project.name === 'chromium') {
+    await testInfo.attach('sentencepiece-perf.json', {
+      body: Buffer.from(JSON.stringify({ firstResultMs, dualSessionFirstComparisonMs }, null, 2)),
+      contentType: 'application/json',
+    })
+    console.log(`PERF sentencepiece firstResultMs=${firstResultMs} dualSessionFirstComparisonMs=${dualSessionFirstComparisonMs}`)
   }
   expect(errors).toEqual([])
 })
@@ -1373,6 +1388,62 @@ test('find works in JSON Markdown and full progressive text', async ({ page }) =
   await expect(page.getByText('显示 1 / 1', { exact: true })).toBeVisible()
   await expect(row).toContainText(query)
   expect(errors).toEqual([])
+})
+
+test('finds the tail of an almost 32 MiB progressive text within budget', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', 'The near-cap text find gate is recorded once in Chromium.')
+  const errors = collectErrors(page)
+  const externalRequests: string[] = []
+  page.on('request', request => {
+    if (new URL(request.url()).hostname !== '127.0.0.1') externalRequests.push(request.url())
+  })
+  const localFixture = testInfo.outputPath('performance-find-fixture')
+  const exactBytes = await writePerformanceFindFixture(localFixture)
+  const loadStarted = Date.now()
+  await page.goto('/')
+  const picker = page.getByLabel('选择本地目录')
+  await picker.setInputFiles(localFixture)
+
+  const table = page.getByRole('table', { name: '行列表' })
+  await expect(table).toBeVisible({ timeout: 10_000 })
+  const loadMs = Date.now() - loadStarted
+  expect(loadMs).toBeLessThan(10_000)
+  expect(exactBytes).toBe(32 * 1024 * 1024 - 1)
+
+  const tableViewport = page.locator('.table-scroll')
+  await tableViewport.focus()
+  const findStarted = Date.now()
+  await page.keyboard.press('Meta+F')
+  const searchInput = page.getByRole('textbox', { name: '当前文件查找' })
+  await searchInput.fill('PERF_TAIL_NEEDLE')
+  await expect(page.getByText('1 / 1', { exact: true })).toBeVisible({ timeout: 3_000 })
+  const findMs = Date.now() - findStarted
+  expect(findMs).toBeLessThan(3_000)
+
+  const row = table.getByRole('row').filter({ hasText: 'PERF_TAIL_NEEDLE' })
+  const currentMark = row.locator('mark.current')
+  await expect(row).toHaveCount(1)
+  const hitLineNumber = Number(((await row.locator('td').first().textContent()) ?? '').replace(/\D/g, ''))
+  expect(hitLineNumber).toBeGreaterThan(1001)
+  await expect(currentMark).toHaveCount(1)
+  await expect(currentMark).toHaveAttribute('aria-current', 'true')
+  expect(await currentMark.evaluate((element, selector) => {
+    const viewport = document.querySelector(selector)
+    if (!(element instanceof HTMLElement) || !(viewport instanceof HTMLElement)) return false
+    const mark = element.getBoundingClientRect()
+    const bounds = viewport.getBoundingClientRect()
+    return mark.bottom >= bounds.top && mark.top <= bounds.bottom
+      && mark.right >= bounds.left && mark.left <= bounds.right
+  }, '.table-scroll')).toBe(true)
+
+  const evidence = { exactBytes, loadMs, findMs, hitLineNumber, consoleErrorsAndWarnings: errors, externalRequests }
+  await testInfo.attach('performance-find.json', {
+    body: Buffer.from(JSON.stringify(evidence, null, 2)),
+    contentType: 'application/json',
+  })
+  console.log(`PERF almost-32m-find exactBytes=${exactBytes} loadMs=${loadMs} findMs=${findMs} hitLineNumber=${hitLineNumber}`)
+  expect(errors).toEqual([])
+  expect(externalRequests).toEqual([])
 })
 
 test('Jinja source find preserves query while editing and resets on file switch', async ({ page }) => {

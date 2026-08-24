@@ -117,7 +117,7 @@ test('Chat: Qwen config, README, SafeTensors, Tokenizer Raw, Chat and cross-repo
     cachedVocabularyQueryMs,
     vocabularyRequestsAfter,
   })
-  console.log(`LIVE Qwen revision=${identity.sha} comparison revision=${comparisonIdentity.sha} ranges=${JSON.stringify(requests.filter(request => request.range !== null))}`)
+  console.log(`LIVE Qwen revision=${identity.sha} comparison revision=${comparisonIdentity.sha} firstVocabularyQueryMs=${firstVocabularyQueryMs} cachedVocabularyQueryMs=${cachedVocabularyQueryMs} ranges=${JSON.stringify(requests.filter(request => request.range !== null))}`)
 })
 
 test('T5 Raw reports normalization as Decoded only', async ({ page }, testInfo) => {
