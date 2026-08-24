@@ -2,6 +2,7 @@
 
 状态：已确认
 日期：2026-08-22
+更新日期：2026-08-24
 Web 基线：`11e1086 feat(model-files-web): add complete browser inspector`
 原生对照上界：`59292c6 fix(model-files): close English UI localization gaps`
 
@@ -23,29 +24,29 @@ Web 基线：`11e1086 feat(model-files-web): add complete browser inspector`
 
 ## 3. 功能差异矩阵
 
-| 原生基线后行为 | Web 当前状态 | 本轮决定 | 主要原生证据 | Web 目标入口 |
+| 原生基线后行为 | Web 当前状态 | 本轮决定 | 主要原生证据 | Web 证据入口 |
 | --- | --- | --- | --- | --- |
-| Tokenizer 换行/空白片段保持单行显示 | 未完整对齐；CRLF 与关闭空白显示时仍可换行 | 移植 | `7ecdb07` | `visiblePiece()`、Token table E2E |
-| 独立 SentencePiece `.model` 编解码 | `BLOCKED` | 必做；候选依赖门失败，等待外部变化/新授权 | `cff8139`、`docs/sentencepiece-web-feasibility.md` | Worker runtime、same-directory bundle |
-| 源码语法高亮 | 缺失 | 移植 | `457b66e` | `Readers.tsx` 或最小专用 Reader |
-| PDF 本地预览 | 缺失 | 移植；浏览器 Blob URL/内建 viewer | `457b66e` | inspection dispatch、PDF Reader |
-| 不支持的二进制明确拒绝 | 仅依赖 UTF-8 fatal decode，不拒绝 NUL | 移植 | `457b66e` | 全文读取后的文本边界检查 |
-| Token ID parser 与反解模式 | 缺失 | 移植 | `345e874`、`d4ad1f1`、`04b406b` | Worker protocol、Tokenizer workspace |
-| Special flag、segment/table/ID 共享选择 | 缺失 | 移植 | `c1e5922` | Tokenizer result model/UI |
-| Chat tools/variables、正文/模板开销与 Exact role | Tokenizer Chat 固定 `tools: []`，缺 variables/归因 | 移植；Decoded-only 不归因 | `c0e9d26`、`638c153` | Chat input/encode flow |
-| jinja/config/named template catalog | 只支持独立文件或单字符串 | 移植三种已验证形态 | `34f2189` | config parse、Chat source control |
-| 缺 `tokenizer_class` 显式恢复 | JS runtime 不按 class 分派 | N/A；不得制造假选择器 | `be7272f` | 一致性仍可报告缺失 class |
-| tokenizer.json 按需词表搜索 | 只在 load 时构造统计 | 移植；索引只活在 Worker/session | `ea916c0` | Worker search request |
-| 仓库一致性报告与 coverage | 缺失 | 移植 Web 可证明的规则 | `644bf66`、`00ed1cc`、`1c5e095` | 纯分析模块、header badge、Config report |
-| adapter/processor 配置分类 | Web 当前排除了 processor/preprocessor | 移植且复用 configuration 类别 | `6b3ca5f` | `classifyFile()` |
-| 同快照 tokenizer 对照 | 缺失 | 移植 | `e3e2001`、`0446d3a` | 第二 Tokenizer session、comparison UI |
-| 词表差集与搜索 | 缺失 | 移植；按 piece、先过滤后截断 | `d099951` | comparison session |
-| 跨仓库 tokenizer 对照 | 缺失 | 移植为第二公开 HF 或第二本地目录选择 | `46b43e9` | 现有 loadRepository/loadLocalDirectory |
-| Python/YAML/JSON 折叠 | 缺失 | 移植原生扫描合同 | `0c388fe` | Source Reader、纯扫描模块 |
-| 当前文件 `Cmd/Ctrl+F` 查找 | 现有只是行筛选 | 移植完整文本查找 | `5050df3` | Source/Raw/Jinja reader |
-| `zh-Hans` / `en` | 仅中文 | 跟随浏览器语言，无应用内选择器 | `ac3249e`、`59292c6` | 一个消息目录与 Intl 格式化 |
+| Tokenizer 换行/空白片段保持单行显示 | 已实现 | PASS | `7ecdb07` | `App.tsx visiblePiece()`；E2E `renders CR and LF as visible single-line tokens` |
+| 独立 SentencePiece `.model` 编解码 | 已实现 | PASS | `cff8139`、`docs/sentencepiece-web-feasibility.md` | `tokenizerProtocol.ts format: sentencepiece`、`tokenizer.worker.ts`；E2E `runs official SentencePiece models through Raw IDs Chat comparison and recovery` |
+| 源码语法高亮 | 已实现 | PASS | `457b66e` | `sourceHighlight.worker.ts`、`Readers.tsx SourceInspection`；E2E `dispatches local Python and PDF readers safely` |
+| PDF 本地预览 | 已实现 | PASS | `457b66e` | `Readers.tsx PdfInspection`；E2E `dispatches local Python and PDF readers safely` |
+| 不支持的二进制明确拒绝 | 已实现 | PASS | `457b66e` | `core/readers.ts decodeStrictText()` 的 fatal UTF-8 与 NUL 边界；unit `rejects NUL bytes in strict text` |
+| Token ID parser 与反解模式 | 已实现 | PASS | `345e874`、`d4ad1f1`、`04b406b` | `core/tokenizer.ts parseTokenIds()`；E2E `decodes shared Token IDs with special flags and linked selection` |
+| Special flag、segment/table/ID 共享选择 | 已实现 | PASS | `c1e5922` | `core/tokenizer.ts buildSpecialTokenIndex()/tokenFlag()` 与共享选中 token；同上 E2E |
+| Chat tools/variables、正文/模板开销与 Exact role | 已实现 | PASS | `c0e9d26`、`638c153` | `core/tokenAttribution.ts buildChatContext()/chatTokenOverhead()/chatTokenRoles()`；E2E `attributes Exact Chat tokens to custom message roles` |
+| jinja/config/named template catalog | 已实现 | PASS | `34f2189` | `core/chatTemplates.ts parseChatTemplates()/mergeChatTemplates()`；E2E `selects between independent and tokenizer config chat templates`、`sorts named object templates and switches without rereading the config` |
+| 缺 `tokenizer_class` 显式恢复 | 用户批准不适用 | N/A | `be7272f` | `@huggingface/tokenizers` 不按 class 分派；一致性 warning 由 `core/consistency.ts analyzeRepositoryConsistency()` 保留 |
+| tokenizer.json 按需词表搜索 | 已实现 | PASS | `ea916c0` | `core/tokenizer.ts buildTokenizerVocabularyIndex()/filterTokenizerVocabulary()`、`App.tsx searchVocabulary()`；E2E `searches vocabulary latest-only without rereading tokenizer resources` |
+| 仓库一致性报告与 coverage | 已实现 | PASS | `644bf66`、`00ed1cc`、`1c5e095` | `core/consistency.ts analyzeRepositoryConsistency()`、header badge/report；E2E `consistency background acquires materials once and reports repository warnings` |
+| adapter/processor 配置分类 | 已实现 | PASS | `6b3ca5f` | `src/core/huggingface.test.ts` 的 `matches native file intent classification and reader-friendly ordering`；`src/core/consistency.test.ts` 的 `builds identity fields with fixed order, aliases, adapters, and processor sizes` |
+| 同快照 tokenizer 对照 | 已实现 | PASS | `e3e2001`、`0446d3a` | `tokenizerClient.ts` 双 session；E2E `compares same-snapshot Raw tokenizers and isolates a failed right target` |
+| 词表差集与搜索 | 已实现 | PASS | `d099951` | `tokenizerProtocol.ts prepare-vocabulary-diff`、`core/tokenizer.ts buildTokenizerVocabularyDiff()`；SentencePiece E2E 明确跳过词表差集并保留编解码对照 |
+| 跨仓库 tokenizer 对照 | 已实现 | PASS | `46b43e9` | 公开 HF 与第二本地目录入口；E2E `loads an isolated public Hugging Face comparison repository`、`loads a second local comparison directory without external requests` |
+| Python/YAML/JSON 折叠 | 已实现 | PASS | `0c388fe` | `core/sourceFolding.ts foldRanges()`、`Readers.tsx`；E2E `folds Python YAML and JSON while preserving the full source` |
+| 当前文件 `Cmd/Ctrl+F` 查找 | 已实现 | PASS | `5050df3` | `Readers.tsx SourceFind`、`core/readers.ts navigateTextMatches()`；E2E `source find navigates matches and reveals collapsed ancestors` |
+| `zh-Hans` / `en` | 已实现 | PASS | `ac3249e`、`59292c6` | `i18n.ts` 单消息目录与 `Intl` 格式化；E2E `runs the core repository and tokenizer entry points in English` |
 
-文档截图、LICENSE 和验收记录提交本身不算新产品功能；最终只按实际 PASS/N/A/NO-GO 结果同步 Web 文档。
+文档截图、LICENSE 和验收记录提交本身不算新产品功能；当前第 3 节只按实际 PASS/N/A 结果同步 Web 文档。
 
 ## 4. Web 平台适配
 
@@ -143,8 +144,8 @@ Web 继续只读取 GGUF 24-byte prefix，因此 `gguf-context-mismatch` 与 `gg
 
 ### 6.1 工件与矩阵
 
-- `SPEC.md`、`GOAL.md`、README、产品化计划、依赖清单和新的 parity acceptance 互相一致。
-- 本规格矩阵每一项最终为 PASS、用户确认的 N/A，或因依赖门明确 BLOCKED；不得以旧测试或作者自述代替证据。
+- `SPEC.md` 第 3 节、`GOAL.md`、README、产品化计划、依赖清单和新的 parity acceptance 互相一致。
+- 本规格矩阵每一项当前为 PASS 或用户确认的 N/A，不以旧测试或作者自述代替证据。
 - 除用户已有 `tools/model-files/.DS_Store` 外，不夹带无关工作区文件；不 push、tag、release 或部署。
 
 ### 6.2 自动化
@@ -152,7 +153,7 @@ Web 继续只读取 GGUF 24-byte prefix，因此 `gguf-context-mismatch` 与 `gg
 - `cd tools/model-files-web && npm run check` exit 0。
 - `cd tools/model-files-web && npm run test:e2e` exit 0；Chromium、Firefox、WebKit 的离线 fixture 覆盖新功能；任何 skip 都有平台原因和对应的其他执行证据。
 - `cd tools/model-files-web && npm run test:e2e:live` exit 0；每个 manifest 返回 SHA 后，后续内容 URL 全部使用该 SHA；验收记录实际 SHA，并覆盖真实 tokenizer 诊断和跨仓库对照。
-- `npm audit --omit=dev` 无 critical/high；新增 runtime 依赖有版本、许可证、bundle 和维护性记录。
+- `npm audit --omit=dev --registry=https://registry.npmjs.org --json` 无 critical/high；新增 runtime 依赖有版本、许可证、bundle 和维护性记录。
 - `git diff --check`、目标文件 secret scan、staged diff review 通过。
 
 ### 6.3 真实浏览器

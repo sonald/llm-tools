@@ -1,12 +1,14 @@
 # ModelFiles Web 本地功能完整性计划
 
-状态：T11–T20 已完成；本地功能完整性 `PASS`，发布后置
+状态：T11–T20 本地功能完整性已完成；T21–T34 原生功能追平已完成；功能/运行时验收 `PASS`；性能测试提交 `81b8eb9` 已完成；五份文档将由本文件所在提交完成收口，最终 `PASS`；发布后置
 
 日期：2026-08-10
 
-适用基线：`edb0f56c89d7e5f2edcd17f1a4c6eadd7e1532da` 加当前未提交的 `tools/model-files-web/`
+更新日期：2026-08-24
 
-当前里程碑：本地功能完整性完成（不发布、不打 tag、不要求远端 CI）
+历史本地功能基线：`edb0f56c89d7e5f2edcd17f1a4c6eadd7e1532da`；功能/性能提交到 `81b8eb9`；文档收口为本文件所在提交
+
+当前里程碑：T21–T34 原生功能追平完成（不发布、不打 tag、不要求远端 CI）
 
 历史证据：[v0.1 纵向验收记录](v0.1-acceptance.md)
 
@@ -375,7 +377,30 @@ git diff --check
 
 现有 `.github/workflows/model-files-web.yml`、tag 约定和 Pages 方案保留，但当前不执行、不验收，也不影响 Checkpoint H。只有用户明确启动发布阶段后，才重新核对 remote、tag、干净 checkout、production smoke、artifact digest 和回滚。
 
-## 9. 执行纪律
+## 9. T21–T34 原生功能追平完成段
+
+本段只记录 Web 基线后的追加范围，不改写上方 T11–T20 历史数字。完整命令、counts、request ledger、截图哈希和 Git 状态见 [原生追平验收记录](native-parity-acceptance.md)。最终矩阵只有 `PASS` 与用户批准的 `N/A`：`tokenizer_class` override 为 `N/A`，因为 `@huggingface/tokenizers` 不按 class 分派；一致性缺失 warning 保留。
+
+| 任务 | 结论 | 关键提交 / 当前证据 |
+| --- | --- | --- |
+| T21 SentencePiece dependency/runtime/browser coverage | `PASS` | `ddc5d02`、`ded42c1`、`16591ac`、`93ef3bc`；三引擎 BPE/Unigram 产品流 |
+| T22 Source/PDF/binary readers | `PASS` | `aa0b041`；local reader dispatch E2E |
+| T23 Source folding ranges/controls | `PASS` | `5e40fe6`、`ad81d5d`；Python/YAML/JSON folding E2E |
+| T24 In-file find scanner/UI/performance | `PASS` | `4fb0cf7`、`2f3a05b`、`81b8eb9` near-cap perf gate |
+| T25 Token ID diagnostics/special/shared selection | `PASS` | `af7f162`；shared Token IDs E2E |
+| T26 Chat context/tools/variables/overhead/roles | `PASS` | `544f845`、`103a829`、`4e02e5e`、`66ab409` |
+| T27 Template catalog | `PASS` | `b5e589d`；independent/config/named forms E2E |
+| T28 On-demand vocabulary search | `PASS` | `c0a86fb`；latest-only/no-reread E2E |
+| T29 Consistency analysis/report/adapter-processor classification | `PASS` | `34c86c5`、`0fcb696`；materials-once E2E |
+| T30 Comparison session isolation | `PASS` | `c533d85`；failed-right recovery E2E |
+| T31 Same-snapshot comparison/vocabulary diff | `PASS` | `9d76e5c`、`e4dd98b` |
+| T32 Public-repository comparison | `PASS` | `ed34bbe`；isolated public HF E2E |
+| T33 Second-local-directory comparison | `PASS` | `99f0227`；no external requests E2E |
+| T34 zh-Hans/en localization/runtime acceptance | `PASS` | `0719b62` + 本次文档同步；English core E2E |
+
+2026-08-24 权威门禁：`npm run check` exit 0（159 pass/0 fail）；offline E2E exit 0（108 pass、27 explicit skips、0 fail）；live E2E exit 0（3 pass）；official registry `npm audit --omit=dev --registry=https://registry.npmjs.org --json` exit 0 且全 severity 为 0；SentencePiece reproducible build exit 0 且 artifacts hash unchanged；production Chromium focused responsive test exit 0。性能测试已提交到 `81b8eb9`，五份文档由本文件所在提交完成收口；无 push/tag/release/deploy。
+
+## 10. 执行纪律
 
 - 一次只实施一个任务；每个任务先补最小失败测试，再实现，再跑自己的 unit/E2E。
 - 每个 Checkpoint 停下来更新本计划的实际结果和偏差，再进入下一阶段。
