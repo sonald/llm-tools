@@ -545,6 +545,8 @@ private struct WeightWorkspaceView: View {
     @State private var query = ""
     @State private var selectedMetadataKey: String?
     @State private var selectedTensorName: String?
+    @State private var showsTensorInspector = true
+    @State private var tensorTreeID = UUID()
     @FocusState private var queryIsFocused: Bool
 
     var body: some View {
@@ -558,9 +560,11 @@ private struct WeightWorkspaceView: View {
                 }
             case .tensors:
                 HSplitView {
-                    tensorTable.frame(minWidth: 520)
-                    tensorInspector
-                        .frame(minWidth: 260, idealWidth: 310, maxWidth: 390)
+                    tensorView.frame(minWidth: 520)
+                    if showsTensorInspector {
+                        tensorInspector
+                            .frame(minWidth: 260, idealWidth: 310, maxWidth: 390)
+                    }
                 }
             default:
                 ScrollView {
@@ -601,11 +605,11 @@ private struct WeightWorkspaceView: View {
     }
 
     private var filteredTensors: [TensorDescriptor] {
-        guard !query.isEmpty else { return tensors }
-        return tensors.filter {
-            $0.name.localizedCaseInsensitiveContains(query)
-                || $0.dataType.localizedCaseInsensitiveContains(query)
-        }
+        TensorHierarchy.matches(tensors, query: query)
+    }
+
+    private var tensorRows: [TensorHierarchyRow] {
+        TensorHierarchy.build(filteredTensors)
     }
 
     private var metadataTable: some View {
@@ -660,25 +664,137 @@ private struct WeightWorkspaceView: View {
         }
     }
 
-    private var tensorTable: some View {
+    private var tensorView: some View {
         VStack(spacing: 0) {
-            tableSearch(
-                title: "Tensors",
-                count: filteredTensors.count,
-                prompt: String(localized: "搜索名称或 dtype")
-            )
-            Divider()
-            Table(filteredTensors, selection: $selectedTensorName) {
-                TableColumn("名称", value: \.name)
-                TableColumn("Shape") { tensor in
-                    Text(tensor.shapeText).font(.system(.body, design: .monospaced))
+            HStack(spacing: 12) {
+                Text("Tensors").font(.headline)
+                Text(String(localized: "\(filteredTensors.count) 项"))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    tensorTreeID = UUID()
+                } label: {
+                    Label(String(localized: "全部收起"), systemImage: "chevron.up")
+                        .font(.caption)
                 }
-                TableColumn("类型", value: \.dataType)
-                TableColumn("参数") { tensor in
-                    Text(tensor.parameterCount.formatted()).monospacedDigit()
+                .help(String(localized: "全部收起"))
+                TextField(String(localized: "搜索名称或 dtype"), text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 280)
+                    .focused($queryIsFocused)
+                Button {
+                    showsTensorInspector.toggle()
+                } label: {
+                    Label(
+                        showsTensorInspector ? String(localized: "隐藏详情") : String(localized: "显示详情"),
+                        systemImage: showsTensorInspector ? "rectangle.righthalf.inset.filled.arrow.right" : "rectangle.lefthalf.inset.filled.arrow.left"
+                    )
+                    .labelStyle(.iconOnly)
                 }
+                .accessibilityLabel(showsTensorInspector
+                    ? String(localized: "隐藏详情")
+                    : String(localized: "显示详情"))
+                .help(showsTensorInspector
+                    ? String(localized: "隐藏右侧 Tensor 详情")
+                    : String(localized: "显示右侧 Tensor 详情"))
             }
+            .padding(.horizontal, 14)
+            .frame(height: 48)
+            if selectedTensorName != nil {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(fullTensorPath(selectedTensorName ?? ""))
+                        .font(.caption.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(.quaternary.opacity(0.25))
+            }
+            tensorColumnHeader
+            Divider()
+            List(tensorRows, id: \.id, children: \.children, selection: $selectedTensorName) { row in
+                tensorRow(row)
+            }
+            .id(tensorTreeID)
+            .listStyle(.inset)
         }
+    }
+
+    private func fullTensorPath(_ name: String) -> String {
+        name.split(separator: ".").joined(separator: " › ")
+    }
+
+    private var tensorColumnHeader: some View {
+        HStack(spacing: 10) {
+            Text(String(localized: "名称"))
+                .frame(minWidth: 120, maxWidth: .infinity, alignment: .leading)
+            Spacer(minLength: 12)
+            Text(String(localized: "Shape"))
+                .frame(width: columnValueWidth, alignment: .trailing)
+            Text(String(localized: "类型"))
+                .frame(width: columnDTypeWidth, alignment: .leading)
+            Text(String(localized: "参数"))
+                .frame(width: columnCountWidth, alignment: .trailing)
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+    }
+
+    private var columnValueWidth: CGFloat { 104 }
+    private var columnDTypeWidth: CGFloat { 52 }
+    private var columnCountWidth: CGFloat { 92 }
+
+    @ViewBuilder
+    private func tensorRow(_ row: TensorHierarchyRow) -> some View {
+        switch row.kind {
+        case let .group(label, descendantCount):
+            HStack(spacing: 6) {
+                Image(systemName: "folder")
+                    .foregroundStyle(.secondary)
+                Text(label)
+                Text(tensorCountLabel(descendantCount))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .tag(row.id)
+        case let .leaf(tensor):
+            HStack(spacing: 10) {
+                Text(tensor.name.split(separator: ".").last.map(String.init) ?? tensor.name)
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(1)
+                    .frame(minWidth: 120, maxWidth: .infinity, alignment: .leading)
+                Spacer(minLength: 12)
+                Text(tensor.shapeText)
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(1)
+                    .foregroundStyle(.secondary)
+                    .frame(width: columnValueWidth, alignment: .trailing)
+                Text(tensor.dataType)
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(1)
+                    .foregroundStyle(.secondary)
+                    .frame(width: columnDTypeWidth, alignment: .leading)
+                Text(tensor.parameterCount.formatted())
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(1)
+                    .foregroundStyle(.secondary)
+                    .frame(width: columnCountWidth, alignment: .trailing)
+            }
+            .help(tensor.name)
+            .tag(tensor.name)
+        }
+    }
+
+    private func tensorCountLabel(_ count: Int) -> String {
+        String(localized: "\(count) 个 Tensors")
     }
 
     @ViewBuilder
@@ -686,7 +802,18 @@ private struct WeightWorkspaceView: View {
         if let tensor = tensors.first(where: { $0.id == selectedTensorName }) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Tensor 详情").font(.headline)
+                    HStack {
+                        Text("Tensor 详情").font(.headline)
+                        Spacer()
+                        Button {
+                            showsTensorInspector = false
+                        } label: {
+                            Label(String(localized: "隐藏"), systemImage: "rectangle.righthalf.inset.filled.arrow.right")
+                                .labelStyle(.iconOnly)
+                        }
+                        .accessibilityLabel(String(localized: "隐藏"))
+                        .help(String(localized: "隐藏右侧 Tensor 详情"))
+                    }
                     Text(tensor.name)
                         .font(.system(.body, design: .monospaced))
                         .textSelection(.enabled)

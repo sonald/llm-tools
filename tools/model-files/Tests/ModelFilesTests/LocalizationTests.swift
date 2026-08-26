@@ -8,6 +8,8 @@ final class LocalizationTests: XCTestCase {
     private let inputPromptKey = "输入模型 ID、仓库 URL、本地绝对路径或 ssh:// 地址"
     private let utf8SizeKey = "UTF-8 大小"
     private let modelFilesKey = "模型文件"
+    private let hideDetailsKey = "隐藏详情"
+    private let collapseAllKey = "全部收起"
 
     private var productionResourceBundle: Bundle {
         get throws {
@@ -82,11 +84,15 @@ final class LocalizationTests: XCTestCase {
         )
         XCTAssertEqual(englishBundle.localizedString(forKey: utf8SizeKey, value: nil, table: nil), "UTF-8 Size")
         XCTAssertEqual(englishBundle.localizedString(forKey: modelFilesKey, value: nil, table: nil), "Model files")
+        XCTAssertEqual(englishBundle.localizedString(forKey: hideDetailsKey, value: nil, table: nil), "Hide details")
+        XCTAssertEqual(englishBundle.localizedString(forKey: collapseAllKey, value: nil, table: nil), "Collapse All")
         XCTAssertEqual(chineseBundle.localizedString(forKey: overviewKey, value: nil, table: nil), overviewKey)
         XCTAssertEqual(chineseBundle.localizedString(forKey: overflowKey, value: nil, table: nil), overflowKey)
         XCTAssertEqual(chineseBundle.localizedString(forKey: inputPromptKey, value: nil, table: nil), inputPromptKey)
         XCTAssertEqual(chineseBundle.localizedString(forKey: utf8SizeKey, value: nil, table: nil), utf8SizeKey)
         XCTAssertEqual(chineseBundle.localizedString(forKey: modelFilesKey, value: nil, table: nil), modelFilesKey)
+        XCTAssertEqual(chineseBundle.localizedString(forKey: hideDetailsKey, value: nil, table: nil), hideDetailsKey)
+        XCTAssertEqual(chineseBundle.localizedString(forKey: collapseAllKey, value: nil, table: nil), collapseAllKey)
     }
 
     func testProductionCatalogContainsSmokeTranslations() throws {
