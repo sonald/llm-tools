@@ -79,6 +79,60 @@ test('SafeTensors hierarchy keeps two exact ranges without tensor data', async (
   expect(errors).toEqual([])
 })
 
+test('SafeTensors hierarchy stays usable across responsive layouts', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', '响应式证据只在 Chromium 采集；Firefox/WebKit 由三浏览器验收单独覆盖。')
+  const errors = collectErrors(page)
+  await installFixtureRoutes(page)
+  await openFixture(page)
+  await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
+  await page.getByRole('button', { name: 'Tensors', exact: true }).click()
+  const tensorTable = page.getByRole('table', { name: 'SafeTensors Tensors' })
+  await expect(tensorTable).toBeVisible()
+  await tensorTable.getByRole('button', { name: /^model/ }).click()
+  await tensorTable.getByRole('button', { name: /^layer/ }).click()
+  await tensorTable.getByRole('button', { name: /^0/ }).click()
+  await tensorTable.getByRole('button', { name: /model\.layer\.0\.weight/ }).click()
+  await expect(page.getByRole('heading', { name: '选中 Tensor · model.layer.0.weight' })).toBeVisible()
+  await expect(tensorTable.locator('.tensor-group-row').filter({ hasText: '105 个 Tensor' }).locator('td').first()).toHaveAttribute('colspan', '5')
+
+  for (const viewport of [
+    { width: 390, height: 844 },
+    { width: 768, height: 1024 },
+    { width: 1280, height: 800 },
+  ]) {
+    await page.setViewportSize(viewport)
+    await expect(tensorTable).toBeVisible()
+    await expect(page.getByRole('heading', { name: '选中 Tensor · model.layer.0.weight' })).toBeVisible()
+    const selectedLeaf = tensorTable.getByRole('button', { name: 'model.layer.0.weight' })
+    await expect(selectedLeaf).toContainText('weight')
+    expect(await selectedLeaf.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    const outline = await page.locator('.tensor-outline').boundingBox()
+    const inspector = await page.locator('.tensor-inspector').boundingBox()
+    expect(outline).not.toBeNull()
+    expect(inspector).not.toBeNull()
+    if (outline === null || inspector === null) continue
+    if (viewport.width < 900) {
+      expect(inspector.y).toBeGreaterThanOrEqual(outline.y + outline.height - 1)
+    } else {
+      expect(inspector.x).toBeGreaterThanOrEqual(outline.x + outline.width - 1)
+    }
+    const screenshot = testInfo.outputPath(`safetensors-hierarchy-${viewport.width}x${viewport.height}.png`)
+    await page.screenshot({ path: screenshot, fullPage: false })
+    await testInfo.attach(`safetensors-hierarchy-${viewport.width}x${viewport.height}`, {
+      path: screenshot,
+      contentType: 'image/png',
+    })
+    if (viewport.width === 390) {
+      await page.getByRole('button', { name: '隐藏详情' }).click()
+      await expect(page.getByRole('button', { name: '显示详情' })).toBeVisible()
+      await page.getByRole('button', { name: '显示详情' }).click()
+      await expect(page.getByRole('heading', { name: '选中 Tensor · model.layer.0.weight' })).toBeVisible()
+    }
+  }
+  expect(errors).toEqual([])
+})
+
 test('inspects only the 24-byte GGUF basic prefix', async ({ page }) => {
   const errors = collectErrors(page)
   const requests = await installFixtureRoutes(page)

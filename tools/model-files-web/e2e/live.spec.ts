@@ -16,6 +16,21 @@ test('Chat: Qwen config, README, SafeTensors, Tokenizer Raw, Chat and cross-repo
   await expect(page.locator('.markdown-body')).toContainText('Qwen3', { timeout: 30_000 })
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
   await expect(page.getByText('Tensor 数据').locator('..').getByText('0 bytes', { exact: true })).toBeVisible({ timeout: 30_000 })
+  const tensorHierarchyStartedAt = Date.now()
+  await page.getByRole('button', { name: 'Tensors', exact: true }).click()
+  const tensorTable = page.getByRole('table', { name: 'SafeTensors Tensors' })
+  await expect(tensorTable).toBeVisible({ timeout: 30_000 })
+  await tensorTable.getByRole('button', { name: /^model/ }).click()
+  await tensorTable.getByRole('button', { name: /^layers/ }).click()
+  await page.getByPlaceholder('名称或 dtype 包含…').fill('q_proj')
+  const qProjectionLeaf = tensorTable.getByRole('button', { name: /^model\.layers\.\d+\.self_attn\.q_proj\.weight$/ }).first()
+  await expect(qProjectionLeaf).toBeVisible({ timeout: 30_000 })
+  await qProjectionLeaf.click()
+  const qProjectionName = await qProjectionLeaf.getAttribute('aria-label')
+  if (qProjectionName === null) throw new Error('Qwen q_proj leaf did not expose its full tensor name')
+  const tensorHierarchyMs = Date.now() - tensorHierarchyStartedAt
+  await expect(page.getByText(qProjectionName.split('.').filter(Boolean).join(' › '))).toBeVisible()
+  await expect(page.getByRole('heading', { name: `选中 Tensor · ${qProjectionName}` })).toBeVisible()
 
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
   await expect(page.getByText('Model Type').locator('..')).toContainText('BPE', { timeout: 60_000 })
@@ -116,8 +131,9 @@ test('Chat: Qwen config, README, SafeTensors, Tokenizer Raw, Chat and cross-repo
     firstVocabularyQueryMs,
     cachedVocabularyQueryMs,
     vocabularyRequestsAfter,
+    tensorHierarchyMs,
   })
-  console.log(`LIVE Qwen revision=${identity.sha} comparison revision=${comparisonIdentity.sha} firstVocabularyQueryMs=${firstVocabularyQueryMs} cachedVocabularyQueryMs=${cachedVocabularyQueryMs} ranges=${JSON.stringify(requests.filter(request => request.range !== null))}`)
+  console.log(`LIVE Qwen revision=${identity.sha} comparison revision=${comparisonIdentity.sha} tensorHierarchyMs=${tensorHierarchyMs} firstVocabularyQueryMs=${firstVocabularyQueryMs} cachedVocabularyQueryMs=${cachedVocabularyQueryMs} ranges=${JSON.stringify(requests.filter(request => request.range !== null))}`)
 })
 
 test('T5 Raw reports normalization as Decoded only', async ({ page }, testInfo) => {

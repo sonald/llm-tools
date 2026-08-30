@@ -266,6 +266,11 @@ mark.find-match.current {
 .tensor-layout-inspector-hidden { grid-template-columns: minmax(0, 1fr); }
 .tensor-outline { min-width: 0; }
 .tensor-table-scroll { margin: 0; }
+.tensor-table-scroll th:first-child, .tensor-table-scroll td:first-child { width: 48%; }
+.tensor-table-scroll th:nth-child(2), .tensor-table-scroll td:nth-child(2) { width: 12%; }
+.tensor-table-scroll th:nth-child(3), .tensor-table-scroll td:nth-child(3) { width: 16%; }
+.tensor-table-scroll th:nth-child(4), .tensor-table-scroll td:nth-child(4) { width: 13%; }
+.tensor-table-scroll th:nth-child(5), .tensor-table-scroll td:nth-child(5) { width: 11%; }
 .tensor-group-row td, .tensor-leaf-row td { height: 34px; }
 .tensor-group-row td:first-child, .tensor-leaf-row td:first-child { padding: 0; }
 .tensor-group-toggle {

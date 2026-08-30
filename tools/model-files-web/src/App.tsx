@@ -915,7 +915,7 @@ function SafeTensorsInspection({
                       const isExpanded = expanded.has(row.id)
                       return (
                         <tr key={row.id} className="tensor-group-row">
-                          <td>
+                          <td colSpan={5}>
                             <button
                               className="tensor-group-toggle"
                               type="button"
@@ -932,7 +932,6 @@ function SafeTensorsInspection({
                               <span className="tensor-group-count">{t('appTensorGroupCount', { count: formatNumber(row.descendantCount) })}</span>
                             </button>
                           </td>
-                          <td /><td /><td /><td />
                         </tr>
                       )
                     }
