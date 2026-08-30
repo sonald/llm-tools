@@ -1302,8 +1302,8 @@ export const messageCatalog = {
     en: 'Name or dtype contains…',
   },
   appShowingTensorCount: {
-    'zh-Hans': '显示 {visible} / {matching}（总计 {total}）',
-    en: 'Showing {visible} / {matching} ({total} total)',
+    'zh-Hans': '显示 {visible} 行 / 匹配 {matching} 个 Tensor（总计 {total}）',
+    en: 'Showing {visible} rows / {matching} matching tensors ({total} total)',
   },
   appSafeTensorsMetadataTableAriaLabel: {
     'zh-Hans': 'SafeTensors Metadata',
@@ -1341,9 +1341,37 @@ export const messageCatalog = {
     'zh-Hans': 'Bytes',
     en: 'Bytes',
   },
-  appShowMoreTensorsAction: {
-    'zh-Hans': '再显示 100 个 Tensor',
-    en: 'Show 100 more tensors',
+  appTensorGroupCount: {
+    'zh-Hans': '{count} 个 Tensor',
+    en: '{count} tensors',
+  },
+  appExpandGroupAction: {
+    'zh-Hans': '{label}，展开，{count} 个 Tensor',
+    en: '{label}, expand, {count} tensors',
+  },
+  appCollapseGroupAction: {
+    'zh-Hans': '{label}，收起，{count} 个 Tensor',
+    en: '{label}, collapse, {count} tensors',
+  },
+  appCollapseAllAction: {
+    'zh-Hans': '全部收起',
+    en: 'Collapse all',
+  },
+  appHideTensorDetailsAction: {
+    'zh-Hans': '隐藏详情',
+    en: 'Hide details',
+  },
+  appShowTensorDetailsAction: {
+    'zh-Hans': '显示详情',
+    en: 'Show details',
+  },
+  appTensorBreadcrumbAriaLabel: {
+    'zh-Hans': 'Tensor 路径：{path}',
+    en: 'Tensor path: {path}',
+  },
+  appShowMoreTensorRowsAction: {
+    'zh-Hans': '再显示 100 行',
+    en: 'Show 100 more rows',
   },
   appSelectedTensorTitle: {
     'zh-Hans': '选中 Tensor · {name}',

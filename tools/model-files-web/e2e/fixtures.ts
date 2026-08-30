@@ -473,7 +473,7 @@ function comparisonBodies(
 
 function safeTensorsFixture(): Uint8Array {
   const tensors = Object.fromEntries(Array.from({ length: 105 }, (_, index) => [
-    `layer.${String(index).padStart(3, '0')}`,
+    `model.layer.${index}.weight`,
     { dtype: 'F32', shape: [0], data_offsets: [0, 0] },
   ]))
   const rawHeader = bytes(JSON.stringify({

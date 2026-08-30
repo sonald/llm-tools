@@ -20,6 +20,12 @@ import {
   type GGUFPrefix,
   type SafeTensorsSummary,
 } from './core/inspectors.ts'
+import {
+  autoExpandMatchingPaths,
+  buildTensorHierarchy,
+  filterTensorSummaries,
+  flattenTensorHierarchy,
+} from './core/tensorHierarchy.ts'
 import { decodeStrictText, validatePdfData } from './core/readers.ts'
 import {
   activeChatTemplate,
@@ -791,14 +797,38 @@ function SafeTensorsInspection({
   const [filter, setFilter] = useState('')
   const [limit, setLimit] = useState(100)
   const [selectedName, setSelectedName] = useState(summary.tensors[0]?.name ?? '')
+  const [manualExpanded, setManualExpanded] = useState<Set<string>>(() => new Set())
+  const [searchAutoExpand, setSearchAutoExpand] = useState(false)
+  const [showsInspector, setShowsInspector] = useState(true)
   const term = filter.trim().toLocaleLowerCase()
   const metadata = Object.entries(summary.metadata).sort(([left], [right]) => left.localeCompare(right))
   const matchingMetadata = metadata.filter(([key, value]) => term === '' || key.toLocaleLowerCase().includes(term)
     || value.toLocaleLowerCase().includes(term))
-  const matchingTensors = summary.tensors.filter(tensor => term === '' || tensor.name.toLocaleLowerCase().includes(term)
-    || tensor.dtype.toLocaleLowerCase().includes(term))
-  const visible = matchingTensors.slice(0, limit)
+  const matchingTensors = useMemo(() => filterTensorSummaries(summary.tensors, filter), [summary.tensors, filter])
+  const hierarchy = useMemo(() => buildTensorHierarchy(matchingTensors), [matchingTensors])
+  const autoExpanded = useMemo(() => searchAutoExpand && term !== ''
+    ? autoExpandMatchingPaths(hierarchy, filter)
+    : new Set<string>(), [filter, hierarchy, searchAutoExpand, term])
+  const expanded = useMemo(() => new Set([...manualExpanded, ...autoExpanded]), [autoExpanded, manualExpanded])
+  const rows = useMemo(() => flattenTensorHierarchy(hierarchy, expanded), [expanded, hierarchy])
+  const visibleRows = rows.slice(0, limit)
   const selected = summary.tensors.find(tensor => tensor.name === selectedName) ?? null
+  const breadcrumb = selected === null
+    ? ''
+    : (selected.name.split('.').filter(Boolean).length > 0
+      ? selected.name.split('.').filter(Boolean)
+      : selected.name ? [selected.name] : []).join(' › ')
+
+  const toggleGroup = (id: string) => {
+    setManualExpanded(current => {
+      const next = new Set(expanded)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+    if (term !== '') setSearchAutoExpand(false)
+  }
+
   return (
     <div className="inspection-canvas">
       <ValidationStrip items={[
@@ -812,6 +842,7 @@ function SafeTensorsInspection({
             setPerspective(value)
             setFilter('')
             setLimit(100)
+            setSearchAutoExpand(false)
           }} key={value}>{label}</button>
         ))}
       </div>
@@ -831,8 +862,10 @@ function SafeTensorsInspection({
           <label>
             <span>{perspective === 'metadata' ? t('appFilterMetadataLabel') : t('appFilterTensorLabel')}</span>
             <input value={filter} onChange={event => {
-              setFilter(event.target.value)
+              const nextFilter = event.target.value
+              setFilter(nextFilter)
               setLimit(100)
+              if (perspective === 'tensors') setSearchAutoExpand(nextFilter.trim() !== '')
             }} placeholder={perspective === 'metadata' ? t('appKeyOrValueContainsPlaceholder') : t('appNameOrDtypeContainsPlaceholder')} />
           </label>
           <span>{perspective === 'metadata'
@@ -841,7 +874,7 @@ function SafeTensorsInspection({
               total: formatNumber(metadata.length),
             })
             : t('appShowingTensorCount', {
-              visible: formatNumber(visible.length),
+              visible: formatNumber(visibleRows.length),
               matching: formatNumber(matchingTensors.length),
               total: formatNumber(summary.tensors.length),
             })}</span>
@@ -859,34 +892,88 @@ function SafeTensorsInspection({
       ) : null}
       {perspective === 'tensors' ? (
         <>
-          <div className="table-scroll">
-            <table aria-label={t('appSafeTensorsTensorsTableAriaLabel')}>
-              <thead><tr>
-                <th>{t('appTensorColumn')}</th><th>{t('appDTypeColumn')}</th><th>{t('appShapeColumn')}</th>
-                <th>{t('appParametersColumn')}</th><th>{t('appBytesColumn')}</th>
-              </tr></thead>
-              <tbody>{visible.map(tensor => (
-                <tr key={tensor.name}>
-                  <td><button className="table-link" type="button" onClick={() => setSelectedName(tensor.name)}>{tensor.name}</button></td>
-                  <td>{tensor.dtype}</td><td>{`[${tensor.shape.join(', ')}]`}</td>
-                  <td>{formatNumber(tensor.parameters)}</td><td>{formatNumber(tensor.bytes)}</td>
-                </tr>
-              ))}</tbody>
-            </table>
+          <div className="tensor-toolbar-actions">
+            <button className="tensor-action" type="button" onClick={() => {
+              setManualExpanded(new Set())
+              setSearchAutoExpand(false)
+            }}>{t('appCollapseAllAction')}</button>
+            <button className="tensor-action" type="button" onClick={() => setShowsInspector(current => !current)}>
+              {showsInspector ? t('appHideTensorDetailsAction') : t('appShowTensorDetailsAction')}
+            </button>
           </div>
-          {visible.length < matchingTensors.length ? (
-            <button className="load-more" type="button" onClick={() => setLimit(Math.min(limit + 100, matchingTensors.length))}>{t('appShowMoreTensorsAction')}</button>
-          ) : null}
-          {selected !== null ? (
-            <section className="inspection-section">
-              <h2>{t('appSelectedTensorTitle', { name: selected.name })}</h2>
-              <MetricGrid items={[
-                [t('appDTypeColumn'), selected.dtype], [t('appShapeColumn'), `[${selected.shape.join(', ')}]`],
-                [t('appDataOffsetsLabel'), `${selected.dataStart}–${selected.dataEnd}`],
-                [t('appBytesColumn'), formatNumber(selected.bytes)],
-              ]} />
+          <div className={`tensor-layout${showsInspector ? '' : ' tensor-layout-inspector-hidden'}`}>
+            <section className="tensor-outline">
+              <div className="table-scroll tensor-table-scroll">
+                <table aria-label={t('appSafeTensorsTensorsTableAriaLabel')}>
+                  <thead><tr>
+                    <th>{t('appTensorColumn')}</th><th>{t('appDTypeColumn')}</th><th>{t('appShapeColumn')}</th>
+                    <th>{t('appParametersColumn')}</th><th>{t('appBytesColumn')}</th>
+                  </tr></thead>
+                  <tbody>{visibleRows.map(row => {
+                    const isGroup = row.children.length > 0 || row.tensor === undefined
+                    if (isGroup) {
+                      const isExpanded = expanded.has(row.id)
+                      return (
+                        <tr key={row.id} className="tensor-group-row">
+                          <td>
+                            <button
+                              className="tensor-group-toggle"
+                              type="button"
+                              aria-expanded={isExpanded}
+                              aria-label={t(isExpanded ? 'appCollapseGroupAction' : 'appExpandGroupAction', {
+                                label: row.label,
+                                count: formatNumber(row.descendantCount),
+                              })}
+                              style={{ paddingLeft: `${8 + row.depth * 16}px` }}
+                              onClick={() => toggleGroup(row.id)}
+                            >
+                              <span aria-hidden="true" className={`tensor-disclosure${isExpanded ? ' expanded' : ''}`} />
+                              <span>{row.label}</span>
+                              <span className="tensor-group-count">{t('appTensorGroupCount', { count: formatNumber(row.descendantCount) })}</span>
+                            </button>
+                          </td>
+                          <td /><td /><td /><td />
+                        </tr>
+                      )
+                    }
+                    const tensor = row.tensor
+                    if (tensor === undefined) return null
+                    return (
+                      <tr key={row.id} className={selectedName === tensor.name ? 'tensor-leaf-row selected' : 'tensor-leaf-row'}>
+                        <td>
+                          <button
+                            className="table-link tensor-leaf-link"
+                            type="button"
+                            aria-label={tensor.name}
+                            aria-pressed={selectedName === tensor.name}
+                            title={tensor.name}
+                            style={{ paddingLeft: `${8 + row.depth * 16}px` }}
+                            onClick={() => setSelectedName(tensor.name)}
+                          >{row.label}</button>
+                        </td>
+                        <td>{tensor.dtype}</td><td>{`[${tensor.shape.join(', ')}]`}</td>
+                        <td>{formatNumber(tensor.parameters)}</td><td>{formatNumber(tensor.bytes)}</td>
+                      </tr>
+                    )
+                  })}</tbody>
+                </table>
+              </div>
+              {visibleRows.length < rows.length ? (
+                <button className="load-more" type="button" onClick={() => setLimit(Math.min(limit + 100, rows.length))}>{t('appShowMoreTensorRowsAction')}</button>
+              ) : null}
             </section>
-          ) : null}
+            {showsInspector && selected !== null ? (
+              <aside className="tensor-inspector inspection-section">
+                <h2>{t('appSelectedTensorTitle', { name: selected.name })}</h2>
+                <p className="tensor-breadcrumb" aria-label={t('appTensorBreadcrumbAriaLabel', { path: breadcrumb })}>{breadcrumb}</p>
+                <MetricGrid items={[
+                  [t('appDTypeColumn'), selected.dtype], [t('appShapeColumn'), `[${selected.shape.join(', ')}]`],
+                  [t('appDataOffsetsLabel'), `${selected.dataStart}–${selected.dataEnd}`],
+                  [t('appBytesColumn'), formatNumber(selected.bytes)],
+                ]} />
+              </aside>
+            ) : null}
+          </div>
         </>
       ) : null}
     </div>
