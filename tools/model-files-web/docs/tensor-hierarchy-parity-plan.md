@@ -1,6 +1,6 @@
 # ModelFiles Web Tensor 层级浏览增量移植计划
 
-状态：已确认，执行中
+状态：已完成
 日期：2026-08-30
 上次 Web 收口：`b889ae5 docs(model-files-web): record native parity acceptance`
 新增原生上界：`ef90a92 feat(model-files): organize tensors by hierarchy`
@@ -9,20 +9,20 @@
 
 `b889ae5..HEAD` 中只有一个新增原生功能：SafeTensors 的 Tensor 视图从平面表格改为层级 outline。Web 当前已经从 Header 获得完整 tensor 名称、dtype、shape、参数量、字节数和 offsets，因此该功能可在纯浏览器边界内移植，不需要新 Range、Worker、依赖或权重读取。
 
-执行时继续由 OpenRouter `stealth/ox-alpha` 编写功能代码；主代理负责 RED 测试设计、编排、diff 审查、真实浏览器验收和提交边界。
+执行采用 `gpt-5.6-luna`（max）完成；主代理负责 RED 测试设计、编排、diff 审查、真实浏览器验收和提交边界。
 
 ## 2. 增量行为矩阵
 
 | `ef90a92` 用户行为 | Web 当前状态 | 决定 |
 | --- | --- | --- |
-| 按 `.` 分段形成 module/layer/tensor 层级 | 平面表格 | 移植 |
-| 数字段自然排序（`2` 在 `10` 前） | Header parser 已自然排序完整名称 | 层级内继续自然排序 |
-| group 显示后代 Tensor 数；leaf 显示相对名 | 缺失 | 移植 |
-| 名称/dtype 搜索后只保留匹配叶及祖先 | 平面过滤 | 移植，并保证命中直接可达 |
-| 全部收起 | 缺失 | 移植 |
-| 选中 Tensor 的完整 breadcrumb | 详情标题仅显示完整名称 | 移植为 `›` 路径，同时保留完整名称 |
-| 右侧详情隐藏/恢复且不丢选择 | 详情固定在表格下方 | 宽屏侧栏、窄屏下置，可隐藏 |
-| 中英文本与可访问名称 | 缺新控件词条 | 移植到现有 `i18n.ts` |
+| 按 `.` 分段形成 module/layer/tensor 层级 | 已实现 | PASS |
+| 数字段自然排序（`2` 在 `10` 前） | Header parser 与 hierarchy 均自然排序 | PASS |
+| group 显示后代 Tensor 数；leaf 显示相对名 | 已实现 | PASS |
+| 名称/dtype 搜索后只保留匹配叶及祖先 | 已实现并自动展开命中路径 | PASS |
+| 全部收起 | 已实现 | PASS |
+| 选中 Tensor 的完整 breadcrumb | 已实现 `›` 路径并保留完整名称 | PASS |
+| 右侧详情隐藏/恢复且不丢选择 | 宽屏侧栏、窄屏下置，可隐藏 | PASS |
+| 中英文本与可访问名称 | 已接入现有 `i18n.ts` | PASS |
 | Header-only、0 bytes Tensor data | 已 PASS | 必须保持，不扩大读取边界 |
 
 ## 3. Web 架构决定
@@ -67,7 +67,7 @@ Header 中的全部 Tensor 继续只存在于内存 summary。构树和 group co
 
 ## 4. 实施任务
 
-### T35 — 层级模型与边界测试（S，2 文件）
+### T35 — 层级模型与边界测试（S，2 文件，已完成）
 
 **文件：**
 
@@ -88,9 +88,11 @@ node --test src/core/tensorHierarchy.test.ts
 npm run check
 ```
 
-**依赖：** 无。完成后单独提交。
+结果：8 个 hierarchy unit 全部通过；10,000 Tensor 构树 29.490042 ms（<1 s），无 leaf 丢失。
 
-### T36 — SafeTensors outline 纵向切片（M，5 文件）
+**依赖：** 无；提交 `4c52e76`。
+
+### T36 — SafeTensors outline 纵向切片（M，5 文件，已完成）
 
 **文件：**
 
@@ -117,9 +119,11 @@ npm run check
 git diff --check
 ```
 
-**依赖：** T35。完成后单独提交。
+**依赖：** T35；提交 `1c2ad4b`。
 
-### T37 — 三浏览器、live 与响应式证据（S，2 文件）
+结果：focused Chromium hierarchy 初始验收 1/1；group/leaf、搜索自动展开、选择、Collapse All、详情隐藏/恢复与 100 行渐进均通过。
+
+### T37 — 三浏览器、live 与响应式证据（S，2 文件，已完成）
 
 **文件：**
 
@@ -141,9 +145,11 @@ npm run test:e2e
 npm run test:e2e:live
 ```
 
-**依赖：** T36。完成后单独提交。
+**依赖：** T36；提交 `5e08c4a`。
 
-### T38 — 规格与验收收口（M，最多 5 文件）
+结果：离线 `npm run test:e2e` 138 total / 109 passed / 29 skipped / 0 failed（43.2 s）；通用 hierarchy 流程在 Chromium、Firefox、WebKit 均通过。最终 responsive focused Chromium 2/2（2.5 s，390×844/768×1024/1280×800），无页面横向溢出、leaf/count 可读、详情在窄屏下置、宽屏右置，console error/warning 0/0；Qwen live 3/3（18.8 s），hierarchy `tensorHierarchyMs=100`。
+
+### T38 — 规格与验收收口（M，6 文件，已完成）
 
 **文件：**
 
@@ -152,6 +158,7 @@ npm run test:e2e:live
 - `README.md`
 - `docs/productization-plan.md`
 - `docs/native-parity-acceptance.md`
+- `docs/tensor-hierarchy-parity-plan.md`
 
 **验收：**
 
@@ -159,30 +166,32 @@ npm run test:e2e:live
 - 记录命令、三浏览器结果、Qwen revision、Range ledger、响应式截图和原子提交；
 - `tools/model-files/.DS_Store` 保持 untracked；无 push/tag/release/deploy。
 
-**依赖：** T37。文档只在 fresh acceptance 后提交。
+**依赖：** T37；文档由本文件所在提交收口。
+
+结果：六份文档（含本计划）均已按 fresh evidence 同步，由本文件所在提交收口；本计划状态收口为已完成。
 
 ## 5. Checkpoints
 
 ### Checkpoint A — T35
 
-- 层级模型没有 UI/React 依赖；所有 native gold 和 Web 边界测试通过。
-- 评审节点前缀冲突、排序和 10,000 项成本，再进入 UI。
+- [x] 层级模型没有 UI/React 依赖；所有 native gold 和 Web 边界测试通过。
+- [x] 评审节点前缀冲突、排序和 10,000 项成本，再进入 UI。
 
 ### Checkpoint B — T36
 
-- focused Chromium E2E 通过；表格语义、键盘焦点和渐进 DOM 无回退。
-- SafeTensors Range ledger 与改动前完全一致。
+- [x] focused Chromium E2E 通过；表格语义、键盘焦点和渐进 DOM 无回退。
+- [x] SafeTensors Range ledger 与改动前完全一致。
 
 ### Checkpoint C — T37–T38
 
-- 完整 unit/build、三浏览器、live、响应式和 console/network 证据通过。
-- 文档矩阵和 Git 状态与实际提交一致。
+- [x] 完整 unit/build、三浏览器、live、响应式和 console/network 证据通过。
+- [x] 文档矩阵和 Git 状态与实际提交一致。
 
-## 6. 候选 done_when（需用户确认）
+## 6. Done when（已确认并完成）
 
 - `SPEC.md` 新增 `ef90a92` 对应行并以当前证据结束为 PASS；既有 18 PASS + 1 N/A 不回退。
 - 层级模型 unit 覆盖自然排序、计数、搜索、前缀冲突和 10,000 项性能；`npm run check` exit 0。
-- offline Playwright 在 Chromium、Firefox、WebKit 对层级展开、搜索、选择、全部收起和详情恢复均 exit 0；每个 skip 有明确平台理由。
+- offline Playwright 在 Chromium、Firefox、WebKit 对层级展开、搜索、选择、全部收起和详情恢复均 exit 0；responsive 测试的 Firefox/WebKit skip 有明确平台理由。
 - `npm run test:e2e:live` exit 0，并记录真实 Qwen manifest SHA；SafeTensors 仍只读 `bytes=0-7` 与精确 Header Range，Tensor 数据和交互新增请求均为 0。
 - production Chromium 在 390×844、768×1024、1280×800 通过布局、键盘、可访问名称、深色与 console 0/0 检查。
 - 不新增 runtime dependency；不实现 GGUF hierarchy、权重数据预览、展开状态持久化或通用树组件。
@@ -199,11 +208,11 @@ npm run test:e2e:live
 | 为树交互引入重依赖 | 停止；复用现有 table、button、React state 和 CSS |
 | Range 或 Tensor data 边界变化 | 产品 FAIL；不得以 hierarchy 为由读取任何新字节 |
 
-## 8. 推荐默认与待确认项
+## 8. 推荐默认（已确认）
 
 1. 层级 outline 直接替换平面 Tensor 表，不增加双模式切换。
 2. 搜索非空时自动展开匹配路径；Collapse All 可立即覆盖。
 3. 宽屏详情右置，窄屏详情下置；详情隐藏/恢复不丢选择。
 4. 不新增依赖、Worker、全局状态或持久化。
 
-用户已确认上述候选 `done_when` 和四项默认；当前按 T35 → T38 顺序执行。
+上述 `done_when` 和四项默认已完成；T35 → T38 已按顺序收口。

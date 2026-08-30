@@ -8,7 +8,7 @@ Model Files Web 是纯浏览器、公开只读的 Hugging Face 模型文件检�
 | --- | --- | --- |
 | Config、Generation Config、通用 JSON、分片 index | 语义概览、全部字段、原文 | 单文件最多 32 MiB，严格 UTF-8/JSON，1,000 项渐进显示 |
 | Markdown、`vocab.json`、`merges.txt` 与文本 | 渲染/原文、搜索、渐进列表 | 单文件最多 32 MiB；raw HTML 与第三方图片请求禁用 |
-| SafeTensors | Header、metadata、完整 tensor 目录与筛选 | 只读 8-byte 长度和精确 Header，0 bytes tensor 数据 |
+| SafeTensors | Header、metadata、层级 tensor 目录（自然排序、搜索剪枝、后代计数、折叠、breadcrumb、详情） | 只读 8-byte 长度和精确 Header，0 bytes tensor 数据 |
 | GGUF | 基础摘要 | 只读前 24 bytes；版本、字节序、tensor/metadata 数量 |
 | `imatrix*.dat` | legacy imatrix 概览、搜索、Entry 详情 | 受限全文解析；累计条目、名称和 float 数量均失败关闭 |
 | `tokenizer.json` | 结构/词表分析、Raw/Chat、Token IDs/Special/Role/tools/variables/overhead/template catalog/vocabulary | 同目录 bundle 最多 32 MiB；输入最多 64 KiB；搜索结果最多 1,000 条；Worker latest-only |

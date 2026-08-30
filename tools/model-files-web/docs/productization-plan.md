@@ -1,14 +1,14 @@
 # ModelFiles Web 本地功能完整性计划
 
-状态：T11–T20 本地功能完整性已完成；T21–T34 原生功能追平已完成；功能/运行时验收 `PASS`；性能测试提交 `81b8eb9` 已完成；五份文档将由本文件所在提交完成收口，最终 `PASS`；发布后置
+状态：T11–T20 本地功能完整性已完成；T21–T38 原生功能追平已完成；功能/运行时/文档验收 `PASS`；发布后置
 
 日期：2026-08-10
 
-更新日期：2026-08-24
+更新日期：2026-08-30
 
-历史本地功能基线：`edb0f56c89d7e5f2edcd17f1a4c6eadd7e1532da`；功能/性能提交到 `81b8eb9`；文档收口为本文件所在提交
+历史本地功能基线：`edb0f56c89d7e5f2edcd17f1a4c6eadd7e1532da`；功能/性能提交到 `81b8eb9`；Tensor hierarchy 提交到 `5e08c4a`；六份文档由本文件所在提交收口
 
-当前里程碑：T21–T34 原生功能追平完成（不发布、不打 tag、不要求远端 CI）
+当前里程碑：T21–T38 原生功能追平完成（不发布、不打 tag、不要求远端 CI）
 
 历史证据：[v0.1 纵向验收记录](v0.1-acceptance.md)
 
@@ -56,7 +56,7 @@ Web 版已完成纯浏览器可行范围内的本地功能移植。公开 Huggin
 | Markdown 模型卡渲染 | 已完成 | `PASS` | GFM、三种排版、原文；禁用 raw HTML 与第三方图片请求 |
 | `tokenizer.json` 结构与词表分析 | 已完成 | `PASS` | BPE、WordPiece、Unigram 结构与 Unicode 标量统计在 Worker 中完成 |
 | `vocab.json`、`merges.txt`、`tokenizer_config.json` 阅读 | 已完成 | `PASS` | 搜索、渐进列表和语义摘要 |
-| SafeTensors | 已完成 | `PASS` | 两次精确 Range/File.slice，完整 Header 工作台，0 bytes tensor 数据 |
+| SafeTensors | 已完成 | `PASS` | 两次精确 Range/File.slice，完整 Header 工作台、层级 tensor 目录与详情，0 bytes tensor 数据 |
 | GGUF 基础摘要 | 已完成 | `PASS` | 固定 24 bytes，只显示版本、字节序与计数 |
 | GGUF 完整 metadata / tensor directory | parser 已验证，产品门失败 | `NO-GO` | 现有真实证据会越过 tensor data offset 339,552 bytes，不重开此任务 |
 | Legacy `imatrix*.dat` | 已完成 | `PASS` | 受限全文解析、概览、搜索与 Entry 详情；其他 `.dat` 不猜测 |
@@ -377,7 +377,7 @@ git diff --check
 
 现有 `.github/workflows/model-files-web.yml`、tag 约定和 Pages 方案保留，但当前不执行、不验收，也不影响 Checkpoint H。只有用户明确启动发布阶段后，才重新核对 remote、tag、干净 checkout、production smoke、artifact digest 和回滚。
 
-## 9. T21–T34 原生功能追平完成段
+## 9. T21–T38 原生功能追平完成段
 
 本段只记录 Web 基线后的追加范围，不改写上方 T11–T20 历史数字。完整命令、counts、request ledger、截图哈希和 Git 状态见 [原生追平验收记录](native-parity-acceptance.md)。最终矩阵只有 `PASS` 与用户批准的 `N/A`：`tokenizer_class` override 为 `N/A`，因为 `@huggingface/tokenizers` 不按 class 分派；一致性缺失 warning 保留。
 
@@ -397,8 +397,12 @@ git diff --check
 | T32 Public-repository comparison | `PASS` | `ed34bbe`；isolated public HF E2E |
 | T33 Second-local-directory comparison | `PASS` | `99f0227`；no external requests E2E |
 | T34 zh-Hans/en localization/runtime acceptance | `PASS` | `0719b62` + 本次文档同步；English core E2E |
+| T35 Tensor hierarchy model/unit | `PASS` | `4c52e76`；10,000 Tensor build 29.490042 ms，<1 s；unit 与 `npm run check` |
+| T36 SafeTensors hierarchy outline | `PASS` | `1c2ad4b`；focused Chromium hierarchy E2E；`5e08c4a` 补 responsive 可读性修复 |
+| T37 三浏览器/live/responsive evidence | `PASS` | `5e08c4a`；offline 109 pass/29 skip，Qwen live 3/3，responsive 2/2 |
+| T38 文档与验收收口 | `PASS` | 本文件所在提交；本轮 fresh evidence 已同步 |
 
-2026-08-24 权威门禁：`npm run check` exit 0（159 pass/0 fail）；offline E2E exit 0（108 pass、27 explicit skips、0 fail）；live E2E exit 0（3 pass）；official registry `npm audit --omit=dev --registry=https://registry.npmjs.org --json` exit 0 且全 severity 为 0；SentencePiece reproducible build exit 0 且 artifacts hash unchanged；production Chromium focused responsive test exit 0。性能测试已提交到 `81b8eb9`，五份文档由本文件所在提交完成收口；无 push/tag/release/deploy。
+2026-08-30 权威门禁：`npm run check` exit 0（167 pass/0 fail）；production build main 540.40 kB（gzip 156.88）、CSS 33.06 kB（gzip 7.08）、tokenizer worker 166.88 kB、source worker 67.90 kB、WASM 615.43 kB（gzip 243.67），仅既有 Vite warnings；offline E2E exit 0（138 total、109 pass、29 explicit skips、0 fail、43.2 s）；responsive focused Chromium 2/2（2.5 s，390×844/768×1024/1280×800，无页面横向溢出、leaf/count 可读、详情按视口下置/右置、console error/warning 0/0）；live E2E exit 0（3/3、18.8 s），Qwen hierarchy `tensorHierarchyMs=100`。10,000 Tensor 构树 29.490042 ms；10k-token 457 ms；SentencePiece first/dual 384/357 ms；近 32 MiB 文本 exact 33554431 bytes load/find 207/168 ms，命中第 65,536 行。`npm audit --omit=dev --registry=https://registry.npmjs.org --json` exit 0，漏洞 total/high/critical 均 0；无新增 runtime dependency、push/tag/release/deploy。
 
 ## 10. 执行纪律
 

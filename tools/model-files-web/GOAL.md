@@ -1,5 +1,5 @@
 <goal>
-Bring tools/model-files-web to verified user-visible parity with every applicable feature added to tools/model-files after Web baseline 11e1086 through native baseline ef90a92, including the accepted baseline through b889ae5 plus SafeTensors Tensor hierarchy browsing. Functional code is written by OpenRouter stealth/ox-alpha; the primary agent owns orchestration, review, atomic commits, independent tests, and final PASS/FAIL/BLOCKED audit.
+Bring tools/model-files-web to verified user-visible parity with every applicable feature added to tools/model-files after Web baseline 11e1086 through native baseline ef90a92, including the accepted baseline through b889ae5 plus SafeTensors Tensor hierarchy browsing. Functional code is written by gpt-5.6-luna at max reasoning; the primary agent owns orchestration, review, atomic commits, independent tests, and final PASS/FAIL/BLOCKED audit.
 </goal>
 
 <context>
@@ -107,7 +107,7 @@ If localhost binding or browser launch fails only because of the managed sandbox
 - Do not paper over failures.
 - Do not widen scope.
 - Keep the final answer concise.
-- Functional implementation is delegated to OpenRouter stealth/ox-alpha. The primary agent writes orchestration/specification artifacts, reviews every produced diff, independently verifies behavior, and owns commits.
+- Functional implementation is delegated to gpt-5.6-luna at max reasoning. The primary agent writes orchestration/specification artifacts, reviews every produced diff, independently verifies behavior, and owns commits.
 - Use RED to GREEN for every behavior change. A test that never failed is not sufficient evidence for a new path.
 - Keep each commit independently buildable, tested, reviewable, and scoped. Stage explicit paths only; never stage tools/model-files/.DS_Store.
 - Use the first Ponytail rung that satisfies the verified requirement: existing code, platform API, installed dependency, then minimum new code. Do not preserve speculative extension points.

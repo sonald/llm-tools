@@ -10,7 +10,7 @@ Web 基线：`11e1086 feat(model-files-web): add complete browser inspector`
 
 把 `tools/model-files/` 在 Web 基线之后新增、且能保持纯浏览器与只读安全合同的用户可见能力移植到 `tools/model-files-web/`，当前增量包含 `ef90a92` 的 SafeTensors Tensor 层级浏览；并用离线三浏览器 E2E、固定 revision 的真实 Hugging Face smoke 以及真实 Chromium 交互完成独立验收。
 
-主代理负责编排、规格、审查、独立验证和提交边界；功能代码由 OpenRouter `stealth/ox-alpha` 编写。每个可独立验证的批次必须在 focused tests、`npm run check` 和相关浏览器检查通过后单独提交。
+主代理负责编排、规格、审查、独立验证和提交边界；功能代码由 `gpt-5.6-luna`（max）编写。每个可独立验证的批次必须在 focused tests、`npm run check` 和相关浏览器检查通过后单独提交。
 
 ## 2. 保留的现有产品合同
 
@@ -45,9 +45,9 @@ Web 基线：`11e1086 feat(model-files-web): add complete browser inspector`
 | Python/YAML/JSON 折叠 | 已实现 | PASS | `0c388fe` | `core/sourceFolding.ts foldRanges()`、`Readers.tsx`；E2E `folds Python YAML and JSON while preserving the full source` |
 | 当前文件 `Cmd/Ctrl+F` 查找 | 已实现 | PASS | `5050df3` | `Readers.tsx SourceFind`、`core/readers.ts navigateTextMatches()`；E2E `source find navigates matches and reveals collapsed ancestors` |
 | `zh-Hans` / `en` | 已实现 | PASS | `ac3249e`、`59292c6` | `i18n.ts` 单消息目录与 `Intl` 格式化；E2E `runs the core repository and tokenizer entry points in English` |
-| SafeTensors Tensor 层级浏览 | 平面表格 | IN PROGRESS | `ef90a92` | `docs/tensor-hierarchy-parity-plan.md`；待 `tensorHierarchy` unit、三浏览器 E2E 与 Qwen live 证据 |
+| SafeTensors Tensor 层级浏览 | 已实现 | PASS | `ef90a92`、`4c52e76`、`1c2ad4b`、`5e08c4a` | `core/tensorHierarchy.ts` 与 SafeTensors outline；离线三浏览器、响应式 Chromium、Qwen live fresh evidence |
 
-文档截图、LICENSE 和验收记录提交本身不算新产品功能；既有行保持 PASS/N/A，新 Tensor hierarchy 行在 fresh acceptance 前保持 IN PROGRESS。
+文档截图、LICENSE 和验收记录提交本身不算新产品功能；既有行保持 PASS/N/A，Tensor hierarchy 已以 fresh unit、离线三浏览器、响应式 Chromium 和 Qwen live 证据收口为 PASS。
 
 ## 4. Web 平台适配
 
@@ -159,7 +159,7 @@ Web 继续只读取 GGUF 24-byte prefix，因此 `gguf-context-mismatch` 与 `gg
 ### 6.1 工件与矩阵
 
 - `SPEC.md` 第 3 节、`GOAL.md`、README、产品化计划、依赖清单和新的 parity acceptance 互相一致。
-- 既有矩阵行保持 PASS 或用户确认的 N/A；Tensor hierarchy 行最终必须以 fresh unit、三浏览器和 live 证据从 IN PROGRESS 收口为 PASS。
+- 既有矩阵行保持 PASS 或用户确认的 N/A；Tensor hierarchy 行已以 fresh unit、三浏览器和 live 证据收口为 PASS。
 - 除用户已有 `tools/model-files/.DS_Store` 外，不夹带无关工作区文件；不 push、tag、release 或部署。
 
 ### 6.2 自动化
@@ -185,6 +185,8 @@ Web 继续只读取 GGUF 24-byte prefix，因此 `gguf-context-mismatch` 与 `gg
 9. 键盘焦点、可访问名称、动态状态和颜色之外的状态表达可用。
 10. production preview console 0 error/0 warning；网络账本只有预期清单、可读文件和既有严格 Range，权重内容请求为 0。
 11. SafeTensors Tensors 视图完成层级展开、自然排序、搜索剪枝、leaf 选择、全部收起、breadcrumb 和详情隐藏/恢复；390×844、768×1024、1280×800 均可用。
+
+本轮 fresh evidence：`npm run test:e2e` 为 138 total / 109 passed / 29 skipped / 0 failed（43.2 s），通用 hierarchy 流程在 Chromium、Firefox、WebKit 均通过；responsive focused Chromium 为 2/2（2.5 s），三视口无页面横向溢出、leaf/count 可读、390×844 与 768×1024 详情下置、1280×800 详情右置且 console error/warning 为 0/0；`npm run test:e2e:live` 为 3/3（18.8 s），Qwen SafeTensors hierarchy `tensorHierarchyMs=100`。
 
 性能证据至少记录：128 KiB 折叠扫描、接近 32 MiB 文本查找、Qwen 级 150k 词表首次索引/查询、10k token、双 session 首次加载、SentencePiece WASM 冷启动，以及 10,000 Tensor 层级构树。Tensor 构树 `<1 s`；现有 10k token `<10 s`、100k 行 `<3 s` 门不回退。
 
