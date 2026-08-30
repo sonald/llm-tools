@@ -1,10 +1,11 @@
 <goal>
-Bring tools/model-files-web to verified user-visible parity with every applicable feature added to tools/model-files after Web baseline 11e1086 through native baseline 59292c6: standalone SentencePiece tokenizers, source/PDF reading, folding/find, tokenizer diagnostics, repository consistency, tokenizer comparison, and zh-Hans/en localization. Functional code is written by OpenRouter stealth/ox-alpha; the primary agent owns orchestration, review, atomic commits, independent tests, and final PASS/FAIL/BLOCKED audit.
+Bring tools/model-files-web to verified user-visible parity with every applicable feature added to tools/model-files after Web baseline 11e1086 through native baseline ef90a92, including the accepted baseline through b889ae5 plus SafeTensors Tensor hierarchy browsing. Functional code is written by OpenRouter stealth/ox-alpha; the primary agent owns orchestration, review, atomic commits, independent tests, and final PASS/FAIL/BLOCKED audit.
 </goal>
 
 <context>
 Read first:
 - tools/model-files-web/SPEC.md
+- tools/model-files-web/docs/tensor-hierarchy-parity-plan.md
 - tools/model-files-web/package.json
 - tools/model-files-web/src/App.tsx
 - tools/model-files-web/src/Readers.tsx
@@ -15,18 +16,22 @@ Read first:
 - tools/model-files-web/src/tokenizerClient.ts
 - tools/model-files-web/e2e/fixtures.ts
 - tools/model-files-web/e2e/model-files.spec.ts
+- tools/model-files-web/e2e/live.spec.ts
+- tools/model-files/Sources/ModelFiles/Support/TensorHierarchy.swift
+- tools/model-files/Tests/ModelFilesTests/TensorHierarchyTests.swift
 - tools/model-files/docs/diagnostic-inspector-spec.md
 - tools/model-files/docs/diagnostic-inspector-acceptance.md
 - tools/model-files/docs/source-reader-i18n-requirements.md
 - tools/model-files/docs/source-reader-i18n-implementation-plan.md
 
-Use git log --reverse 11e1086..59292c6 -- tools/model-files to audit the full native delta. Treat the current worktree as authoritative and preserve the existing untracked tools/model-files/.DS_Store.
+Treat `b889ae5` as the accepted Web baseline and use `git log --reverse b889ae5..ef90a92 -- tools/model-files` to audit the current native delta. Treat the current worktree as authoritative and preserve the existing untracked tools/model-files/.DS_Store.
 </context>
 
 <constraints>
 - Follow repository AGENTS.md: add no entity or abstraction without a concrete current job; apply YAGNI to every new type and dependency.
 - Keep the product pure-browser and read-only. No backend, SSH, ModelScope, private credentials, desktop bridge, inference, conversion, upload, remote code, or model-weight reads.
 - Preserve the established 32 MiB readable/bundle cap, 64 KiB input cap, 1,000-result cap, exact SafeTensors ranges, and 24-byte GGUF product path.
+- Tensor hierarchy consumes only the existing SafeTensors Header summary. Preserve the semantic table, 100-row progressive DOM budget, two exact Header reads, and 0 bytes Tensor data; add no tree/virtualization dependency, Worker, global state, or persistence.
 - Standalone SentencePiece .model remains required. Audit a browser WASM dependency first against SPEC.md section 4.1, including artifact checksum/provenance, no runtime fetch, CSP impact, BPE/Unigram gold, tokenOffset=0 semantics, optional config/template bundle limits, Worker termination cancellation, cold-start cost, and bundle size. If no candidate passes, stop that slice and report BLOCKED; do not implement SentencePiece or protobuf from scratch and do not silently substitute tokenizer.json.
 - tokenizer_class override is N/A in @huggingface/tokenizers because that runtime does not dispatch by class. Keep the consistency warning but do not add a fake recovery UI.
 - Reuse the existing inspection dispatch, repository loaders, Worker, Tokenization model, visual language, and E2E fixture. Add only the minimum interface required for two isolated tokenizer sessions.
@@ -43,11 +48,12 @@ Use git log --reverse 11e1086..59292c6 -- tools/model-files to audit the full na
 - Every row in tools/model-files-web/SPEC.md section 3 has current evidence and ends as PASS, user-approved N/A, or a real dependency BLOCKED. No feature is declared complete from intent, old evidence, or structural tests alone.
 - Standalone SentencePiece .model performs real BPE/Unigram encode IDs, pieces, decode, Token IDs round trip, same-directory config/template behavior, Worker cancellation, and size-limit enforcement in browsers; or the approved dependency gate produces a documented blocker and implementation pauses.
 - Source/PDF/binary, folding/find, Token ID/Special/Role/template/vocabulary, consistency, comparison, and zh-Hans/en behaviors satisfy SPEC.md sections 4 and 6.
+- SafeTensors hierarchy proves dot-path groups, natural numeric order, accurate descendant counts, relative leaf labels, trimmed name/dtype search with visible matches, Collapse All, full breadcrumb, selection persistence, and hide/restore details.
 - cd tools/model-files-web && npm run check exits 0.
 - cd tools/model-files-web && npm run test:e2e exits 0 across Chromium, Firefox, and WebKit; every skip has an explicit platform reason and alternate executed evidence.
 - cd tools/model-files-web && npm run test:e2e:live exits 0; each run records the manifest SHA and proves every subsequent content URL is pinned to it for real tokenizer diagnostics and cross-repository comparison.
 - npm audit --omit=dev reports no critical or high vulnerability; every added runtime dependency has exact version, compatible license, provenance, maintenance note, and measured production bundle impact in docs/third-party-dependencies.md.
-- Real production-preview Chromium completes the ten flows in SPEC.md section 6.3. Console has zero errors/warnings; accessibility and responsive checks pass at 390x844, 768x1024, and 1280x800; the network ledger contains no model-weight content request and preserves existing SafeTensors/GGUF boundaries.
+- Real production-preview Chromium completes all flows in SPEC.md section 6.3, including Tensor hierarchy. Console has zero errors/warnings; accessibility and responsive checks pass at 390x844, 768x1024, and 1280x800; the network ledger contains no model-weight content request and preserves existing SafeTensors/GGUF boundaries.
 - README, productization plan, dependency inventory, and a new parity acceptance record match executed evidence.
 - git diff --check, scoped secret scan, staged-diff review, and repository status prove only intended Web/CI documentation changes were committed. The existing tools/model-files/.DS_Store remains untouched. No push/tag/release/deployment occurs.
 </done_when>
@@ -60,15 +66,18 @@ Use git log --reverse 11e1086..59292c6 -- tools/model-files to audit the full na
 5. Add the pure repository consistency analyzer and classifier first; then separately add cached material acquisition plus badge/report UI without GGUF or weight background reads.
 6. Refactor the global tokenizer client only as far as required to own two isolated sessions. Land session isolation first, comparison UI/vocabulary diff second, and cross-repository sources third.
 7. Localize all UI/error/accessibility strings through one minimal zh-Hans/en message catalog after feature strings stabilize.
-8. After each independently verifiable slice: review tests first, review implementation for correctness/readability/architecture/security/performance, run focused tests, npm run check, relevant E2E, git diff --check, secret/staged review, then make one atomic commit.
-9. Run complete offline, live, production-preview, responsive, keyboard, accessibility, console, and network acceptance. Update docs only from fresh evidence.
-10. Audit every SPEC matrix row against current files and runtime evidence before marking the goal complete.
+8. Implement Tensor hierarchy as four accepted slices: pure model/unit tests; SafeTensors outline UI; three-browser/live/responsive evidence; documentation closeout. Keep all prior accepted behavior unchanged.
+9. After each independently verifiable slice: review tests first, review implementation for correctness/readability/architecture/security/performance, run focused tests, npm run check, relevant E2E, git diff --check, secret/staged review, then make one atomic commit.
+10. Run complete offline, live, production-preview, responsive, keyboard, accessibility, console, and network acceptance. Update docs only from fresh evidence.
+11. Audit every SPEC matrix row against current files and runtime evidence before marking the goal complete.
 </workflow>
 
 <verification_loop>
 Focused first:
 - cd tools/model-files-web && node --test src/core/<changed>.test.ts
 - cd tools/model-files-web && npx playwright test e2e/model-files.spec.ts --project=chromium -g '<changed flow>'
+- cd tools/model-files-web && node --test src/core/tensorHierarchy.test.ts
+- cd tools/model-files-web && npx playwright test e2e/model-files.spec.ts --project=chromium -g 'SafeTensors hierarchy'
 
 Broad gates after each slice:
 - cd tools/model-files-web && npm run check
@@ -82,6 +91,7 @@ Dependency/security gate:
 Final live/runtime gates:
 - cd tools/model-files-web && npm run test:e2e:live
 - run the production preview in a real Chromium session; capture DOM/accessibility, screenshots, console, and network evidence for SPEC.md section 6.3
+- verify a real Qwen SafeTensors hierarchy from its pinned manifest SHA without any Range or Tensor-data expansion
 
 If localhost binding or browser launch fails only because of the managed sandbox, rerun the same command with approved elevation and label the first result BLOCKED(environment), not product FAIL. If a real product assertion fails, reproduce it, add or keep the failing regression test, fix the root cause, then rerun focused and broad gates.
 </verification_loop>
@@ -107,6 +117,7 @@ If localhost binding or browser launch fails only because of the managed sandbox
 Final repository artifacts:
 - tools/model-files-web/SPEC.md
 - tools/model-files-web/GOAL.md
+- tools/model-files-web/docs/tensor-hierarchy-parity-plan.md
 - implemented source/tests/fixtures under tools/model-files-web
 - synchronized tools/model-files-web/README.md
 - synchronized tools/model-files-web/docs/productization-plan.md

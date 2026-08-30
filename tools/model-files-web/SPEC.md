@@ -2,13 +2,13 @@
 
 状态：已确认
 日期：2026-08-22
-更新日期：2026-08-24
+更新日期：2026-08-30
 Web 基线：`11e1086 feat(model-files-web): add complete browser inspector`
-原生对照上界：`59292c6 fix(model-files): close English UI localization gaps`
+原生对照上界：`ef90a92 feat(model-files): organize tensors by hierarchy`
 
 ## 1. 目标
 
-把 `tools/model-files/` 在 Web 基线之后新增、且能保持纯浏览器与只读安全合同的用户可见能力移植到 `tools/model-files-web/`，并用离线三浏览器 E2E、固定 revision 的真实 Hugging Face smoke 以及真实 Chromium 交互完成独立验收。
+把 `tools/model-files/` 在 Web 基线之后新增、且能保持纯浏览器与只读安全合同的用户可见能力移植到 `tools/model-files-web/`，当前增量包含 `ef90a92` 的 SafeTensors Tensor 层级浏览；并用离线三浏览器 E2E、固定 revision 的真实 Hugging Face smoke 以及真实 Chromium 交互完成独立验收。
 
 主代理负责编排、规格、审查、独立验证和提交边界；功能代码由 OpenRouter `stealth/ox-alpha` 编写。每个可独立验证的批次必须在 focused tests、`npm run check` 和相关浏览器检查通过后单独提交。
 
@@ -45,8 +45,9 @@ Web 基线：`11e1086 feat(model-files-web): add complete browser inspector`
 | Python/YAML/JSON 折叠 | 已实现 | PASS | `0c388fe` | `core/sourceFolding.ts foldRanges()`、`Readers.tsx`；E2E `folds Python YAML and JSON while preserving the full source` |
 | 当前文件 `Cmd/Ctrl+F` 查找 | 已实现 | PASS | `5050df3` | `Readers.tsx SourceFind`、`core/readers.ts navigateTextMatches()`；E2E `source find navigates matches and reveals collapsed ancestors` |
 | `zh-Hans` / `en` | 已实现 | PASS | `ac3249e`、`59292c6` | `i18n.ts` 单消息目录与 `Intl` 格式化；E2E `runs the core repository and tokenizer entry points in English` |
+| SafeTensors Tensor 层级浏览 | 平面表格 | IN PROGRESS | `ef90a92` | `docs/tensor-hierarchy-parity-plan.md`；待 `tensorHierarchy` unit、三浏览器 E2E 与 Qwen live 证据 |
 
-文档截图、LICENSE 和验收记录提交本身不算新产品功能；当前第 3 节只按实际 PASS/N/A 结果同步 Web 文档。
+文档截图、LICENSE 和验收记录提交本身不算新产品功能；既有行保持 PASS/N/A，新 Tensor hierarchy 行在 fresh acceptance 前保持 IN PROGRESS。
 
 ## 4. Web 平台适配
 
@@ -121,6 +122,15 @@ Web 继续只读取 GGUF 24-byte prefix，因此 `gguf-context-mismatch` 与 `gg
 - UI、错误、aria-label、placeholder、计数与状态均进入一个消息目录；文件内容、路径、仓库 ID、代码与 metadata key 不翻译。
 - 使用 `Intl.NumberFormat` 等原生 API；初始化时把 `<html lang>` 精确设为 `zh-Hans` 或 `en`。除两种 locale 的核心 E2E 外，静态 key/占位符审计和错误路径测试必须证明用户可见源码字面量没有漏出另一语言；技术名、fixture 内容与用户文件除外。
 
+### 4.7 SafeTensors Tensor 层级浏览
+
+- 只复用已解析的 `SafeTensorsSummary.tensors`，按 `.` 分段构造 group/leaf；group 显示完整匹配集合的后代 Tensor 数，leaf 显示相对名称并保留完整名称作为选择身份。
+- 自然排序必须保证数字段 `2` 在 `10` 前；名称/dtype 搜索 trim whitespace、不区分大小写，并只保留匹配 leaf 与祖先路径。
+- 保留现有语义 table、Shape/DType/参数/Bytes 列、100 行渐进预算和完整选中详情；不得一次渲染全部 Header 条目或新增树/虚拟列表依赖。
+- 非空搜索默认展开匹配路径；全部收起可覆盖本次自动展开。选中 Tensor 在搜索、折叠或详情隐藏后保持不变。
+- 宽屏详情右置，窄屏详情下置；隐藏/显示详情、group disclosure、breadcrumb 和计数均进入现有 zh-Hans/en 消息目录与可访问名称。
+- 远端继续只读 `bytes=0-7` 与精确 Header Range，本地继续两次 `File.slice()`；所有层级交互新增请求为 0，Tensor data 保持 0 bytes。
+
 ## 5. 实施批次与提交
 
 1. `docs(model-files-web): specify native parity goal`
@@ -137,6 +147,10 @@ Web 继续只读取 GGUF 24-byte prefix，因此 `gguf-context-mismatch` 与 `gg
 12. `feat(model-files-web): add cross-repository tokenizer comparison`
 13. `feat(model-files-web): add English localization`
 14. `docs(model-files-web): record native parity acceptance`
+15. `feat(model-files-web): model tensor hierarchy`
+16. `feat(model-files-web): browse tensors by hierarchy`
+17. `test(model-files-web): verify tensor hierarchy in browsers`
+18. `docs(model-files-web): record tensor hierarchy acceptance`
 
 允许在审查后合并极小且不可独立验收的相邻批次；不允许把多个大功能压成一个提交。每个实现批次遵循 RED → GREEN → review → focused test → `npm run check` → 相关 E2E → staged diff/secret/whitespace review → commit。
 
@@ -145,7 +159,7 @@ Web 继续只读取 GGUF 24-byte prefix，因此 `gguf-context-mismatch` 与 `gg
 ### 6.1 工件与矩阵
 
 - `SPEC.md` 第 3 节、`GOAL.md`、README、产品化计划、依赖清单和新的 parity acceptance 互相一致。
-- 本规格矩阵每一项当前为 PASS 或用户确认的 N/A，不以旧测试或作者自述代替证据。
+- 既有矩阵行保持 PASS 或用户确认的 N/A；Tensor hierarchy 行最终必须以 fresh unit、三浏览器和 live 证据从 IN PROGRESS 收口为 PASS。
 - 除用户已有 `tools/model-files/.DS_Store` 外，不夹带无关工作区文件；不 push、tag、release 或部署。
 
 ### 6.2 自动化
@@ -170,8 +184,9 @@ Web 继续只读取 GGUF 24-byte prefix，因此 `gguf-context-mismatch` 与 `gg
 8. `zh-Hans` 与 `en` 分别完成核心流程；`390x844`、`768x1024`、`1280x800` 主操作可达，窄屏对照改为上下排列。
 9. 键盘焦点、可访问名称、动态状态和颜色之外的状态表达可用。
 10. production preview console 0 error/0 warning；网络账本只有预期清单、可读文件和既有严格 Range，权重内容请求为 0。
+11. SafeTensors Tensors 视图完成层级展开、自然排序、搜索剪枝、leaf 选择、全部收起、breadcrumb 和详情隐藏/恢复；390×844、768×1024、1280×800 均可用。
 
-性能证据至少记录：128 KiB 折叠扫描、接近 32 MiB 文本查找、Qwen 级 150k 词表首次索引/查询、10k token、双 session 首次加载与 SentencePiece WASM 冷启动。阈值以现有 10k token `<10 s`、100k 行 `<3 s` 门为下限；任何更慢路径必须给出用户可见响应性证据和原因。
+性能证据至少记录：128 KiB 折叠扫描、接近 32 MiB 文本查找、Qwen 级 150k 词表首次索引/查询、10k token、双 session 首次加载、SentencePiece WASM 冷启动，以及 10,000 Tensor 层级构树。Tensor 构树 `<1 s`；现有 10k token `<10 s`、100k 行 `<3 s` 门不回退。
 
 ## 7. 非目标
 
@@ -180,12 +195,14 @@ Web 继续只读取 GGUF 24-byte prefix，因此 `gguf-context-mismatch` 与 `gg
 - 手写 SentencePiece 算法、手写多语言语法高亮器、语言插件 SDK、通用 tokenizer provider/factory。
 - 可编辑源码、保存、替换、全仓库搜索、折叠状态/查找历史持久化。
 - 应用内语言选择器、第三种语言。
+- Tensor 平面/层级双模式、展开状态持久化、通用 tree/treegrid 组件或新虚拟列表依赖。
 
 ## 8. 权威参考
 
 - 原生诊断：`../model-files/docs/diagnostic-inspector-spec.md`、`../model-files/docs/diagnostic-inspector-acceptance.md`
 - 原生阅读与国际化：`../model-files/docs/source-reader-i18n-requirements.md`、`../model-files/docs/source-reader-i18n-implementation-plan.md`
 - 现有 Web 合同：`docs/productization-plan.md`、`docs/local-functionality-acceptance.md`、`docs/third-party-dependencies.md`
+- 本轮增量：`docs/tensor-hierarchy-parity-plan.md`、`../model-files/Sources/ModelFiles/Support/TensorHierarchy.swift`、`../model-files/Tests/ModelFilesTests/TensorHierarchyTests.swift`
 - Hugging Face Tokenizers.js：<https://github.com/huggingface/tokenizers.js/>
 - Google SentencePiece：<https://github.com/google/sentencepiece>
 - 浏览器 Blob/PDF：<https://developer.mozilla.org/en-US/docs/Web/API/File_API/Using_files_from_web_applications>
