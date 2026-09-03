@@ -25,8 +25,9 @@ function indentFolds(source: string, isHeader: HeaderPredicate): FoldRange[] {
   const ranges: FoldRange[] = []
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
+    if (!isHeader(line)) continue
     const indent = leadingWhitespaceWidth(line)
-    if (indent === null || !isHeader(line)) continue
+    if (indent === null) continue
 
     let end = index
     let sawDeeper = false
@@ -116,6 +117,10 @@ function jsonFolds(source: string): FoldRange[] {
 }
 
 function isPythonHeader(line: string): boolean {
+  const trimmed = trimWhitespace(line)
+  if (!trimmed.includes('#')) {
+    return trimmed !== '' && !trimmed.includes('"""') && !trimmed.includes("'''") && trimmed.endsWith(':')
+  }
   const code = trimWhitespace(pythonCodeWithoutComment(line))
   if (code === '') return false
   if (code.includes('"""') || code.includes("'''")) return false
@@ -228,7 +233,7 @@ function isAllWhitespace(line: string): boolean {
 }
 
 function trimWhitespace(value: string): string {
-  return value.replace(/^[\p{White_Space}]+|[\p{White_Space}]+$/gu, '')
+  return value.trim()
 }
 
 function firstCharacter(value: string): string {
