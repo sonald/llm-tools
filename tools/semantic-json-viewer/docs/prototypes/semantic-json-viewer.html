@@ -1,0 +1,932 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Semantic JSON Viewer · UI Prototype</title>
+  <!-- PROTOTYPE — Three UI variants for the v0.1 desktop reader, switchable via ?variant=A|B|C. Frozen data, no parser or file I/O. -->
+  <style>
+    :root {
+      color-scheme: light;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", "Cascadia Code", Consolas, monospace;
+      --bg: #eef0f3;
+      --surface: #ffffff;
+      --surface-2: #f7f8fa;
+      --surface-3: #eef2f7;
+      --text: #18202d;
+      --muted: #697386;
+      --faint: #98a1b2;
+      --line: #dfe3e9;
+      --line-strong: #cbd1da;
+      --blue: #2864dc;
+      --blue-soft: #e8f0ff;
+      --amber: #9b6212;
+      --amber-soft: #fff7e5;
+      --green: #267346;
+      --green-soft: #edf8f1;
+      font-family: var(--sans);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { color: var(--text); background: var(--bg); font-size: 13px; }
+    button, input, select { color: inherit; font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible {
+      outline: 2px solid #4987ff;
+      outline-offset: 2px;
+    }
+    .mono { font-family: var(--mono); }
+    .muted { color: var(--muted); }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+    .prototype-note {
+      position: fixed;
+      z-index: 100;
+      top: 11px;
+      left: 50%;
+      translate: -50% 0;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 6px 10px;
+      border: 1px solid #e8cf98;
+      border-radius: 7px;
+      color: #74501f;
+      background: #fff9e9;
+      box-shadow: 0 3px 14px rgb(38 43 52 / 10%);
+      font-size: 10px;
+      letter-spacing: .01em;
+    }
+    .prototype-note strong { font-size: 9px; letter-spacing: .1em; }
+    .prototype-note span { display: none; }
+
+    .shell {
+      width: calc(100vw - 28px);
+      height: calc(100vh - 28px);
+      margin: 14px;
+      overflow: hidden;
+      border: 1px solid #bfc5cf;
+      border-radius: 11px;
+      background: var(--surface);
+      box-shadow: 0 22px 70px rgb(28 34 45 / 18%), 0 2px 8px rgb(28 34 45 / 9%);
+    }
+    .topbar {
+      height: 54px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--line-strong);
+      background: #fafbfc;
+    }
+    .brand { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 720; white-space: nowrap; }
+    .brand-mark {
+      width: 25px;
+      height: 25px;
+      display: grid;
+      place-items: center;
+      border-radius: 6px;
+      color: white;
+      background: #1d2736;
+      font: 700 12px var(--mono);
+    }
+    .file-name { font-weight: 650; white-space: nowrap; }
+    .file-path { max-width: 260px; overflow: hidden; color: var(--faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .spacer { flex: 1; }
+    .tool-button, .compact-button, .icon-button {
+      height: 31px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: var(--surface);
+    }
+    .tool-button { display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; font-size: 11px; }
+    .compact-button { padding: 0 9px; font-size: 10px; }
+    .icon-button { width: 31px; display: grid; place-items: center; padding: 0; }
+    .tool-button:hover, .compact-button:hover, .icon-button:hover { background: var(--surface-2); }
+    .tool-button svg, .compact-button svg, .icon-button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; vertical-align: middle; }
+    .tool-button, .go-entry, .search-mode button { white-space: nowrap; }
+    .search-box { position: relative; width: min(230px, 18vw); }
+    .search-box input, .go-entry input {
+      width: 100%;
+      height: 31px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: var(--surface);
+      font-size: 11px;
+    }
+    .search-box input { padding: 0 58px 0 29px; }
+    .search-box svg { position: absolute; top: 8px; left: 9px; width: 14px; height: 14px; fill: none; stroke: var(--muted); stroke-width: 1.8; }
+    .keycap { position: absolute; top: 8px; right: 8px; color: var(--faint); font: 9px var(--mono); }
+    .file-mode { height: 31px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); font-size: 10px; }
+    .desktop-tools { display: flex; align-items: center; gap: 7px; }
+    .mobile-tools-button { display: none; }
+    .mobile-tools {
+      position: fixed;
+      z-index: 130;
+      top: 58px;
+      right: 8px;
+      width: 290px;
+      display: grid;
+      gap: 9px;
+      padding: 11px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: 0 14px 38px rgb(12 18 28 / 28%);
+    }
+    .mobile-tools .search-box { width: 100%; }
+    .mobile-tools .go-entry { justify-content: space-between; }
+    .mobile-tools .go-entry input { flex: 1; }
+
+    .view-tabs { display: flex; gap: 1px; align-items: stretch; }
+    .view-tabs button {
+      min-width: 68px;
+      height: 35px;
+      padding: 0 11px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      background: transparent;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .view-tabs button:hover { color: var(--text); background: var(--surface-2); }
+    .view-tabs button.active { color: var(--blue); border-bottom-color: var(--blue); }
+    .search-result {
+      max-width: 900px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 auto 14px;
+      padding: 8px 10px;
+      border: 1px solid #c9d9f5;
+      border-radius: 6px;
+      color: #35557f;
+      background: #eff5ff;
+      font-size: 9.5px;
+    }
+    .search-result strong { color: var(--blue); }
+    mark { padding: 0 2px; color: inherit; background: #ffdf72; }
+
+    .entry-list { min-height: 0; overflow: auto; background: #fafbfc; }
+    .entry-heading {
+      height: 42px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 13px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 650;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .entry-button {
+      width: 100%;
+      min-height: 64px;
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1fr);
+      gap: 9px;
+      padding: 10px 12px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      text-align: left;
+    }
+    .entry-button:hover { background: #f1f4f8; }
+    .entry-button.active { background: var(--blue-soft); box-shadow: inset 3px 0 var(--blue); }
+    .entry-dot { width: 7px; height: 7px; margin-top: 5px; border-radius: 50%; background: #778195; }
+    .entry-dot.invalid { background: #d34a42; }
+    .entry-dot.tool { background: #c98018; }
+    .entry-button.active .entry-dot { background: var(--blue); }
+    .entry-button.active .entry-dot.invalid { background: #d34a42; }
+    .entry-title { display: flex; gap: 8px; align-items: baseline; font-size: 11.5px; font-weight: 650; }
+    .entry-title .line { margin-left: auto; color: var(--faint); font-size: 9px; font-weight: 500; }
+    .entry-preview { display: block; margin-top: 4px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .entry-meta { display: block; margin-top: 5px; color: var(--faint); font-size: 9px; }
+    .outline-list { min-height: 0; overflow: auto; padding: 8px; background: #fafbfc; }
+    .outline-button {
+      width: 100%;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 5px;
+      color: var(--muted);
+      background: transparent;
+      text-align: left;
+      font-size: 10px;
+    }
+    .outline-button:hover, .outline-button.active { color: var(--text); background: var(--blue-soft); }
+    .outline-button.child { padding-left: 28px; }
+    .outline-button span:last-child { margin-left: auto; color: var(--faint); font: 9px var(--mono); }
+
+    .statusbar {
+      height: 31px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 12px;
+      border-top: 1px solid var(--line-strong);
+      color: var(--muted);
+      background: #fafbfc;
+      font-size: 9.5px;
+      font-variant-numeric: tabular-nums;
+    }
+    .statusbar span + span { padding-left: 12px; border-left: 1px solid var(--line-strong); }
+    .status-ok { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+    .status-ok::before { width: 7px; height: 7px; border-radius: 50%; background: #45a66b; content: ""; }
+
+    .content-pane { min-width: 0; min-height: 0; overflow: hidden; background: var(--surface); }
+    .content-toolbar {
+      height: 42px;
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    .content-scroll { height: calc(100% - 42px); overflow: auto; padding: 24px 7% 96px; }
+    .semantic-document { max-width: 820px; margin: 0 auto; }
+    .conversation-block { position: relative; padding: 0 0 22px 38px; }
+    .conversation-block::before { position: absolute; top: 23px; bottom: -1px; left: 13px; width: 1px; background: var(--line); content: ""; }
+    .conversation-block:last-child::before { display: none; }
+    .avatar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 27px;
+      height: 27px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #b8c8e8;
+      border-radius: 50%;
+      color: #28549e;
+      background: #eff4ff;
+      font-size: 9px;
+      font-weight: 800;
+    }
+    .avatar.assistant { color: #8a5c0d; border-color: #e8c887; background: #fff7e5; }
+    .role { margin-bottom: 7px; font-size: 10px; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
+    .message { color: #303947; font-size: 13px; line-height: 1.62; }
+    .message h1 { margin: 0 0 10px; font-size: 23px; letter-spacing: -.025em; }
+    .message p { margin: 0 0 10px; }
+    .message ul { margin: 8px 0 13px; padding-left: 20px; }
+    .message li { margin: 5px 0; }
+    code, .inline-code { padding: 1px 4px; border: 1px solid #d9dee7; border-radius: 4px; background: #f5f7fa; font: .92em var(--mono); }
+    .code-block {
+      position: relative;
+      margin: 12px 0;
+      overflow: auto;
+      border: 1px solid #d8dee8;
+      border-radius: 8px;
+      background: #f8fafc;
+    }
+    .code-label { padding: 7px 10px; border-bottom: 1px solid #e1e5eb; color: var(--muted); font: 9px var(--mono); }
+    .code-block pre { margin: 0; padding: 12px 14px; color: #283547; font: 11px/1.65 var(--mono); }
+    .kw { color: #7c3fc2; }
+    .fn { color: #1767a8; }
+    .str { color: #a15317; }
+    .cm { color: #6a8b72; }
+
+    .semantic-card { margin: 13px 0; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 8px; }
+    .semantic-card.tool-call { border-color: #e8c887; }
+    .semantic-card.tool-result { border-color: #b8d8c3; }
+    .semantic-card-head { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: var(--surface-2); font-size: 10px; font-weight: 700; }
+    .tool-call .semantic-card-head { color: var(--amber); background: var(--amber-soft); }
+    .tool-result .semantic-card-head { color: var(--green); background: var(--green-soft); }
+    .semantic-card-head .name { margin-left: auto; color: var(--muted); font: 9px var(--mono); }
+    .kv-grid { display: grid; grid-template-columns: 150px minmax(0, 1fr); }
+    .kv-grid > div { min-height: 29px; display: flex; align-items: center; padding: 5px 10px; border-top: 1px solid var(--line); font: 10px var(--mono); }
+    .kv-grid > div:nth-child(odd) { color: var(--muted); border-right: 1px solid var(--line); background: #fbfcfd; }
+    .open-content {
+      width: 100%;
+      padding: 9px 11px;
+      border: 0;
+      border-top: 1px solid var(--line);
+      color: var(--blue);
+      background: white;
+      text-align: left;
+      font-size: 10px;
+      font-weight: 650;
+    }
+    .open-content:hover { background: var(--blue-soft); }
+
+    .tree-view { max-width: 900px; margin: 0 auto; font: 11px/1.5 var(--mono); }
+    .tree-row { min-height: 31px; display: grid; grid-template-columns: minmax(150px, 1fr) 130px 150px; align-items: center; gap: 12px; padding: 5px 8px; border-bottom: 1px solid #edf0f4; }
+    .tree-row:hover { background: #f7f9fc; }
+    .tree-row.selected { background: var(--blue-soft); }
+    .tree-key { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tree-key .caret { display: inline-block; width: 16px; color: var(--muted); }
+    .tree-type { color: #7655a5; font-size: 9px; }
+    .tree-value { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+    .tree-indent-1 { padding-left: 28px; }
+    .tree-indent-2 { padding-left: 52px; }
+    .tree-actions { margin: 15px 8px; display: flex; gap: 6px; }
+    .tree-warning { margin: 12px 8px; padding: 9px 11px; border-left: 3px solid #d28b25; background: #fff8e8; color: #75521e; font: 10px/1.5 var(--sans); }
+
+    .raw-view { max-width: 980px; margin: 0 auto; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: #fbfcfe; }
+    .raw-head { height: 34px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 9px; }
+    .raw-head button { margin-left: auto; }
+    .raw-lines { overflow: auto; padding: 10px 0 18px; font: 10.5px/1.7 var(--mono); }
+    .raw-line { display: grid; grid-template-columns: 44px minmax(0, 1fr); }
+    .raw-line .ln { padding-right: 11px; color: #a0a8b6; text-align: right; user-select: none; }
+    .raw-line .src { padding: 0 12px; white-space: pre; }
+    .raw-line.highlight { background: #fff4c9; }
+    .json-key { color: #6156bd; }
+    .json-str { color: #25713e; }
+    .json-number { color: #aa4f28; }
+
+    .inspector { min-height: 0; overflow: auto; border-left: 1px solid var(--line-strong); background: #fbfcfd; }
+    .inspector-head { height: 42px; display: flex; align-items: center; padding: 0 13px; border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 720; }
+    .inspect-body { padding: 14px 14px 90px; }
+    .inspect-section { padding: 0 0 15px; margin: 0 0 15px; border-bottom: 1px solid var(--line); }
+    .inspect-section:last-child { border: 0; }
+    .inspect-label { margin: 0 0 7px; color: var(--muted); font-size: 8px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+    .inspect-value { color: #303a4b; font: 10px/1.5 var(--mono); overflow-wrap: anywhere; }
+    .inspect-list { margin: 0; padding-left: 17px; color: #4c5668; font-size: 10px; line-height: 1.6; }
+    .inspect-grid { display: grid; grid-template-columns: 105px minmax(0, 1fr); gap: 7px 10px; font-size: 10px; line-height: 1.4; }
+    .inspect-grid dt { color: var(--muted); }
+    .inspect-grid dd { margin: 0; overflow-wrap: anywhere; }
+    .explanation { padding: 8px 9px; border: 1px solid #d9e4f8; border-radius: 6px; background: #f1f6ff; color: #385070; font-size: 9px; line-height: 1.5; }
+    .side-panel { min-width: 0; min-height: 0; overflow: hidden; border-left: 1px solid var(--line-strong); background: #fbfcfd; }
+    .side-panel-tabs { height: 42px; display: flex; align-items: stretch; border-bottom: 1px solid var(--line); }
+    .side-panel-tabs button { flex: 1; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font-size: 10px; font-weight: 650; }
+    .side-panel-tabs button.active { color: var(--blue); border-bottom-color: var(--blue); }
+    .side-panel > .inspector, .side-panel > .content-drawer { height: calc(100% - 42px); border-left: 0; }
+    .side-panel > .inspector .inspector-head, .side-panel > .content-drawer .drawer-head { display: none; }
+    .panel-close { display: none; }
+    .schema-note { display: inline-flex; margin-left: 7px; padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font: 8px var(--mono); }
+    .state-banner { margin: 0 auto 14px; padding: 10px 12px; border-left: 3px solid var(--blue); background: var(--surface-2); color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .security-banner { margin-bottom: 14px; padding: 9px 10px; border: 1px solid #b9d9c4; border-radius: 6px; color: #286043; background: #eff9f2; font-size: 9px; line-height: 1.5; }
+
+    /* A — reader-first three pane */
+    .variant-a { height: 100%; display: grid; grid-template-rows: 54px minmax(0, 1fr) 31px; }
+    .variant-a .workspace { min-height: 0; display: grid; grid-template-columns: 260px minmax(480px, 1fr) 285px; }
+    .variant-a .left { min-height: 0; display: grid; grid-template-rows: 42px minmax(0, 1fr); border-right: 1px solid var(--line-strong); }
+    .variant-a .entry-heading { justify-content: space-between; }
+    .variant-a .mode-select { height: 26px; border: 0; color: var(--muted); background: transparent; font-size: 9px; }
+
+    /* B — structure-first audit table */
+    .variant-b { height: 100%; display: grid; grid-template-rows: 54px minmax(0, 1fr) 31px; }
+    .variant-b .topbar { gap: 16px; }
+    .go-entry { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; }
+    .go-entry input { width: 70px; padding: 0 8px; }
+    .search-mode { display: inline-flex; padding: 2px; border: 1px solid var(--line-strong); border-radius: 7px; background: #f1f3f6; }
+    .search-mode button { height: 25px; padding: 0 9px; border: 0; border-radius: 5px; color: var(--muted); background: transparent; font-size: 9px; }
+    .search-mode button.active { color: var(--blue); background: white; box-shadow: 0 1px 3px rgb(20 28 42 / 14%); }
+    .variant-b .workspace { min-height: 0; display: grid; grid-template-columns: minmax(430px, 44%) minmax(520px, 56%); }
+    .entry-table-wrap { min-width: 0; min-height: 0; display: grid; grid-template-rows: 34px minmax(0, 1fr); overflow: hidden; border-right: 1px solid var(--line-strong); }
+    .entry-table-scroll { min-height: 0; overflow: auto; }
+    .event-summary { display: flex; align-items: center; gap: 7px; padding: 0 10px; border-bottom: 1px solid var(--line); color: var(--muted); background: #fffaf0; font-size: 8.5px; }
+    .event-summary strong { color: #8a5c0d; }
+    .entry-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 10px; }
+    .entry-table th { position: sticky; z-index: 1; top: 0; height: 37px; padding: 0 9px; border-bottom: 1px solid var(--line-strong); color: var(--muted); background: #f8f9fb; font-size: 8px; text-align: left; text-transform: uppercase; }
+    .entry-table td { height: 38px; padding: 0 9px; border-bottom: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .entry-table tr { cursor: pointer; }
+    .entry-table tbody tr:hover { background: #f3f6fa; }
+    .entry-table tr.active { color: white; background: var(--blue); }
+    .entry-table th:nth-child(1) { width: 54px; }
+    .entry-table th:nth-child(2) { width: 58px; }
+    .entry-table th:nth-child(3) { width: 74px; }
+    .entry-table th:nth-child(4) { width: 80px; }
+    .b-right { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(330px, 1fr) 145px; }
+    .b-semantic { min-height: 0; overflow: hidden; border-bottom: 1px solid var(--line-strong); }
+    .b-semantic { display: grid; grid-template-rows: 42px minmax(0, 1fr); }
+    .b-semantic.showing-viewer { display: block; }
+    .b-semantic.showing-viewer .content-drawer { height: 100%; }
+    .b-semantic .content-scroll { height: auto; padding: 18px 4.5% 50px; }
+    .b-semantic .conversation-block { padding-left: 0; }
+    .b-semantic .conversation-block::before, .b-semantic .avatar { display: none; }
+    .b-inspector { min-height: 0; display: grid; grid-template-columns: 1fr 1fr 1.25fr; background: #fafbfc; }
+    .b-inspector > section { min-width: 0; padding: 12px 14px; border-right: 1px solid var(--line); }
+    .b-inspector > section:last-child { border: 0; }
+    .b-inspector .inspect-label { margin-bottom: 6px; }
+
+    /* C — focus-first reader with drawer */
+    body.dark { --bg: #07111c; --surface: #0b1826; --surface-2: #102033; --surface-3: #14263a; --text: #edf3fa; --muted: #9dacbf; --faint: #687d94; --line: #20364b; --line-strong: #2b455e; --blue: #4fb5ff; --blue-soft: #103b5e; color-scheme: dark; }
+    body.dark .shell { border-color: #2b4259; box-shadow: 0 24px 80px rgb(0 0 0 / 48%); }
+    body.dark .prototype-note { color: #f1c878; border-color: #6f5527; background: #2e2515; }
+    body.dark .topbar, body.dark .statusbar, body.dark .content-toolbar, body.dark .inspector, body.dark .entry-list, body.dark .raw-view, body.dark .semantic-card, body.dark .open-content { background: var(--surface); }
+    body.dark .tool-button, body.dark .compact-button, body.dark .icon-button, body.dark .search-box input, body.dark .go-entry input { background: #0d1c2b; }
+    body.dark code, body.dark .inline-code { border-color: #2a4259; background: #122335; }
+    body.dark .code-block { border-color: #29445d; background: #0a1724; }
+    body.dark .code-block pre { color: #c0cbd8; }
+    body.dark .code-label, body.dark .semantic-card-head { border-color: var(--line); background: #102033; }
+    body.dark .message { color: #cbd7e5; }
+    body.dark .kw { color: #c58df2; }
+    body.dark .fn { color: #68b9ef; }
+    body.dark .str { color: #e79b5a; }
+    body.dark .cm { color: #76a27f; }
+    body.dark .tool-call .semantic-card-head { color: #f0a947; background: #2b2114; }
+    body.dark .tool-result .semantic-card-head { color: #79d391; background: #12271d; }
+    body.dark .kv-grid > div:nth-child(odd) { background: #0e1d2c; }
+    body.dark .tree-row:hover { background: #112338; }
+    body.dark .tree-row.selected { background: #123a58; }
+    body.dark .raw-line.highlight { color: #1e2935; background: #d8be65; }
+    body.dark .tree-warning { color: #ffd68b; border-color: #e9a23b; background: #2a2113; }
+    body.dark .search-result { color: #a9cae7; border-color: #24527a; background: #0f2b42; }
+    body.dark .side-panel { border-color: var(--line-strong); background: #0e1c2b; }
+    body.dark .security-banner { color: #9bdfb2; border-color: #285e3e; background: #10271b; }
+    body.dark .inspect-value, body.dark .inspect-list { color: #becbd8; }
+    body.dark .explanation { color: #a9cae7; border-color: #24527a; background: #0f2b42; }
+    body.dark .search-mode { border-color: #29445d; background: #0e1c2b; }
+    body.dark .search-mode button.active { color: #78c9ff; background: #123a58; box-shadow: none; }
+    .variant-c { height: 100%; display: grid; grid-template-rows: 54px minmax(0, 1fr) 31px; background: var(--surface); }
+    .variant-c .topbar { background: #081522; }
+    .variant-c .workspace { min-height: 0; display: grid; grid-template-columns: 135px minmax(520px, 1fr) 330px; }
+    .c-rail { min-height: 0; overflow: auto; border-right: 1px solid var(--line-strong); background: #091625; }
+    .c-rail-title { height: 42px; display: flex; align-items: center; padding: 0 18px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 10px; }
+    .rail-entry { width: 100%; height: 43px; display: grid; grid-template-columns: 1fr 8px; align-items: center; padding: 0 22px; border: 0; border-bottom: 1px solid #14283b; color: #acbac9; background: transparent; text-align: left; font: 11px var(--mono); }
+    .rail-entry:hover { background: #102237; }
+    .rail-entry.active { color: white; background: #0e4771; box-shadow: inset 2px 0 var(--blue); }
+    .rail-entry i { width: 6px; height: 6px; border-radius: 50%; background: #6fcf7c; }
+    .rail-entry.tool i { background: #e99b42; }
+    .rail-entry.invalid i { background: #ef655e; }
+    .c-main { min-width: 0; min-height: 0; display: grid; grid-template-rows: 42px minmax(0, 1fr); }
+    .breadcrumb { min-width: 0; display: flex; align-items: center; gap: 10px; padding: 0 18px; border-bottom: 1px solid var(--line); color: var(--muted); font: 10px var(--mono); }
+    .breadcrumb span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .breadcrumb svg { width: 11px; height: 11px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; }
+    .c-main .content-scroll { height: 100%; padding: 24px 6% 90px; background: #0b1826; }
+    .c-main .conversation-block { padding-left: 0; }
+    .c-main .conversation-block::before, .c-main .avatar, .c-main .role { display: none; }
+    .c-main .semantic-document { max-width: 780px; }
+    .c-main .message h1 { font-size: 21px; }
+    .content-drawer { min-width: 0; min-height: 0; overflow: auto; border-left: 1px solid var(--line-strong); background: var(--surface); }
+    .drawer-head { height: 42px; display: flex; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 720; }
+    .drawer-head button { margin-left: auto; }
+    .drawer-tabs { height: 40px; display: flex; border-bottom: 1px solid var(--line); }
+    .drawer-tabs button { flex: 1; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font-size: 9px; }
+    .drawer-tabs button.active { color: var(--blue); border-bottom-color: var(--blue); }
+    .drawer-tools { min-height: 44px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+    .drawer-tools select { height: 27px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--surface); font-size: 9px; }
+    .drawer-body { padding: 14px 14px 80px; }
+    .drawer-body pre { overflow: auto; margin: 0; color: #354052; font: 9.5px/1.65 var(--mono); white-space: pre-wrap; }
+    .drawer-preview { color: #4b5768; font-size: 11px; line-height: 1.6; }
+    .drawer-preview h3 { margin: 0 0 8px; color: var(--text); font-size: 13px; }
+    body.dark .drawer-body pre, body.dark .drawer-preview { color: #becbd8; }
+    body.dark .content-drawer, body.dark .drawer-tools select { background: #0e1c2b; }
+    .drawer-meta { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 6px; margin-bottom: 16px; font: 9px/1.45 var(--mono); }
+    .drawer-meta dt { color: var(--muted); }
+    .drawer-meta dd { margin: 0; }
+
+    .prototype-switcher {
+      position: fixed;
+      z-index: 120;
+      bottom: 58px;
+      left: 50%;
+      translate: -50% 0;
+      height: 42px;
+      display: flex;
+      align-items: center;
+      overflow: hidden;
+      border: 1px solid #111827;
+      border-radius: 10px;
+      color: #f7f9fc;
+      background: #17202d;
+      box-shadow: 0 10px 28px rgb(0 0 0 / 30%);
+    }
+    .prototype-switcher button { width: 42px; height: 42px; display: grid; place-items: center; border: 0; color: inherit; background: transparent; }
+    .prototype-switcher button:hover { background: #2b3748; }
+    .prototype-switcher svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9; }
+    .variant-label { min-width: 190px; padding: 0 14px; border-right: 1px solid #384557; border-left: 1px solid #384557; text-align: center; font-size: 10px; }
+    .variant-label strong { display: block; margin-bottom: 2px; color: white; font-size: 11px; }
+    .variant-label span { color: #aab5c4; }
+    .toast {
+      position: fixed;
+      z-index: 140;
+      right: 28px;
+      bottom: 26px;
+      padding: 9px 12px;
+      border: 1px solid #465264;
+      border-radius: 7px;
+      color: white;
+      background: #1c2736;
+      box-shadow: 0 8px 24px rgb(0 0 0 / 25%);
+      font-size: 10px;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity .15s, transform .15s;
+      pointer-events: none;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    @media (max-width: 1050px) {
+      .variant-a .workspace { grid-template-columns: 220px minmax(430px, 1fr); }
+      .variant-c .workspace { grid-template-columns: 105px minmax(430px, 1fr); }
+      .side-panel { display: none; }
+      .panel-open .side-panel { position: fixed; z-index: 50; top: 68px; right: 14px; bottom: 45px; width: min(420px, 72vw); display: block; box-shadow: -16px 0 42px rgb(0 0 0 / 35%); }
+      .panel-close { display: grid; }
+      .file-path { display: none; }
+      .search-box { width: 210px; }
+      .variant-b .workspace { grid-template-columns: minmax(330px, 42%) minmax(430px, 58%); }
+    }
+    @media (max-width: 1500px) and (min-width: 761px) {
+      .file-path { display: none; }
+      .search-box { width: 190px; }
+      .topbar { gap: 6px; }
+    }
+    @media (max-width: 760px) {
+      .shell { width: 100vw; height: 100vh; margin: 0; border: 0; border-radius: 0; }
+      .prototype-note { display: none; }
+      .brand span:last-child, .file-name, .desktop-tools { display: none; }
+      .mobile-tools-button { display: grid; }
+      .variant-a .workspace { grid-template-columns: 150px minmax(0, 1fr); }
+      .variant-b .workspace { grid-template-columns: 175px minmax(0, 1fr); }
+      .variant-c .workspace { grid-template-columns: 72px minmax(0, 1fr); }
+      .panel-open .side-panel { top: 54px; right: 0; bottom: 31px; width: calc(100vw - 72px); }
+      .entry-preview, .entry-meta, .entry-title .line, .entry-table th:nth-child(3), .entry-table td:nth-child(3), .entry-table th:nth-child(4), .entry-table td:nth-child(4), .b-inspector { display: none; }
+      .entry-table th:nth-child(1), .entry-table th:nth-child(2) { width: 50%; }
+      .b-right { grid-template-rows: 58% 42%; }
+      .content-scroll, .b-semantic .content-scroll { padding-right: 18px; padding-left: 18px; }
+      .statusbar span:nth-child(2), .statusbar span:nth-child(3) { display: none; }
+      .prototype-switcher { bottom: 42px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="prototype-note"><strong>PROTOTYPE</strong><span>Frozen data · no file I/O · evaluate information architecture</span></div>
+  <main id="app" class="shell"></main>
+  <nav class="prototype-switcher" aria-label="Prototype variants">
+    <button type="button" data-action="prev-variant" aria-label="Previous variant">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+    </button>
+    <div class="variant-label"><strong id="variant-key">A — Reader first</strong><span>Use ← → to compare</span></div>
+    <button type="button" data-action="next-variant" aria-label="Next variant">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+    </button>
+  </nav>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const entries = [
+      { id: 97, line: 103, role: 'user', kind: 'object', preview: 'Please inspect the repository structure.', meta: 'OpenAI · 4 messages', status: 'valid', schema: 'OpenAI-specific' },
+      { id: 98, line: 104, role: 'assistant', kind: 'object', preview: 'I’ll start by reading the source tree.', meta: 'OpenAI · tool_calls', status: 'valid', schema: 'OpenAI-specific' },
+      { id: 99, line: 105, role: 'tool', kind: 'object', preview: '{"path":"/workspace/src","recursive":true}', meta: 'OpenAI · Tool call', status: 'tool', schema: 'OpenAI-specific' },
+      { id: 100, line: 106, role: 'tool', kind: 'object', preview: '{"status":"success","items":28}', meta: 'OpenAI · Tool result', status: 'tool', schema: 'OpenAI-specific' },
+      { id: 101, line: 107, role: 'assistant', kind: 'object', preview: 'Thinking block followed by tool_use.', meta: 'Anthropic · thinking/tool_use', status: 'valid', schema: 'Anthropic-specific' },
+      { id: 102, line: 108, role: 'user', kind: 'object', preview: 'Summarize the entry point and key modules.', meta: 'Generic · role/content', status: 'valid', schema: 'Generic role/content' },
+      { id: 103, line: 109, role: 'assistant', kind: 'object', preview: 'Successfully read the directory at /workspace/src…', meta: 'Generic · 12 messages · 18.2 KiB', status: 'valid', schema: 'Generic role/content' },
+      { id: 104, line: 110, role: 'unknown', kind: 'invalid', preview: 'Expected comma at byte 19,483', meta: 'Invalid JSON · source preserved', status: 'invalid', schema: 'Skipped' },
+      { id: 105, line: 111, role: 'user', kind: 'object', preview: 'Which module owns configuration?', meta: 'Generic · 5 messages', status: 'valid', schema: 'Generic role/content' },
+      { id: 106, line: 112, role: 'assistant', kind: 'object', preview: 'Configuration is loaded from defaults.rs.', meta: 'Generic · 9 messages', status: 'valid', schema: 'Generic role/content' },
+      { id: 107, line: 113, role: 'tool', kind: 'object', preview: '{"path":"src/config/defaults.rs"}', meta: 'OpenAI · Tool call', status: 'tool', schema: 'OpenAI-specific' },
+      { id: 108, line: 114, role: 'assistant', kind: 'object', preview: 'Long conversation performance fixture.', meta: '10,000 messages · virtualized', status: 'valid', schema: 'Anthropic-specific' }
+    ];
+
+    const variantNames = { A: 'A — Reader first', B: 'B — Audit split', C: 'C — Focus reader' };
+    const state = {
+      variant: new URLSearchParams(location.search).get('variant')?.toUpperCase() || 'A',
+      fileMode: 'entry',
+      view: 'semantic',
+      selectedEntry: 103,
+      selectedItem: 3,
+      selectedNode: '$.messages[3].content',
+      contentOpen: false,
+      panelOpen: innerWidth > 1050,
+      mobileTools: false,
+      contentTab: 'rendered',
+      summaryMode: 'auto',
+      searchMode: 'decoded',
+      searchQuery: '',
+      renderer: 'Auto · Markdown',
+      wrap: true
+    };
+    if (!variantNames[state.variant]) state.variant = 'A';
+
+    const searchIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>';
+    const folderIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h6l2 2h10v10H3z"/></svg>';
+    const chevron = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
+    const copyIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V5H5v11h3"/></svg>';
+    const menuIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>';
+
+    function selectedEntry() {
+      return entries.find(entry => entry.id === state.selectedEntry) || { id: state.selectedEntry, line: state.selectedEntry + 6, role: 'assistant', kind: 'object', preview: 'Indexed entry loaded on demand.', meta: 'Generic · on-demand projection', status: 'valid', schema: 'Generic role/content' };
+    }
+
+    function modeMeta() {
+      if (state.fileMode === 'document') return { file: 'request.json', path: '/workspace/data/request.json', label: 'Document', total: 'root' };
+      if (state.fileMode === 'collection') return { file: 'eval-results.json', path: '/workspace/data/eval-results.json', label: 'Collection', total: '1,000,000' };
+      return { file: 'agent-trace.jsonl', path: '/workspace/logs/agent-trace.jsonl', label: 'Entry', total: '4,238,912' };
+    }
+
+    function contextInfo() {
+      const entry = selectedEntry();
+      if (state.fileMode === 'document') return { path: state.selectedNode, node: 'request.json : 248–2,090', line: 8, bytes: '248–2,090', json: 'string', semantic: 'Markdown', detection: 'Schema-directed LLM content', signals: ['parent is assistant message', 'field is content', 'contains fenced code block'] };
+      if (state.fileMode === 'collection') return { path: `$[${state.selectedItem}].response`, node: `eval-results.json : item-${state.selectedItem}`, line: 14 + state.selectedItem * 8, bytes: `${4096 + state.selectedItem * 640}–${4632 + state.selectedItem * 640}`, json: 'string', semantic: 'Markdown', detection: 'Content-detected rendering', signals: ['field is response', 'ATX heading', 'fenced code block'] };
+      if (entry.status === 'invalid') return { path: `Entry ${entry.id}`, node: 'No NodeId · parse failed', line: entry.line, bytes: '19,483–19,542', json: 'Invalid JSON', semantic: 'Not evaluated', detection: 'Skipped after parse error', signals: ["expected ',' or '}'", 'raw byte slice available', 'later entries remain available'] };
+      const start = 18320 + (entry.id - 97) * 1162;
+      return { path: state.selectedNode, node: `file-7 : ${start}–${start + 1162}`, line: entry.line, bytes: `${start.toLocaleString()}–${(start + 1162).toLocaleString()}`, json: 'string', semantic: 'Markdown', detection: entry.schema, signals: [entry.schema === 'Anthropic-specific' ? 'contains thinking/tool_use block' : 'role/content shape matched', 'field is content', 'contains fenced code block'] };
+    }
+
+    function searchModeControl() {
+      return `<div class="search-mode" aria-label="Search representation"><button type="button" class="${state.searchMode === 'decoded' ? 'active' : ''}" data-search-mode="decoded">Decoded</button><button type="button" class="${state.searchMode === 'raw' ? 'active' : ''}" data-search-mode="raw">Raw Source</button></div>`;
+    }
+
+    function goControl() {
+      if (state.fileMode === 'document') return '';
+      const label = state.fileMode === 'collection' ? 'Go to Item' : 'Go to Entry';
+      const value = state.fileMode === 'collection' ? state.selectedItem : state.selectedEntry;
+      return `<label class="go-entry">${label} <input data-role="go-entry" value="${value}" inputmode="numeric"><button class="compact-button" type="button" data-action="go-entry">Go</button></label>`;
+    }
+
+    function searchControl() {
+      return `<label class="search-box">${searchIcon}<span class="sr-only">Search current scope</span><input data-role="search" value="${state.searchQuery}" placeholder="Search current ${modeMeta().label.toLowerCase()}"><span class="keycap">⌘F</span></label>`;
+    }
+
+    function mobileTools() {
+      if (!state.mobileTools) return '';
+      return `<div class="mobile-tools">${searchControl()}${searchModeControl()}${goControl()}<div style="display:flex;gap:6px"><button class="compact-button" type="button" data-side="inspector">Inspector</button><button class="compact-button" type="button" data-side="content">Content Viewer</button></div></div>`;
+    }
+
+    function topbar(extra = '') {
+      const meta = modeMeta();
+      return `<header class="topbar"><div class="brand"><span class="brand-mark">{}</span><span>Semantic JSON Viewer</span></div><button class="tool-button" type="button" data-action="open-file">${folderIcon} Open file</button><label><span class="sr-only">File mode</span><select class="file-mode" data-role="file-mode"><option value="entry" ${state.fileMode === 'entry' ? 'selected' : ''}>Entry Mode</option><option value="document" ${state.fileMode === 'document' ? 'selected' : ''}>Document Mode</option><option value="collection" ${state.fileMode === 'collection' ? 'selected' : ''}>Collection Mode</option></select></label><span class="file-name">${meta.file}</span><span class="file-path">${meta.path}</span><div class="spacer"></div>${extra}<div class="desktop-tools">${searchModeControl()}${goControl()}${searchControl()}</div><button class="icon-button mobile-tools-button" type="button" data-action="toggle-mobile-tools" aria-label="Search, navigation, and panels">${menuIcon}</button>${mobileTools()}</header>`;
+    }
+
+    function viewTabs() {
+      return `<div class="view-tabs" role="tablist" aria-label="Representation">
+        ${['semantic', 'tree', 'raw'].map(view => `<button type="button" role="tab" aria-selected="${state.view === view}" class="${state.view === view ? 'active' : ''}" data-view="${view}">${view[0].toUpperCase() + view.slice(1)}</button>`).join('')}
+      </div>`;
+    }
+
+    function renderAsControl() {
+      return `<label class="muted" style="font-size:9px">Render As <select class="file-mode" data-role="render-as"><option ${state.renderer === 'Auto · Markdown' ? 'selected' : ''}>Auto · Markdown</option><option ${state.renderer === 'Plain Text' ? 'selected' : ''}>Plain Text</option><option ${state.renderer === 'Code · Rust' ? 'selected' : ''}>Code · Rust</option><option ${state.renderer === 'HTML Preview' ? 'selected' : ''}>HTML Preview</option></select></label>`;
+    }
+
+    function statusbar() {
+      const meta = modeMeta();
+      const context = contextInfo();
+      const primary = state.fileMode === 'document' ? 'Document · root' : state.fileMode === 'collection' ? `Item ${state.selectedItem} / ${meta.total}` : `Entry ${state.selectedEntry} / ${meta.total}`;
+      const index = state.fileMode === 'entry' ? 'Indexing complete · Dense index' : state.fileMode === 'collection' ? 'Collection children on demand' : 'Document structure loaded';
+      return `<footer class="statusbar"><span>${primary}</span><span>Source line ${context.line}</span><span>Bytes ${context.bytes}</span><span>UTF-8</span><span class="status-ok">${index}</span></footer>`;
+    }
+
+    function entryList() {
+      return `<div class="entry-list">${entries.map(entry => `<button type="button" class="entry-button ${entry.id === state.selectedEntry ? 'active' : ''}" data-entry="${entry.id}">
+        <span class="entry-dot ${entry.status}"></span><span><span class="entry-title">Entry ${entry.id}<span class="line">line ${entry.line}</span></span><span class="entry-preview">${entry.preview}</span><span class="entry-meta">${entry.meta}</span></span>
+      </button>`).join('')}</div>`;
+    }
+
+    function outlineList() {
+      return `<div class="outline-list"><button class="outline-button active" data-node="$"><span>▾ root</span><span>Object{3}</span></button><button class="outline-button child" data-node="$.messages"><span>messages</span><span>Array[4]</span></button><button class="outline-button child" data-node="$.metadata"><span>metadata</span><span>Object{2}</span></button><button class="outline-button child" data-node="$.result"><span>result</span><span>Markdown</span></button></div>`;
+    }
+
+    function collectionList(compact = false) {
+      const items = Array.from({ length: 12 }, (_, item) => compact
+        ? `<button type="button" class="rail-entry ${item === state.selectedItem ? 'active' : ''}" data-item="${item}"><span>${String(item).padStart(3, '0')}</span><i></i></button>`
+        : `<button type="button" class="entry-button ${item === state.selectedItem ? 'active' : ''}" data-item="${item}"><span class="entry-dot"></span><span><span class="entry-title">Item ${item}<span class="line">array index ${item}</span></span><span class="entry-preview">Eval sample ${item}: tool-use reasoning and expected output</span><span class="entry-meta">Object{6} · 4.2 KiB</span></span></button>`).join('');
+      return `<div class="${compact ? 'c-rail' : 'entry-list'}">${items}</div>`;
+    }
+
+    function navigation() {
+      if (state.fileMode === 'document') return outlineList();
+      if (state.fileMode === 'collection') return collectionList();
+      return entryList();
+    }
+
+    function navigationHeader() {
+      if (state.fileMode === 'document') return `<span>Outline</span><span>Document</span>`;
+      if (state.fileMode === 'collection') return `<span>Items · 1,000,000</span><span>Virtual list</span>`;
+      return `<span>Entries · 4,238,912</span><select class="mode-select" data-role="summary-mode"><option value="auto" ${state.summaryMode === 'auto' ? 'selected' : ''}>Auto summary</option><option value="generic" ${state.summaryMode === 'generic' ? 'selected' : ''}>Generic</option><option value="event" ${state.summaryMode === 'event' ? 'selected' : ''}>Event</option></select>`;
+    }
+
+    function searchBanner() {
+      if (!state.searchQuery) return '';
+      const count = state.searchMode === 'raw' ? 1 : 3;
+      const context = contextInfo();
+      return `<div class="search-result"><strong>${count} matches</strong><span>in ${state.searchMode === 'raw' ? 'Raw Source' : 'Decoded'} · current ${modeMeta().label}</span><span class="spacer"></span><span class="mono">${context.path} · ${context.bytes}</span></div>`;
+    }
+
+    function semanticView(compact = false) {
+      const entry = selectedEntry();
+      if (state.fileMode === 'document') return `<article class="semantic-document"><div class="state-banner"><strong>Document Mode</strong><br>One complete JSON document. Outline navigation follows root object fields.</div><div class="message"><h1>Request</h1><p>Analyze the repository and return a safe <mark>Markdown</mark> summary.</p><div class="semantic-card"><div class="semantic-card-head">metadata <span class="name">Object{2}</span></div><div class="kv-grid"><div>model</div><div>"local-agent"</div><div>request_id</div><div>"req_2048"</div></div></div></div></article>`;
+      if (state.fileMode === 'collection') return `<article class="semantic-document"><div class="state-banner"><strong>Collection Mode · Item ${state.selectedItem}</strong><br>Only the selected array item is projected into the WebView.</div><div class="message"><h1>Evaluation sample</h1><p>Expected the assistant to inspect <code>src/main.rs</code> and explain the result.</p><div class="semantic-card tool-result"><div class="semantic-card-head">Evaluation result <span class="name">score 0.92</span></div><div class="kv-grid"><div>expected</div><div>"Repository summary"</div><div>passed</div><div>true</div></div></div></div></article>`;
+      if (entry.status === 'invalid') return `<div class="semantic-document"><div class="tree-warning"><strong>Invalid JSON · Entry ${entry.id}</strong><br>Line ${entry.line} · Bytes 19,483–19,542<br>Expected ',' or '}'. This entry was not parsed or semantically detected.</div><div class="tree-actions"><button class="compact-button" data-view="raw">Open this Entry’s Raw</button><button class="compact-button" data-copy-label="Invalid Entry Raw" data-action="copy">Copy Raw</button></div><div class="state-banner">Entry 105 remains available. One bad record does not block later entries.</div></div>`;
+      const longConversation = entry.id === 108 ? `<div class="state-banner"><strong>Long conversation · 10,000 messages</strong><br>Visible blocks only · 20 blocks overscan before and after · 100-block page cursor.</div>` : '';
+      const thinking = entry.schema === 'Anthropic-specific' ? `<div class="semantic-card tool-call"><div class="semantic-card-head">Thinking Block <span class="name">Anthropic · explicit block type</span></div><div style="padding:10px;font-size:10px;line-height:1.5">I should inspect the entry point before summarizing the repository.</div></div>` : '';
+      return `<article class="semantic-document">
+        ${longConversation}${compact ? '' : `<section class="conversation-block"><span class="avatar">U</span><div class="role">User <span class="schema-note">${entry.schema}</span></div><div class="message">Read the project at <code>/workspace/src</code> recursively, then summarize its entry point and key modules.</div></section>`}
+        <section class="conversation-block"><span class="avatar assistant">A</span><div class="role">Assistant <span class="schema-note">${entry.schema}</span></div><div class="message">
+          <h1>${state.searchQuery ? '<mark>Result</mark>' : 'Result'}</h1>
+          <p>Successfully read the directory at <code>/workspace/src</code> recursively. The project is a Rust application organized as a standard Cargo workspace.</p>
+          <ul><li>The entry point is <code>src/main.rs</code>.</li><li>Core logic lives in <code>src/lib.rs</code>.</li><li>Configuration is loaded from <code>src/config/defaults.rs</code>.</li></ul>
+          ${thinking}
+          <div class="code-block"><div class="code-label">rust · 10 lines</div><pre><span class="kw">use</span> anyhow::<span class="fn">Result</span>;
+<span class="kw">use</span> myapp::run;
+
+<span class="kw">fn</span> <span class="fn">main</span>() -&gt; Result&lt;()&gt; {
+  <span class="kw">if let</span> Err(error) = run() {
+    eprintln!(<span class="str">"error: {error:#}"</span>);
+    std::process::exit(<span class="json-number">1</span>);
+  }
+  Ok(())
+}</pre></div>
+          <div class="semantic-card tool-call"><div class="semantic-card-head">Tool Call <span class="name">read_dir_recursive · call_0af8</span></div><div class="kv-grid"><div>path</div><div>"/workspace/src"</div><div>recursive</div><div>true</div><div>follow_symlinks</div><div>false</div></div></div>
+          <div class="semantic-card tool-result"><div class="semantic-card-head">Tool Result <span class="name">success · 28 items</span></div><div class="kv-grid"><div>status</div><div>"success"</div><div>tree</div><div>Object{28}</div></div><button class="open-content" type="button" data-side="content">Open long content in Content Viewer →</button></div>
+        </div></section>
+      </article>`;
+    }
+
+    function treeView() {
+      if (state.fileMode === 'entry' && selectedEntry().status === 'invalid') return `<div class="tree-view"><div class="tree-warning"><strong>No Tree for Entry ${state.selectedEntry}</strong><br>JSON parsing stopped at byte 19,483. The original byte slice is still available.</div><div class="tree-actions"><button class="compact-button" data-view="raw">Open this Entry’s Raw</button></div></div>`;
+      const root = state.fileMode === 'collection' ? `Item ${state.selectedItem}` : 'root';
+      return `<div class="tree-view" role="tree">
+        <div class="tree-row"><div class="tree-key"><span class="caret">▾</span>${root}</div><div class="tree-type">Object{4}</div><div class="tree-value">bytes ${contextInfo().bytes}</div></div>
+        <div class="tree-row tree-indent-1"><div class="tree-key"><span class="caret">▾</span>messages</div><div class="tree-type">Array[4]</div><div class="tree-value">Conversation</div></div>
+        <div class="tree-row tree-indent-2"><div class="tree-key"><span class="caret">▸</span>0</div><div class="tree-type">User Message</div><div class="tree-value">Object{2}</div></div>
+        <div class="tree-row tree-indent-2"><div class="tree-key"><span class="caret">▾</span>3</div><div class="tree-type">Assistant Message</div><div class="tree-value">Object{3}</div></div>
+        <div class="tree-row tree-indent-2 selected"><div class="tree-key"><span class="caret"></span>content</div><div class="tree-type">Markdown · 1.8 KiB</div><div class="tree-value">"## Result\\n…"</div></div>
+        <div class="tree-row tree-indent-1"><div class="tree-key"><span class="caret">▾</span>arguments</div><div class="tree-type">JSON String · Object{3}</div><div class="tree-value">"{\\"path\\":…}"</div></div>
+        <div class="tree-row tree-indent-2"><div class="tree-key"><span class="caret"></span>path</div><div class="tree-type">string</div><div class="tree-value">"/workspace/src"</div></div>
+        <div class="tree-row tree-indent-2"><div class="tree-key"><span class="caret"></span>recursive</div><div class="tree-type">boolean</div><div class="tree-value">true</div></div>
+        <div class="tree-row tree-indent-1"><div class="tree-key"><span class="caret"></span>value#1</div><div class="tree-type">number · duplicate key</div><div class="tree-value">1</div></div>
+        <div class="tree-row tree-indent-1"><div class="tree-key"><span class="caret"></span>value#2</div><div class="tree-type">number · duplicate key</div><div class="tree-value">2</div></div>
+        <div class="tree-row tree-indent-1"><div class="tree-key"><span class="caret"></span>run_id</div><div class="tree-type">integer · raw lexeme</div><div class="tree-value">922337203685477580712345</div></div>
+        <div class="tree-warning"><strong>Ambiguous duplicate field</strong><br>Both occurrences retain distinct NodeIds and source spans. The large integer remains an exact raw lexeme.</div>
+        <div class="tree-actions"><button class="compact-button" type="button" data-copy-label="Raw JSON subtree" data-action="copy">Copy Raw</button><button class="compact-button" type="button" data-copy-label="JSON path" data-action="copy">Copy Path</button><button class="compact-button" type="button" data-view="raw">Jump to source span</button></div>
+      </div>`;
+    }
+
+    function rawLines(limit = 12) {
+      const entry = selectedEntry();
+      if (state.fileMode === 'entry' && entry.status === 'invalid') return `<div class="raw-line highlight"><span class="ln">${entry.line}</span><span class="src">{<span class="json-key">"role"</span>:<span class="json-str">"assistant"</span> <span class="json-key">"content"</span>:<span class="json-str">"missing comma"</span>}</span></div><div class="raw-line"><span class="ln"></span><span class="src">                         ^ expected ',' or '}' at byte 19,483</span></div>`;
+      const prefix = state.fileMode === 'collection' ? `[${state.selectedItem}] ` : '';
+      const lines = [
+        `<span class="json-key">"id"</span>: <span class="json-str">"${prefix}msg_8f3c2b1e7a9d4c"</span>,`,
+        `<span class="json-key">"type"</span>: <span class="json-str">"conversation"</span>,`,
+        `<span class="json-key">"messages"</span>: [`,
+        `  {<span class="json-key">"role"</span>:<span class="json-str">"user"</span>,<span class="json-key">"content"</span>:<span class="json-str">"Read the project recursively."</span>},`,
+        `  {<span class="json-key">"role"</span>:<span class="json-str">"assistant"</span>,<span class="json-key">"content"</span>:<span class="json-str">"## Result\\n\\nSuccessfully read…"</span>,`,
+        `   <span class="json-key">"tool_calls"</span>:[{<span class="json-key">"function"</span>:{<span class="json-key">"name"</span>:<span class="json-str">"read_dir_recursive"</span>,`,
+        `   <span class="json-key">"arguments"</span>:<span class="json-str">"{\\"path\\":\\"/workspace/src\\",\\"recursive\\":true}"</span>}}]},`,
+        `  {<span class="json-key">"role"</span>:<span class="json-str">"tool"</span>,<span class="json-key">"content"</span>:<span class="json-str">"{\\"status\\":\\"success\\",\\"items\\":28}"</span>}`,
+        `],`,
+        `<span class="json-key">"value"</span>: <span class="json-number">1</span>,`,
+        `<span class="json-key">"value"</span>: <span class="json-number">2</span>,`,
+        `<span class="json-key">"run_id"</span>: <span class="json-number">922337203685477580712345</span>`
+      ];
+      return lines.slice(0, limit).map((line, index) => `<div class="raw-line ${index === 4 ? 'highlight' : ''}"><span class="ln">${contextInfo().line + index}</span><span class="src">${index === 0 ? '{' : ''}${line}${index === lines.length - 1 ? '}' : ''}</span></div>`).join('');
+    }
+
+    function rawView() {
+      const invalid = state.fileMode === 'entry' && selectedEntry().status === 'invalid';
+      const scope = state.fileMode === 'document' ? 'Document root' : state.fileMode === 'collection' ? `Item ${state.selectedItem}` : `Entry ${state.selectedEntry}`;
+      return `<div class="raw-view"><div class="raw-head"><span>${invalid ? 'Invalid JSON · ' : ''}UTF-8 · original byte slice</span><span>${scope}</span><button class="compact-button" type="button" data-copy-label="${invalid ? 'Invalid Entry Raw' : 'Raw byte slice'}" data-action="copy">${copyIcon} Copy Raw</button></div><div class="raw-lines">${rawLines()}</div></div>`;
+    }
+
+    function currentView(compact = false) {
+      const content = state.view === 'tree' ? treeView() : state.view === 'raw' ? rawView() : semanticView(compact);
+      return `${searchBanner()}${content}`;
+    }
+
+    function inspector() {
+      const context = contextInfo();
+      return `<aside class="inspector"><div class="inspector-head">Inspector</div><div class="inspect-body">
+        <section class="inspect-section"><div class="inspect-label">Path</div><div class="inspect-value">${context.path}</div></section>
+        <section class="inspect-section"><dl class="inspect-grid"><dt>Node identity</dt><dd>${context.node}</dd><dt>Source</dt><dd>Line ${context.line} · Bytes ${context.bytes}</dd><dt>JSON Type</dt><dd>${context.json}</dd><dt>Semantic Type</dt><dd>${context.semantic}</dd></dl></section>
+        <section class="inspect-section"><div class="inspect-label">Detection source</div><div class="inspect-value">${context.detection}</div></section>
+        <section class="inspect-section"><div class="inspect-label">Signals</div><ul class="inspect-list">${context.signals.map(signal => `<li>${signal}</li>`).join('')}</ul></section>
+        <div class="explanation">Entry, NodeId and byte span stay anchored while switching Semantic, Tree and Raw.</div>
+      </div></aside>`;
+    }
+
+    function contentDrawer() {
+      const context = contextInfo();
+      const rendered = `<div class="drawer-preview"><h3>Rendered preview</h3><p>The project is a Rust application organized as a standard Cargo workspace.</p><p>Its entry point is <code>src/main.rs</code>, with configuration in <code>src/config/defaults.rs</code>.</p></div>`;
+      const decoded = `<pre>## Result\n\nSuccessfully read the directory at /workspace/src.\n\n\`\`\`rust\nfn main() -&gt; Result&lt;()&gt; { ... }\n\`\`\`</pre>`;
+      const raw = `<pre>"## Result\\n\\nSuccessfully read the directory at \\/workspace\\/src.\\n\\n\`\`\`rust\\nfn main() -&gt; Result&lt;()&gt; { ... }\\n\`\`\`"</pre>`;
+      const security = state.renderer === 'HTML Preview' ? `<div class="security-banner"><strong>Isolated HTML Preview</strong><br>Opaque origin · scripts, network, forms, navigation, file access and application IPC blocked.</div>` : '';
+      return `<aside class="content-drawer"><div class="drawer-head">Content Viewer<button class="icon-button" type="button" data-action="close-content" aria-label="Close Content Viewer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+        <div class="drawer-tabs">${[['rendered','Rendered'],['decoded','Decoded Source'],['raw','Raw Lexeme']].map(([key,label]) => `<button type="button" class="${state.contentTab === key ? 'active' : ''}" data-content-tab="${key}">${label}</button>`).join('')}</div>
+        <div class="drawer-tools">${renderAsControl()}<label class="search-box" style="width:130px">${searchIcon}<input data-role="content-search" placeholder="Search content"></label><button class="compact-button" type="button" data-action="wrap">${state.wrap ? 'Wrap' : 'No Wrap'}</button><button class="compact-button" type="button" data-copy-label="${state.contentTab === 'rendered' ? 'Rendered text' : state.contentTab === 'decoded' ? 'Decoded Source' : 'Raw Lexeme'}" data-action="copy">${copyIcon} Copy ${state.contentTab === 'rendered' ? 'Text' : state.contentTab === 'decoded' ? 'Decoded' : 'Raw'}</button></div>
+        <div class="drawer-body"><dl class="drawer-meta"><dt>Path</dt><dd>${context.path}</dd><dt>Node / span</dt><dd>${context.node}</dd><dt>Size</dt><dd>1,842 bytes · 1,786 chars · 72 lines</dd><dt>Renderer</dt><dd>${state.renderer}</dd></dl>${security}${state.contentTab === 'rendered' ? rendered : state.contentTab === 'decoded' ? decoded : raw}</div>
+      </aside>`;
+    }
+
+    function sidePanel() {
+      return `<aside class="side-panel"><div class="side-panel-tabs"><button type="button" class="${!state.contentOpen ? 'active' : ''}" data-side="inspector">Inspector</button><button type="button" class="${state.contentOpen ? 'active' : ''}" data-side="content">Content Viewer</button><button class="icon-button panel-close" type="button" data-action="close-panel" aria-label="Close side panel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>${state.contentOpen ? contentDrawer() : inspector()}</aside>`;
+    }
+
+    function bNavigation() {
+      if (state.fileMode !== 'entry') return `<div class="entry-table-wrap"><div class="event-summary"><strong>${modeMeta().label} Mode</strong><span>Read-only navigation</span></div>${navigation()}</div>`;
+      const rows = entries.map(entry => `<tr class="${entry.id === state.selectedEntry ? 'active' : ''}" data-entry="${entry.id}"><td>${entry.id}</td><td>${entry.line}</td><td>${entry.kind}</td><td>${entry.role}</td><td>${entry.preview}</td></tr>`).join('');
+      return `<div class="entry-table-wrap"><div class="event-summary"><strong>Event-like entries detected</strong><span>Summary: ${state.summaryMode}</span><span>Entry boundaries unchanged · no session aggregation</span></div><div class="entry-table-scroll"><table class="entry-table"><thead><tr><th>#</th><th>Line</th><th>Type</th><th>Role</th><th>Preview</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+    }
+
+    function bInspector() {
+      const context = contextInfo();
+      return `<div class="b-inspector"><section><div class="inspect-label">Selected node</div><div class="inspect-value">${context.path}</div><div class="muted" style="margin-top:6px;font-size:9px">${context.node}</div></section><section><div class="inspect-label">Source</div><div>${context.json} · ${context.semantic}</div><div class="muted" style="margin-top:6px;font-size:9px">Line ${context.line} · Bytes ${context.bytes}</div></section><section><div class="inspect-label">Detection</div><div>${context.detection}</div><div class="muted" style="margin-top:6px;font-size:9px">${context.signals.join(' · ')}</div></section></div>`;
+    }
+
+    function compactRail() {
+      if (state.fileMode === 'collection') return collectionList(true);
+      if (state.fileMode === 'document') return `<aside class="c-rail"><div class="c-rail-title">Outline</div><button class="rail-entry active" data-node="$"><span>root</span><i></i></button><button class="rail-entry" data-node="$.messages"><span>msgs</span><i></i></button><button class="rail-entry" data-node="$.result"><span>result</span><i></i></button></aside>`;
+      return `<aside class="c-rail"><div class="c-rail-title">Entries</div>${entries.map(entry => `<button type="button" title="Entry ${entry.id}: ${entry.preview}" class="rail-entry ${entry.status} ${entry.id === state.selectedEntry ? 'active' : ''}" data-entry="${entry.id}"><span>${String(entry.id).padStart(3, '0')}</span><i></i></button>`).join('')}</aside>`;
+    }
+
+    function renderA() {
+      return `<section class="variant-a ${state.panelOpen ? 'panel-open' : ''}">${topbar(renderAsControl())}<div class="workspace"><aside class="left"><div class="entry-heading">${navigationHeader()}</div>${navigation()}</aside><section class="content-pane"><div class="content-toolbar">${viewTabs()}<span class="spacer"></span><button class="compact-button" type="button" data-side="inspector">Inspector</button><button class="compact-button" type="button" data-side="content">Content Viewer</button></div><div class="content-scroll">${currentView()}</div></section>${sidePanel()}</div>${statusbar()}</section>`;
+    }
+
+    function renderB() {
+      return `<section class="variant-b">${topbar()}<div class="workspace">${bNavigation()}<section class="b-right"><div class="b-semantic ${state.contentOpen ? 'showing-viewer' : ''}">${state.contentOpen ? contentDrawer() : `<div class="content-toolbar">${viewTabs()}<span class="spacer"></span><button class="compact-button" type="button" data-side="content">Content Viewer</button></div><div class="content-scroll">${currentView(true)}</div>`}</div>${bInspector()}</section></div>${statusbar()}</section>`;
+    }
+
+    function renderC() {
+      const context = contextInfo();
+      const crumb = state.fileMode === 'entry' ? `Entry ${state.selectedEntry}` : state.fileMode === 'collection' ? `Item ${state.selectedItem}` : 'root';
+      return `<section class="variant-c ${state.panelOpen ? 'panel-open' : ''}">${topbar(viewTabs())}<div class="workspace">${compactRail()}<section class="c-main"><nav class="breadcrumb"><span>${crumb}</span>${chevron}<span>${context.path}</span></nav><div class="content-scroll">${currentView(true)}</div></section>${sidePanel()}</div>${statusbar()}</section>`;
+    }
+
+    function render() {
+      document.body.classList.toggle('dark', state.variant === 'C');
+      document.getElementById('variant-key').textContent = variantNames[state.variant];
+      document.getElementById('app').innerHTML = state.variant === 'A' ? renderA() : state.variant === 'B' ? renderB() : renderC();
+    }
+
+    let toastTimer;
+    function toast(message) {
+      const node = document.getElementById('toast');
+      node.textContent = message;
+      node.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => node.classList.remove('show'), 1600);
+    }
+
+    function changeVariant(step) {
+      const variants = ['A', 'B', 'C'];
+      state.variant = variants[(variants.indexOf(state.variant) + step + variants.length) % variants.length];
+      state.contentOpen = false;
+      state.panelOpen = innerWidth > 1050;
+      state.mobileTools = false;
+      const url = new URL(location.href);
+      url.searchParams.set('variant', state.variant);
+      history.replaceState(null, '', url);
+      render();
+    }
+
+    function goToSelection() {
+      const input = document.querySelector('[data-role="go-entry"]');
+      const value = Number(input?.value);
+      if (!Number.isInteger(value) || value < 0) return toast('Enter a valid number');
+      if (state.fileMode === 'entry' && value > 1283491) return toast('Indexing has not reached this entry yet');
+      if (state.fileMode === 'collection') state.selectedItem = value;
+      else state.selectedEntry = value;
+      state.mobileTools = false;
+      render();
+      toast(`Jumped to ${state.fileMode === 'collection' ? 'Item' : 'Entry'} ${value}`);
+    }
+
+    document.addEventListener('click', event => {
+      const target = event.target.closest('button, tr[data-entry]');
+      if (!target) return;
+      if (target.dataset.entry) { state.selectedEntry = Number(target.dataset.entry); state.contentOpen = false; render(); return; }
+      if (target.dataset.item) { state.selectedItem = Number(target.dataset.item); state.contentOpen = false; render(); return; }
+      if (target.dataset.node) { state.selectedNode = target.dataset.node; render(); return; }
+      if (target.dataset.view) { state.view = target.dataset.view; render(); return; }
+      if (target.dataset.contentTab) { state.contentTab = target.dataset.contentTab; render(); return; }
+      if (target.dataset.searchMode) { state.searchMode = target.dataset.searchMode; render(); return; }
+      if (target.dataset.side) { state.contentOpen = target.dataset.side === 'content'; state.panelOpen = true; state.mobileTools = false; render(); return; }
+      const action = target.dataset.action;
+      if (action === 'prev-variant') changeVariant(-1);
+      if (action === 'next-variant') changeVariant(1);
+      if (action === 'close-content') { state.contentOpen = false; render(); }
+      if (action === 'close-panel') { state.panelOpen = false; render(); }
+      if (action === 'toggle-mobile-tools') { state.mobileTools = !state.mobileTools; render(); }
+      if (action === 'copy') toast(`Copied ${target.dataset.copyLabel || 'selected representation'}`);
+      if (action === 'wrap') { state.wrap = !state.wrap; render(); }
+      if (action === 'open-file') toast('Prototype: file picker is not connected');
+      if (action === 'go-entry') goToSelection();
+    });
+
+    document.addEventListener('change', event => {
+      if (event.target.dataset.role === 'file-mode') { state.fileMode = event.target.value; state.view = 'semantic'; state.contentOpen = false; state.searchQuery = ''; render(); }
+      if (event.target.dataset.role === 'render-as') { state.renderer = event.target.value; render(); toast(`Renderer override: ${state.renderer}`); }
+      if (event.target.dataset.role === 'summary-mode') { state.summaryMode = event.target.value; render(); toast(`Entry summaries: ${state.summaryMode}`); }
+    });
+
+    document.addEventListener('keydown', event => {
+      const editing = event.target.matches('input, textarea, select, [contenteditable]');
+      if (!editing && event.key === 'ArrowLeft') changeVariant(-1);
+      if (!editing && event.key === 'ArrowRight') changeVariant(1);
+      if (event.key === 'Escape') { state.mobileTools = false; if (innerWidth <= 1050) state.panelOpen = false; render(); }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'g') { event.preventDefault(); if (innerWidth <= 760) { state.mobileTools = true; render(); } setTimeout(() => document.querySelector('[data-role="go-entry"]')?.focus()); }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); if (innerWidth <= 760) { state.mobileTools = true; render(); } setTimeout(() => document.querySelector('[data-role="search"]')?.focus()); }
+      if (editing && event.key === 'Enter' && event.target.dataset.role === 'go-entry') goToSelection();
+      if (editing && event.key === 'Enter' && event.target.dataset.role === 'search') { state.searchQuery = event.target.value.trim(); render(); toast(`${state.searchMode === 'raw' ? 'Raw Source' : 'Decoded'} search · ${state.searchMode === 'raw' ? 1 : 3} matches`); }
+      if (editing && event.key === 'Enter' && event.target.dataset.role === 'content-search') toast(`1 match in ${state.contentTab === 'rendered' ? 'Rendered text' : state.contentTab === 'decoded' ? 'Decoded Source' : 'Raw Lexeme'}`);
+    });
+
+    render();
+  </script>
+</body>
+</html>
