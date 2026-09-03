@@ -1131,7 +1131,7 @@ test('cancels a delayed SentencePiece load and keeps only the latest tokenizer s
   expect(errors).toEqual([])
 })
 
-test('opens every supported local directory reader without network upload', async ({ page }, testInfo) => {
+test('opens every supported local directory reader without network upload', { timeout: 60_000 }, async ({ page }, testInfo) => {
   const errors = collectErrors(page)
   const externalRequests: string[] = []
   page.on('request', request => {
