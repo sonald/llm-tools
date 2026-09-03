@@ -392,7 +392,7 @@ test('invalid replies and worker errors fail only their own session', { timeout:
     const errorPromise = errorComparison.inspectTokenizerData(tokenizerData())
     await Promise.resolve()
     const errorWorker = FakeWorker.created.at(-1)!
-    errorWorker.onerror?.(new ErrorEvent('error', { message: 'worker failed' }))
+    errorWorker.onerror?.({ message: 'worker failed' } as ErrorEvent)
     await assert.rejects(errorPromise, /worker failed/)
     assert.equal(errorWorker.terminated, true)
     const retryPromise = errorComparison.inspectTokenizerData(tokenizerData())
