@@ -72,6 +72,16 @@ pub struct ParseError {
 }
 
 pub fn parse_json(input: &[u8]) -> Result<ParsedJson<'_>, ParseError> {
+    let (parsed, consumed) = parse_json_prefix(input)?;
+
+    if consumed < input.len() {
+        return Err(error_at(input, consumed, "trailing data"));
+    }
+
+    Ok(parsed)
+}
+
+pub(crate) fn parse_json_prefix(input: &[u8]) -> Result<(ParsedJson<'_>, usize), ParseError> {
     let text = from_utf8(input)
         .map_err(|error| error_at(input, error.valid_up_to(), "input is not valid UTF-8"))?;
     let mut parser = Parser {
@@ -87,14 +97,13 @@ pub fn parse_json(input: &[u8]) -> Result<ParsedJson<'_>, ParseError> {
     let _root = parser.parse_value(None, ChildLocator::Root)?;
     parser.skip_whitespace();
 
-    if parser.index < parser.input.len() {
-        return Err(parser.error("trailing data"));
-    }
-
-    Ok(ParsedJson {
-        source: input,
-        nodes: parser.nodes,
-    })
+    Ok((
+        ParsedJson {
+            source: input,
+            nodes: parser.nodes,
+        },
+        parser.index,
+    ))
 }
 
 struct Parser<'a> {
