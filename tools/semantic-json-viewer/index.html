@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Semantic JSON Viewer</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="navigation" aria-label="Entries">
+        <h1>Entries</h1>
+        <p class="empty-note">No file is open.</p>
+      </aside>
+
+      <section class="workspace" aria-label="File viewer">
+        <div class="tabs" role="tablist" aria-label="Viewer modes">
+          <button class="tab is-active" type="button" role="tab" aria-selected="true" data-tab="semantic">
+            Semantic
+          </button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-tab="tree">
+            Tree
+          </button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-tab="raw">
+            Raw
+          </button>
+        </div>
+
+        <div class="panel" role="tabpanel" data-panel="semantic">
+          <p>No file is open.</p>
+          <button class="open-file" type="button" disabled>Open File</button>
+          <span class="hint">File opening is not wired yet.</span>
+        </div>
+
+        <div class="panel is-hidden" role="tabpanel" data-panel="tree">
+          <p>No file is open.</p>
+        </div>
+
+        <div class="panel is-hidden" role="tabpanel" data-panel="raw">
+          <p>No file is open.</p>
+        </div>
+      </section>
+
+      <section class="inspector" aria-label="Inspector">
+        <h1>Inspector</h1>
+        <p class="empty-note">Select a node to inspect it.</p>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
