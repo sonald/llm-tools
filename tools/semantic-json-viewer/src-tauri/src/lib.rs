@@ -3,6 +3,7 @@ pub mod file_source;
 pub mod json;
 pub mod jsonl_entry;
 pub mod jsonl_index;
+pub mod tree;
 
 pub fn run() {
     tauri::Builder::default()
