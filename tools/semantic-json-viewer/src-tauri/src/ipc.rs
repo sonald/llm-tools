@@ -6,11 +6,20 @@ use tauri::State;
 
 use crate::document_session::DocumentSession;
 use crate::json::JsonKind;
+use crate::jsonl_entry::EntryStatus;
+use crate::jsonl_session::{
+    EntrySelection, EntrySummary, JsonlProgress, JsonlSession, OversizedPreview,
+};
 use crate::tree::{NodePage, NodeProjection, TextChunk};
+
+enum OpenSession {
+    Document(DocumentSession),
+    Entry(JsonlSession),
+}
 
 #[derive(Default)]
 pub struct AppState {
-    session: Mutex<(u64, Option<DocumentSession>)>,
+    session: Mutex<(u64, Option<OpenSession>)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -19,7 +28,8 @@ pub struct FileSummary {
     pub path: String,
     pub size: u64,
     pub mode: String,
-    pub root: NodeDto,
+    pub root: Option<NodeDto>,
+    pub progress: Option<JsonlProgressDto>,
     pub session_revision: u64,
 }
 
@@ -52,6 +62,67 @@ pub struct TextChunkDto {
     pub text: String,
     pub has_more: bool,
     pub next_offset: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsonlProgressDto {
+    pub indexed_entries: u64,
+    pub indexed_source_lines: u64,
+    pub complete: bool,
+    pub stride: u64,
+    pub total_entries: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryLocationDto {
+    pub entry_ordinal: u64,
+    pub source_line: u64,
+    pub byte_start: u64,
+    pub byte_end: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseErrorDto {
+    pub message: String,
+    pub byte_offset: usize,
+    pub line: usize,
+    pub column: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryDto {
+    pub location: EntryLocationDto,
+    pub status: String,
+    pub parse_error: Option<ParseErrorDto>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryPageDto {
+    pub entries: Vec<EntryDto>,
+    pub has_more: bool,
+    pub next_cursor: Option<u64>,
+    pub progress: JsonlProgressDto,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntrySelectionDto {
+    pub entry: EntryDto,
+    pub root: Option<NodeDto>,
+    pub session_revision: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OversizedPreviewDto {
+    pub entry: EntryDto,
+    pub head: Vec<u8>,
+    pub tail: Vec<u8>,
 }
 
 #[tauri::command(async)]
@@ -113,12 +184,52 @@ pub fn read_decoded_text(
     read_decoded_text_inner(&state, node_id, offset, length, session_revision)
 }
 
+#[tauri::command(async)]
+pub fn scan_entries(
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<JsonlProgressDto, IpcError> {
+    scan_entries_inner(&state, session_revision)
+}
+
+#[tauri::command(async)]
+pub fn list_entries(
+    start: u64,
+    limit: usize,
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<EntryPageDto, IpcError> {
+    list_entries_inner(&state, start, limit, session_revision)
+}
+
+#[tauri::command(async)]
+pub fn select_entry(
+    ordinal: u64,
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<EntrySelectionDto, IpcError> {
+    select_entry_inner(&state, ordinal, session_revision)
+}
+
+#[tauri::command(async)]
+pub fn get_oversized_preview(
+    ordinal: u64,
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<OversizedPreviewDto, IpcError> {
+    get_oversized_preview_inner(&state, ordinal, session_revision)
+}
+
 fn open_file_inner(state: &AppState, path: &str) -> Result<FileSummary, IpcError> {
     if path.trim().is_empty() {
         return Err(invalid_request("path must not be empty"));
     }
 
-    let session = DocumentSession::open(Path::new(path)).map_err(open_error)?;
+    let session = if is_jsonl_path(Path::new(path)) {
+        OpenSession::Entry(JsonlSession::open(Path::new(path)).map_err(open_error)?)
+    } else {
+        OpenSession::Document(DocumentSession::open(Path::new(path)).map_err(open_error)?)
+    };
     let mut guard = lock_session(state)?;
     let next_revision = guard
         .0
@@ -129,21 +240,42 @@ fn open_file_inner(state: &AppState, path: &str) -> Result<FileSummary, IpcError
     Ok(summary)
 }
 
-fn file_summary(session: &DocumentSession, session_revision: u64) -> Result<FileSummary, IpcError> {
-    let root = session.root().map_err(session_error)?;
-    let mode = if root.kind == JsonKind::Array {
-        "collection"
-    } else {
-        "document"
-    };
+fn is_jsonl_path(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some(extension)
+            if extension.eq_ignore_ascii_case("jsonl")
+                || extension.eq_ignore_ascii_case("ndjson")
+    )
+}
 
-    Ok(FileSummary {
-        path: session.identity().canonical_path.display().to_string(),
-        size: session.identity().size,
-        mode: mode.to_owned(),
-        root: node_dto(root),
-        session_revision,
-    })
+fn file_summary(session: &OpenSession, session_revision: u64) -> Result<FileSummary, IpcError> {
+    match session {
+        OpenSession::Document(session) => {
+            let root = session.root().map_err(session_error)?;
+            let mode = if root.kind == JsonKind::Array {
+                "collection"
+            } else {
+                "document"
+            };
+            Ok(FileSummary {
+                path: session.identity().canonical_path.display().to_string(),
+                size: session.identity().size,
+                mode: mode.to_owned(),
+                root: Some(node_dto(root)),
+                progress: None,
+                session_revision,
+            })
+        }
+        OpenSession::Entry(session) => Ok(FileSummary {
+            path: session.identity().canonical_path.display().to_string(),
+            size: session.identity().size,
+            mode: "entry".to_owned(),
+            root: None,
+            progress: Some(progress_dto(session.progress().map_err(session_error)?)),
+            session_revision,
+        }),
+    }
 }
 
 fn get_file_summary_inner(state: &AppState) -> Result<FileSummary, IpcError> {
@@ -153,8 +285,13 @@ fn get_file_summary_inner(state: &AppState) -> Result<FileSummary, IpcError> {
 }
 
 fn get_root_node_inner(state: &AppState, session_revision: u64) -> Result<NodeDto, IpcError> {
-    with_session(state, session_revision, |session| {
-        session.root().map(node_dto).map_err(session_error)
+    with_session(state, session_revision, |session| match session {
+        OpenSession::Document(session) => session.root().map(node_dto).map_err(session_error),
+        OpenSession::Entry(session) => session
+            .selected_root()
+            .map_err(session_error)?
+            .map(node_dto)
+            .ok_or_else(|| invalid_request("no valid entry is selected")),
     })
 }
 
@@ -164,10 +301,14 @@ fn get_node_summary_inner(
     session_revision: u64,
 ) -> Result<NodeDto, IpcError> {
     with_session(state, session_revision, |session| {
-        session
-            .node(node_id)
-            .map_err(session_error)?
-            .map(node_dto)
+        let node = match session {
+            OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
+            OpenSession::Entry(session) => {
+                require_selected(session)?;
+                session.selected_node(node_id).map_err(session_error)?
+            }
+        };
+        node.map(node_dto)
             .ok_or_else(|| not_found(format!("node {node_id} was not found")))
     })
 }
@@ -180,18 +321,24 @@ fn get_children_inner(
     session_revision: u64,
 ) -> Result<NodePageDto, IpcError> {
     with_session(state, session_revision, |session| {
-        let parent = session
-            .node(node_id)
-            .map_err(session_error)?
-            .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+        let parent = match session {
+            OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
+            OpenSession::Entry(session) => {
+                require_selected(session)?;
+                session.selected_node(node_id).map_err(session_error)?
+            }
+        }
+        .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
         if limit == 0 || cursor > parent.child_count {
             return Err(invalid_request("invalid cursor or limit"));
         }
-        session
-            .children(node_id, cursor, limit)
-            .map_err(session_error)?
-            .map(node_page_dto)
-            .ok_or_else(|| invalid_request("invalid cursor or limit"))
+        match session {
+            OpenSession::Document(session) => session.children(node_id, cursor, limit),
+            OpenSession::Entry(session) => session.selected_children(node_id, cursor, limit),
+        }
+        .map_err(session_error)?
+        .map(node_page_dto)
+        .ok_or_else(|| invalid_request("invalid cursor or limit"))
     })
 }
 
@@ -202,11 +349,13 @@ fn read_raw_slice_inner(
     session_revision: u64,
 ) -> Result<TextChunkDto, IpcError> {
     with_session(state, session_revision, |session| {
-        session
-            .read_raw_text(source_start, length)
-            .map_err(session_error)?
-            .map(text_chunk_dto)
-            .ok_or_else(|| invalid_request("raw slice is unavailable"))
+        match session {
+            OpenSession::Document(session) => session.read_raw_text(source_start, length),
+            OpenSession::Entry(session) => session.read_raw_text(source_start, length),
+        }
+        .map_err(session_error)?
+        .map(text_chunk_dto)
+        .ok_or_else(|| invalid_request("raw slice is unavailable"))
     })
 }
 
@@ -218,25 +367,104 @@ fn read_decoded_text_inner(
     session_revision: u64,
 ) -> Result<TextChunkDto, IpcError> {
     with_session(state, session_revision, |session| {
-        let node = session
-            .node(node_id)
-            .map_err(session_error)?
-            .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+        let node = match session {
+            OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
+            OpenSession::Entry(session) => {
+                require_selected(session)?;
+                session.selected_node(node_id).map_err(session_error)?
+            }
+        }
+        .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
         if node.kind != JsonKind::String {
             return Err(invalid_request("node does not contain decoded text"));
         }
-        session
-            .read_decoded_text(node_id, offset, length)
+        match session {
+            OpenSession::Document(session) => session.read_decoded_text(node_id, offset, length),
+            OpenSession::Entry(session) => session.read_decoded_text(node_id, offset, length),
+        }
+        .map_err(session_error)?
+        .map(text_chunk_dto)
+        .ok_or_else(|| invalid_request("decoded text is unavailable"))
+    })
+}
+
+fn scan_entries_inner(
+    state: &AppState,
+    session_revision: u64,
+) -> Result<JsonlProgressDto, IpcError> {
+    with_entry_session_mut(state, session_revision, |session| {
+        session.scan_next().map(progress_dto).map_err(session_error)
+    })
+}
+
+fn list_entries_inner(
+    state: &AppState,
+    start: u64,
+    limit: usize,
+    session_revision: u64,
+) -> Result<EntryPageDto, IpcError> {
+    with_entry_session(state, session_revision, |session| {
+        let page = session
+            .list_entry_summaries(start, limit)
             .map_err(session_error)?
-            .map(text_chunk_dto)
-            .ok_or_else(|| invalid_request("decoded text is unavailable"))
+            .ok_or_else(|| invalid_request("entry range has not been indexed"))?;
+        let progress = session.progress().map_err(session_error)?;
+        Ok(EntryPageDto {
+            entries: page.summaries.into_iter().map(entry_dto).collect(),
+            has_more: page.has_more,
+            next_cursor: page.next_cursor,
+            progress: progress_dto(progress),
+        })
+    })
+}
+
+fn select_entry_inner(
+    state: &AppState,
+    ordinal: u64,
+    session_revision: u64,
+) -> Result<EntrySelectionDto, IpcError> {
+    let mut guard = lock_session(state)?;
+    if guard.0 != session_revision {
+        return Err(stale_session());
+    }
+    let next_revision = guard
+        .0
+        .checked_add(1)
+        .ok_or_else(|| internal("session revision overflow"))?;
+    let session = guard.1.as_mut().ok_or_else(no_session)?;
+    let selection = match session {
+        OpenSession::Document(_) => {
+            return Err(invalid_request("command requires a JSONL session"));
+        }
+        OpenSession::Entry(session) => session.select_entry(ordinal).map_err(session_error)?,
+    };
+    let Some(selection) = selection else {
+        guard.0 = next_revision;
+        return Err(invalid_request("entry is not indexed"));
+    };
+    let dto = selection_dto(selection, next_revision);
+    guard.0 = next_revision;
+    Ok(dto)
+}
+
+fn get_oversized_preview_inner(
+    state: &AppState,
+    ordinal: u64,
+    session_revision: u64,
+) -> Result<OversizedPreviewDto, IpcError> {
+    with_entry_session(state, session_revision, |session| {
+        let preview = session
+            .oversized_preview(ordinal)
+            .map_err(session_error)?
+            .ok_or_else(|| invalid_request("entry is not oversized"))?;
+        Ok(oversized_preview_dto(preview))
     })
 }
 
 fn with_session<T>(
     state: &AppState,
     session_revision: u64,
-    operation: impl FnOnce(&DocumentSession) -> Result<T, IpcError>,
+    operation: impl FnOnce(&OpenSession) -> Result<T, IpcError>,
 ) -> Result<T, IpcError> {
     let guard = lock_session(state)?;
     let session = guard.1.as_ref().ok_or_else(no_session)?;
@@ -246,9 +474,42 @@ fn with_session<T>(
     operation(session)
 }
 
-fn lock_session(
+fn with_entry_session<T>(
     state: &AppState,
-) -> Result<MutexGuard<'_, (u64, Option<DocumentSession>)>, IpcError> {
+    session_revision: u64,
+    operation: impl FnOnce(&JsonlSession) -> Result<T, IpcError>,
+) -> Result<T, IpcError> {
+    with_session(state, session_revision, |session| match session {
+        OpenSession::Document(_) => Err(invalid_request("command requires a JSONL session")),
+        OpenSession::Entry(session) => operation(session),
+    })
+}
+
+fn require_selected(session: &JsonlSession) -> Result<(), IpcError> {
+    session
+        .selected_ordinal()
+        .map_err(session_error)?
+        .map(|_| ())
+        .ok_or_else(|| invalid_request("no valid entry is selected"))
+}
+
+fn with_entry_session_mut<T>(
+    state: &AppState,
+    session_revision: u64,
+    operation: impl FnOnce(&mut JsonlSession) -> Result<T, IpcError>,
+) -> Result<T, IpcError> {
+    let mut guard = lock_session(state)?;
+    if guard.0 != session_revision {
+        return Err(stale_session());
+    }
+    let session = guard.1.as_mut().ok_or_else(no_session)?;
+    match session {
+        OpenSession::Document(_) => Err(invalid_request("command requires a JSONL session")),
+        OpenSession::Entry(session) => operation(session),
+    }
+}
+
+fn lock_session(state: &AppState) -> Result<MutexGuard<'_, (u64, Option<OpenSession>)>, IpcError> {
     state
         .session
         .lock()
@@ -297,7 +558,7 @@ fn not_found(message: impl Into<String>) -> IpcError {
     }
 }
 
-fn open_error(error: crate::document_session::DocumentOpenError) -> IpcError {
+fn open_error(error: impl std::fmt::Display) -> IpcError {
     IpcError {
         code: "open_failed".to_owned(),
         message: error.to_string(),
@@ -350,6 +611,68 @@ fn text_chunk_dto(chunk: TextChunk) -> TextChunkDto {
     }
 }
 
+fn progress_dto(progress: JsonlProgress) -> JsonlProgressDto {
+    JsonlProgressDto {
+        indexed_entries: progress.indexed_entries,
+        indexed_source_lines: progress.indexed_source_lines,
+        complete: progress.complete,
+        stride: progress.stride,
+        total_entries: progress.total_entries,
+    }
+}
+
+fn entry_dto(summary: EntrySummary) -> EntryDto {
+    let (status, parse_error) = match summary.status {
+        EntryStatus::Valid => ("valid", None),
+        EntryStatus::InvalidUtf8 => ("invalidUtf8", None),
+        EntryStatus::Oversized => ("oversized", None),
+        EntryStatus::InvalidJson(error) => (
+            "invalidJson",
+            Some(ParseErrorDto {
+                message: error.message,
+                byte_offset: error.byte_offset,
+                line: error.line,
+                column: error.column,
+            }),
+        ),
+    };
+    EntryDto {
+        location: EntryLocationDto {
+            entry_ordinal: summary.location.entry_ordinal,
+            source_line: summary.location.source_line,
+            byte_start: summary.location.byte_start,
+            byte_end: summary.location.byte_end,
+        },
+        status: status.to_owned(),
+        parse_error,
+    }
+}
+
+fn selection_dto(selection: EntrySelection, session_revision: u64) -> EntrySelectionDto {
+    EntrySelectionDto {
+        entry: entry_dto(selection.summary),
+        root: selection.root.map(node_dto),
+        session_revision,
+    }
+}
+
+fn oversized_preview_dto(preview: OversizedPreview) -> OversizedPreviewDto {
+    OversizedPreviewDto {
+        entry: EntryDto {
+            location: EntryLocationDto {
+                entry_ordinal: preview.location.entry_ordinal,
+                source_line: preview.location.source_line,
+                byte_start: preview.location.byte_start,
+                byte_end: preview.location.byte_end,
+            },
+            status: "oversized".to_owned(),
+            parse_error: None,
+        },
+        head: preview.head,
+        tail: preview.tail,
+    }
+}
+
 fn json_kind_name(kind: JsonKind) -> &'static str {
     match kind {
         JsonKind::String => "string",
@@ -378,6 +701,10 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("{prefix}-{}-{nanos}.json", std::process::id()))
+    }
+
+    fn temp_jsonl_path(prefix: &str) -> PathBuf {
+        temp_path(prefix).with_extension("jsonl")
     }
 
     #[test]
@@ -428,7 +755,7 @@ mod tests {
         let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
         let page = get_children_inner(
             &state,
-            summary.root.id,
+            summary.root.as_ref().unwrap().id,
             0,
             usize::MAX,
             summary.session_revision,
@@ -451,7 +778,7 @@ mod tests {
         let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
         let chunk = read_decoded_text_inner(
             &state,
-            summary.root.id + 1,
+            summary.root.as_ref().unwrap().id + 1,
             0,
             usize::MAX,
             summary.session_revision,
@@ -465,6 +792,192 @@ mod tests {
     }
 
     #[test]
+    fn jsonl_open_exposes_partial_progress_and_scan_keeps_revision() {
+        let path = temp_jsonl_path("ipc-jsonl-progress");
+        let mut input = (0..20)
+            .map(|index| format!("{index}\n"))
+            .collect::<String>()
+            .into_bytes();
+        input.extend(std::iter::repeat_n(b'x', 256 * 1024));
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        assert_eq!(summary.mode, "entry");
+        assert!(summary.root.is_none());
+        let progress = summary.progress.as_ref().unwrap();
+        assert!(progress.indexed_entries >= 20);
+        assert!(!progress.complete);
+        assert_eq!(progress.total_entries, None);
+        assert_eq!(summary.session_revision, 1);
+
+        let page = list_entries_inner(&state, 0, 200, summary.session_revision).unwrap();
+        assert_eq!(page.entries.len(), 20);
+        assert!(!page.progress.complete);
+        assert_eq!(page.progress.total_entries, None);
+
+        let complete = scan_entries_inner(&state, summary.session_revision).unwrap();
+        assert!(complete.complete);
+        assert_eq!(complete.total_entries, Some(21));
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap().session_revision,
+            summary.session_revision
+        );
+
+        let complete_page = list_entries_inner(&state, 0, 200, summary.session_revision).unwrap();
+        assert!(complete_page.progress.complete);
+        assert_eq!(complete_page.progress.total_entries, Some(21));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn jsonl_selection_dispatches_tree_and_invalidates_old_revision() {
+        let path = temp_jsonl_path("ipc-jsonl-select");
+        fs::write(&path, b"{\"name\":\"Ada\"}\n[1,2]\n").unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+
+        let first = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(first.entry.status, "valid");
+        assert_eq!(first.root.as_ref().unwrap().kind, "object");
+        assert_eq!(first.session_revision, 2);
+        assert_eq!(
+            get_root_node_inner(&state, opened.session_revision)
+                .unwrap_err()
+                .code,
+            "stale_session"
+        );
+        let root = get_root_node_inner(&state, first.session_revision).unwrap();
+        let page = get_children_inner(&state, root.id, 0, 200, first.session_revision).unwrap();
+        assert_eq!(page.nodes[0].label, "name");
+        let raw = read_raw_slice_inner(&state, 0, usize::MAX, first.session_revision).unwrap();
+        assert_eq!(raw.text, r#"{"name":"Ada"}"#);
+        let decoded =
+            read_decoded_text_inner(&state, page.nodes[0].id, 0, 32, first.session_revision)
+                .unwrap();
+        assert_eq!(decoded.text, "Ada");
+
+        let second = select_entry_inner(&state, 1, first.session_revision).unwrap();
+        assert_eq!(second.entry.status, "valid");
+        assert_eq!(second.root.as_ref().unwrap().kind, "array");
+        assert_eq!(second.session_revision, 3);
+        assert_eq!(
+            get_root_node_inner(&state, first.session_revision)
+                .unwrap_err()
+                .code,
+            "stale_session"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn unindexed_selection_bumps_revision_after_clearing_tree() {
+        let path = temp_jsonl_path("ipc-jsonl-select-missing");
+        fs::write(&path, b"{\"ok\":true}\n").unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let valid = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(valid.session_revision, 2);
+        assert!(get_root_node_inner(&state, valid.session_revision).is_ok());
+
+        assert_eq!(
+            select_entry_inner(&state, 99, valid.session_revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        let after = get_file_summary_inner(&state).unwrap();
+        assert_eq!(after.session_revision, 3);
+        assert_eq!(
+            get_root_node_inner(&state, valid.session_revision)
+                .unwrap_err()
+                .code,
+            "stale_session"
+        );
+        assert_eq!(
+            get_node_summary_inner(&state, 0, valid.session_revision)
+                .unwrap_err()
+                .code,
+            "stale_session"
+        );
+        assert_eq!(
+            get_root_node_inner(&state, after.session_revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn jsonl_status_dtos_keep_parse_errors_and_clear_invalid_selection() {
+        let path = temp_jsonl_path("ipc-jsonl-statuses");
+        fs::write(&path, b"{\"ok\":true}\n{\n\"bad\":\xff\n").unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let page = list_entries_inner(&state, 0, 200, opened.session_revision).unwrap();
+        assert_eq!(page.entries.len(), 3);
+        assert_eq!(page.entries[0].status, "valid");
+        assert_eq!(page.entries[1].status, "invalidJson");
+        assert!(page.entries[1].parse_error.is_some());
+        assert_eq!(page.entries[2].status, "invalidUtf8");
+        assert!(page.entries[2].parse_error.is_none());
+
+        let valid = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        let invalid_json = select_entry_inner(&state, 1, valid.session_revision).unwrap();
+        assert_eq!(invalid_json.entry.status, "invalidJson");
+        assert!(invalid_json.root.is_none());
+        assert_eq!(invalid_json.session_revision, valid.session_revision + 1);
+        assert_eq!(
+            get_root_node_inner(&state, invalid_json.session_revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        let invalid_utf8 = select_entry_inner(&state, 2, invalid_json.session_revision).unwrap();
+        assert_eq!(invalid_utf8.entry.status, "invalidUtf8");
+        assert!(invalid_utf8.root.is_none());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn jsonl_oversized_preview_and_selection_stay_below_ipc_limit() {
+        let path = temp_jsonl_path("ipc-jsonl-oversized");
+        let mut input = Vec::with_capacity(16 * 1024 * 1024 + 64);
+        input.push(0xff);
+        input.extend(std::iter::repeat_n(b'a', 16 * 1024 * 1024));
+        input.push(b'\n');
+        input.extend_from_slice(br#"{"ok":true}"#);
+        input.push(b'\n');
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let mut progress = opened.progress.clone().unwrap();
+        while !progress.complete {
+            progress = scan_entries_inner(&state, opened.session_revision).unwrap();
+        }
+        assert_eq!(progress.total_entries, Some(2));
+
+        let preview = get_oversized_preview_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(preview.entry.status, "oversized");
+        assert_eq!(preview.head.len(), 64 * 1024);
+        assert_eq!(preview.tail.len(), 64 * 1024);
+        assert!(serde_json::to_vec(&preview).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
+
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(selected.entry.status, "oversized");
+        assert!(selected.root.is_none());
+        assert_eq!(selected.session_revision, opened.session_revision + 1);
+        assert_eq!(
+            get_root_node_inner(&state, selected.session_revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn open_and_read_commands_share_one_session() {
         let path = temp_path("ipc-session");
         fs::write(&path, r#"{"name":"Ada","items":[1,2]}"#).unwrap();
@@ -472,8 +985,8 @@ mod tests {
 
         let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
         assert_eq!(summary.mode, "document");
-        assert_eq!(summary.root.kind, "object");
-        assert_eq!(summary.root.child_count, 2);
+        assert_eq!(summary.root.as_ref().unwrap().kind, "object");
+        assert_eq!(summary.root.as_ref().unwrap().child_count, 2);
         assert_eq!(summary.session_revision, 1);
 
         let root = get_root_node_inner(&state, summary.session_revision).unwrap();
@@ -499,7 +1012,7 @@ mod tests {
 
         let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
         assert_eq!(summary.mode, "collection");
-        assert_eq!(summary.root.kind, "array");
+        assert_eq!(summary.root.as_ref().unwrap().kind, "array");
         assert_eq!(summary.session_revision, 1);
 
         fs::remove_file(path).unwrap();
@@ -588,7 +1101,7 @@ mod tests {
         assert_eq!(get_file_summary_inner(&state).unwrap(), summary);
         assert_eq!(
             get_root_node_inner(&state, summary.session_revision).unwrap(),
-            summary.root
+            summary.root.clone().unwrap()
         );
         assert_eq!(
             read_raw_slice_inner(&state, 8, 5, summary.session_revision)

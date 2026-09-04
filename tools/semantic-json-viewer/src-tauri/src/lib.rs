@@ -19,6 +19,10 @@ pub fn run() {
             ipc::get_children,
             ipc::read_raw_slice,
             ipc::read_decoded_text,
+            ipc::scan_entries,
+            ipc::list_entries,
+            ipc::select_entry,
+            ipc::get_oversized_preview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
