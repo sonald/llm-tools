@@ -1,9 +1,11 @@
 use std::io::{self, ErrorKind};
 use std::path::Path;
+use std::str::from_utf8;
 
 use crate::file_source::{FileIdentity, FileSource};
 use crate::jsonl_entry::{inspect_entry, EntryStatus, MAX_ENTRY_BYTES, PREVIEW_BYTES};
 use crate::jsonl_index::{Checkpoint, EntryLocation, JsonlIndex, JsonlIndexer};
+use crate::tree::{NodePage, NodeProjection, TextChunk, TreeDocument};
 
 const MAX_ENTRY_PAGE: usize = 200;
 
@@ -43,12 +45,37 @@ pub struct OversizedPreview {
     pub tail: Vec<u8>,
 }
 
+pub struct EntrySelection {
+    pub summary: EntrySummary,
+    pub root: Option<NodeProjection>,
+}
+
+struct LoadedEntry {
+    location: EntryLocation,
+    bytes: Option<Vec<u8>>,
+}
+
 pub struct JsonlSession {
     source: FileSource,
     indexer: Option<JsonlIndexer>,
     index: Option<JsonlIndex>,
     next_offset: u64,
     complete: bool,
+    selected: Option<(u64, TreeDocument)>,
+}
+
+fn append_entry_byte(bytes: &mut Vec<u8>, byte: u8) -> io::Result<()> {
+    if bytes.len() >= MAX_ENTRY_BYTES {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            "uncached oversized JSONL entry",
+        ));
+    }
+    bytes
+        .try_reserve(1)
+        .map_err(|error| io::Error::new(ErrorKind::OutOfMemory, error))?;
+    bytes.push(byte);
+    Ok(())
 }
 
 impl JsonlSession {
@@ -59,6 +86,7 @@ impl JsonlSession {
             index: None,
             next_offset: 0,
             complete: false,
+            selected: None,
         };
         session.scan_next()?;
         Ok(session)
@@ -239,6 +267,98 @@ impl JsonlSession {
         }))
     }
 
+    pub fn select_entry(&mut self, ordinal: u64) -> io::Result<Option<EntrySelection>> {
+        self.selected = None;
+        self.ensure_current()?;
+        let Some(loaded) = self.load_entry_once(ordinal)? else {
+            self.ensure_current()?;
+            return Ok(None);
+        };
+        let location = loaded.location;
+        let length = location
+            .byte_end
+            .checked_sub(location.byte_start)
+            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+        let (status, tree) = match loaded.bytes {
+            None => (EntryStatus::Oversized, None),
+            Some(_bytes)
+                if length > u64::try_from(MAX_ENTRY_BYTES).expect("entry size exceeds u64") =>
+            {
+                (EntryStatus::Oversized, None)
+            }
+            Some(bytes) if from_utf8(&bytes).is_err() => (EntryStatus::InvalidUtf8, None),
+            Some(bytes) => match TreeDocument::from_bytes(bytes) {
+                Ok(tree) => (EntryStatus::Valid, Some(tree)),
+                Err(error) => (EntryStatus::InvalidJson(error), None),
+            },
+        };
+        self.ensure_current()?;
+        let root = tree.as_ref().map(TreeDocument::root);
+        if let Some(tree) = tree {
+            self.selected = Some((ordinal, tree));
+        }
+        Ok(Some(EntrySelection {
+            summary: EntrySummary { location, status },
+            root,
+        }))
+    }
+
+    pub fn selected_ordinal(&self) -> io::Result<Option<u64>> {
+        self.ensure_current()?;
+        Ok(self.selected.as_ref().map(|(ordinal, _)| *ordinal))
+    }
+
+    pub fn selected_root(&self) -> io::Result<Option<NodeProjection>> {
+        self.ensure_current()?;
+        Ok(self.selected.as_ref().map(|(_, tree)| tree.root()))
+    }
+
+    pub fn selected_node(&self, node_id: usize) -> io::Result<Option<NodeProjection>> {
+        self.ensure_current()?;
+        Ok(self
+            .selected
+            .as_ref()
+            .and_then(|(_, tree)| tree.node(node_id)))
+    }
+
+    pub fn selected_children(
+        &self,
+        parent_id: usize,
+        cursor: usize,
+        limit: usize,
+    ) -> io::Result<Option<NodePage>> {
+        self.ensure_current()?;
+        Ok(self
+            .selected
+            .as_ref()
+            .and_then(|(_, tree)| tree.children(parent_id, cursor, limit)))
+    }
+
+    pub fn read_raw_text(
+        &self,
+        offset: usize,
+        requested_len: usize,
+    ) -> io::Result<Option<TextChunk>> {
+        self.ensure_current()?;
+        Ok(self
+            .selected
+            .as_ref()
+            .and_then(|(_, tree)| tree.read_raw_text(offset, requested_len)))
+    }
+
+    pub fn read_decoded_text(
+        &self,
+        node_id: usize,
+        offset: usize,
+        requested_len: usize,
+    ) -> io::Result<Option<TextChunk>> {
+        self.ensure_current()?;
+        Ok(self
+            .selected
+            .as_ref()
+            .and_then(|(_, tree)| tree.read_decoded_text(node_id, offset, requested_len)))
+    }
+
     fn ensure_current(&self) -> io::Result<()> {
         if self.source.is_current() {
             Ok(())
@@ -288,6 +408,164 @@ impl JsonlSession {
             },
             |index| index.nearest_checkpoint(ordinal),
         )
+    }
+
+    fn load_entry_once(&self, ordinal: u64) -> io::Result<Option<LoadedEntry>> {
+        self.ensure_current()?;
+        if ordinal >= self.indexed_entries_unchecked() {
+            return Ok(None);
+        }
+        if let Some(location) = self.oversized_location(ordinal) {
+            return Ok(Some(LoadedEntry {
+                location,
+                bytes: None,
+            }));
+        }
+
+        let Some(checkpoint) = self.nearest_checkpoint(ordinal) else {
+            return Ok(None);
+        };
+        if checkpoint.entry_ordinal > ordinal {
+            return Ok(None);
+        }
+
+        let mut offset = checkpoint.byte_offset;
+        let mut line_start = checkpoint.byte_offset;
+        let mut source_line = checkpoint.source_line;
+        let mut current_ordinal = checkpoint.entry_ordinal;
+        let mut line_has_content = false;
+        let mut last_byte = None;
+        let mut pending_target_cr = false;
+        let mut target_bytes = Vec::new();
+
+        loop {
+            if let Some(location) = self.oversized_location(current_ordinal) {
+                if location.byte_start == line_start && offset <= location.byte_end {
+                    if current_ordinal == ordinal {
+                        return Ok(Some(LoadedEntry {
+                            location,
+                            bytes: None,
+                        }));
+                    }
+                    current_ordinal = current_ordinal
+                        .checked_add(1)
+                        .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+                    let Some(next_offset) = self.next_after_cached_line(location)? else {
+                        break;
+                    };
+                    source_line = source_line
+                        .checked_add(1)
+                        .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+                    line_start = next_offset;
+                    offset = next_offset;
+                    line_has_content = false;
+                    last_byte = None;
+                    pending_target_cr = false;
+                    continue;
+                }
+            }
+
+            let chunk = self.source.read_chunk(offset, usize::MAX)?;
+            if chunk.bytes.is_empty() {
+                if chunk.has_more {
+                    return Err(io::Error::new(
+                        ErrorKind::UnexpectedEof,
+                        "file ended before the requested JSONL entry",
+                    ));
+                }
+                if line_has_content && current_ordinal == ordinal {
+                    if pending_target_cr {
+                        append_entry_byte(&mut target_bytes, b'\r')?;
+                    }
+                    return Ok(Some(LoadedEntry {
+                        location: EntryLocation {
+                            entry_ordinal: ordinal,
+                            source_line,
+                            byte_start: line_start,
+                            byte_end: offset,
+                        },
+                        bytes: Some(target_bytes),
+                    }));
+                }
+                break;
+            }
+
+            for (relative, &byte) in chunk.bytes.iter().enumerate() {
+                if byte == b'\n' {
+                    let lf = chunk
+                        .start
+                        .checked_add(relative as u64)
+                        .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+                    let content_end = if last_byte == Some(b'\r') {
+                        lf.checked_sub(1)
+                            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?
+                    } else {
+                        lf
+                    };
+                    if !line_has_content && current_ordinal == ordinal {
+                        target_bytes.clear();
+                    }
+                    if line_has_content && line_start < content_end {
+                        if current_ordinal == ordinal {
+                            return Ok(Some(LoadedEntry {
+                                location: EntryLocation {
+                                    entry_ordinal: ordinal,
+                                    source_line,
+                                    byte_start: line_start,
+                                    byte_end: content_end,
+                                },
+                                bytes: Some(target_bytes),
+                            }));
+                        }
+                        current_ordinal = current_ordinal
+                            .checked_add(1)
+                            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+                    }
+                    source_line = source_line
+                        .checked_add(1)
+                        .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+                    line_start = lf
+                        .checked_add(1)
+                        .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+                    line_has_content = false;
+                    last_byte = None;
+                    pending_target_cr = false;
+                } else {
+                    if current_ordinal == ordinal {
+                        if pending_target_cr {
+                            append_entry_byte(&mut target_bytes, b'\r')?;
+                            pending_target_cr = false;
+                        }
+                        if byte == b'\r' {
+                            pending_target_cr = true;
+                        } else {
+                            append_entry_byte(&mut target_bytes, byte)?;
+                        }
+                    }
+                    if !matches!(byte, b' ' | b'\t' | b'\r') {
+                        line_has_content = true;
+                    }
+                    last_byte = Some(byte);
+                }
+            }
+
+            offset = if chunk.has_more {
+                chunk.next_offset.ok_or_else(|| {
+                    io::Error::new(
+                        ErrorKind::InvalidData,
+                        "JSONL chunk omitted its next offset",
+                    )
+                })?
+            } else {
+                chunk
+                    .start
+                    .checked_add(chunk.bytes.len() as u64)
+                    .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?
+            };
+        }
+
+        self.ensure_current()?;
+        Ok(None)
     }
 
     fn oversized_location(&self, ordinal: u64) -> Option<EntryLocation> {
@@ -706,6 +984,7 @@ mod tests {
             }),
             next_offset: bytes.len() as u64,
             complete: true,
+            selected: None,
         };
 
         assert_eq!(
@@ -763,6 +1042,124 @@ mod tests {
     }
 
     #[test]
+    fn selects_valid_object_and_exposes_tree_and_text_views() {
+        let (path, mut session) = session(
+            "jsonl-session-select-object",
+            br#"{"name":"Ada","items":[true,false]}"#.as_ref(),
+        );
+        let selection = session.select_entry(0).unwrap().unwrap();
+        assert_eq!(selection.summary.status, EntryStatus::Valid);
+        let root = selection.root.expect("valid entry root");
+        assert_eq!(root.kind, crate::json::JsonKind::Object);
+        assert_eq!(root.child_count, 2);
+        assert_eq!(session.selected_ordinal().unwrap(), Some(0));
+        assert_eq!(
+            session.selected_root().unwrap().unwrap().kind,
+            crate::json::JsonKind::Object
+        );
+
+        let children = session.selected_children(root.id, 0, 200).unwrap().unwrap();
+        assert_eq!(children.nodes[0].label, "name");
+        assert_eq!(children.nodes[1].label, "items");
+        let name = session
+            .selected_node(children.nodes[0].id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(name.value_preview.as_deref(), Some("Ada"));
+
+        let raw = session.read_raw_text(0, usize::MAX).unwrap().unwrap();
+        assert_eq!(raw.text, r#"{"name":"Ada","items":[true,false]}"#);
+        let decoded = session
+            .read_decoded_text(name.id, 0, usize::MAX)
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded.text, "Ada");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selects_array_and_scalar_entries() {
+        let (path, mut session) = session("jsonl-session-select-kinds", b"[1,2]\nfalse\n");
+        let array = session.select_entry(0).unwrap().unwrap();
+        assert_eq!(array.summary.status, EntryStatus::Valid);
+        assert_eq!(array.root.unwrap().kind, crate::json::JsonKind::Array);
+        let scalar = session.select_entry(1).unwrap().unwrap();
+        assert_eq!(scalar.summary.status, EntryStatus::Valid);
+        let root = scalar.root.unwrap();
+        assert_eq!(root.kind, crate::json::JsonKind::False);
+        assert_eq!(root.child_count, 0);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selecting_a_large_valid_entry_reads_across_chunks_once() {
+        let value = "a".repeat(300_000);
+        let input = format!(r#"{{"text":"{value}"}}"#);
+        let (path, mut session) = session("jsonl-session-select-large", input.as_bytes());
+        finish(&mut session);
+        let selection = session.select_entry(0).unwrap().unwrap();
+        assert_eq!(selection.summary.status, EntryStatus::Valid);
+        let root = selection.root.unwrap();
+        let child = session
+            .selected_children(root.id, 0, 1)
+            .unwrap()
+            .unwrap()
+            .nodes[0]
+            .id;
+        let mut decoded_len = 0;
+        let mut offset = Some(0);
+        while let Some(current_offset) = offset {
+            let decoded = session
+                .read_decoded_text(child, current_offset, usize::MAX)
+                .unwrap()
+                .unwrap();
+            decoded_len += decoded.text.len();
+            offset = decoded.next_offset;
+        }
+        assert_eq!(decoded_len, value.len());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn invalid_and_out_of_range_selection_clears_the_previous_tree() {
+        let bytes = b"{\"ok\":true}\n{\n\"bad\":\xff\n";
+        let (path, mut session) = session("jsonl-session-select-invalid", bytes);
+        assert!(session.select_entry(0).unwrap().unwrap().root.is_some());
+
+        let invalid_json = session.select_entry(1).unwrap().unwrap();
+        assert!(matches!(
+            invalid_json.summary.status,
+            EntryStatus::InvalidJson(_)
+        ));
+        assert!(invalid_json.root.is_none());
+        assert_eq!(session.selected_ordinal().unwrap(), None);
+        assert!(session.selected_root().unwrap().is_none());
+
+        let invalid_utf8 = session.select_entry(2).unwrap().unwrap();
+        assert_eq!(invalid_utf8.summary.status, EntryStatus::InvalidUtf8);
+        assert!(invalid_utf8.root.is_none());
+        assert!(session.select_entry(99).unwrap().is_none());
+        assert!(session.selected_node(0).unwrap().is_none());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selecting_after_blank_lines_keeps_the_target_span_exact() {
+        let bytes = b"zero\n  \t\r\n{\"ok\":1}\n";
+        let (path, mut session) = session("jsonl-session-select-blank", bytes);
+        let selection = session.select_entry(1).unwrap().unwrap();
+        assert_eq!(selection.summary.status, EntryStatus::Valid);
+        let root = selection.root.unwrap();
+        assert_eq!(selection.summary.location.byte_start, 10);
+        assert_eq!(selection.summary.location.byte_end, 18);
+        assert_eq!(root.span.start, 0);
+        assert_eq!(root.span.end, 8);
+        let raw = session.read_raw_text(0, usize::MAX).unwrap().unwrap();
+        assert_eq!(raw.text, r#"{"ok":1}"#);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn an_entry_at_exactly_the_limit_is_read_and_parsed() {
         let mut bytes = Vec::with_capacity(MAX_ENTRY_BYTES + 1);
         bytes.push(b'0');
@@ -814,6 +1211,13 @@ mod tests {
         let valid = session.entry_summary(1).unwrap().unwrap();
         assert_eq!(valid.status, EntryStatus::Valid);
         assert_eq!(valid.location.byte_start, following_start as u64);
+
+        assert!(session.select_entry(1).unwrap().unwrap().root.is_some());
+        let oversized_selection = session.select_entry(0).unwrap().unwrap();
+        assert_eq!(oversized_selection.summary.status, EntryStatus::Oversized);
+        assert!(oversized_selection.root.is_none());
+        assert_eq!(session.selected_ordinal().unwrap(), None);
+        assert!(session.selected_root().unwrap().is_none());
 
         session
             .index
@@ -893,6 +1297,48 @@ mod tests {
             session.oversized_preview(0).unwrap_err().kind(),
             ErrorKind::InvalidData
         );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stale_file_is_rejected_by_selected_tree_operations() {
+        let (path, mut session) = session("jsonl-session-selected-stale", b"{\"ok\":true}\n");
+        let selection = session.select_entry(0).unwrap().unwrap();
+        let root = selection.root.unwrap();
+        fs::write(&path, b"changed\n").unwrap();
+
+        for result in [
+            session
+                .selected_ordinal()
+                .map(|_| ())
+                .map_err(|error| error.kind()),
+            session
+                .selected_root()
+                .map(|_| ())
+                .map_err(|error| error.kind()),
+            session
+                .selected_node(root.id)
+                .map(|_| ())
+                .map_err(|error| error.kind()),
+            session
+                .selected_children(root.id, 0, 1)
+                .map(|_| ())
+                .map_err(|error| error.kind()),
+            session
+                .read_raw_text(0, 1)
+                .map(|_| ())
+                .map_err(|error| error.kind()),
+            session
+                .read_decoded_text(root.id, 0, 1)
+                .map(|_| ())
+                .map_err(|error| error.kind()),
+            session
+                .select_entry(0)
+                .map(|_| ())
+                .map_err(|error| error.kind()),
+        ] {
+            assert_eq!(result, Err(ErrorKind::InvalidData));
+        }
         fs::remove_file(path).unwrap();
     }
 }
