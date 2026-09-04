@@ -33,6 +33,7 @@ pub struct JsonlIndexer {
     stride: u64,
     line_start_byte: u64,
     in_line: bool,
+    line_has_content: bool,
     line_last_byte: Option<u8>,
 }
 
@@ -46,6 +47,7 @@ impl Default for JsonlIndexer {
             stride: 1,
             line_start_byte: 0,
             in_line: false,
+            line_has_content: false,
             line_last_byte: None,
         }
     }
@@ -64,6 +66,21 @@ impl JsonlIndexer {
         self.source_line_count
     }
 
+    pub fn stride(&self) -> u64 {
+        self.stride
+    }
+
+    pub fn nearest_checkpoint(&self, ordinal: u64) -> Option<Checkpoint> {
+        match self
+            .checkpoints
+            .binary_search_by(|checkpoint| checkpoint.entry_ordinal.cmp(&ordinal))
+        {
+            Ok(index) => self.checkpoints.get(index).copied(),
+            Err(0) => None,
+            Err(next_index) => self.checkpoints.get(next_index - 1).copied(),
+        }
+    }
+
     pub fn feed(&mut self, chunk: &[u8]) {
         let chunk_start = self.byte_offset;
         let chunk_length = u64::try_from(chunk.len()).expect("chunk length exceeds u64");
@@ -80,15 +97,20 @@ impl JsonlIndexer {
                 self.record_line(
                     self.line_start_byte,
                     delimiter_offset,
+                    self.line_has_content,
                     self.line_last_byte == Some(b'\r'),
                 );
                 self.line_last_byte = None;
                 self.in_line = false;
+                self.line_has_content = false;
                 self.line_start_byte = delimiter_offset
                     .checked_add(1)
                     .expect("JSONL byte offset overflow");
             } else {
                 self.in_line = true;
+                if !matches!(byte, b' ' | b'\t' | b'\r') {
+                    self.line_has_content = true;
+                }
                 self.line_last_byte = Some(byte);
             }
         }
@@ -96,8 +118,14 @@ impl JsonlIndexer {
 
     pub fn finish(mut self) -> JsonlIndex {
         if self.in_line {
-            self.record_line(self.line_start_byte, self.byte_offset, false);
+            self.record_line(
+                self.line_start_byte,
+                self.byte_offset,
+                self.line_has_content,
+                false,
+            );
             self.in_line = false;
+            self.line_has_content = false;
             self.line_last_byte = None;
         }
 
@@ -109,7 +137,13 @@ impl JsonlIndexer {
         }
     }
 
-    fn record_line(&mut self, start: u64, end_before_delimiter: u64, is_crlf: bool) {
+    fn record_line(
+        &mut self,
+        start: u64,
+        end_before_delimiter: u64,
+        has_content: bool,
+        is_crlf: bool,
+    ) {
         let end = if is_crlf {
             end_before_delimiter
                 .checked_sub(1)
@@ -123,7 +157,7 @@ impl JsonlIndexer {
             .expect("JSONL source line overflow");
         self.source_line_count = source_line;
 
-        if start < end {
+        if has_content && start < end {
             self.push_checkpoint(Checkpoint {
                 entry_ordinal: self.entry_count,
                 source_line,
@@ -169,6 +203,17 @@ pub struct JsonlIndex {
 }
 
 impl JsonlIndex {
+    pub fn nearest_checkpoint(&self, ordinal: u64) -> Option<Checkpoint> {
+        match self
+            .checkpoints
+            .binary_search_by(|checkpoint| checkpoint.entry_ordinal.cmp(&ordinal))
+        {
+            Ok(index) => self.checkpoints.get(index).copied(),
+            Err(0) => None,
+            Err(next_index) => self.checkpoints.get(next_index - 1).copied(),
+        }
+    }
+
     pub fn locate(&self, bytes: &[u8], ordinal: u64) -> Option<EntryLocation> {
         if ordinal >= self.total_entry_count || self.stride == 0 || !self.stride.is_power_of_two() {
             return None;
@@ -198,7 +243,10 @@ impl JsonlIndex {
             let line_bytes = &bytes[byte_start..];
             let Some(relative_lf) = line_bytes.iter().position(|&byte| byte == b'\n') else {
                 let content_end = bytes.len();
-                if current_ordinal == ordinal {
+                let has_content = line_bytes
+                    .iter()
+                    .any(|&byte| !matches!(byte, b' ' | b'\t' | b'\r'));
+                if has_content && current_ordinal == ordinal {
                     return Some(EntryLocation {
                         entry_ordinal: ordinal,
                         source_line: current_line,
@@ -217,7 +265,10 @@ impl JsonlIndex {
             } else {
                 lf
             };
-            if content_end > byte_start {
+            let has_content = line_bytes[..relative_lf]
+                .iter()
+                .any(|&byte| !matches!(byte, b' ' | b'\t' | b'\r'));
+            if has_content && content_end > byte_start {
                 if current_ordinal == ordinal {
                     return Some(EntryLocation {
                         entry_ordinal: ordinal,
@@ -274,12 +325,11 @@ mod tests {
         let bytes = b"a\n\n   \r\nb\r\n\n";
         let index = scan_jsonl(bytes);
 
-        assert_eq!(index.total_entry_count, 3);
+        assert_eq!(index.total_entry_count, 2);
         assert_eq!(index.total_source_line_count, 5);
         assert_eq!(index.stride, 1);
         assert_location(&index, bytes, 0, 1, 0, 1);
-        assert_location(&index, bytes, 1, 3, 3, 6);
-        assert_location(&index, bytes, 2, 4, 8, 9);
+        assert_location(&index, bytes, 1, 4, 8, 9);
     }
 
     #[test]
@@ -296,11 +346,10 @@ mod tests {
         let index = indexer.finish();
         let bytes = b"{\"name\":\"value\"}\r\n \r\nlast";
 
-        assert_eq!(index.total_entry_count, 3);
+        assert_eq!(index.total_entry_count, 2);
         assert_eq!(index.total_source_line_count, 3);
         assert_location(&index, bytes, 0, 1, 0, 16);
-        assert_location(&index, bytes, 1, 2, 18, 19);
-        assert_location(&index, bytes, 2, 3, 21, 25);
+        assert_location(&index, bytes, 1, 3, 21, 25);
     }
 
     #[test]
@@ -347,6 +396,23 @@ mod tests {
         assert_location(&index, bytes, 0, 1, 0, 5);
         assert_location(&index, bytes, 1, 2, 6, 10);
         assert_location(&index, bytes, 2, 3, 11, 16);
+    }
+
+    #[test]
+    fn sparse_lookup_skips_whitespace_only_lines() {
+        let bytes = b"zero\n   \r\none\n";
+        let index = JsonlIndex {
+            checkpoints: vec![Checkpoint {
+                entry_ordinal: 0,
+                source_line: 1,
+                byte_offset: 0,
+            }],
+            total_entry_count: 2,
+            total_source_line_count: 3,
+            stride: 2,
+        };
+
+        assert_location(&index, bytes, 1, 3, 10, 13);
     }
 
     #[test]
