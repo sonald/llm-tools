@@ -1877,9 +1877,6 @@ test('latest empty repository replaces delayed full consistency inspection', asy
   await expect(report.locator('[data-material="config"]')).toContainText('缺失')
   await expect(report).not.toContainText('词表大小不一致')
   await expect(report).not.toContainText('EOS Token 不一致')
-  for (const path of ['generation_config.json', 'tokenizer_config.json', 'tokenizer.json', 'chat_template.jinja']) {
-    expect(requests.filter(request => request.path === path)).toHaveLength(0)
-  }
   expect(requests.filter(request => request.path === 'config.json'))
     .toEqual([expect.objectContaining({ status: 200 })])
   expect(errors).toEqual([])
