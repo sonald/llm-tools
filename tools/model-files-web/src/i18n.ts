@@ -1925,6 +1925,10 @@ export const messageCatalog = {
     'zh-Hans': 'SentencePiece 模型无效：{reason}',
     en: 'Invalid SentencePiece model: {reason}',
   },
+  sentencepieceTiktokenRanks: {
+    'zh-Hans': '这是 tiktoken BPE ranks 文本，不是 SentencePiece 模型。请打开同仓库的 tokenizer.json。',
+    en: 'This is a tiktoken BPE ranks file, not a SentencePiece model. Open tokenizer.json in the same repository instead.',
+  },
   sentencepieceOperationFailed: {
     'zh-Hans': 'SentencePiece 操作失败：{reason}',
     en: 'SentencePiece operation failed: {reason}',

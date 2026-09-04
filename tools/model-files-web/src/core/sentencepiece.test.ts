@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { SentencePieceWasm } from '../sentencepieceWasm.ts'
+import { looksLikeTiktokenRanks, SentencePieceWasm } from '../sentencepieceWasm.ts'
 
 const fixtureDir = new URL('./fixtures/sentencepiece/', import.meta.url)
 
@@ -14,6 +14,23 @@ async function loadFixture(name: string): Promise<SentencePieceWasm> {
 test('rejects an invalid serialized model', async () => {
   const invalidModel = new TextEncoder().encode('__NOT_A_PROTO__')
   await assert.rejects(() => SentencePieceWasm.load(invalidModel), /SentencePiece 模型无效/)
+})
+
+test('rejects tiktoken BPE ranks before protobuf parse', async () => {
+  const ranks = new TextEncoder().encode('IQ== 0\nIg== 1\nIw== 2\n')
+  assert.equal(looksLikeTiktokenRanks(ranks), true)
+  await assert.rejects(
+    () => SentencePieceWasm.load(ranks),
+    /tiktoken BPE ranks|不是 SentencePiece 模型/,
+  )
+})
+
+test('does not treat official SentencePiece fixtures as tiktoken ranks', async () => {
+  const fs = await import('node:fs/promises')
+  const bpe = new Uint8Array(await fs.readFile(new URL('test_bpe_model.model', fixtureDir)))
+  const unigram = new Uint8Array(await fs.readFile(new URL('test_model.model', fixtureDir)))
+  assert.equal(looksLikeTiktokenRanks(bpe), false)
+  assert.equal(looksLikeTiktokenRanks(unigram), false)
 })
 
 test('loads the official BPE model and round-trips fixed gold', async () => {

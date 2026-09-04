@@ -70,6 +70,23 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+const tiktokenRankLine = /^[A-Za-z0-9+/]+=* [0-9]+$/
+
+export function looksLikeTiktokenRanks(bytes: Uint8Array): boolean {
+  if (bytes.byteLength === 0) return false
+  const sampleLength = Math.min(bytes.byteLength, 256)
+  const sample = bytes.subarray(0, sampleLength)
+  for (let index = 0; index < sample.length; index++) {
+    const value = sample[index]
+    if (value === 0 || value > 127) return false
+  }
+  const text = String.fromCharCode(...sample)
+  const lines = text.split('\n')
+  if (sampleLength < bytes.byteLength && !text.endsWith('\n')) lines.pop()
+  const candidates = lines.filter(line => line.length > 0)
+  return candidates.length > 0 && candidates.every(line => tiktokenRankLine.test(line))
+}
+
 export class SentencePieceWasm {
   #module: SentencePieceModule | null
 
@@ -79,6 +96,9 @@ export class SentencePieceWasm {
 
   static async load(model: Uint8Array): Promise<SentencePieceWasm> {
     const validatedModel = requireModel(model)
+    if (looksLikeTiktokenRanks(validatedModel)) {
+      throw new Error(t('sentencepieceTiktokenRanks'))
+    }
     const module = await createSentencePieceModule()
     try {
       module.LoadFromSerializedProto(validatedModel)
