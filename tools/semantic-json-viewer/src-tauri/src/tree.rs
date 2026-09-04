@@ -6,6 +6,7 @@ use crate::json::{
 
 const MAX_LABEL_OR_VALUE_CHARS: usize = 256;
 const MAX_PAGE_SIZE: usize = 200;
+const MAX_TEXT_CHUNK_BYTES: usize = 128 * 1024;
 
 pub struct TreeDocument {
     parsed: ParsedJson<'static>,
@@ -53,6 +54,25 @@ impl TreeDocument {
             has_more,
             next_cursor: has_more.then_some(end),
         })
+    }
+
+    pub fn read_raw_text(&self, offset: usize, requested_len: usize) -> Option<TextChunk> {
+        let source = str::from_utf8(self.parsed.source()).ok()?;
+        chunk_text(source, offset, requested_len)
+    }
+
+    pub fn read_decoded_text(
+        &self,
+        node_id: usize,
+        offset: usize,
+        requested_len: usize,
+    ) -> Option<TextChunk> {
+        let node = self.parsed.node_at(node_id)?;
+        if node.kind != JsonKind::String {
+            return None;
+        }
+        let decoded = node.decoded.as_deref()?;
+        chunk_text(decoded, offset, requested_len)
     }
 
     fn projection(&self, id: usize, node: &JsonNode) -> NodeProjection {
@@ -122,11 +142,49 @@ pub struct NodePage {
     pub next_cursor: Option<usize>,
 }
 
+pub struct TextChunk {
+    pub start: usize,
+    pub text: String,
+    pub has_more: bool,
+    pub next_offset: Option<usize>,
+}
+
 fn truncate_chars(value: &str, max_chars: usize) -> (String, bool) {
     let mut chars = value.chars();
     let truncated: String = chars.by_ref().take(max_chars).collect();
     let has_more = chars.next().is_some();
     (truncated, has_more)
+}
+
+fn chunk_text(text: &str, offset: usize, requested_len: usize) -> Option<TextChunk> {
+    if requested_len == 0 || offset > text.len() || !text.is_char_boundary(offset) {
+        return None;
+    }
+    if offset == text.len() {
+        return Some(TextChunk {
+            start: offset,
+            text: String::new(),
+            has_more: false,
+            next_offset: None,
+        });
+    }
+
+    let remaining = text.len() - offset;
+    let mut end = offset + requested_len.min(MAX_TEXT_CHUNK_BYTES).min(remaining);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == offset {
+        return None;
+    }
+
+    let has_more = end < text.len();
+    Some(TextChunk {
+        start: offset,
+        text: text[offset..end].to_owned(),
+        has_more,
+        next_offset: has_more.then_some(end),
+    })
 }
 
 #[cfg(test)]
@@ -222,5 +280,107 @@ mod tests {
         assert!(tree.children(root.id, 1, 10).unwrap().nodes.is_empty());
         assert!(tree.children(root.id, 2, 10).is_none());
         assert!(tree.children(root.id, 0, 0).is_none());
+    }
+
+    #[test]
+    fn reads_raw_text_with_original_escapes_and_decoded_text_separately() {
+        let tree = document(r#"["a\né"]"#);
+        let node = tree.node(1).unwrap();
+
+        let raw = tree.read_raw_text(2, 5).unwrap();
+        assert_eq!(raw.start, 2);
+        assert_eq!(raw.text, r"a\né");
+        assert!(raw.has_more);
+        assert_eq!(raw.next_offset, Some(7));
+
+        let raw_end = tree.read_raw_text(7, 1).unwrap();
+        assert_eq!(raw_end.text, "\"");
+        assert!(raw_end.has_more);
+        assert_eq!(raw_end.next_offset, Some(8));
+
+        let decoded = tree.read_decoded_text(node.id, 0, 4).unwrap();
+        assert_eq!(decoded.start, 0);
+        assert_eq!(decoded.text, "a\né");
+        assert!(!decoded.has_more);
+        assert_eq!(decoded.next_offset, None);
+    }
+
+    #[test]
+    fn paginates_text_at_128_kib() {
+        let value = "a".repeat(200_000);
+        let tree = document(&format!(r#"["{value}"]"#));
+        let node = tree.node(1).unwrap();
+
+        let first = tree.read_decoded_text(node.id, 0, usize::MAX).unwrap();
+        assert_eq!(first.text.len(), MAX_TEXT_CHUNK_BYTES);
+        assert!(first.has_more);
+        assert_eq!(first.next_offset, Some(MAX_TEXT_CHUNK_BYTES));
+
+        let second = tree
+            .read_decoded_text(node.id, first.next_offset.unwrap(), usize::MAX)
+            .unwrap();
+        assert_eq!(second.start, MAX_TEXT_CHUNK_BYTES);
+        assert_eq!(second.text.len(), 200_000 - MAX_TEXT_CHUNK_BYTES);
+        assert!(!second.has_more);
+        assert_eq!(second.next_offset, None);
+    }
+
+    #[test]
+    fn rejects_chunks_that_cannot_contain_a_complete_scalar() {
+        let tree = document(r#"["😀😀"]"#);
+        let node = tree.node(1).unwrap();
+
+        assert!(tree.read_decoded_text(node.id, 0, 1).is_none());
+        let first = tree.read_decoded_text(node.id, 0, 5).unwrap();
+        assert_eq!(first.text.len(), 4);
+        assert_eq!(first.text, "😀");
+        assert!(first.has_more);
+        assert_eq!(first.next_offset, Some(4));
+
+        let second = tree.read_decoded_text(node.id, 4, 5).unwrap();
+        assert_eq!(second.start, 4);
+        assert_eq!(second.text, "😀");
+        assert!(!second.has_more);
+        assert_eq!(second.next_offset, None);
+    }
+
+    #[test]
+    fn rejects_invalid_text_chunk_requests() {
+        let tree = document(r#"["😀😀"]"#);
+        let root = tree.root();
+        let node = tree.node(1).unwrap();
+        let decoded_len = "😀😀".len();
+
+        assert!(tree.read_raw_text(0, 0).is_none());
+        assert!(tree.read_decoded_text(node.id, 0, 0).is_none());
+        assert!(tree.node(99).is_none());
+        assert!(tree.read_decoded_text(99, 0, 1).is_none());
+        assert!(tree.read_decoded_text(root.id, 0, 1).is_none());
+        assert!(tree
+            .read_raw_text(tree.parsed.source().len() + 1, 1)
+            .is_none());
+        assert!(tree
+            .read_decoded_text(node.id, decoded_len + 1, 1)
+            .is_none());
+        assert!(tree.read_decoded_text(node.id, 1, 1).is_none());
+    }
+
+    #[test]
+    fn returns_empty_chunks_at_end_of_text() {
+        let tree = document(r#"["😀😀"]"#);
+        let node = tree.node(1).unwrap();
+        let decoded_len = "😀😀".len();
+
+        let raw = tree.read_raw_text(tree.parsed.source().len(), 1).unwrap();
+        assert_eq!(raw.start, tree.parsed.source().len());
+        assert!(raw.text.is_empty());
+        assert!(!raw.has_more);
+        assert_eq!(raw.next_offset, None);
+
+        let decoded = tree.read_decoded_text(node.id, decoded_len, 1).unwrap();
+        assert_eq!(decoded.start, decoded_len);
+        assert!(decoded.text.is_empty());
+        assert!(!decoded.has_more);
+        assert_eq!(decoded.next_offset, None);
     }
 }
