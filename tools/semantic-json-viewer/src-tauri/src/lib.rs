@@ -1,5 +1,6 @@
 pub mod file_route;
 pub mod json;
+pub mod jsonl_index;
 
 pub fn run() {
     tauri::Builder::default()
