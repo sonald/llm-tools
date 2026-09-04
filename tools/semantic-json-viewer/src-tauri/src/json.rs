@@ -1,8 +1,15 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::str::{self, from_utf8};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NodeId(usize);
+
+impl NodeId {
+    pub fn index(self) -> usize {
+        self.0
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SourceSpan {
@@ -44,7 +51,7 @@ pub struct JsonNode {
 
 #[derive(Debug)]
 pub struct ParsedJson<'a> {
-    source: &'a [u8],
+    source: Cow<'a, [u8]>,
     nodes: Vec<JsonNode>,
 }
 
@@ -57,7 +64,19 @@ impl<'a> ParsedJson<'a> {
         &self.nodes[id.0]
     }
 
-    pub fn raw_lexeme(&self, id: NodeId) -> &'a [u8] {
+    pub fn source(&self) -> &[u8] {
+        self.source.as_ref()
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn node_at(&self, index: usize) -> Option<&JsonNode> {
+        self.nodes.get(index)
+    }
+
+    pub fn raw_lexeme(&self, id: NodeId) -> &[u8] {
         let span = self.node(id).span;
         &self.source[span.start..span.end]
     }
@@ -81,6 +100,18 @@ pub fn parse_json(input: &[u8]) -> Result<ParsedJson<'_>, ParseError> {
     Ok(parsed)
 }
 
+pub fn parse_json_owned(input: Vec<u8>) -> Result<ParsedJson<'static>, ParseError> {
+    let nodes = {
+        let parsed = parse_json(&input)?;
+        parsed.nodes
+    };
+
+    Ok(ParsedJson {
+        source: Cow::Owned(input),
+        nodes,
+    })
+}
+
 pub(crate) fn parse_json_prefix(input: &[u8]) -> Result<(ParsedJson<'_>, usize), ParseError> {
     let text = from_utf8(input)
         .map_err(|error| error_at(input, error.valid_up_to(), "input is not valid UTF-8"))?;
@@ -99,7 +130,7 @@ pub(crate) fn parse_json_prefix(input: &[u8]) -> Result<(ParsedJson<'_>, usize),
 
     Ok((
         ParsedJson {
-            source: input,
+            source: Cow::Borrowed(input),
             nodes: parser.nodes,
         },
         parser.index,
@@ -851,5 +882,34 @@ mod tests {
             assert_eq!(error.line, line);
             assert_eq!(error.column, column);
         }
+    }
+
+    #[test]
+    fn borrowed_source_and_lexeme_are_zero_copy() {
+        let source = br#"{"value":1}"#;
+        let parsed = parse_json(source).unwrap();
+
+        assert_eq!(parsed.source().as_ptr(), source.as_ptr());
+        assert_eq!(parsed.raw_lexeme(parsed.root()), source);
+    }
+
+    #[test]
+    fn owned_arena_preserves_source_and_node_access() {
+        let source = br#"{"a":1,"a":922337203685477580712345}"#.to_vec();
+        let source_pointer = source.as_ptr();
+        let parsed = parse_json_owned(source).unwrap();
+
+        assert_eq!(parsed.source().as_ptr(), source_pointer);
+        assert_eq!(parsed.node_count(), 3);
+        let children = &parsed.node(parsed.root()).children;
+        assert_eq!(children[0].index(), 1);
+        assert_eq!(children[1].index(), 2);
+        assert!(parsed.node_at(2).is_some());
+        assert!(parsed.node_at(99).is_none());
+        assert!(matches!(
+            parsed.node(children[1]).locator,
+            ChildLocator::ObjectKey { occurrence: 2, .. }
+        ));
+        assert_eq!(parsed.raw_lexeme(children[1]), b"922337203685477580712345");
     }
 }
