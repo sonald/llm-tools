@@ -3,8 +3,8 @@ use std::str::from_utf8;
 use crate::json::{parse_json, ParseError};
 use crate::jsonl_index::EntryLocation;
 
-const MAX_ENTRY_BYTES: usize = 16 * 1024 * 1024;
-const PREVIEW_BYTES: usize = 64 * 1024;
+pub const MAX_ENTRY_BYTES: usize = 16 * 1024 * 1024;
+pub const PREVIEW_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EntryStatus {

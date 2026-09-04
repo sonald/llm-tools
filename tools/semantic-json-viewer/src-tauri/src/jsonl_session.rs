@@ -2,6 +2,7 @@ use std::io::{self, ErrorKind};
 use std::path::Path;
 
 use crate::file_source::{FileIdentity, FileSource};
+use crate::jsonl_entry::{inspect_entry, EntryStatus, MAX_ENTRY_BYTES, PREVIEW_BYTES};
 use crate::jsonl_index::{Checkpoint, EntryLocation, JsonlIndex, JsonlIndexer};
 
 const MAX_ENTRY_PAGE: usize = 200;
@@ -20,6 +21,26 @@ pub struct EntryPage {
     pub locations: Vec<EntryLocation>,
     pub has_more: bool,
     pub next_cursor: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EntrySummary {
+    pub location: EntryLocation,
+    pub status: EntryStatus,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EntrySummaryPage {
+    pub summaries: Vec<EntrySummary>,
+    pub has_more: bool,
+    pub next_cursor: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OversizedPreview {
+    pub location: EntryLocation,
+    pub head: Vec<u8>,
+    pub tail: Vec<u8>,
 }
 
 pub struct JsonlSession {
@@ -104,6 +125,10 @@ impl JsonlSession {
             return Ok(None);
         }
 
+        if let Some(location) = self.oversized_location(ordinal) {
+            return Ok(Some(location));
+        }
+
         let checkpoint = self.nearest_checkpoint(ordinal);
         let Some(checkpoint) = checkpoint else {
             return Ok(None);
@@ -132,7 +157,13 @@ impl JsonlSession {
         }
 
         let end = start.saturating_add(page_size as u64).min(indexed_entries);
-        let checkpoint = self.nearest_checkpoint(start);
+        let checkpoint = self.nearest_checkpoint(start).or_else(|| {
+            self.oversized_location(start).map(|location| Checkpoint {
+                entry_ordinal: start,
+                source_line: location.source_line,
+                byte_offset: location.byte_start,
+            })
+        });
         let Some(checkpoint) = checkpoint else {
             return Ok(None);
         };
@@ -143,6 +174,68 @@ impl JsonlSession {
             locations,
             has_more,
             next_cursor,
+        }))
+    }
+
+    pub fn entry_summary(&self, ordinal: u64) -> io::Result<Option<EntrySummary>> {
+        self.ensure_current()?;
+        let Some(location) = self.locate_entry(ordinal)? else {
+            return Ok(None);
+        };
+        self.summarize_location(location).map(Some)
+    }
+
+    pub fn list_entry_summaries(
+        &self,
+        start: u64,
+        limit: usize,
+    ) -> io::Result<Option<EntrySummaryPage>> {
+        self.ensure_current()?;
+        let Some(page) = self.list_entries(start, limit)? else {
+            return Ok(None);
+        };
+        let summaries = page
+            .locations
+            .into_iter()
+            .map(|location| self.summarize_location(location))
+            .collect::<io::Result<Vec<_>>>()?;
+        Ok(Some(EntrySummaryPage {
+            summaries,
+            has_more: page.has_more,
+            next_cursor: page.next_cursor,
+        }))
+    }
+
+    pub fn oversized_preview(&self, ordinal: u64) -> io::Result<Option<OversizedPreview>> {
+        self.ensure_current()?;
+        let Some(summary) = self.entry_summary(ordinal)? else {
+            return Ok(None);
+        };
+        if summary.status != EntryStatus::Oversized {
+            return Ok(None);
+        }
+
+        let length = summary
+            .location
+            .byte_end
+            .checked_sub(summary.location.byte_start)
+            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+        let preview_len = u64::try_from(PREVIEW_BYTES).expect("preview size exceeds u64");
+        if length <= preview_len {
+            return Ok(None);
+        }
+        let head = self.read_range(summary.location.byte_start, preview_len)?;
+        let tail_start = summary
+            .location
+            .byte_end
+            .checked_sub(preview_len)
+            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+        let tail = self.read_range(tail_start, preview_len)?;
+        self.ensure_current()?;
+        Ok(Some(OversizedPreview {
+            location: summary.location,
+            head,
+            tail,
         }))
     }
 
@@ -197,6 +290,80 @@ impl JsonlSession {
         )
     }
 
+    fn oversized_location(&self, ordinal: u64) -> Option<EntryLocation> {
+        self.index.as_ref().map_or_else(
+            || {
+                self.indexer
+                    .as_ref()
+                    .expect("indexer exists")
+                    .oversized_location(ordinal)
+            },
+            |index| index.oversized_location(ordinal),
+        )
+    }
+
+    fn summarize_location(&self, location: EntryLocation) -> io::Result<EntrySummary> {
+        let length = location
+            .byte_end
+            .checked_sub(location.byte_start)
+            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+        let status = if length > u64::try_from(MAX_ENTRY_BYTES).expect("entry size exceeds u64") {
+            EntryStatus::Oversized
+        } else {
+            let bytes = self.read_range(location.byte_start, length)?;
+            inspect_entry(&bytes)
+        };
+        self.ensure_current()?;
+        Ok(EntrySummary { location, status })
+    }
+
+    fn read_range(&self, start: u64, length: u64) -> io::Result<Vec<u8>> {
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+        if end > self.source.identity().size {
+            return Err(ErrorKind::InvalidData.into());
+        }
+
+        let capacity = usize::try_from(length).map_err(|_| {
+            io::Error::new(
+                ErrorKind::InvalidData,
+                "entry range exceeds addressable memory",
+            )
+        })?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(capacity)
+            .map_err(|error| io::Error::new(ErrorKind::OutOfMemory, error))?;
+        let mut offset = start;
+        while offset < end {
+            let remaining = end - offset;
+            let requested = usize::try_from(remaining).map_err(|_| {
+                io::Error::new(
+                    ErrorKind::InvalidData,
+                    "entry range exceeds addressable memory",
+                )
+            })?;
+            let chunk = self.source.read_chunk(offset, requested)?;
+            if chunk.bytes.is_empty() {
+                return Err(io::Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "file ended before the requested JSONL range",
+                ));
+            }
+            let read = u64::try_from(chunk.bytes.len()).expect("chunk length exceeds u64");
+            if read > remaining {
+                return Err(ErrorKind::InvalidData.into());
+            }
+            bytes.extend_from_slice(&chunk.bytes);
+            offset = offset
+                .checked_add(read)
+                .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+        }
+        self.ensure_current()?;
+        Ok(bytes)
+    }
+
     fn finish_index(&mut self) {
         if self.complete {
             return;
@@ -231,6 +398,32 @@ impl JsonlSession {
         let mut last_byte = None;
 
         loop {
+            if let Some(location) = self.oversized_location(ordinal) {
+                if location.byte_start == line_start && offset <= location.byte_end {
+                    if ordinal >= first_ordinal && locations.len() < requested {
+                        locations.push(location);
+                        if locations.len() == requested {
+                            self.ensure_current()?;
+                            return Ok(locations);
+                        }
+                    }
+                    ordinal = ordinal
+                        .checked_add(1)
+                        .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+                    let Some(next_offset) = self.next_after_cached_line(location)? else {
+                        break;
+                    };
+                    source_line = source_line
+                        .checked_add(1)
+                        .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+                    line_start = next_offset;
+                    offset = next_offset;
+                    line_has_content = false;
+                    last_byte = None;
+                    continue;
+                }
+            }
+
             let chunk = self.source.read_chunk(offset, usize::MAX)?;
             if chunk.bytes.is_empty() {
                 if chunk.has_more {
@@ -316,6 +509,41 @@ impl JsonlSession {
 
         self.ensure_current()?;
         Ok(locations)
+    }
+
+    fn next_after_cached_line(&self, location: EntryLocation) -> io::Result<Option<u64>> {
+        let file_size = self.source.identity().size;
+        if location.byte_end > file_size {
+            return Err(ErrorKind::InvalidData.into());
+        }
+        if location.byte_end == file_size {
+            return Ok(None);
+        }
+        let delimiter = self.source.read_chunk(location.byte_end, 2)?;
+        let Some(&first) = delimiter.bytes.first() else {
+            return Err(io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "file ended before the oversized JSONL delimiter",
+            ));
+        };
+        if first == b'\n' {
+            return location
+                .byte_end
+                .checked_add(1)
+                .map(Some)
+                .ok_or_else(|| io::Error::from(ErrorKind::InvalidData));
+        }
+        if first == b'\r' && delimiter.bytes.get(1) == Some(&b'\n') {
+            return location
+                .byte_end
+                .checked_add(2)
+                .map(Some)
+                .ok_or_else(|| io::Error::from(ErrorKind::InvalidData));
+        }
+        Err(io::Error::new(
+            ErrorKind::InvalidData,
+            "cached oversized JSONL span has no LF delimiter",
+        ))
     }
 }
 
@@ -471,6 +699,7 @@ mod tests {
                     source_line: 1,
                     byte_offset: 0,
                 }],
+                oversized_locations: Vec::new(),
                 total_entry_count: 2,
                 total_source_line_count: 3,
                 stride: 2,
@@ -500,6 +729,12 @@ mod tests {
             .collect::<String>();
         let (path, mut session) = session("jsonl-session-list", bytes.as_bytes());
         finish(&mut session);
+        assert!(session
+            .index
+            .as_ref()
+            .expect("completed session index")
+            .oversized_locations
+            .is_empty());
         let page = session.list_entries(0, usize::MAX).unwrap().unwrap();
         assert_eq!(page.locations.len(), 200);
         assert!(page.has_more);
@@ -507,6 +742,122 @@ mod tests {
         let tail = session.list_entries(200, 200).unwrap().unwrap();
         assert_eq!(tail.locations.len(), 5);
         assert!(!tail.has_more);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn entry_summaries_keep_invalid_rows_independent() {
+        let bytes = b"{\"ok\":true}\n{\"bad\":\xff}\n{\n{\"after\":1}\r\n";
+        let (path, session) = session("jsonl-session-statuses", bytes);
+        let page = session.list_entry_summaries(0, 200).unwrap().unwrap();
+        assert_eq!(page.summaries.len(), 4);
+        assert_eq!(page.summaries[0].status, EntryStatus::Valid);
+        assert_eq!(page.summaries[1].status, EntryStatus::InvalidUtf8);
+        assert!(matches!(
+            page.summaries[2].status,
+            EntryStatus::InvalidJson(_)
+        ));
+        assert_eq!(page.summaries[3].status, EntryStatus::Valid);
+        assert_eq!(page.summaries[3].location.source_line, 4);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn an_entry_at_exactly_the_limit_is_read_and_parsed() {
+        let mut bytes = Vec::with_capacity(MAX_ENTRY_BYTES + 1);
+        bytes.push(b'0');
+        bytes.extend(std::iter::repeat_n(b' ', MAX_ENTRY_BYTES - 1));
+        bytes.push(b'\n');
+        let (path, mut session) = session("jsonl-session-exact-limit", &bytes);
+        finish(&mut session);
+
+        let summary = session.entry_summary(0).unwrap().unwrap();
+        assert_eq!(summary.status, EntryStatus::Valid);
+        assert_eq!(
+            summary.location.byte_end - summary.location.byte_start,
+            MAX_ENTRY_BYTES as u64
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn oversized_entry_returns_bounded_head_and_tail_and_keeps_following_rows() {
+        let mut bytes = Vec::with_capacity(MAX_ENTRY_BYTES + 32);
+        bytes.push(0xff);
+        bytes.extend(std::iter::repeat_n(b'a', MAX_ENTRY_BYTES));
+        bytes.push(b'\n');
+        let following = br#"{"ok":true}"#;
+        let following_start = bytes.len();
+        bytes.extend_from_slice(following);
+        bytes.push(b'\n');
+        let (path, mut session) = session("jsonl-session-oversized", &bytes);
+        finish(&mut session);
+
+        let oversized = session.entry_summary(0).unwrap().unwrap();
+        assert_eq!(oversized.status, EntryStatus::Oversized);
+        let cached_location = session
+            .index
+            .as_ref()
+            .expect("completed session index")
+            .oversized_location(0)
+            .expect("oversized span is cached");
+        assert_eq!(cached_location, oversized.location);
+        assert_eq!(
+            session
+                .index
+                .as_ref()
+                .expect("completed session index")
+                .oversized_locations
+                .len(),
+            1
+        );
+        let valid = session.entry_summary(1).unwrap().unwrap();
+        assert_eq!(valid.status, EntryStatus::Valid);
+        assert_eq!(valid.location.byte_start, following_start as u64);
+
+        session
+            .index
+            .as_mut()
+            .expect("completed session index")
+            .checkpoints
+            .clear();
+        let locations = session.list_entries(0, 2).unwrap().unwrap();
+        assert_eq!(locations.locations.len(), 2);
+        assert_eq!(locations.locations[0], oversized.location);
+        assert_eq!(locations.locations[1], valid.location);
+        let summaries = session.list_entry_summaries(0, 2).unwrap().unwrap();
+        assert_eq!(summaries.summaries.len(), 2);
+        assert_eq!(summaries.summaries[0].status, EntryStatus::Oversized);
+        assert_eq!(summaries.summaries[1].status, EntryStatus::Valid);
+        let preview = session.oversized_preview(0).unwrap().unwrap();
+        assert_eq!(preview.location, oversized.location);
+        assert_eq!(preview.head.len(), PREVIEW_BYTES);
+        assert_eq!(preview.tail.len(), PREVIEW_BYTES);
+        assert_eq!(preview.head[0], 0xff);
+        assert!(preview.head[1..].iter().all(|&byte| byte == b'a'));
+        assert!(preview.tail.iter().all(|&byte| byte == b'a'));
+        assert!(session.oversized_preview(1).unwrap().is_none());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn entry_summary_page_is_capped_and_carries_statuses() {
+        let bytes = (0..205)
+            .map(|index| format!("{index}\n"))
+            .collect::<String>();
+        let (path, mut session) = session("jsonl-session-summary-page", bytes.as_bytes());
+        finish(&mut session);
+        let page = session
+            .list_entry_summaries(0, usize::MAX)
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.summaries.len(), 200);
+        assert!(page.has_more);
+        assert_eq!(page.next_cursor, Some(200));
+        assert!(page
+            .summaries
+            .iter()
+            .all(|summary| summary.status == EntryStatus::Valid));
         fs::remove_file(path).unwrap();
     }
 
@@ -528,6 +879,18 @@ mod tests {
         );
         assert_eq!(
             session.list_entries(0, 1).unwrap_err().kind(),
+            ErrorKind::InvalidData
+        );
+        assert_eq!(
+            session.entry_summary(0).unwrap_err().kind(),
+            ErrorKind::InvalidData
+        );
+        assert_eq!(
+            session.list_entry_summaries(0, 1).unwrap_err().kind(),
+            ErrorKind::InvalidData
+        );
+        assert_eq!(
+            session.oversized_preview(0).unwrap_err().kind(),
             ErrorKind::InvalidData
         );
         fs::remove_file(path).unwrap();

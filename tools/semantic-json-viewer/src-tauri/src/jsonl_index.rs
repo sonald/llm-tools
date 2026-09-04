@@ -1,5 +1,7 @@
 use std::mem::size_of;
 
+use crate::jsonl_entry::MAX_ENTRY_BYTES;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Checkpoint {
     pub entry_ordinal: u64,
@@ -30,6 +32,8 @@ pub struct JsonlIndexer {
     source_line_count: u64,
     entry_count: u64,
     checkpoints: Vec<Checkpoint>,
+    // At most one cached span per >16 MiB line; ordinary entries stay checkpoint-only.
+    oversized_locations: Vec<EntryLocation>,
     stride: u64,
     line_start_byte: u64,
     in_line: bool,
@@ -44,6 +48,7 @@ impl Default for JsonlIndexer {
             source_line_count: 0,
             entry_count: 0,
             checkpoints: Vec::new(),
+            oversized_locations: Vec::new(),
             stride: 1,
             line_start_byte: 0,
             in_line: false,
@@ -79,6 +84,13 @@ impl JsonlIndexer {
             Err(0) => None,
             Err(next_index) => self.checkpoints.get(next_index - 1).copied(),
         }
+    }
+
+    pub fn oversized_location(&self, ordinal: u64) -> Option<EntryLocation> {
+        self.oversized_locations
+            .binary_search_by(|location| location.entry_ordinal.cmp(&ordinal))
+            .ok()
+            .and_then(|index| self.oversized_locations.get(index).copied())
     }
 
     pub fn feed(&mut self, chunk: &[u8]) {
@@ -131,6 +143,7 @@ impl JsonlIndexer {
 
         JsonlIndex {
             checkpoints: self.checkpoints,
+            oversized_locations: self.oversized_locations,
             total_entry_count: self.entry_count,
             total_source_line_count: self.source_line_count,
             stride: self.stride,
@@ -158,8 +171,17 @@ impl JsonlIndexer {
         self.source_line_count = source_line;
 
         if has_content && start < end {
+            let entry_ordinal = self.entry_count;
+            if end - start > u64::try_from(MAX_ENTRY_BYTES).expect("entry size exceeds u64") {
+                self.oversized_locations.push(EntryLocation {
+                    entry_ordinal,
+                    source_line,
+                    byte_start: start,
+                    byte_end: end,
+                });
+            }
             self.push_checkpoint(Checkpoint {
-                entry_ordinal: self.entry_count,
+                entry_ordinal,
                 source_line,
                 byte_offset: start,
             });
@@ -197,6 +219,7 @@ impl JsonlIndexer {
 #[derive(Debug, Eq, PartialEq)]
 pub struct JsonlIndex {
     pub checkpoints: Vec<Checkpoint>,
+    pub(crate) oversized_locations: Vec<EntryLocation>,
     pub total_entry_count: u64,
     pub total_source_line_count: u64,
     pub stride: u64,
@@ -212,6 +235,13 @@ impl JsonlIndex {
             Err(0) => None,
             Err(next_index) => self.checkpoints.get(next_index - 1).copied(),
         }
+    }
+
+    pub fn oversized_location(&self, ordinal: u64) -> Option<EntryLocation> {
+        self.oversized_locations
+            .binary_search_by(|location| location.entry_ordinal.cmp(&ordinal))
+            .ok()
+            .and_then(|index| self.oversized_locations.get(index).copied())
     }
 
     pub fn locate(&self, bytes: &[u8], ordinal: u64) -> Option<EntryLocation> {
@@ -388,6 +418,7 @@ mod tests {
                     byte_offset: 11,
                 },
             ],
+            oversized_locations: Vec::new(),
             total_entry_count: 3,
             total_source_line_count: 3,
             stride: 2,
@@ -407,6 +438,7 @@ mod tests {
                 source_line: 1,
                 byte_offset: 0,
             }],
+            oversized_locations: Vec::new(),
             total_entry_count: 2,
             total_source_line_count: 3,
             stride: 2,
