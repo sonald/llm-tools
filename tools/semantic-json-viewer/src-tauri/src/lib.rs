@@ -1,3 +1,4 @@
+pub mod document_session;
 pub mod file_route;
 pub mod file_source;
 pub mod json;
