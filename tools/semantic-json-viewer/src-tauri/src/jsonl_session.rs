@@ -62,6 +62,7 @@ pub struct JsonlSession {
     next_offset: u64,
     complete: bool,
     selected: Option<(u64, TreeDocument)>,
+    many_invalid_utf8_warning: bool,
 }
 
 fn append_entry_byte(bytes: &mut Vec<u8>, byte: u8) -> io::Result<()> {
@@ -87,6 +88,7 @@ impl JsonlSession {
             next_offset: 0,
             complete: false,
             selected: None,
+            many_invalid_utf8_warning: false,
         };
         session.scan_next()?;
         Ok(session)
@@ -98,6 +100,14 @@ impl JsonlSession {
 
     pub fn is_current(&self) -> bool {
         self.source.is_current()
+    }
+
+    pub fn set_many_invalid_utf8_warning(&mut self, warning: bool) {
+        self.many_invalid_utf8_warning = warning;
+    }
+
+    pub fn many_invalid_utf8_warning(&self) -> bool {
+        self.many_invalid_utf8_warning
     }
 
     pub fn progress(&self) -> io::Result<JsonlProgress> {
@@ -985,6 +995,7 @@ mod tests {
             next_offset: bytes.len() as u64,
             complete: true,
             selected: None,
+            many_invalid_utf8_warning: false,
         };
 
         assert_eq!(

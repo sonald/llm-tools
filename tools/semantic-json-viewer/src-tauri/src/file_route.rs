@@ -3,9 +3,17 @@ use std::str::from_utf8;
 
 use crate::json::{parse_json, parse_json_prefix, JsonKind, ParseError};
 
-const FULL_PARSE_LIMIT_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const FULL_PARSE_LIMIT_BYTES: u64 = 128 * 1024 * 1024;
 const SAMPLE_LINE_LIMIT: usize = 200;
-const SAMPLE_SIZE_LIMIT: usize = 8 * 1024 * 1024;
+pub(crate) const SAMPLE_SIZE_LIMIT: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PathKind {
+    Json,
+    Jsonl,
+    Unsupported,
+    Unknown,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileMode {
@@ -25,6 +33,88 @@ pub enum OpenDecision {
     InvalidJson(ParseError),
     UnsupportedEncoding,
     UnsupportedFraming,
+    UnsupportedFormat,
+}
+
+pub(crate) fn path_kind(path: &Path) -> PathKind {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) if extension.eq_ignore_ascii_case("json") => PathKind::Json,
+        Some(extension)
+            if extension.eq_ignore_ascii_case("jsonl")
+                || extension.eq_ignore_ascii_case("ndjson") =>
+        {
+            PathKind::Jsonl
+        }
+        Some(extension)
+            if extension.eq_ignore_ascii_case("jsonc")
+                || extension.eq_ignore_ascii_case("json5")
+                || extension.eq_ignore_ascii_case("gz")
+                || extension.eq_ignore_ascii_case("zst") =>
+        {
+            PathKind::Unsupported
+        }
+        Some(_) | None => PathKind::Unknown,
+    }
+}
+
+pub(crate) fn explicit_mode(path: &Path) -> Option<FileMode> {
+    match path_kind(path) {
+        PathKind::Json => Some(FileMode::Document),
+        PathKind::Jsonl => Some(FileMode::Entry),
+        PathKind::Unsupported | PathKind::Unknown => None,
+    }
+}
+
+pub(crate) fn route_read_limit(path: &Path, size: u64, requested_mode: Option<FileMode>) -> u64 {
+    match path_kind(path) {
+        PathKind::Json => size,
+        PathKind::Unknown if requested_mode == Some(FileMode::Document) => size,
+        PathKind::Unknown if size <= FULL_PARSE_LIMIT_BYTES => size,
+        PathKind::Jsonl | PathKind::Unsupported | PathKind::Unknown => {
+            size.min(SAMPLE_SIZE_LIMIT as u64)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OverrideError {
+    Conflict,
+    NotAllowed,
+}
+
+pub(crate) fn route_with_override(
+    path: &Path,
+    reported_size: u64,
+    bytes: &[u8],
+    requested_mode: Option<FileMode>,
+) -> Result<OpenDecision, OverrideError> {
+    let decision = route_bytes(path, reported_size, bytes);
+    let Some(requested_mode) = requested_mode else {
+        return Ok(decision);
+    };
+    if matches!(
+        decision,
+        OpenDecision::UnsupportedEncoding
+            | OpenDecision::UnsupportedFraming
+            | OpenDecision::UnsupportedFormat
+    ) {
+        return Ok(decision);
+    }
+    if let Some(explicit_mode) = explicit_mode(path) {
+        if explicit_mode != requested_mode {
+            return Err(OverrideError::Conflict);
+        }
+        return Ok(decision);
+    }
+    if !matches!(decision, OpenDecision::NeedsModeChoice) {
+        return Err(OverrideError::NotAllowed);
+    }
+    let override_path = match requested_mode {
+        FileMode::Document => Path::new("override.json"),
+        FileMode::Entry => Path::new("override.jsonl"),
+        FileMode::Collection => return Err(OverrideError::NotAllowed),
+    };
+    Ok(route_bytes(override_path, reported_size, bytes))
 }
 
 pub fn route_bytes(path: &Path, reported_size: u64, bytes: &[u8]) -> OpenDecision {
@@ -36,15 +126,11 @@ pub fn route_bytes(path: &Path, reported_size: u64, bytes: &[u8]) -> OpenDecisio
         return OpenDecision::UnsupportedFraming;
     }
 
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some(extension) if extension.eq_ignore_ascii_case("json") => route_json(bytes),
-        Some(extension)
-            if extension.eq_ignore_ascii_case("jsonl")
-                || extension.eq_ignore_ascii_case("ndjson") =>
-        {
-            route_jsonl(bytes)
-        }
-        _ => route_unknown(reported_size, bytes),
+    match path_kind(path) {
+        PathKind::Json => route_json(bytes),
+        PathKind::Jsonl => route_jsonl(bytes, reported_size),
+        PathKind::Unsupported => OpenDecision::UnsupportedFormat,
+        PathKind::Unknown => route_unknown(reported_size, bytes),
     }
 }
 
@@ -63,8 +149,8 @@ fn route_json(bytes: &[u8]) -> OpenDecision {
     }
 }
 
-fn route_jsonl(bytes: &[u8]) -> OpenDecision {
-    let lines = sampled_lines(bytes);
+fn route_jsonl(bytes: &[u8], reported_size: u64) -> OpenDecision {
+    let lines = sampled_lines_for_route(bytes, reported_size);
 
     OpenDecision::Open {
         mode: FileMode::Entry,
@@ -75,7 +161,7 @@ fn route_jsonl(bytes: &[u8]) -> OpenDecision {
 
 fn route_unknown(reported_size: u64, bytes: &[u8]) -> OpenDecision {
     if reported_size > FULL_PARSE_LIMIT_BYTES {
-        return route_unknown_sample(bytes);
+        return route_unknown_sample(bytes, reported_size);
     }
 
     match parse_json(bytes) {
@@ -84,9 +170,10 @@ fn route_unknown(reported_size: u64, bytes: &[u8]) -> OpenDecision {
             has_utf8_bom: has_utf8_bom(bytes),
             many_invalid_utf8_warning: false,
         },
-        Err(error) => {
-            let lines = sampled_lines(bytes);
-            let concatenated = lines.iter().any(|line| {
+        Err(_error) => {
+            let sampled = sampled_lines(bytes);
+            let lines = sampled_lines_for_route(bytes, reported_size);
+            let concatenated = sampled.iter().any(|line| {
                 parse_json_prefix(line)
                     .is_ok_and(|(_, consumed)| concatenated_json_framing(line, consumed))
             });
@@ -101,18 +188,17 @@ fn route_unknown(reported_size: u64, bytes: &[u8]) -> OpenDecision {
                     has_utf8_bom: has_utf8_bom(bytes),
                     many_invalid_utf8_warning: many_invalid_utf8(&lines),
                 }
-            } else if from_utf8(bytes).is_err() {
-                OpenDecision::UnsupportedEncoding
             } else {
-                OpenDecision::InvalidJson(error)
+                OpenDecision::NeedsModeChoice
             }
         }
     }
 }
 
-fn route_unknown_sample(bytes: &[u8]) -> OpenDecision {
-    let lines = sampled_lines(bytes);
-    let concatenated = lines.iter().any(|line| {
+fn route_unknown_sample(bytes: &[u8], reported_size: u64) -> OpenDecision {
+    let sampled = sampled_lines(bytes);
+    let lines = sampled_lines_for_route(bytes, reported_size);
+    let concatenated = sampled.iter().any(|line| {
         parse_json_prefix(line).is_ok_and(|(_, consumed)| concatenated_json_framing(line, consumed))
     });
 
@@ -198,6 +284,18 @@ fn sampled_lines(bytes: &[u8]) -> Vec<&[u8]> {
     }
 
     lines
+}
+
+fn sampled_lines_for_route(bytes: &[u8], reported_size: u64) -> Vec<&[u8]> {
+    if reported_size > bytes.len() as u64 && !bytes.ends_with(b"\n") {
+        let end = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |index| index + 1);
+        sampled_lines(&bytes[..end])
+    } else {
+        sampled_lines(bytes)
+    }
 }
 
 fn line_is_blank(line: &[u8]) -> bool {
@@ -302,7 +400,7 @@ mod tests {
         bytes.extend_from_slice(b"not-json\nnot-json\n");
         assert!(matches!(
             route_bytes(Path::new("blob"), bytes.len() as u64, &bytes),
-            OpenDecision::InvalidJson(_)
+            OpenDecision::NeedsModeChoice
         ));
 
         for size in [b"{}[]".len() as u64, FULL_PARSE_LIMIT_BYTES + 1] {
@@ -411,6 +509,161 @@ mod tests {
         assert_eq!(
             route_bytes(Path::new("data.json"), 2, b"{\xff}"),
             OpenDecision::UnsupportedEncoding
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_explicit_formats() {
+        for path in ["data.jsonc", "data.json5", "data.gz", "data.zst"] {
+            assert_eq!(
+                route_bytes(Path::new(path), 2, b"{}"),
+                OpenDecision::UnsupportedFormat,
+                "path: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn overrides_do_not_mask_encoding_or_framing_errors() {
+        assert_eq!(
+            route_with_override(Path::new("blob"), 2, &[0xFF, 0xFE], Some(FileMode::Entry)),
+            Ok(OpenDecision::UnsupportedEncoding)
+        );
+        assert_eq!(
+            route_with_override(Path::new("blob"), 4, b"\x1e{}\n", Some(FileMode::Document)),
+            Ok(OpenDecision::UnsupportedFraming)
+        );
+    }
+
+    #[test]
+    fn terminal_preflight_errors_win_over_explicit_override_conflicts() {
+        assert_eq!(
+            route_with_override(
+                Path::new("records.jsonl"),
+                2,
+                &[0xFF, 0xFE],
+                Some(FileMode::Document)
+            ),
+            Ok(OpenDecision::UnsupportedEncoding)
+        );
+        assert_eq!(
+            route_with_override(
+                Path::new("data.json"),
+                4,
+                b"\x1e{}\n",
+                Some(FileMode::Entry)
+            ),
+            Ok(OpenDecision::UnsupportedFraming)
+        );
+    }
+
+    #[test]
+    fn unknown_non_bom_bad_bytes_require_choice_but_can_open_as_jsonl() {
+        let bytes = b"\xff\n{}\n";
+        assert_eq!(
+            route_bytes(Path::new("blob"), bytes.len() as u64, bytes),
+            OpenDecision::NeedsModeChoice
+        );
+        assert!(matches!(
+            route_with_override(
+                Path::new("blob"),
+                bytes.len() as u64,
+                bytes,
+                Some(FileMode::Entry)
+            ),
+            Ok(OpenDecision::Open {
+                mode: FileMode::Entry,
+                ..
+            })
+        ));
+        assert_eq!(
+            route_with_override(
+                Path::new("blob"),
+                bytes.len() as u64,
+                bytes,
+                Some(FileMode::Document)
+            ),
+            Ok(OpenDecision::UnsupportedEncoding)
+        );
+    }
+
+    #[test]
+    fn incomplete_sample_drops_unterminated_tail_from_detection_and_warning() {
+        let mut bytes = Vec::new();
+        for _ in 0..8 {
+            bytes.extend_from_slice(b"{}\n");
+        }
+        bytes.push(0xff);
+        let reported_size = bytes.len() as u64 + 1;
+        assert!(matches!(
+            route_bytes(Path::new("blob"), reported_size, &bytes),
+            OpenDecision::Open {
+                mode: FileMode::Entry,
+                many_invalid_utf8_warning: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            route_bytes(Path::new("records.jsonl"), reported_size, &bytes),
+            OpenDecision::Open {
+                mode: FileMode::Entry,
+                many_invalid_utf8_warning: false,
+                ..
+            }
+        ));
+
+        let mut bytes = b"{}\n".repeat(2);
+        bytes.extend_from_slice(b" \t");
+        assert!(matches!(
+            route_bytes(Path::new("blob"), bytes.len() as u64 + 1, &bytes),
+            OpenDecision::Open {
+                mode: FileMode::Entry,
+                ..
+            }
+        ));
+
+        for (invalid_count, expected_warning) in [(2, false), (3, true)] {
+            let mut bytes = Vec::new();
+            for index in 0..10 {
+                if index < invalid_count {
+                    bytes.extend_from_slice(b"\xff\n");
+                } else {
+                    bytes.extend_from_slice(b"{}\n");
+                }
+            }
+            bytes.push(0xff);
+            assert!(matches!(
+                route_bytes(
+                    Path::new("records.jsonl"),
+                    bytes.len() as u64 + 1,
+                    &bytes
+                ),
+                OpenDecision::Open {
+                    mode: FileMode::Entry,
+                    many_invalid_utf8_warning: warning,
+                    ..
+                } if warning == expected_warning
+            ));
+        }
+    }
+
+    #[test]
+    fn route_read_limits_keep_automatic_large_detection_bounded() {
+        assert_eq!(
+            route_read_limit(Path::new("blob"), FULL_PARSE_LIMIT_BYTES + 1, None),
+            SAMPLE_SIZE_LIMIT as u64
+        );
+        assert_eq!(
+            route_read_limit(
+                Path::new("blob"),
+                FULL_PARSE_LIMIT_BYTES + 1,
+                Some(FileMode::Document)
+            ),
+            FULL_PARSE_LIMIT_BYTES + 1
+        );
+        assert_eq!(
+            route_read_limit(Path::new("records.ndjson"), FULL_PARSE_LIMIT_BYTES, None),
+            SAMPLE_SIZE_LIMIT as u64
         );
     }
 

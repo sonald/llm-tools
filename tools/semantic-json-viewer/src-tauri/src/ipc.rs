@@ -1,3 +1,4 @@
+use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
@@ -5,6 +6,10 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::document_session::DocumentSession;
+use crate::file_route::{
+    route_read_limit, route_with_override, FileMode, OpenDecision, OverrideError,
+};
+use crate::file_source::{FileIdentity, FileSource};
 use crate::json::JsonKind;
 use crate::jsonl_entry::EntryStatus;
 use crate::jsonl_session::{
@@ -30,6 +35,7 @@ pub struct FileSummary {
     pub mode: String,
     pub root: Option<NodeDto>,
     pub progress: Option<JsonlProgressDto>,
+    pub many_invalid_utf8_warning: bool,
     pub session_revision: u64,
 }
 
@@ -126,8 +132,15 @@ pub struct OversizedPreviewDto {
 }
 
 #[tauri::command(async)]
-pub fn open_file(path: String, state: State<'_, AppState>) -> Result<FileSummary, IpcError> {
-    open_file_inner(&state, &path)
+pub fn open_file(
+    path: String,
+    open_as: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<FileSummary, IpcError> {
+    match open_as.as_deref() {
+        None => open_file_inner(&state, &path),
+        Some(value) => open_file_with_override(&state, &path, Some(value)),
+    }
 }
 
 #[tauri::command]
@@ -221,15 +234,48 @@ pub fn get_oversized_preview(
 }
 
 fn open_file_inner(state: &AppState, path: &str) -> Result<FileSummary, IpcError> {
+    open_file_with_override(state, path, None)
+}
+
+fn open_file_with_override(
+    state: &AppState,
+    path: &str,
+    open_as: Option<&str>,
+) -> Result<FileSummary, IpcError> {
     if path.trim().is_empty() {
         return Err(invalid_request("path must not be empty"));
     }
 
-    let session = if is_jsonl_path(Path::new(path)) {
-        OpenSession::Entry(JsonlSession::open(Path::new(path)).map_err(open_error)?)
-    } else {
-        OpenSession::Document(DocumentSession::open(Path::new(path)).map_err(open_error)?)
+    let path = Path::new(path);
+    let requested_mode = parse_open_as(open_as)?;
+    let route_source = FileSource::open(path).map_err(open_error)?;
+
+    let read_limit = route_read_limit(path, route_source.identity().size, requested_mode);
+    let route_bytes = read_route_bytes(&route_source, read_limit).map_err(open_read_error)?;
+    let decision = route_with_override(
+        path,
+        route_source.identity().size,
+        &route_bytes,
+        requested_mode,
+    )
+    .map_err(override_error)?;
+    let (mode, many_invalid_utf8_warning) = decision_mode(decision)?;
+    // ponytail: route and session currently reread the selected file; reuse route bytes only if v0.1 benchmarks miss the target.
+    drop(route_bytes);
+
+    let session = match mode {
+        FileMode::Entry => {
+            let mut session = JsonlSession::open(path).map_err(open_error)?;
+            session.set_many_invalid_utf8_warning(many_invalid_utf8_warning);
+            OpenSession::Entry(session)
+        }
+        FileMode::Document | FileMode::Collection => {
+            OpenSession::Document(DocumentSession::open(path).map_err(open_error)?)
+        }
     };
+    if route_source.identity() != session_identity(&session) {
+        return Err(file_changed());
+    }
     let mut guard = lock_session(state)?;
     let next_revision = guard
         .0
@@ -240,13 +286,101 @@ fn open_file_inner(state: &AppState, path: &str) -> Result<FileSummary, IpcError
     Ok(summary)
 }
 
-fn is_jsonl_path(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|extension| extension.to_str()),
-        Some(extension)
-            if extension.eq_ignore_ascii_case("jsonl")
-                || extension.eq_ignore_ascii_case("ndjson")
-    )
+fn parse_open_as(open_as: Option<&str>) -> Result<Option<FileMode>, IpcError> {
+    match open_as {
+        None => Ok(None),
+        Some(value) if value.eq_ignore_ascii_case("json") => Ok(Some(FileMode::Document)),
+        Some(value) if value.eq_ignore_ascii_case("jsonl") => Ok(Some(FileMode::Entry)),
+        Some(_) => Err(invalid_request("openAs must be json or jsonl")),
+    }
+}
+
+fn read_route_bytes(source: &FileSource, limit: u64) -> io::Result<Vec<u8>> {
+    let target = source.identity().size.min(limit);
+    let capacity = usize::try_from(target).map_err(|_| {
+        io::Error::new(
+            ErrorKind::InvalidData,
+            "route sample exceeds addressable memory",
+        )
+    })?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|error| io::Error::new(ErrorKind::OutOfMemory, error))?;
+    let mut offset = 0;
+    while offset < target {
+        let remaining = target - offset;
+        let requested = usize::try_from(remaining).map_err(|_| {
+            io::Error::new(
+                ErrorKind::InvalidData,
+                "route sample exceeds addressable memory",
+            )
+        })?;
+        let chunk = source.read_chunk(offset, requested)?;
+        if chunk.bytes.is_empty() {
+            if chunk.has_more {
+                return Err(io::Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "file ended before the route sample",
+                ));
+            }
+            break;
+        }
+        let read = u64::try_from(chunk.bytes.len()).expect("chunk length exceeds u64");
+        if read > remaining {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "route sample exceeded its requested range",
+            ));
+        }
+        bytes.extend_from_slice(&chunk.bytes);
+        offset = offset
+            .checked_add(read)
+            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+    }
+    if !source.is_current() {
+        return Err(ErrorKind::InvalidData.into());
+    }
+    Ok(bytes)
+}
+
+fn decision_mode(decision: OpenDecision) -> Result<(FileMode, bool), IpcError> {
+    match decision {
+        OpenDecision::Open {
+            mode,
+            many_invalid_utf8_warning,
+            ..
+        } => Ok((mode, many_invalid_utf8_warning)),
+        OpenDecision::InvalidJson(error) => Err(invalid_json(error)),
+        OpenDecision::UnsupportedEncoding => Err(unsupported_encoding()),
+        OpenDecision::UnsupportedFraming => Err(unsupported_framing()),
+        OpenDecision::UnsupportedFormat => Err(unsupported_format()),
+        OpenDecision::NeedsModeChoice => Err(mode_choice_required()),
+    }
+}
+
+fn override_error(error: OverrideError) -> IpcError {
+    match error {
+        OverrideError::Conflict => invalid_request("openAs conflicts with the file extension"),
+        OverrideError::NotAllowed => {
+            invalid_request("openAs is only valid after mode choice is required")
+        }
+    }
+}
+
+fn open_read_error(error: io::Error) -> IpcError {
+    if error.kind() == ErrorKind::InvalidData {
+        file_changed()
+    } else {
+        open_error(error)
+    }
+}
+
+fn session_identity(session: &OpenSession) -> &FileIdentity {
+    match session {
+        OpenSession::Document(session) => session.identity(),
+        OpenSession::Entry(session) => session.identity(),
+    }
 }
 
 fn file_summary(session: &OpenSession, session_revision: u64) -> Result<FileSummary, IpcError> {
@@ -264,6 +398,7 @@ fn file_summary(session: &OpenSession, session_revision: u64) -> Result<FileSumm
                 mode: mode.to_owned(),
                 root: Some(node_dto(root)),
                 progress: None,
+                many_invalid_utf8_warning: false,
                 session_revision,
             })
         }
@@ -273,6 +408,7 @@ fn file_summary(session: &OpenSession, session_revision: u64) -> Result<FileSumm
             mode: "entry".to_owned(),
             root: None,
             progress: Some(progress_dto(session.progress().map_err(session_error)?)),
+            many_invalid_utf8_warning: session.many_invalid_utf8_warning(),
             session_revision,
         }),
     }
@@ -521,12 +657,15 @@ fn lock_session(state: &AppState) -> Result<MutexGuard<'_, (u64, Option<OpenSess
 pub struct IpcError {
     pub code: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parse_error: Option<ParseErrorDto>,
 }
 
 fn no_session() -> IpcError {
     IpcError {
         code: "no_session".to_owned(),
         message: "no document is open".to_owned(),
+        parse_error: None,
     }
 }
 
@@ -534,6 +673,7 @@ fn file_changed() -> IpcError {
     IpcError {
         code: "file_changed".to_owned(),
         message: "the file changed on disk".to_owned(),
+        parse_error: None,
     }
 }
 
@@ -541,6 +681,7 @@ fn stale_session() -> IpcError {
     IpcError {
         code: "stale_session".to_owned(),
         message: "the document session is stale".to_owned(),
+        parse_error: None,
     }
 }
 
@@ -548,6 +689,7 @@ fn invalid_request(message: impl Into<String>) -> IpcError {
     IpcError {
         code: "invalid_request".to_owned(),
         message: message.into(),
+        parse_error: None,
     }
 }
 
@@ -555,6 +697,7 @@ fn not_found(message: impl Into<String>) -> IpcError {
     IpcError {
         code: "not_found".to_owned(),
         message: message.into(),
+        parse_error: None,
     }
 }
 
@@ -562,6 +705,52 @@ fn open_error(error: impl std::fmt::Display) -> IpcError {
     IpcError {
         code: "open_failed".to_owned(),
         message: error.to_string(),
+        parse_error: None,
+    }
+}
+
+fn invalid_json(error: crate::json::ParseError) -> IpcError {
+    IpcError {
+        code: "invalid_json".to_owned(),
+        message: "invalid JSON".to_owned(),
+        parse_error: Some(ParseErrorDto {
+            message: error.message,
+            byte_offset: error.byte_offset,
+            line: error.line,
+            column: error.column,
+        }),
+    }
+}
+
+fn unsupported_encoding() -> IpcError {
+    IpcError {
+        code: "unsupported_encoding".to_owned(),
+        message: "v0.1 accepts UTF-8 and UTF-8 BOM files only".to_owned(),
+        parse_error: None,
+    }
+}
+
+fn unsupported_framing() -> IpcError {
+    IpcError {
+        code: "unsupported_framing".to_owned(),
+        message: "JSON Text Sequences and concatenated JSON values are not supported".to_owned(),
+        parse_error: None,
+    }
+}
+
+fn unsupported_format() -> IpcError {
+    IpcError {
+        code: "unsupported_format".to_owned(),
+        message: "this file format is not supported".to_owned(),
+        parse_error: None,
+    }
+}
+
+fn mode_choice_required() -> IpcError {
+    IpcError {
+        code: "mode_choice_required".to_owned(),
+        message: "choose whether to open the file as JSON or JSONL".to_owned(),
+        parse_error: None,
     }
 }
 
@@ -569,6 +758,7 @@ fn internal(message: impl Into<String>) -> IpcError {
     IpcError {
         code: "internal".to_owned(),
         message: message.into(),
+        parse_error: None,
     }
 }
 
@@ -688,6 +878,7 @@ fn json_kind_name(kind: JsonKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::Write;
     use std::path::PathBuf;
     use std::time::SystemTime;
 
@@ -705,6 +896,21 @@ mod tests {
 
     fn temp_jsonl_path(prefix: &str) -> PathBuf {
         temp_path(prefix).with_extension("jsonl")
+    }
+
+    fn write_large_json(path: &Path, prefix: &[u8], suffix: &[u8]) {
+        let size = (crate::file_route::FULL_PARSE_LIMIT_BYTES + 1) as usize;
+        let mut file = fs::File::create(path).unwrap();
+        let filler = vec![b' '; 1024 * 1024];
+        file.write_all(prefix).unwrap();
+        let mut remaining = size - prefix.len() - suffix.len();
+        while remaining > 0 {
+            let write_len = remaining.min(filler.len());
+            file.write_all(&filler[..write_len]).unwrap();
+            remaining -= write_len;
+        }
+        file.write_all(suffix).unwrap();
+        file.flush().unwrap();
     }
 
     #[test]
@@ -828,6 +1034,245 @@ mod tests {
         assert!(complete_page.progress.complete);
         assert_eq!(complete_page.progress.total_entries, Some(21));
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn unknown_large_file_uses_bounded_sample_and_stays_in_entry_mode() {
+        let path = temp_path("ipc-route-large-sample").with_extension("blob");
+        let mut file = fs::File::create(&path).unwrap();
+        file.set_len(crate::file_route::FULL_PARSE_LIMIT_BYTES + 1)
+            .unwrap();
+        file.write_all("{}\n".repeat(200).as_bytes()).unwrap();
+        file.flush().unwrap();
+
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        assert_eq!(summary.mode, "entry");
+        assert!(summary.root.is_none());
+        assert!(summary.progress.as_ref().unwrap().indexed_entries >= 2);
+        assert!(!summary.progress.as_ref().unwrap().complete);
+        assert_eq!(summary.progress.as_ref().unwrap().total_entries, None);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn open_routes_overrides_and_preserves_the_previous_session_on_failure() {
+        let previous = temp_path("ipc-route-previous");
+        fs::write(&previous, b"{\"previous\":true}").unwrap();
+        let state = AppState::default();
+        let previous_summary = open_file_inner(&state, previous.to_str().unwrap()).unwrap();
+
+        let explicit_jsonl = temp_jsonl_path("ipc-route-conflict");
+        fs::write(&explicit_jsonl, b"{}\n").unwrap();
+        assert_eq!(
+            open_file_with_override(&state, explicit_jsonl.to_str().unwrap(), Some("json"))
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(get_file_summary_inner(&state).unwrap(), previous_summary);
+
+        assert_eq!(
+            open_file_with_override(&state, previous.to_str().unwrap(), Some("ndjson"))
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            open_file_with_override(&state, previous.to_str().unwrap(), Some("yaml"))
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+
+        let unknown = temp_path("ipc-route-choice").with_extension("blob");
+        fs::write(&unknown, b"not-json\nstill-not-json\n").unwrap();
+        assert_eq!(
+            open_file_inner(&state, unknown.to_str().unwrap())
+                .unwrap_err()
+                .code,
+            "mode_choice_required"
+        );
+        let chosen =
+            open_file_with_override(&state, unknown.to_str().unwrap(), Some("jsonl")).unwrap();
+        assert_eq!(chosen.mode, "entry");
+        assert!(!chosen.many_invalid_utf8_warning);
+        assert_eq!(
+            chosen.session_revision,
+            previous_summary.session_revision + 1
+        );
+
+        let unsupported = temp_path("ipc-route-unsupported").with_extension("jsonc");
+        fs::write(&unsupported, b"{}").unwrap();
+        assert_eq!(
+            open_file_inner(&state, unsupported.to_str().unwrap())
+                .unwrap_err()
+                .code,
+            "unsupported_format"
+        );
+
+        fs::remove_file(previous).unwrap();
+        fs::remove_file(explicit_jsonl).unwrap();
+        fs::remove_file(unknown).unwrap();
+        fs::remove_file(unsupported).unwrap();
+    }
+
+    #[test]
+    fn open_file_uses_content_for_unknown_small_and_extension_case_for_entries() {
+        let state = AppState::default();
+        let object = temp_path("ipc-route-unknown-object").with_extension("blob");
+        fs::write(&object, b"{\"a\":1}").unwrap();
+        let summary = open_file_inner(&state, object.to_str().unwrap()).unwrap();
+        assert_eq!(summary.mode, "document");
+        assert!(summary.root.is_some());
+        assert!(summary.progress.is_none());
+        fs::remove_file(object).unwrap();
+
+        let array = temp_path("ipc-route-unknown-array").with_extension("blob");
+        fs::write(&array, b"[1,2]").unwrap();
+        let summary = open_file_inner(&state, array.to_str().unwrap()).unwrap();
+        assert_eq!(summary.mode, "collection");
+        assert_eq!(summary.root.as_ref().unwrap().kind, "array");
+        fs::remove_file(array).unwrap();
+
+        let mut jsonl = Vec::new();
+        for _ in 0..9 {
+            jsonl.extend_from_slice(b"{}\n");
+        }
+        jsonl.extend_from_slice(b"not-json\n");
+        let unknown_jsonl = temp_path("ipc-route-unknown-jsonl").with_extension("blob");
+        fs::write(&unknown_jsonl, &jsonl).unwrap();
+        let summary = open_file_inner(&state, unknown_jsonl.to_str().unwrap()).unwrap();
+        assert_eq!(summary.mode, "entry");
+        assert!(summary.root.is_none());
+        assert!(summary.progress.is_some());
+        fs::remove_file(unknown_jsonl).unwrap();
+
+        for extension in ["JSONL", "NDJSON"] {
+            let path = temp_path("ipc-route-case").with_extension(extension);
+            fs::write(&path, b"{}\n").unwrap();
+            assert_eq!(
+                open_file_inner(&state, path.to_str().unwrap())
+                    .unwrap()
+                    .mode,
+                "entry"
+            );
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn unknown_bad_utf8_requires_choice_and_supports_jsonl_byte_safe_override() {
+        let path = temp_path("ipc-route-unknown-bad-utf8").with_extension("blob");
+        fs::write(&path, b"\xff\n{}\n").unwrap();
+        let state = AppState::default();
+
+        assert_eq!(
+            open_file_inner(&state, path.to_str().unwrap())
+                .unwrap_err()
+                .code,
+            "mode_choice_required"
+        );
+        let entry = open_file_with_override(&state, path.to_str().unwrap(), Some("jsonl")).unwrap();
+        assert_eq!(entry.mode, "entry");
+        assert!(entry.progress.is_some());
+        let page = list_entries_inner(&state, 0, 200, entry.session_revision).unwrap();
+        assert_eq!(page.entries[0].status, "invalidUtf8");
+        assert_eq!(page.entries[1].status, "valid");
+
+        assert_eq!(
+            open_file_with_override(&state, path.to_str().unwrap(), Some("json"))
+                .unwrap_err()
+                .code,
+            "unsupported_encoding"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn unknown_large_mode_choice_can_retry_as_json_document_or_collection() {
+        for (prefix, suffix, expected_mode) in [
+            (br#"{"value":0"# as &[u8], b"}" as &[u8], "document"),
+            (b"[0" as &[u8], b"]" as &[u8], "collection"),
+        ] {
+            let path = temp_path("ipc-route-large-choice").with_extension("blob");
+            write_large_json(&path, prefix, suffix);
+            let state = AppState::default();
+            let error = open_file_inner(&state, path.to_str().unwrap()).unwrap_err();
+            assert_eq!(error.code, "mode_choice_required");
+            let summary =
+                open_file_with_override(&state, path.to_str().unwrap(), Some("json")).unwrap();
+            assert_eq!(summary.mode, expected_mode);
+            assert!(summary.root.is_some());
+            assert!(summary.progress.is_none());
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn open_reports_structured_encoding_framing_and_warning_states() {
+        let state = AppState::default();
+        let json = temp_path("ipc-route-json-invalid");
+        fs::write(&json, b"{").unwrap();
+        let error = open_file_inner(&state, json.to_str().unwrap()).unwrap_err();
+        assert_eq!(error.code, "invalid_json");
+        assert!(error.parse_error.is_some());
+        fs::remove_file(json).unwrap();
+
+        let encoding = temp_path("ipc-route-encoding").with_extension("blob");
+        fs::write(&encoding, [0xFF, 0xFE]).unwrap();
+        assert_eq!(
+            open_file_with_override(&state, encoding.to_str().unwrap(), Some("jsonl"))
+                .unwrap_err()
+                .code,
+            "unsupported_encoding"
+        );
+        fs::remove_file(encoding).unwrap();
+
+        let framing = temp_path("ipc-route-framing").with_extension("blob");
+        fs::write(&framing, b"\x1e{}\n").unwrap();
+        assert_eq!(
+            open_file_with_override(&state, framing.to_str().unwrap(), Some("jsonl"))
+                .unwrap_err()
+                .code,
+            "unsupported_framing"
+        );
+        fs::remove_file(framing).unwrap();
+
+        for (invalid_count, expected_warning) in [(2, false), (3, true)] {
+            let warning = temp_jsonl_path("ipc-route-warning");
+            let mut input = Vec::new();
+            for index in 0..10 {
+                if index < invalid_count {
+                    input.extend_from_slice(b"\xff\n");
+                } else {
+                    input.extend_from_slice(b"{}\n");
+                }
+            }
+            fs::write(&warning, input).unwrap();
+            let summary = open_file_inner(&state, warning.to_str().unwrap()).unwrap();
+            assert_eq!(summary.many_invalid_utf8_warning, expected_warning);
+            let encoded = serde_json::to_vec(&summary).unwrap();
+            let encoded = String::from_utf8(encoded).unwrap();
+            assert!(encoded.contains("manyInvalidUtf8Warning"));
+            assert!(!encoded.contains("many_invalid_utf8_warning"));
+            fs::remove_file(warning).unwrap();
+        }
+
+        let mixed = temp_jsonl_path("ipc-route-parse-error");
+        let mut input = b"\xff\n\xff\n{\n".to_vec();
+        input.extend(std::iter::repeat_n(b"{}\n".as_slice(), 7).flatten());
+        fs::write(&mixed, input).unwrap();
+        let summary = open_file_inner(&state, mixed.to_str().unwrap()).unwrap();
+        let page = list_entries_inner(&state, 0, 200, summary.session_revision).unwrap();
+        let encoded_page = String::from_utf8(serde_json::to_vec(&page).unwrap()).unwrap();
+        assert!(encoded_page.contains("parseError"));
+        assert!(encoded_page.contains("byteOffset"));
+        assert!(!encoded_page.contains("byte_offset"));
+        let encoded_summary = String::from_utf8(serde_json::to_vec(&summary).unwrap()).unwrap();
+        assert!(encoded_summary.contains("manyInvalidUtf8Warning"));
+        assert!(!encoded_summary.contains("many_invalid_utf8_warning"));
+        fs::remove_file(mixed).unwrap();
     }
 
     #[test]
@@ -1086,12 +1531,14 @@ mod tests {
         let state = AppState::default();
         let summary = open_file_inner(&state, first.to_str().unwrap()).unwrap();
 
-        assert_eq!(
-            open_file_inner(&state, invalid.to_str().unwrap())
-                .unwrap_err()
-                .code,
-            "open_failed"
-        );
+        let invalid_error = open_file_inner(&state, invalid.to_str().unwrap()).unwrap_err();
+        assert_eq!(invalid_error.code, "invalid_json");
+        let parse_error = invalid_error.parse_error.as_ref().unwrap();
+        assert_eq!(parse_error.message, "expected object key");
+        assert_eq!(parse_error.byte_offset, 1);
+        assert_eq!(parse_error.line, 1);
+        assert_eq!(parse_error.column, 2);
+        assert_eq!(get_file_summary_inner(&state).unwrap(), summary);
         assert_eq!(
             open_file_inner(&state, missing.to_str().unwrap())
                 .unwrap_err()
