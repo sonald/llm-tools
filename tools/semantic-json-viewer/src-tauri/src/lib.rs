@@ -1,4 +1,5 @@
 pub mod file_route;
+pub mod file_source;
 pub mod json;
 pub mod jsonl_entry;
 pub mod jsonl_index;
