@@ -49,6 +49,7 @@ type TreeViewOptions = {
     children: HTMLElement;
     value: HTMLElement;
   };
+  onSelection: (node: NodeDto) => void;
   onError: (error: unknown) => void;
 };
 
@@ -61,6 +62,7 @@ export class TreeView {
   private readonly tab: HTMLButtonElement;
   private readonly inspector: HTMLElement;
   private readonly fields: TreeViewOptions["fields"];
+  private readonly onSelection: (node: NodeDto) => void;
   private readonly onError: (error: unknown) => void;
   private session: TreeSession | null = null;
   private generation = 0;
@@ -76,6 +78,7 @@ export class TreeView {
     this.tab = options.tab;
     this.inspector = options.inspector;
     this.fields = options.fields;
+    this.onSelection = options.onSelection;
     this.onError = options.onError;
     this.panel.addEventListener("click", (event) => this.handleClick(event));
     this.panel.addEventListener("keydown", (event) => this.handleKeydown(event));
@@ -220,6 +223,7 @@ export class TreeView {
   private select(record: NodeRecord): void {
     this.selectedId = record.node.id;
     this.focusKey = record.node.id;
+    this.onSelection(record.node);
     this.renderInspector(record.node);
     this.renderTree();
   }
@@ -255,8 +259,12 @@ export class TreeView {
     if (!item) return;
     const record = this.records.get(Number(item.dataset.nodeId));
     if (!record) return;
-    this.select(record);
-    if (target.closest(".tree-disclosure") && record.node.childCount > 0) this.toggle(record);
+    if (target.closest(".tree-disclosure") && record.node.childCount > 0) {
+      this.focusKey = record.node.id;
+      this.toggle(record);
+    } else {
+      this.select(record);
+    }
   }
 
   private handleKeydown(event: KeyboardEvent): void {

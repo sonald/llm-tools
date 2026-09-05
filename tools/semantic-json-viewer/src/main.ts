@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { EntryList, type EntrySelectionDto } from "./entry-list";
+import { RawView } from "./raw-view";
 import { TreeView, type NodeDto } from "./tree-view";
 
 type FileMode = "document" | "collection" | "entry";
@@ -134,6 +135,13 @@ const treeView = new TreeView({
   tab: treeTab,
   inspector: nodeInspector,
   fields: { id: nodeId, label: nodeLabel, kind: nodeKind, span: nodeSpan, children: nodeChildren, value: nodeValue },
+  onSelection: handleTreeSelection,
+  onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
+});
+
+const rawView = new RawView({
+  panel: rawPanel,
+  tab: rawTab,
   onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
 });
 
@@ -220,6 +228,10 @@ function handleEntrySelectionBusy(busy: boolean): void {
   render();
 }
 
+function handleTreeSelection(node: NodeDto): void {
+  rawView.setScope(node);
+}
+
 function handleEntryError(error: unknown): void {
   handleCurrentSessionAsyncError(ipcError(error));
 }
@@ -231,11 +243,12 @@ function handleCurrentSessionAsyncError(parsed: IpcErrorPayload, stopEntryIndex 
     state.scanStoppedRevision = summary.sessionRevision;
   }
   if (parsed.code === "file_changed" || parsed.code === "stale_session") {
+    rawView.clear();
+    treeView.clear();
     if (summary?.mode === "entry") {
       state.scanStoppedRevision = summary.sessionRevision;
       state.selectedEntry = null;
       entryList.clear();
-      treeView.clear();
       setActiveView("semantic");
     } else {
       setActiveView("semantic");
@@ -267,13 +280,16 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
   if (!rootMatchesStatus) {
     state.error = { code: "internal", message: "Entry selection returned an inconsistent Tree root." };
     treeView.setSession({ mode: "entry", sessionRevision: selection.sessionRevision }, null);
+    rawView.clear("Tree is unavailable because the Entry selection was inconsistent.");
     setActiveView("semantic");
   } else {
     treeView.setSession(
       { mode: "entry", sessionRevision: selection.sessionRevision },
       valid ? selection.root : null
     );
-    if (valid && previousView === "tree") setActiveView("tree");
+    if (valid && selection.root) rawView.setSession(selection.sessionRevision, selection.root);
+    else rawView.clear("Select a valid Entry to open Raw bytes.");
+    if (valid && (previousView === "tree" || previousView === "raw")) setActiveView(previousView);
     else setActiveView("semantic");
   }
   render();
@@ -295,6 +311,7 @@ function handleEntryRevisionUnknown(value: unknown): void {
   state.error = null;
   state.scanQueued = null;
   state.scanStoppedRevision = null;
+  rawView.clear("Select a valid Entry to open Raw bytes.");
   entryList.resync(next.sessionRevision, next.progress);
   treeView.setSession({ mode: "entry", sessionRevision: next.sessionRevision }, null);
   setActiveView("semantic");
@@ -510,6 +527,8 @@ function setActiveView(view: "semantic" | "tree" | "raw"): void {
   }
   setText(treeReaderTitle, view[0].toUpperCase() + view.slice(1));
   if (view === "tree") treeView.activate();
+  if (view === "raw") rawView.activate();
+  else rawView.deactivate();
 }
 
 function moveViewFocus(direction: 1 | -1): void {
@@ -538,6 +557,7 @@ function render(): void {
   appShell.dataset.mobileDrawer = state.mobileDrawer ?? "";
   appShell.dataset.inspectorOpen = tablet ? String(state.tabletInspectorOpen) : "false";
   entryList.setOpening(state.opening);
+  rawView.setBusy(state.opening || state.selectionBusy);
   renderSummary();
   renderError();
 }
@@ -580,7 +600,19 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
     state.opening = false;
     entryList.setOpening(false);
     state.selectedEntry = null;
+    const rootShapeValid = summary.mode === "entry" ? summary.root === null : summary.root !== null;
+    if (!rootShapeValid) {
+      state.error = { code: "internal", message: "The file summary has an inconsistent Tree root." };
+      treeView.clear();
+      rawView.clear("Raw bytes are unavailable for this inconsistent file summary.");
+      entryList.setSession(null);
+      setActiveView("semantic");
+      render();
+      return;
+    }
     treeView.setSession({ mode: summary.mode, sessionRevision: summary.sessionRevision });
+    if (summary.root) rawView.setSession(summary.sessionRevision, summary.root);
+    else rawView.clear("Select a valid Entry to open Raw bytes.");
     entryList.setSession(summary.mode === "entry" && summary.progress ? {
       revision: summary.sessionRevision,
       progress: summary.progress
