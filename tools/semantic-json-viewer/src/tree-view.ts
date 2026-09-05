@@ -82,20 +82,22 @@ export class TreeView {
     this.clear();
   }
 
-  setSession(session: TreeSession): void {
+  setSession(session: TreeSession, seededRoot?: NodeDto | null): void {
     this.generation += 1;
     this.session = session;
-    this.rootId = null;
+    this.rootId = seededRoot?.id ?? null;
     this.rootLoading = false;
     this.rootError = null;
     this.selectedId = null;
-    this.focusKey = null;
+    this.focusKey = seededRoot?.id ?? null;
     this.records.clear();
-    const enabled = session.mode !== "entry";
+    if (seededRoot) this.records.set(seededRoot.id, this.newRecord(seededRoot, null));
+    const enabled = session.mode !== "entry" || seededRoot !== undefined && seededRoot !== null;
     this.tab.disabled = !enabled;
     this.tab.setAttribute("aria-disabled", String(!enabled));
     this.clearInspector();
-    this.renderPlaceholder(enabled ? "Open Tree to load the document root." : "Select a valid Entry to enable Tree.");
+    if (seededRoot) this.renderTree();
+    else this.renderPlaceholder(enabled ? "Open Tree to load the document root." : "Select a valid Entry to enable Tree.");
   }
 
   clear(): void {
@@ -114,7 +116,7 @@ export class TreeView {
   }
 
   activate(): void {
-    if (!this.session || this.session.mode === "entry") {
+    if (!this.session || this.session.mode === "entry" && this.rootId === null) {
       this.renderPlaceholder("Select a valid Entry to enable Tree.");
       return;
     }

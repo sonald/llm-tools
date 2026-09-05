@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { EntryList, type EntrySelectionDto } from "./entry-list";
 import { TreeView, type NodeDto } from "./tree-view";
 
 type FileMode = "document" | "collection" | "entry";
@@ -37,6 +38,8 @@ type IpcErrorPayload = {
 
 type AppState = {
   summary: FileSummary | null;
+  selectedEntry: EntrySelectionDto["entry"] | null;
+  selectionBusy: boolean;
   error: IpcErrorPayload | null;
   opening: boolean;
   generation: number;
@@ -50,6 +53,8 @@ type AppState = {
 
 const state: AppState = {
   summary: null,
+  selectedEntry: null,
+  selectionBusy: false,
   error: null,
   opening: false,
   generation: 0,
@@ -69,6 +74,15 @@ const filePath = required<HTMLElement>("file-path");
 const fileMode = required<HTMLElement>("file-mode");
 const navigationMode = required<HTMLElement>("navigation-mode");
 const navigationState = required<HTMLElement>("navigation-state");
+const entryNavigation = required<HTMLElement>("entry-navigation");
+const entryGoInput = required<HTMLInputElement>("entry-go-input");
+const entryGoButton = required<HTMLButtonElement>("entry-go-button");
+const entryGoError = required<HTMLElement>("entry-go-error");
+const entryListPanel = required<HTMLElement>("entry-list");
+const entryPrevious = required<HTMLButtonElement>("entry-prev");
+const entryNext = required<HTMLButtonElement>("entry-next");
+const entryListStatus = required<HTMLElement>("entry-list-status");
+const entryListRetry = required<HTMLButtonElement>("entry-list-retry");
 const readerState = required<HTMLElement>("reader-state");
 const inspectorPath = required<HTMLElement>("inspector-path");
 const inspectorSize = required<HTMLElement>("inspector-size");
@@ -103,18 +117,51 @@ const nodeKind = required<HTMLElement>("node-kind");
 const nodeSpan = required<HTMLElement>("node-span");
 const nodeChildren = required<HTMLElement>("node-children");
 const nodeValue = required<HTMLElement>("node-value");
+const entryInspector = required<HTMLElement>("entry-inspector");
+const entryInspectorOrdinal = required<HTMLElement>("entry-inspector-ordinal");
+const entryInspectorStatus = required<HTMLElement>("entry-inspector-status");
+const entryInspectorSourceLine = required<HTMLElement>("entry-inspector-source-line");
+const entryInspectorBytes = required<HTMLElement>("entry-inspector-bytes");
+const entryInspectorParseMessage = required<HTMLElement>("entry-inspector-parse-message");
+const entryInspectorParseByteOffset = required<HTMLElement>("entry-inspector-parse-byte-offset");
+const entryInspectorParseLine = required<HTMLElement>("entry-inspector-parse-line");
+const entryInspectorParseColumn = required<HTMLElement>("entry-inspector-parse-column");
+
+let activeView: "semantic" | "tree" | "raw" = "semantic";
 
 const treeView = new TreeView({
   panel: treePanel,
   tab: treeTab,
   inspector: nodeInspector,
   fields: { id: nodeId, label: nodeLabel, kind: nodeKind, span: nodeSpan, children: nodeChildren, value: nodeValue },
-  onError: (error) => {
-    const parsed = ipcError(error);
-    state.error = parsed;
-    if (parsed.code === "stale_session" || parsed.code === "file_changed") setActiveView("semantic");
-    render();
-  }
+  onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
+});
+
+const entryList = new EntryList({
+  navigation: entryNavigation,
+  navigationState,
+  goInput: entryGoInput,
+  goButton: entryGoButton,
+  goError: entryGoError,
+  list: entryListPanel,
+  previous: entryPrevious,
+  next: entryNext,
+  status: entryListStatus,
+  retry: entryListRetry,
+  inspector: entryInspector,
+  inspectorOrdinal: entryInspectorOrdinal,
+  inspectorStatus: entryInspectorStatus,
+  inspectorSourceLine: entryInspectorSourceLine,
+  inspectorBytes: entryInspectorBytes,
+  inspectorParseMessage: entryInspectorParseMessage,
+  inspectorParseByteOffset: entryInspectorParseByteOffset,
+  inspectorParseLine: entryInspectorParseLine,
+  inspectorParseColumn: entryInspectorParseColumn,
+  onSelection: handleEntrySelection,
+  onSelectionBusy: handleEntrySelectionBusy,
+  onProgress: handleEntryProgress,
+  onError: handleEntryError,
+  onRevisionUnknown: handleEntryRevisionUnknown
 });
 
 function required<T extends Element>(id: string): T {
@@ -158,6 +205,135 @@ function ipcError(value: unknown): IpcErrorPayload {
     return { code: "open_failed", message: value.message };
   }
   return { code: "open_failed", message: "The file could not be opened." };
+}
+
+function handleEntryProgress(progress: JsonlProgressDto): void {
+  const summary = state.summary;
+  if (!summary || summary.mode !== "entry") return;
+  state.summary = { ...summary, progress };
+  render();
+}
+
+function handleEntrySelectionBusy(busy: boolean): void {
+  if (state.selectionBusy === busy) return;
+  state.selectionBusy = busy;
+  render();
+}
+
+function handleEntryError(error: unknown): void {
+  handleCurrentSessionAsyncError(ipcError(error));
+}
+
+function handleCurrentSessionAsyncError(parsed: IpcErrorPayload, stopEntryIndex = false): void {
+  state.error = parsed;
+  const summary = state.summary;
+  if (stopEntryIndex && summary?.mode === "entry") {
+    state.scanStoppedRevision = summary.sessionRevision;
+  }
+  if (parsed.code === "file_changed" || parsed.code === "stale_session") {
+    if (summary?.mode === "entry") {
+      state.scanStoppedRevision = summary.sessionRevision;
+      state.selectedEntry = null;
+      entryList.clear();
+      treeView.clear();
+      setActiveView("semantic");
+    } else {
+      setActiveView("semantic");
+    }
+  }
+  render();
+}
+
+function handleEntrySelection(selection: EntrySelectionDto): void {
+  const summary = state.summary;
+  if (!summary || summary.mode !== "entry") return;
+  if (selection.sessionRevision !== summary.sessionRevision + 1) {
+    state.error = { code: "internal", message: "Entry selection returned an unexpected session revision." };
+    render();
+    return;
+  }
+
+  const previousView = activeView;
+  state.generation += 1;
+  state.summary = { ...summary, sessionRevision: selection.sessionRevision };
+  state.selectedEntry = selection.entry;
+  state.error = null;
+  state.scanQueued = null;
+  state.scanStoppedRevision = null;
+  entryList.adoptSelection(selection, selection.sessionRevision);
+
+  const valid = selection.entry.status === "valid";
+  const rootMatchesStatus = valid ? selection.root !== null : selection.root === null;
+  if (!rootMatchesStatus) {
+    state.error = { code: "internal", message: "Entry selection returned an inconsistent Tree root." };
+    treeView.setSession({ mode: "entry", sessionRevision: selection.sessionRevision }, null);
+    setActiveView("semantic");
+  } else {
+    treeView.setSession(
+      { mode: "entry", sessionRevision: selection.sessionRevision },
+      valid ? selection.root : null
+    );
+    if (valid && previousView === "tree") setActiveView("tree");
+    else setActiveView("semantic");
+  }
+  render();
+  if (state.summary.progress && !state.summary.progress.complete) {
+    resumeExistingScan();
+  }
+}
+
+function handleEntryRevisionUnknown(value: unknown): void {
+  const next = entrySummaryValue(value);
+  if (!next || next.mode !== "entry" || !next.progress) {
+    state.error = { code: "internal", message: "The refreshed JSONL session has an invalid shape." };
+    render();
+    return;
+  }
+  const generation = ++state.generation;
+  state.summary = next;
+  state.selectedEntry = null;
+  state.error = null;
+  state.scanQueued = null;
+  state.scanStoppedRevision = null;
+  entryList.resync(next.sessionRevision, next.progress);
+  treeView.setSession({ mode: "entry", sessionRevision: next.sessionRevision }, null);
+  setActiveView("semantic");
+  render();
+  if (!next.progress.complete) void scanEntries(generation, next.sessionRevision);
+}
+
+function entrySummaryValue(value: unknown): FileSummary | undefined {
+  if (!isRecord(value)) return undefined;
+  const path = typeof value.path === "string" ? value.path : undefined;
+  const size = numberValue(value.size);
+  const sessionRevision = numberValue(value.sessionRevision);
+  const warning = typeof value.manyInvalidUtf8Warning === "boolean" ? value.manyInvalidUtf8Warning : undefined;
+  const progress = jsonlProgressValue(value.progress);
+  if (path === undefined || size === undefined || sessionRevision === undefined || warning === undefined || progress === undefined || value.mode !== "entry") {
+    return undefined;
+  }
+  return {
+    path,
+    size,
+    mode: "entry",
+    root: null,
+    progress,
+    manyInvalidUtf8Warning: warning,
+    sessionRevision
+  };
+}
+
+function jsonlProgressValue(value: unknown): JsonlProgressDto | undefined {
+  if (!isRecord(value)) return undefined;
+  const indexedEntries = numberValue(value.indexedEntries);
+  const indexedSourceLines = numberValue(value.indexedSourceLines);
+  const stride = numberValue(value.stride);
+  const complete = typeof value.complete === "boolean" ? value.complete : undefined;
+  const totalEntries = value.totalEntries === null ? null : numberValue(value.totalEntries);
+  if (indexedEntries === undefined || indexedSourceLines === undefined || stride === undefined || complete === undefined || totalEntries === undefined) {
+    return undefined;
+  }
+  return { indexedEntries, indexedSourceLines, complete, stride, totalEntries };
 }
 
 function modeLabel(mode: FileMode): string {
@@ -284,6 +460,12 @@ function readerTitle(summary: FileSummary): string {
 function readerCopy(summary: FileSummary): string {
   if (summary.mode === "entry" && summary.progress) {
     if (state.scanStoppedRevision === summary.sessionRevision) return `Indexing stopped at ${summary.progress.indexedEntries.toLocaleString()} entries. The partial index remains available.`;
+    if (state.selectedEntry) {
+      const entry = state.selectedEntry;
+      return entry.status === "valid"
+        ? `Entry ${entry.location.entryOrdinal + 1} is selected. Tree is available.`
+        : `Entry ${entry.location.entryOrdinal + 1} is selected. Tree is unavailable for ${entryStatusLabel(entry.status)}.`;
+    }
     return "Select a valid Entry to enable Tree.";
   }
   return summary.mode === "collection" ? "The selected array item will be projected here." : "The semantic projection for this document will appear here.";
@@ -291,15 +473,29 @@ function readerCopy(summary: FileSummary): string {
 
 function statusProgressLabel(summary: FileSummary): string {
   if (!summary.progress) return "Structure ready";
-  if (state.scanStoppedRevision === summary.sessionRevision) return `Indexing stopped · ${summary.progress.indexedEntries.toLocaleString()} indexed`;
-  return summary.progress.complete && summary.progress.totalEntries !== null
-    ? `${summary.progress.totalEntries.toLocaleString()} entries`
-    : `Indexing · ${summary.progress.indexedEntries.toLocaleString()} indexed`;
+  const progress = state.scanStoppedRevision === summary.sessionRevision
+    ? `Indexing stopped · ${summary.progress.indexedEntries.toLocaleString()} indexed`
+    : summary.progress.complete && summary.progress.totalEntries !== null
+      ? `${summary.progress.totalEntries.toLocaleString()} entries`
+      : `Indexing · ${summary.progress.indexedEntries.toLocaleString()} indexed`;
+  if (summary.mode !== "entry") return progress;
+  const selected = state.selectedEntry;
+  if (!selected) return `Indexed through line ${summary.progress.indexedSourceLines.toLocaleString()} · ${progress}`;
+  const { entryOrdinal, sourceLine, byteStart, byteEnd } = selected.location;
+  return `Entry ${entryOrdinal + 1} · source line ${sourceLine} · bytes [${byteStart}, ${byteEnd}) · ${progress}`;
+}
+
+function entryStatusLabel(status: string): string {
+  if (status === "invalidJson") return "Invalid JSON";
+  if (status === "invalidUtf8") return "Invalid UTF-8";
+  if (status === "oversized") return "Oversized Entry";
+  return status === "valid" ? "Valid" : status;
 }
 
 function setActiveView(view: "semantic" | "tree" | "raw"): void {
   if (view === "tree" && treeTab.disabled) return;
   if (view === "raw" && rawTab.disabled) return;
+  activeView = view;
   const tabs: Array<[HTMLButtonElement, HTMLElement]> = [
     [semanticTab, semanticPanel],
     [treeTab, treePanel],
@@ -333,19 +529,21 @@ function render(): void {
   const width = window.innerWidth;
   const mobile = width <= 767;
   const tablet = width >= 768 && width <= 1050;
-  appShell.setAttribute("aria-busy", String(state.opening));
-  openButton.disabled = state.opening;
-  readerOpenButton.disabled = state.opening;
+  const busy = state.opening || state.selectionBusy;
+  appShell.setAttribute("aria-busy", String(busy));
+  openButton.disabled = busy;
+  readerOpenButton.disabled = busy;
   navigationToggle.setAttribute("aria-expanded", String(mobile ? state.mobileDrawer === "navigation" : true));
   inspectorToggle.setAttribute("aria-expanded", String(mobile ? state.mobileDrawer === "inspector" : tablet ? state.tabletInspectorOpen : true));
   appShell.dataset.mobileDrawer = state.mobileDrawer ?? "";
   appShell.dataset.inspectorOpen = tablet ? String(state.tabletInspectorOpen) : "false";
+  entryList.setOpening(state.opening);
   renderSummary();
   renderError();
 }
 
 async function chooseFile(): Promise<void> {
-  if (state.opening) return;
+  if (state.opening || state.selectionBusy) return;
   const pickerGeneration = state.generation;
   state.opening = true;
   render();
@@ -380,7 +578,13 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
     state.scanQueued = null;
     state.scanStoppedRevision = null;
     state.opening = false;
+    entryList.setOpening(false);
+    state.selectedEntry = null;
     treeView.setSession({ mode: summary.mode, sessionRevision: summary.sessionRevision });
+    entryList.setSession(summary.mode === "entry" && summary.progress ? {
+      revision: summary.sessionRevision,
+      progress: summary.progress
+    } : null);
     setActiveView("semantic");
     render();
     if (summary.mode === "entry" && summary.progress && !summary.progress.complete) {
@@ -431,15 +635,12 @@ async function scanEntries(generation: number, sessionRevision: number): Promise
         const progress = await invoke<JsonlProgressDto>("scan_entries", { sessionRevision });
         if (generation !== state.generation || state.summary?.sessionRevision !== sessionRevision) return;
         state.scanStoppedRevision = null;
-        state.summary = { ...state.summary, progress };
-        render();
+        entryList.updateProgress(progress, sessionRevision);
         if (progress.complete) return;
       } catch (error) {
         if (generation !== state.generation || state.summary?.sessionRevision !== sessionRevision) return;
         failed = true;
-        state.scanStoppedRevision = sessionRevision;
-        state.error = ipcError(error);
-        render();
+        handleCurrentSessionAsyncError(ipcError(error), true);
         return;
       }
     }
@@ -532,6 +733,18 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     if (modeDialog.open) return;
     void chooseFile();
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "g") {
+    if (modeDialog.open || state.opening || state.summary?.mode !== "entry") return;
+    event.preventDefault();
+    if (window.innerWidth <= 767) {
+      state.mobileDrawer = "navigation";
+      render();
+      window.requestAnimationFrame(() => entryList.focusGoTo());
+    } else {
+      entryList.focusGoTo();
+    }
     return;
   }
   if (event.key === "Escape" && !modeDialog.open) {
