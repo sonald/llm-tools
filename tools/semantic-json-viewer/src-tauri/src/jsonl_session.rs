@@ -2,7 +2,7 @@ use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::str::from_utf8;
 
-use crate::file_source::{FileIdentity, FileSource};
+use crate::file_source::{FileIdentity, FileSource, ReadChunk};
 use crate::jsonl_entry::{inspect_entry, EntryStatus, MAX_ENTRY_BYTES, PREVIEW_BYTES};
 use crate::jsonl_index::{Checkpoint, EntryLocation, JsonlIndex, JsonlIndexer};
 use crate::tree::{NodePage, NodeProjection, TextChunk, TreeDocument};
@@ -62,6 +62,7 @@ pub struct JsonlSession {
     next_offset: u64,
     complete: bool,
     selected: Option<(u64, TreeDocument)>,
+    selected_location: Option<EntryLocation>,
     many_invalid_utf8_warning: bool,
 }
 
@@ -88,6 +89,7 @@ impl JsonlSession {
             next_offset: 0,
             complete: false,
             selected: None,
+            selected_location: None,
             many_invalid_utf8_warning: false,
         };
         session.scan_next()?;
@@ -279,6 +281,7 @@ impl JsonlSession {
 
     pub fn select_entry(&mut self, ordinal: u64) -> io::Result<Option<EntrySelection>> {
         self.selected = None;
+        self.selected_location = None;
         self.ensure_current()?;
         let Some(loaded) = self.load_entry_once(ordinal)? else {
             self.ensure_current()?;
@@ -307,6 +310,7 @@ impl JsonlSession {
         if let Some(tree) = tree {
             self.selected = Some((ordinal, tree));
         }
+        self.selected_location = Some(location);
         Ok(Some(EntrySelection {
             summary: EntrySummary { location, status },
             root,
@@ -367,6 +371,91 @@ impl JsonlSession {
             .selected
             .as_ref()
             .and_then(|(_, tree)| tree.read_decoded_text(node_id, offset, requested_len)))
+    }
+
+    pub fn read_selected_entry_bytes(
+        &self,
+        offset: u64,
+        length: usize,
+    ) -> io::Result<Option<ReadChunk>> {
+        self.ensure_current()?;
+        let Some(location) = self.selected_location.as_ref() else {
+            return Ok(None);
+        };
+        let entry_length = location
+            .byte_end
+            .checked_sub(location.byte_start)
+            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+        if length == 0 {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "length must be greater than zero",
+            ));
+        }
+        if self.selected.is_some() {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "selected Entry is valid; use read_raw_slice",
+            ));
+        }
+        if entry_length > u64::try_from(MAX_ENTRY_BYTES).expect("entry size exceeds u64") {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "selected Entry is oversized; use get_oversized_preview",
+            ));
+        }
+        if offset > entry_length {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "offset exceeds selected Entry length",
+            ));
+        }
+        if offset == entry_length {
+            self.ensure_current()?;
+            return Ok(Some(ReadChunk {
+                start: offset,
+                bytes: Vec::new(),
+                has_more: false,
+                next_offset: None,
+            }));
+        }
+
+        let requested = u64::try_from(length)
+            .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "length exceeds u64"))?
+            .min(128 * 1024)
+            .min(entry_length - offset);
+        let absolute_offset = location
+            .byte_start
+            .checked_add(offset)
+            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+        let requested_usize =
+            usize::try_from(requested).map_err(|_| io::Error::from(ErrorKind::InvalidData))?;
+        let chunk = self.source.read_chunk(absolute_offset, requested_usize)?;
+        if chunk.start != absolute_offset || chunk.bytes.is_empty() {
+            return Err(io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "file ended before the selected JSONL entry range",
+            ));
+        }
+        let read = u64::try_from(chunk.bytes.len()).expect("chunk length exceeds u64");
+        if read > requested {
+            return Err(ErrorKind::InvalidData.into());
+        }
+        let next = offset
+            .checked_add(read)
+            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+        if next > entry_length {
+            return Err(ErrorKind::InvalidData.into());
+        }
+        let has_more = next < entry_length;
+        let next_offset = has_more.then_some(next);
+        self.ensure_current()?;
+        Ok(Some(ReadChunk {
+            start: offset,
+            bytes: chunk.bytes,
+            has_more,
+            next_offset,
+        }))
     }
 
     fn ensure_current(&self) -> io::Result<()> {
@@ -995,6 +1084,7 @@ mod tests {
             next_offset: bytes.len() as u64,
             complete: true,
             selected: None,
+            selected_location: None,
             many_invalid_utf8_warning: false,
         };
 

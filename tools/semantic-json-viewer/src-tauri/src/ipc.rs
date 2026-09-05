@@ -17,6 +17,8 @@ use crate::jsonl_session::{
 };
 use crate::tree::{NodePage, NodeProjection, TextChunk};
 
+// AppState is a singleton with one session; boxing this variant adds indirection without value.
+#[allow(clippy::large_enum_variant)]
 enum OpenSession {
     Document(DocumentSession),
     Entry(JsonlSession),
@@ -68,6 +70,15 @@ pub struct TextChunkDto {
     pub text: String,
     pub has_more: bool,
     pub next_offset: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryByteChunkDto {
+    pub start: u64,
+    pub bytes: Vec<u8>,
+    pub has_more: bool,
+    pub next_offset: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -184,6 +195,16 @@ pub fn read_raw_slice(
     state: State<'_, AppState>,
 ) -> Result<TextChunkDto, IpcError> {
     read_raw_slice_inner(&state, source_start, length, session_revision)
+}
+
+#[tauri::command(async)]
+pub fn read_selected_entry_bytes(
+    offset: u64,
+    length: usize,
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<EntryByteChunkDto, IpcError> {
+    read_selected_entry_bytes_inner(&state, offset, length, session_revision)
 }
 
 #[tauri::command]
@@ -492,6 +513,37 @@ fn read_raw_slice_inner(
         .map_err(session_error)?
         .map(text_chunk_dto)
         .ok_or_else(|| invalid_request("raw slice is unavailable"))
+    })
+}
+
+fn read_selected_entry_bytes_inner(
+    state: &AppState,
+    offset: u64,
+    length: usize,
+    session_revision: u64,
+) -> Result<EntryByteChunkDto, IpcError> {
+    with_entry_session(state, session_revision, |session| {
+        if length == 0 {
+            return Err(invalid_request("length must be greater than zero"));
+        }
+        let Some(chunk) = session
+            .read_selected_entry_bytes(offset, length)
+            .map_err(|error| {
+                if error.kind() == ErrorKind::InvalidInput {
+                    invalid_request(error.to_string())
+                } else {
+                    session_error(error)
+                }
+            })?
+        else {
+            return Err(invalid_request("no entry is selected"));
+        };
+        Ok(EntryByteChunkDto {
+            start: chunk.start,
+            bytes: chunk.bytes,
+            has_more: chunk.has_more,
+            next_offset: chunk.next_offset,
+        })
     })
 }
 
@@ -1494,6 +1546,298 @@ mod tests {
         );
 
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selected_entry_bytes_keep_invalid_rows_and_delimiters_out_of_scope() {
+        let path = temp_jsonl_path("ipc-selected-entry-bytes");
+        let mut input = b"{\"bad\":".to_vec();
+        input.extend_from_slice(b"\r\n");
+        input.extend_from_slice(&[0xff, 0xfe]);
+        input.extend_from_slice(b"\n{\"after\":1}\r\n");
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+
+        let invalid_json = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(invalid_json.entry.status, "invalidJson");
+        let json_bytes =
+            read_selected_entry_bytes_inner(&state, 0, usize::MAX, invalid_json.session_revision)
+                .unwrap();
+        assert_eq!(json_bytes.start, 0);
+        assert_eq!(json_bytes.bytes, b"{\"bad\":".to_vec());
+        assert!(!json_bytes.has_more);
+        assert_eq!(json_bytes.next_offset, None);
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap().session_revision,
+            invalid_json.session_revision
+        );
+        let offset_error = read_selected_entry_bytes_inner(
+            &state,
+            json_bytes.bytes.len() as u64 + 1,
+            1,
+            invalid_json.session_revision,
+        )
+        .unwrap_err();
+        assert_eq!(offset_error.code, "invalid_request");
+        assert_eq!(offset_error.message, "offset exceeds selected Entry length");
+
+        let invalid_utf8 = select_entry_inner(&state, 1, invalid_json.session_revision).unwrap();
+        assert_eq!(invalid_utf8.entry.status, "invalidUtf8");
+        let utf8_bytes =
+            read_selected_entry_bytes_inner(&state, 0, usize::MAX, invalid_utf8.session_revision)
+                .unwrap();
+        assert_eq!(utf8_bytes.bytes, vec![0xff, 0xfe]);
+        assert!(!utf8_bytes.has_more);
+
+        let valid = select_entry_inner(&state, 2, invalid_utf8.session_revision).unwrap();
+        assert_eq!(valid.entry.status, "valid");
+        assert_eq!(
+            read_selected_entry_bytes_inner(&state, 0, 32, valid.session_revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selected_entry_bytes_page_large_invalid_entry_and_eof() {
+        let path = temp_jsonl_path("ipc-selected-entry-large");
+        let body = vec![b'x'; 300 * 1024];
+        let mut input = body.clone();
+        input.extend_from_slice(b"\n{\"after\":true}\n");
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let mut progress = opened.progress.clone().unwrap();
+        while !progress.complete {
+            progress = scan_entries_inner(&state, opened.session_revision).unwrap();
+        }
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(selected.entry.status, "invalidJson");
+
+        let mut offset = 0;
+        let mut combined = Vec::new();
+        loop {
+            let chunk = read_selected_entry_bytes_inner(
+                &state,
+                offset,
+                usize::MAX,
+                selected.session_revision,
+            )
+            .unwrap();
+            assert!(chunk.bytes.len() <= 128 * 1024);
+            combined.extend_from_slice(&chunk.bytes);
+            if !chunk.has_more {
+                assert_eq!(chunk.next_offset, None);
+                assert_eq!(chunk.start + chunk.bytes.len() as u64, body.len() as u64);
+                break;
+            }
+            let next = chunk.next_offset.expect("next offset for a paged chunk");
+            assert!(next > offset);
+            offset = next;
+        }
+        assert_eq!(combined, body);
+        assert!(
+            serde_json::to_vec(
+                &read_selected_entry_bytes_inner(&state, 0, usize::MAX, selected.session_revision,)
+                    .unwrap()
+            )
+            .unwrap()
+            .len()
+                < MAX_IPC_PAYLOAD_BYTES
+        );
+
+        let eof = read_selected_entry_bytes_inner(
+            &state,
+            body.len() as u64,
+            1,
+            selected.session_revision,
+        )
+        .unwrap();
+        assert!(eof.bytes.is_empty());
+        assert!(!eof.has_more);
+        assert_eq!(eof.next_offset, None);
+        assert_eq!(
+            read_selected_entry_bytes_inner(&state, 0, 0, selected.session_revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            read_selected_entry_bytes_inner(
+                &state,
+                body.len() as u64 + 1,
+                1,
+                selected.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selected_entry_bytes_rejects_unselected_oversized_and_stale_requests_without_bumping() {
+        let path = temp_jsonl_path("ipc-selected-entry-errors");
+        fs::write(&path, b"{\"ok\":true}\n").unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            read_selected_entry_bytes_inner(&state, 0, 1, opened.session_revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(
+            read_selected_entry_bytes_inner(&state, 0, 1, selected.session_revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap().session_revision,
+            selected.session_revision
+        );
+        fs::write(&path, b"{\"changed\":true}\n").unwrap();
+        assert_eq!(
+            read_selected_entry_bytes_inner(&state, 0, 1, selected.session_revision)
+                .unwrap_err()
+                .code,
+            "file_changed"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selected_entry_bytes_clears_after_failed_selection_and_caps_worst_case_payload() {
+        let path = temp_jsonl_path("ipc-selected-entry-failed-selection");
+        fs::write(&path, b"{\"ok\":true}\n{\n").unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(selected.entry.status, "valid");
+        assert_eq!(
+            read_selected_entry_bytes_inner(&state, 0, 1, selected.session_revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            read_selected_entry_bytes_inner(&state, 0, 1, opened.session_revision)
+                .unwrap_err()
+                .code,
+            "stale_session"
+        );
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap().session_revision,
+            selected.session_revision
+        );
+        let after_failed = select_entry_inner(&state, 99, selected.session_revision).unwrap_err();
+        assert_eq!(after_failed.code, "invalid_request");
+        assert_eq!(
+            read_selected_entry_bytes_inner(&state, 0, 1, selected.session_revision + 1)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        fs::remove_file(path).unwrap();
+
+        let path = temp_jsonl_path("ipc-selected-entry-payload-cap");
+        let mut input = vec![0xff; 200 * 1024];
+        input.push(b'\n');
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(selected.entry.status, "invalidUtf8");
+        let chunk =
+            read_selected_entry_bytes_inner(&state, 0, usize::MAX, selected.session_revision)
+                .unwrap();
+        assert_eq!(chunk.bytes.len(), 128 * 1024);
+        assert!(chunk.bytes.iter().all(|&byte| byte == 0xff));
+        assert!(serde_json::to_vec(&chunk).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selected_entry_bytes_rejects_valid_and_oversized_entries() {
+        let valid_path = temp_jsonl_path("ipc-selected-entry-valid");
+        fs::write(&valid_path, b"{\"ok\":true}\n").unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, valid_path.to_str().unwrap()).unwrap();
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(selected.entry.status, "valid");
+        for offset in [0, u64::MAX] {
+            let error = read_selected_entry_bytes_inner(
+                &state,
+                offset,
+                usize::MAX,
+                selected.session_revision,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, "invalid_request");
+            assert_eq!(error.message, "selected Entry is valid; use read_raw_slice");
+        }
+        fs::remove_file(valid_path).unwrap();
+
+        let oversized_path = temp_jsonl_path("ipc-selected-entry-oversized");
+        let mut input = vec![b'x'; crate::jsonl_entry::MAX_ENTRY_BYTES + 1];
+        input.push(b'\n');
+        fs::write(&oversized_path, input).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, oversized_path.to_str().unwrap()).unwrap();
+        let mut progress = opened.progress.clone().unwrap();
+        while !progress.complete {
+            progress = scan_entries_inner(&state, opened.session_revision).unwrap();
+        }
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(selected.entry.status, "oversized");
+        for offset in [0, u64::MAX] {
+            let error =
+                read_selected_entry_bytes_inner(&state, offset, 1, selected.session_revision)
+                    .unwrap_err();
+            assert_eq!(error.code, "invalid_request");
+            assert_eq!(
+                error.message,
+                "selected Entry is oversized; use get_oversized_preview"
+            );
+        }
+        fs::remove_file(oversized_path).unwrap();
+    }
+
+    #[test]
+    fn selected_entry_bytes_document_command_is_invalid_without_revision_change() {
+        let path = temp_path("ipc-selected-entry-document");
+        fs::write(&path, b"{\"ok\":true}").unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let error =
+            read_selected_entry_bytes_inner(&state, 0, 1, summary.session_revision).unwrap_err();
+        assert_eq!(error.code, "invalid_request");
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap().session_revision,
+            summary.session_revision
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selected_entry_bytes_dto_uses_camel_case_fields() {
+        let dto = EntryByteChunkDto {
+            start: 3,
+            bytes: vec![0xff, 0],
+            has_more: true,
+            next_offset: Some(5),
+        };
+        let encoded = String::from_utf8(serde_json::to_vec(&dto).unwrap()).unwrap();
+        assert!(encoded.contains("\"hasMore\""));
+        assert!(encoded.contains("\"nextOffset\""));
+        assert!(!encoded.contains("has_more"));
+        assert!(!encoded.contains("next_offset"));
     }
 
     #[test]
