@@ -188,6 +188,56 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .inspector-empty { padding: 2px 14px 20px; color: var(--faint); font-size: 10px; line-height: 1.5; }
 
+.node-inspector { margin: 0 14px 18px; padding-top: 14px; border-top: 1px solid var(--line-strong); }
+
+.node-inspector h3 { margin-bottom: 11px; font-size: 11px; }
+
+.node-inspector-list { margin: 0; }
+
+.node-inspector-list > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 9px; padding: 6px 0; border-bottom: 1px solid #edf0f4; }
+
+.node-inspector-list dt { color: var(--muted); font-size: 9px; }
+
+.node-inspector-list dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 9px; }
+
+.tree-state { display: flex; min-height: 220px; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 28px; color: var(--muted); text-align: center; }
+
+.tree-state strong { color: var(--text); font-size: 12px; }
+
+.tree-state span { max-width: 360px; font-size: 10px; line-height: 1.5; }
+
+.tree-root { min-width: 560px; padding: 18px 14px 80px; font: 10px/1.45 "SFMono-Regular", Consolas, monospace; }
+
+.tree-item { display: grid; width: 100%; min-height: 35px; grid-template-columns: 18px minmax(0, 1fr) 94px 122px 90px minmax(110px, .7fr); align-items: center; gap: 8px; padding: 6px 8px; border: 0; border-bottom: 1px solid #edf0f4; color: var(--text); background: transparent; text-align: left; }
+
+.tree-item:hover { background: var(--surface-muted); }
+
+.tree-item[aria-selected="true"] { background: var(--blue-soft); box-shadow: inset 3px 0 var(--blue); }
+
+.tree-item:focus-visible, .tree-load-more:focus-visible, .tree-retry:focus-visible { outline: 2px solid #4987ff; outline-offset: -2px; }
+
+.tree-disclosure { color: var(--muted); text-align: center; }
+
+.tree-label, .tree-kind, .tree-span, .tree-children, .tree-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.tree-label { font-weight: 650; }
+
+.tree-id { color: var(--faint); font-size: 9px; }
+
+.tree-kind, .tree-span, .tree-children { color: var(--muted); }
+
+.tree-value { color: #4c5668; }
+
+.tree-group { margin-left: 20px; border-left: 1px solid var(--line); }
+
+.tree-loading { padding: 8px 12px; color: var(--muted); font-size: 9px; }
+
+.tree-load-more, .tree-retry { min-height: 30px; margin: 5px 0 5px 8px; padding: 5px 9px; border: 1px dashed var(--line-strong); border-radius: 5px; color: var(--blue); background: var(--surface-muted); text-align: left; font-size: 9px; }
+
+.tree-retry { border-style: solid; color: var(--danger); background: var(--danger-soft); }
+
+.tree-error { display: flex; align-items: center; gap: 8px; padding: 4px 8px; color: var(--danger); font-size: 9px; }
+
 .statusbar { display: flex; grid-row: 4; min-width: 0; align-items: center; gap: 12px; padding: 0 13px; border-top: 1px solid var(--line-strong); color: var(--muted); background: #fafbfc; font-size: 9px; font-variant-numeric: tabular-nums; }
 
 .statusbar > span:not(.status-spacer) { white-space: nowrap; }
@@ -244,6 +294,7 @@ h3 { font-size: 16px; font-weight: 700; }
   .app-shell[data-mobile-drawer="navigation"] .navigation { display: flex; }
   .app-shell[data-mobile-drawer="inspector"] .inspector { display: block; }
   .reader { width: 100%; height: 100%; }
+  .tree-root { min-width: 560px; padding-right: 10px; padding-left: 10px; }
   .reader-toolbar { padding: 0 10px; }
   .view-tab { min-width: 57px; padding: 0 7px; }
   .statusbar { gap: 8px; padding: 0 9px; font-size: 8px; }

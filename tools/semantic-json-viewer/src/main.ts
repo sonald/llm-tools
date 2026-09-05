@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { TreeView, type NodeDto } from "./tree-view";
 
 type FileMode = "document" | "collection" | "entry";
 
@@ -26,18 +27,6 @@ type FileSummary = {
   progress: JsonlProgressDto | null;
   manyInvalidUtf8Warning: boolean;
   sessionRevision: number;
-};
-
-type NodeDto = {
-  id: number;
-  kind: string;
-  spanStart: number;
-  spanEnd: number;
-  label: string;
-  labelHasMore: boolean;
-  valuePreview: string | null;
-  valueHasMore: boolean;
-  childCount: number;
 };
 
 type IpcErrorPayload = {
@@ -100,6 +89,33 @@ const errorDetails = required<HTMLElement>("error-details");
 const navigationToggle = required<HTMLButtonElement>("navigation-toggle");
 const inspectorToggle = required<HTMLButtonElement>("inspector-toggle");
 const modeDialog = required<HTMLDialogElement>("mode-dialog");
+const semanticTab = required<HTMLButtonElement>("semantic-tab");
+const treeTab = required<HTMLButtonElement>("tree-tab");
+const rawTab = required<HTMLButtonElement>("raw-tab");
+const semanticPanel = required<HTMLElement>("semantic-panel");
+const treePanel = required<HTMLElement>("tree-panel");
+const rawPanel = required<HTMLElement>("raw-panel");
+const nodeInspector = required<HTMLElement>("node-inspector");
+const treeReaderTitle = required<HTMLElement>("reader-title");
+const nodeId = required<HTMLElement>("node-id");
+const nodeLabel = required<HTMLElement>("node-label");
+const nodeKind = required<HTMLElement>("node-kind");
+const nodeSpan = required<HTMLElement>("node-span");
+const nodeChildren = required<HTMLElement>("node-children");
+const nodeValue = required<HTMLElement>("node-value");
+
+const treeView = new TreeView({
+  panel: treePanel,
+  tab: treeTab,
+  inspector: nodeInspector,
+  fields: { id: nodeId, label: nodeLabel, kind: nodeKind, span: nodeSpan, children: nodeChildren, value: nodeValue },
+  onError: (error) => {
+    const parsed = ipcError(error);
+    state.error = parsed;
+    if (parsed.code === "stale_session" || parsed.code === "file_changed") setActiveView("semantic");
+    render();
+  }
+});
 
 function required<T extends Element>(id: string): T {
   const node = document.getElementById(id);
@@ -268,7 +284,7 @@ function readerTitle(summary: FileSummary): string {
 function readerCopy(summary: FileSummary): string {
   if (summary.mode === "entry" && summary.progress) {
     if (state.scanStoppedRevision === summary.sessionRevision) return `Indexing stopped at ${summary.progress.indexedEntries.toLocaleString()} entries. The partial index remains available.`;
-    return summary.progress.complete ? "Entry summaries will appear here when the list view is connected." : `Indexed ${summary.progress.indexedEntries.toLocaleString()} entries; more are being scanned without blocking this view.`;
+    return "Select a valid Entry to enable Tree.";
   }
   return summary.mode === "collection" ? "The selected array item will be projected here." : "The semantic projection for this document will appear here.";
 }
@@ -279,6 +295,38 @@ function statusProgressLabel(summary: FileSummary): string {
   return summary.progress.complete && summary.progress.totalEntries !== null
     ? `${summary.progress.totalEntries.toLocaleString()} entries`
     : `Indexing · ${summary.progress.indexedEntries.toLocaleString()} indexed`;
+}
+
+function setActiveView(view: "semantic" | "tree" | "raw"): void {
+  if (view === "tree" && treeTab.disabled) return;
+  if (view === "raw" && rawTab.disabled) return;
+  const tabs: Array<[HTMLButtonElement, HTMLElement]> = [
+    [semanticTab, semanticPanel],
+    [treeTab, treePanel],
+    [rawTab, rawPanel]
+  ];
+  for (const [tab, panel] of tabs) {
+    const active = tab === (view === "semantic" ? semanticTab : view === "tree" ? treeTab : rawTab);
+    tab.classList.toggle("is-active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+    panel.hidden = !active;
+  }
+  setText(treeReaderTitle, view[0].toUpperCase() + view.slice(1));
+  if (view === "tree") treeView.activate();
+}
+
+function moveViewFocus(direction: 1 | -1): void {
+  const tabs = [semanticTab, treeTab, rawTab].filter((tab) => !tab.disabled);
+  const current = tabs.indexOf(document.activeElement as HTMLButtonElement);
+  const next = current < 0 ? 0 : (current + direction + tabs.length) % tabs.length;
+  focusViewTab(tabs[next]);
+}
+
+function focusViewTab(tab: HTMLButtonElement | undefined): void {
+  if (!tab) return;
+  for (const candidate of [semanticTab, treeTab, rawTab]) candidate.tabIndex = candidate === tab ? 0 : -1;
+  tab.focus();
 }
 
 function render(): void {
@@ -332,6 +380,8 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
     state.scanQueued = null;
     state.scanStoppedRevision = null;
     state.opening = false;
+    treeView.setSession({ mode: summary.mode, sessionRevision: summary.sessionRevision });
+    setActiveView("semantic");
     render();
     if (summary.mode === "entry" && summary.progress && !summary.progress.complete) {
       void scanEntries(generation, summary.sessionRevision);
@@ -429,6 +479,31 @@ openButton.addEventListener("click", () => void chooseFile());
 readerOpenButton.addEventListener("click", () => void chooseFile());
 navigationToggle.addEventListener("click", toggleNavigation);
 inspectorToggle.addEventListener("click", toggleInspector);
+semanticTab.addEventListener("click", () => setActiveView("semantic"));
+treeTab.addEventListener("click", () => setActiveView("tree"));
+rawTab.addEventListener("click", () => setActiveView("raw"));
+document.querySelector<HTMLElement>(".view-tabs")?.addEventListener("keydown", (event) => {
+  if (!(event instanceof KeyboardEvent)) return;
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    moveViewFocus(1);
+  } else if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    moveViewFocus(-1);
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    focusViewTab([semanticTab, treeTab, rawTab].find((tab) => !tab.disabled));
+  } else if (event.key === "End") {
+    event.preventDefault();
+    focusViewTab([semanticTab, treeTab, rawTab].reverse().find((tab) => !tab.disabled));
+  } else if (event.key === "Enter" || event.key === " ") {
+    const target = event.target;
+    if (target instanceof HTMLButtonElement) {
+      event.preventDefault();
+      setActiveView(target === semanticTab ? "semantic" : target === treeTab ? "tree" : "raw");
+    }
+  }
+});
 
 modeDialog.addEventListener("close", () => {
   const choice = modeDialog.returnValue;
