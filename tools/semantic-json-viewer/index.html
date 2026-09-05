@@ -43,6 +43,27 @@
             <strong>No file is open.</strong>
             <span>Open a local JSON or JSONL file to begin.</span>
           </div>
+          <section class="entry-navigation" id="entry-navigation" aria-labelledby="entry-navigation-title" hidden>
+            <div class="entry-navigation-heading">
+              <h3 id="entry-navigation-title">Entries</h3>
+              <span class="pane-kicker">50 per page</span>
+            </div>
+            <div class="entry-go">
+              <label for="entry-go-input">Go to Entry</label>
+              <div class="entry-go-controls">
+                <input id="entry-go-input" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="entry-go-error" />
+                <button class="secondary-button" id="entry-go-button" type="button">Go</button>
+              </div>
+              <span class="entry-go-error" id="entry-go-error" role="alert"></span>
+            </div>
+            <div class="entry-list" id="entry-list" role="listbox" aria-label="JSONL entries" aria-busy="false"></div>
+            <div class="entry-list-footer">
+              <button class="secondary-button" id="entry-prev" type="button">Previous</button>
+              <button class="secondary-button" id="entry-next" type="button">Next</button>
+            </div>
+            <div class="entry-list-status" id="entry-list-status" role="status" aria-live="polite"></div>
+            <button class="secondary-button entry-list-retry" id="entry-list-retry" type="button" hidden>Retry loading entries</button>
+          </section>
         </aside>
 
         <main class="reader" id="reader" aria-labelledby="reader-title">
@@ -80,6 +101,19 @@
           </dl>
           <p class="warning-note" id="inspector-warning" hidden></p>
           <p class="inspector-empty" id="inspector-empty">Select a file to inspect its identity and indexing state.</p>
+          <section class="entry-inspector" id="entry-inspector" aria-labelledby="entry-inspector-title" hidden>
+            <h3 id="entry-inspector-title">Entry Inspector</h3>
+            <dl class="entry-inspector-list">
+              <div><dt>Entry</dt><dd class="mono" id="entry-inspector-ordinal">—</dd></div>
+              <div><dt>Status</dt><dd id="entry-inspector-status">—</dd></div>
+              <div><dt>Source line</dt><dd class="mono" id="entry-inspector-source-line">—</dd></div>
+              <div><dt>Bytes</dt><dd class="mono" id="entry-inspector-bytes">—</dd></div>
+              <div><dt>Parse message</dt><dd id="entry-inspector-parse-message">—</dd></div>
+              <div><dt>Byte offset</dt><dd class="mono" id="entry-inspector-parse-byte-offset">—</dd></div>
+              <div><dt>Line</dt><dd class="mono" id="entry-inspector-parse-line">—</dd></div>
+              <div><dt>Column</dt><dd class="mono" id="entry-inspector-parse-column">—</dd></div>
+            </dl>
+          </section>
           <section class="node-inspector" id="node-inspector" aria-labelledby="node-inspector-title" hidden>
             <h3 id="node-inspector-title">Node Inspector</h3>
             <dl class="node-inspector-list">
