@@ -26,8 +26,9 @@ type NodeScope = {
 
 type EntryBytesScope = {
   kind: "entryBytes";
-  status: "invalidJson" | "invalidUtf8";
+  status: "invalidJson" | "invalidUtf8" | "oversized";
   entryOrdinal: number;
+  sourceLine: number;
   byteStart: number;
   byteEnd: number;
 };
@@ -60,6 +61,7 @@ type RawPageResult = {
 
 type Representation = "lossy" | "hex";
 
+export const MAX_ENTRY_BYTES = 16 * 1024 * 1024;
 const PAGE_BYTES = 128 * 1024;
 
 export class RawView {
@@ -190,7 +192,7 @@ export class RawView {
     if (root && this.active) this.requestPage(root.spanStart, 0);
   }
 
-  setInvalidEntry(revision: number, entry: EntryDto): boolean {
+  setNonValidEntry(revision: number, entry: EntryDto): boolean {
     const scope = entryBytesScope(entry);
     if (!scope) {
       this.clear("Raw bytes are unavailable because the Entry location is invalid.");
@@ -318,13 +320,20 @@ export class RawView {
       const remaining = request.scopeEnd - request.offset;
       const requestedLength = Math.min(PAGE_BYTES, remaining);
       if (request.scopeKind === "entryBytes" && scope.kind === "entryBytes") {
-        const value = await invoke<unknown>("read_selected_entry_bytes", {
-          offset: request.offset,
-          length: requestedLength,
-          sessionRevision: request.revision
-        });
+        const value = scope.status === "oversized"
+          ? await invoke<unknown>("get_oversized_preview", {
+            ordinal: scope.entryOrdinal,
+            sessionRevision: request.revision
+          })
+          : await invoke<unknown>("read_selected_entry_bytes", {
+            offset: request.offset,
+            length: requestedLength,
+            sessionRevision: request.revision
+          });
         if (!this.isCurrent(request)) return;
-        const result = decodeInvalidEntryPage(value, request, scope.status);
+        const result = scope.status === "oversized"
+          ? decodeOversizedPreview(value, request, scope)
+          : decodeInvalidEntryPage(value, request, scope.status);
         if ("error" in result) {
           this.failPage(result.error);
           return;
@@ -404,10 +413,12 @@ export class RawView {
     this.text = this.displayBytes && this.representation === "hex"
       ? formatHex(request.offset, this.displayBytes)
       : result.text;
-    this.statusMessage = request.scopeKind === "entryBytes"
-      ? this.scope?.kind === "entryBytes" && this.scope.status === "invalidUtf8"
+    this.statusMessage = request.scopeKind === "entryBytes" && this.scope?.kind === "entryBytes"
+      ? this.scope.status === "invalidUtf8"
         ? "Original bytes · representation only"
-        : "Original UTF-8 Entry bytes · not reformatted"
+        : this.scope.status === "oversized"
+          ? "Raw preview loaded."
+          : "Original UTF-8 Entry bytes · not reformatted"
       : result.pageEnd < request.scopeEnd ? "Raw bytes loaded." : "End of raw scope.";
     this.render();
     this.restoreControl(request, true);
@@ -456,7 +467,7 @@ export class RawView {
     if (document.activeElement !== document.body && document.activeElement !== document.documentElement && document.activeElement !== originalControl) return;
     let control = originalControl;
     if (succeeded && (control.disabled || control.hidden)) {
-      control = !this.previous.disabled ? this.previous : !this.next.disabled ? this.next : this.tab;
+      control = [this.previous, this.next].find((candidate) => !candidate.disabled && !candidate.hidden) ?? this.tab;
     }
     if (control.disabled || control.hidden) return;
     queueMicrotask(() => {
@@ -475,6 +486,7 @@ export class RawView {
     const scope = this.scope;
     const busy = this.busy || this.pageRequest !== null;
     const invalidUtf8 = scope?.kind === "entryBytes" && scope.status === "invalidUtf8";
+    const oversized = scope?.kind === "entryBytes" && scope.status === "oversized";
     this.tab.disabled = this.session === null || scope === null;
     this.tab.setAttribute("aria-disabled", String(this.tab.disabled));
     this.panel.setAttribute("aria-busy", String(busy));
@@ -490,12 +502,14 @@ export class RawView {
     this.hexTab.classList.toggle("is-active", this.representation === "hex");
     this.lossyTab.tabIndex = this.representation === "lossy" ? 0 : -1;
     this.hexTab.tabIndex = this.representation === "hex" ? 0 : -1;
-    this.representationNote.hidden = !invalidUtf8;
+    this.representationNote.hidden = !invalidUtf8 && !oversized;
     this.representationNote.textContent = invalidUtf8
       ? this.representation === "lossy"
         ? "This is a lossy preview. The source bytes have not been modified."
         : "Original bytes · 16 bytes per row"
-      : "";
+      : oversized
+        ? "Preview only. Showing the first and last 64 KiB. Source bytes have not been modified."
+        : "";
     this.pre.hidden = this.text === null && this.displayBytes === null;
     this.pre.textContent = this.text ?? "";
     this.pre.setAttribute("aria-label", preLabel(scope, this.representation));
@@ -506,8 +520,10 @@ export class RawView {
       this.pre.removeAttribute("role");
       this.pre.removeAttribute("aria-labelledby");
     }
-    this.previous.disabled = busy || this.currentIndex <= 0;
-    this.next.disabled = busy || scope === null || this.pageEnd === null || this.pageEnd >= scopeEnd(scope);
+    this.previous.hidden = Boolean(oversized);
+    this.next.hidden = Boolean(oversized);
+    this.previous.disabled = Boolean(oversized) || busy || this.currentIndex <= 0;
+    this.next.disabled = Boolean(oversized) || busy || scope === null || this.pageEnd === null || this.pageEnd >= scopeEnd(scope);
     this.retry.hidden = this.failedPage === null;
     this.retry.disabled = busy || this.failedPage === null;
   }
@@ -524,14 +540,62 @@ export class RawView {
 }
 
 function entryBytesScope(entry: unknown): EntryBytesScope | null {
-  if (!isRecord(entry) || (entry.status !== "invalidJson" && entry.status !== "invalidUtf8") || !isRecord(entry.location)) return null;
+  if (!isRecord(entry) || (entry.status !== "invalidJson" && entry.status !== "invalidUtf8" && entry.status !== "oversized") || !isRecord(entry.location)) return null;
   const entryOrdinal = entry.location.entryOrdinal;
+  const sourceLine = entry.location.sourceLine;
   const byteStart = entry.location.byteStart;
   const byteEnd = entry.location.byteEnd;
-  if (!safeNonNegativeInteger(entryOrdinal) || !safeNonNegativeInteger(byteStart) || !safeNonNegativeInteger(byteEnd) || byteEnd <= byteStart) {
+  if (!safeNonNegativeInteger(entryOrdinal) || !safeNonNegativeInteger(sourceLine) || sourceLine < 1 || !safeNonNegativeInteger(byteStart) || !safeNonNegativeInteger(byteEnd) || byteEnd <= byteStart) {
     return null;
   }
-  return { kind: "entryBytes", status: entry.status, entryOrdinal, byteStart, byteEnd };
+  const length = byteEnd - byteStart;
+  if (entry.status === "oversized" ? length <= MAX_ENTRY_BYTES : length > MAX_ENTRY_BYTES) return null;
+  return { kind: "entryBytes", status: entry.status, entryOrdinal, sourceLine, byteStart, byteEnd };
+}
+
+function decodeOversizedPreview(value: unknown, request: PageRequest, scope: EntryBytesScope): RawPageResult | { error: string } {
+  if (!isRecord(value) || !isRecord(value.entry) || value.entry.status !== "oversized" || value.entry.parseError !== null || !isRecord(value.entry.location)) {
+    return { error: "Oversized preview response had an invalid entry." };
+  }
+  const location = value.entry.location;
+  const entryOrdinal = location.entryOrdinal;
+  const sourceLine = location.sourceLine;
+  const byteStart = location.byteStart;
+  const byteEnd = location.byteEnd;
+  if (!safeNonNegativeInteger(entryOrdinal) || !safeNonNegativeInteger(sourceLine) || sourceLine < 1 || !safeNonNegativeInteger(byteStart) || !safeNonNegativeInteger(byteEnd) || byteEnd <= byteStart) {
+    return { error: "Oversized preview location was invalid." };
+  }
+  if (entryOrdinal !== scope.entryOrdinal || sourceLine !== scope.sourceLine || byteStart !== scope.byteStart || byteEnd !== scope.byteEnd) {
+    return { error: "Oversized preview location did not match the selected Entry." };
+  }
+  const length = scopeEnd(scope);
+  const head = value.head;
+  const tail = value.tail;
+  if (!Array.isArray(head) || !Array.isArray(tail) || head.length !== 64 * 1024 || tail.length !== 64 * 1024) {
+    return { error: "Oversized preview must contain two 64 KiB byte ranges." };
+  }
+  const headBytes = new Uint8Array(head.length);
+  for (let index = 0; index < head.length; index += 1) {
+    const byte = head[index];
+    if (typeof byte !== "number" || !Number.isInteger(byte) || byte < 0 || byte > 255) {
+      return { error: "Oversized preview head contained an invalid byte." };
+    }
+    headBytes[index] = byte;
+  }
+  const tailBytes = new Uint8Array(tail.length);
+  for (let index = 0; index < tail.length; index += 1) {
+    const byte = tail[index];
+    if (typeof byte !== "number" || !Number.isInteger(byte) || byte < 0 || byte > 255) {
+      return { error: "Oversized preview tail contained an invalid byte." };
+    }
+    tailBytes[index] = byte;
+  }
+  const tailStart = length - 64 * 1024;
+  const omitted = length - 128 * 1024;
+  return {
+    text: `Head · Entry bytes [0, 65536)\n${formatHex(0, headBytes)}\n\n… ${omitted} bytes omitted · Entry bytes [65536, ${tailStart}) …\n\nTail · Entry bytes [${tailStart}, ${length})\n${formatHex(tailStart, tailBytes)}`,
+    pageEnd: request.scopeEnd
+  };
 }
 
 function decodeInvalidEntryPage(
@@ -652,19 +716,23 @@ function scopeLabel(scope: RawScope | null): string {
   if (!scope) return "Raw bytes";
   return scope.kind === "node"
     ? `Node #${scope.node.id} · [${scope.node.spanStart}, ${scope.node.spanEnd})`
-    : `Entry ${scope.entryOrdinal + 1} · ${scope.status === "invalidJson" ? "Invalid JSON" : "Invalid UTF-8"} · Entry bytes [0, ${scopeEnd(scope)})`;
+    : `Entry ${scope.entryOrdinal + 1} · ${scope.status === "invalidJson" ? "Invalid JSON" : scope.status === "invalidUtf8" ? "Invalid UTF-8" : "Oversized Entry"} · Entry bytes [0, ${scopeEnd(scope)})`;
 }
 
 function pageLabel(scope: RawScope, start: number, end: number): string {
-  return scope.kind === "node"
-    ? `Bytes [${start}, ${end}) of [${scope.node.spanStart}, ${scope.node.spanEnd})`
-    : `Bytes [${start}, ${end}) of Entry [0, ${scopeEnd(scope)})`;
+  if (scope.kind === "node") return `Bytes [${start}, ${end}) of [${scope.node.spanStart}, ${scope.node.spanEnd})`;
+  if (scope.status === "oversized") {
+    const tailStart = scopeEnd(scope) - 64 * 1024;
+    return `Head [0, 65536) · Tail [${tailStart}, ${scopeEnd(scope)})`;
+  }
+  return `Bytes [${start}, ${end}) of Entry [0, ${scopeEnd(scope)})`;
 }
 
 function preLabel(scope: RawScope | null, representation: Representation): string {
   if (!scope) return "Raw UTF-8 bytes";
   if (scope.kind === "node") return `Raw UTF-8 bytes for Node #${scope.node.id}`;
   if (scope.status === "invalidUtf8") return scopeStatusRepresentation(scope, representation);
+  if (scope.status === "oversized") return `Oversized Entry ${scope.entryOrdinal + 1} hexadecimal head and tail preview`;
   return `Raw UTF-8 bytes for Entry ${scope.entryOrdinal + 1}`;
 }
 

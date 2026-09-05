@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { EntryList, type EntrySelectionDto } from "./entry-list";
-import { RawView } from "./raw-view";
+import { MAX_ENTRY_BYTES, RawView } from "./raw-view";
 import { TreeView, type NodeDto } from "./tree-view";
 
 type FileMode = "document" | "collection" | "entry";
@@ -278,6 +278,7 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
   const valid = selection.entry.status === "valid";
   const invalidJson = selection.entry.status === "invalidJson";
   const invalidUtf8 = selection.entry.status === "invalidUtf8";
+  const oversized = selection.entry.status === "oversized";
   const rootMatchesStatus = valid ? selection.root !== null : selection.root === null;
   if (!rootMatchesStatus) {
     state.error = { code: "internal", message: "Entry selection returned an inconsistent Tree root." };
@@ -293,15 +294,15 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
     if (valid && selection.root) {
       rawView.setSession(selection.sessionRevision, selection.root);
       rawAvailable = true;
-    } else if (invalidJson || invalidUtf8) {
-      rawAvailable = rawView.setInvalidEntry(selection.sessionRevision, selection.entry);
+    } else if (invalidJson || invalidUtf8 || oversized) {
+      rawAvailable = rawView.setNonValidEntry(selection.sessionRevision, selection.entry);
     } else {
       rawView.clear("Select a valid Entry to open Raw bytes.");
     }
-    if ((invalidJson || invalidUtf8) && !rawAvailable) {
+    if ((invalidJson || invalidUtf8 || oversized) && !rawAvailable) {
       state.error = { code: "internal", message: "Invalid Entry Raw bytes could not be opened." };
       setActiveView("semantic");
-    } else if ((valid || invalidJson || invalidUtf8) && previousView === "raw") {
+    } else if ((valid || invalidJson || invalidUtf8 || oversized) && previousView === "raw") {
       setActiveView("raw");
     } else if (valid && previousView === "tree") {
       setActiveView("tree");
@@ -496,6 +497,13 @@ function readerCopy(summary: FileSummary): string {
     if (state.scanStoppedRevision === summary.sessionRevision) return `Indexing stopped at ${summary.progress.indexedEntries.toLocaleString()} entries. The partial index remains available.`;
     if (state.selectedEntry?.status === "invalidJson") return "Tree is unavailable. Original Raw bytes are available.";
     if (state.selectedEntry?.status === "invalidUtf8") return "Invalid UTF-8 Entry selected. Raw provides Lossy Text and Hex. Source bytes are unchanged.";
+    if (state.selectedEntry?.status === "oversized") {
+      const { byteStart, byteEnd } = state.selectedEntry.location;
+      const length = byteEnd - byteStart;
+      if (Number.isSafeInteger(byteStart) && Number.isSafeInteger(byteEnd) && byteStart >= 0 && byteEnd > byteStart && Number.isSafeInteger(length) && length > MAX_ENTRY_BYTES) {
+        return `Oversized Entry selected. Raw shows only the first and last 64 KiB; ${length - 128 * 1024} bytes are omitted.`;
+      }
+    }
     if (state.selectedEntry) {
       const entry = state.selectedEntry;
       return entry.status === "valid"
