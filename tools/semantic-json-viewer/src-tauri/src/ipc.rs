@@ -22,6 +22,10 @@ use crate::tree::{NodePage, NodeProjection, TextChunk};
 enum OpenSession {
     Document(DocumentSession),
     Entry(JsonlSession),
+    RawDocument {
+        source: FileSource,
+        document_error: IpcError,
+    },
 }
 
 #[derive(Default)]
@@ -38,6 +42,7 @@ pub struct FileSummary {
     pub root: Option<NodeDto>,
     pub progress: Option<JsonlProgressDto>,
     pub many_invalid_utf8_warning: bool,
+    pub document_error: Option<IpcError>,
     pub session_revision: u64,
 }
 
@@ -74,7 +79,7 @@ pub struct TextChunkDto {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EntryByteChunkDto {
+pub struct ByteChunkDto {
     pub start: u64,
     pub bytes: Vec<u8>,
     pub has_more: bool,
@@ -203,8 +208,18 @@ pub fn read_selected_entry_bytes(
     length: usize,
     session_revision: u64,
     state: State<'_, AppState>,
-) -> Result<EntryByteChunkDto, IpcError> {
+) -> Result<ByteChunkDto, IpcError> {
     read_selected_entry_bytes_inner(&state, offset, length, session_revision)
+}
+
+#[tauri::command(async)]
+pub fn read_raw_document_bytes(
+    offset: u64,
+    length: usize,
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<ByteChunkDto, IpcError> {
+    read_raw_document_bytes_inner(&state, offset, length, session_revision)
 }
 
 #[tauri::command]
@@ -280,21 +295,31 @@ fn open_file_with_override(
         requested_mode,
     )
     .map_err(override_error)?;
-    let (mode, many_invalid_utf8_warning) = decision_mode(decision)?;
+    let allow_raw_document = requested_mode != Some(FileMode::Entry);
+    let (mode, many_invalid_utf8_warning, document_error) =
+        decision_mode(decision, allow_raw_document)?;
     // ponytail: route and session currently reread the selected file; reuse route bytes only if v0.1 benchmarks miss the target.
     drop(route_bytes);
 
-    let session = match mode {
-        FileMode::Entry => {
-            let mut session = JsonlSession::open(path).map_err(open_error)?;
-            session.set_many_invalid_utf8_warning(many_invalid_utf8_warning);
-            OpenSession::Entry(session)
+    let route_identity = route_source.identity().clone();
+    let session = if let Some(document_error) = document_error {
+        OpenSession::RawDocument {
+            source: route_source,
+            document_error,
         }
-        FileMode::Document | FileMode::Collection => {
-            OpenSession::Document(DocumentSession::open(path).map_err(open_error)?)
+    } else {
+        match mode {
+            FileMode::Entry => {
+                let mut session = JsonlSession::open(path).map_err(open_error)?;
+                session.set_many_invalid_utf8_warning(many_invalid_utf8_warning);
+                OpenSession::Entry(session)
+            }
+            FileMode::Document | FileMode::Collection => {
+                OpenSession::Document(DocumentSession::open(path).map_err(open_error)?)
+            }
         }
     };
-    if route_source.identity() != session_identity(&session) {
+    if &route_identity != session_identity(&session) {
         return Err(file_changed());
     }
     let mut guard = lock_session(state)?;
@@ -365,14 +390,23 @@ fn read_route_bytes(source: &FileSource, limit: u64) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn decision_mode(decision: OpenDecision) -> Result<(FileMode, bool), IpcError> {
+fn decision_mode(
+    decision: OpenDecision,
+    allow_raw_document: bool,
+) -> Result<(FileMode, bool, Option<IpcError>), IpcError> {
     match decision {
         OpenDecision::Open {
             mode,
             many_invalid_utf8_warning,
             ..
-        } => Ok((mode, many_invalid_utf8_warning)),
+        } => Ok((mode, many_invalid_utf8_warning, None)),
+        OpenDecision::InvalidJson(error) if allow_raw_document => {
+            Ok((FileMode::Document, false, Some(invalid_json(error))))
+        }
         OpenDecision::InvalidJson(error) => Err(invalid_json(error)),
+        OpenDecision::InvalidUtf8Document if allow_raw_document => {
+            Ok((FileMode::Document, false, Some(unsupported_encoding())))
+        }
         OpenDecision::InvalidUtf8Document => Err(unsupported_encoding()),
         OpenDecision::UnsupportedEncoding => Err(unsupported_encoding()),
         OpenDecision::UnsupportedFraming => Err(unsupported_framing()),
@@ -402,6 +436,7 @@ fn session_identity(session: &OpenSession) -> &FileIdentity {
     match session {
         OpenSession::Document(session) => session.identity(),
         OpenSession::Entry(session) => session.identity(),
+        OpenSession::RawDocument { source, .. } => source.identity(),
     }
 }
 
@@ -421,6 +456,7 @@ fn file_summary(session: &OpenSession, session_revision: u64) -> Result<FileSumm
                 root: Some(node_dto(root)),
                 progress: None,
                 many_invalid_utf8_warning: false,
+                document_error: None,
                 session_revision,
             })
         }
@@ -431,8 +467,27 @@ fn file_summary(session: &OpenSession, session_revision: u64) -> Result<FileSumm
             root: None,
             progress: Some(progress_dto(session.progress().map_err(session_error)?)),
             many_invalid_utf8_warning: session.many_invalid_utf8_warning(),
+            document_error: None,
             session_revision,
         }),
+        OpenSession::RawDocument {
+            source,
+            document_error,
+        } => {
+            if !source.is_current() {
+                return Err(file_changed());
+            }
+            Ok(FileSummary {
+                path: source.identity().canonical_path.display().to_string(),
+                size: source.identity().size,
+                mode: "document".to_owned(),
+                root: None,
+                progress: None,
+                many_invalid_utf8_warning: false,
+                document_error: Some(document_error.clone()),
+                session_revision,
+            })
+        }
     }
 }
 
@@ -450,6 +505,9 @@ fn get_root_node_inner(state: &AppState, session_revision: u64) -> Result<NodeDt
             .map_err(session_error)?
             .map(node_dto)
             .ok_or_else(|| invalid_request("no valid entry is selected")),
+        OpenSession::RawDocument { .. } => Err(invalid_request(
+            "command is unavailable for a raw-only document session",
+        )),
     })
 }
 
@@ -464,6 +522,11 @@ fn get_node_summary_inner(
             OpenSession::Entry(session) => {
                 require_selected(session)?;
                 session.selected_node(node_id).map_err(session_error)?
+            }
+            OpenSession::RawDocument { .. } => {
+                return Err(invalid_request(
+                    "command is unavailable for a raw-only document session",
+                ));
             }
         };
         node.map(node_dto)
@@ -485,6 +548,11 @@ fn get_children_inner(
                 require_selected(session)?;
                 session.selected_node(node_id).map_err(session_error)?
             }
+            OpenSession::RawDocument { .. } => {
+                return Err(invalid_request(
+                    "command is unavailable for a raw-only document session",
+                ));
+            }
         }
         .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
         if limit == 0 || cursor > parent.child_count {
@@ -493,6 +561,11 @@ fn get_children_inner(
         match session {
             OpenSession::Document(session) => session.children(node_id, cursor, limit),
             OpenSession::Entry(session) => session.selected_children(node_id, cursor, limit),
+            OpenSession::RawDocument { .. } => {
+                return Err(invalid_request(
+                    "command is unavailable for a raw-only document session",
+                ));
+            }
         }
         .map_err(session_error)?
         .map(node_page_dto)
@@ -510,6 +583,11 @@ fn read_raw_slice_inner(
         match session {
             OpenSession::Document(session) => session.read_raw_text(source_start, length),
             OpenSession::Entry(session) => session.read_raw_text(source_start, length),
+            OpenSession::RawDocument { .. } => {
+                return Err(invalid_request(
+                    "command is unavailable for a raw-only document session",
+                ));
+            }
         }
         .map_err(session_error)?
         .map(text_chunk_dto)
@@ -522,7 +600,7 @@ fn read_selected_entry_bytes_inner(
     offset: u64,
     length: usize,
     session_revision: u64,
-) -> Result<EntryByteChunkDto, IpcError> {
+) -> Result<ByteChunkDto, IpcError> {
     with_entry_session(state, session_revision, |session| {
         if length == 0 {
             return Err(invalid_request("length must be greater than zero"));
@@ -539,11 +617,74 @@ fn read_selected_entry_bytes_inner(
         else {
             return Err(invalid_request("no entry is selected"));
         };
-        Ok(EntryByteChunkDto {
+        Ok(ByteChunkDto {
             start: chunk.start,
             bytes: chunk.bytes,
             has_more: chunk.has_more,
             next_offset: chunk.next_offset,
+        })
+    })
+}
+
+fn read_raw_document_bytes_inner(
+    state: &AppState,
+    offset: u64,
+    length: usize,
+    session_revision: u64,
+) -> Result<ByteChunkDto, IpcError> {
+    with_session(state, session_revision, |session| {
+        let OpenSession::RawDocument { source, .. } = session else {
+            return Err(invalid_request(
+                "command requires a raw-only document session",
+            ));
+        };
+        if length == 0 {
+            return Err(invalid_request("length must be greater than zero"));
+        }
+        let file_size = source.identity().size;
+        if offset > file_size {
+            return Err(invalid_request("offset exceeds raw document length"));
+        }
+        if offset == file_size {
+            if !source.is_current() {
+                return Err(file_changed());
+            }
+            return Ok(ByteChunkDto {
+                start: offset,
+                bytes: Vec::new(),
+                has_more: false,
+                next_offset: None,
+            });
+        }
+
+        let requested = u64::try_from(length)
+            .map_err(|_| invalid_request("length exceeds addressable range"))?
+            .min(128 * 1024)
+            .min(file_size - offset);
+        let requested = usize::try_from(requested)
+            .map_err(|_| internal("raw document range exceeds addressable memory"))?;
+        let chunk = source
+            .read_chunk(offset, requested)
+            .map_err(session_error)?;
+        if !source.is_current() {
+            return Err(file_changed());
+        }
+        if chunk.start != offset || chunk.bytes.is_empty() {
+            return Err(internal("file ended before the raw document range"));
+        }
+        let read = u64::try_from(chunk.bytes.len()).expect("chunk length exceeds u64");
+        let end = offset
+            .checked_add(read)
+            .ok_or_else(|| internal("raw document range overflow"))?;
+        if read > requested as u64 || end > file_size {
+            return Err(internal("raw document range exceeded its requested bounds"));
+        }
+        let has_more = end < file_size;
+        Ok(ByteChunkDto {
+            start: offset,
+            bytes: chunk.bytes,
+            has_more,
+            next_offset: has_more.then_some(end),
         })
     })
 }
@@ -562,6 +703,11 @@ fn read_decoded_text_inner(
                 require_selected(session)?;
                 session.selected_node(node_id).map_err(session_error)?
             }
+            OpenSession::RawDocument { .. } => {
+                return Err(invalid_request(
+                    "command is unavailable for a raw-only document session",
+                ));
+            }
         }
         .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
         if node.kind != JsonKind::String {
@@ -570,6 +716,11 @@ fn read_decoded_text_inner(
         match session {
             OpenSession::Document(session) => session.read_decoded_text(node_id, offset, length),
             OpenSession::Entry(session) => session.read_decoded_text(node_id, offset, length),
+            OpenSession::RawDocument { .. } => {
+                return Err(invalid_request(
+                    "command is unavailable for a raw-only document session",
+                ));
+            }
         }
         .map_err(session_error)?
         .map(text_chunk_dto)
@@ -622,7 +773,7 @@ fn select_entry_inner(
         .ok_or_else(|| internal("session revision overflow"))?;
     let session = guard.1.as_mut().ok_or_else(no_session)?;
     let selection = match session {
-        OpenSession::Document(_) => {
+        OpenSession::Document(_) | OpenSession::RawDocument { .. } => {
             return Err(invalid_request("command requires a JSONL session"));
         }
         OpenSession::Entry(session) => session.select_entry(ordinal).map_err(session_error)?,
@@ -669,7 +820,9 @@ fn with_entry_session<T>(
     operation: impl FnOnce(&JsonlSession) -> Result<T, IpcError>,
 ) -> Result<T, IpcError> {
     with_session(state, session_revision, |session| match session {
-        OpenSession::Document(_) => Err(invalid_request("command requires a JSONL session")),
+        OpenSession::Document(_) | OpenSession::RawDocument { .. } => {
+            Err(invalid_request("command requires a JSONL session"))
+        }
         OpenSession::Entry(session) => operation(session),
     })
 }
@@ -693,7 +846,9 @@ fn with_entry_session_mut<T>(
     }
     let session = guard.1.as_mut().ok_or_else(no_session)?;
     match session {
-        OpenSession::Document(_) => Err(invalid_request("command requires a JSONL session")),
+        OpenSession::Document(_) | OpenSession::RawDocument { .. } => {
+            Err(invalid_request("command requires a JSONL session"))
+        }
         OpenSession::Entry(session) => operation(session),
     }
 }
@@ -1233,10 +1388,12 @@ mod tests {
         assert_eq!(page.entries[0].status, "invalidUtf8");
         assert_eq!(page.entries[1].status, "valid");
 
+        let document =
+            open_file_with_override(&state, path.to_str().unwrap(), Some("json")).unwrap();
+        assert_eq!(document.mode, "document");
+        assert!(document.root.is_none());
         assert_eq!(
-            open_file_with_override(&state, path.to_str().unwrap(), Some("json"))
-                .unwrap_err()
-                .code,
+            document.document_error.as_ref().unwrap().code,
             "unsupported_encoding"
         );
         fs::remove_file(path).unwrap();
@@ -1267,9 +1424,18 @@ mod tests {
         let state = AppState::default();
         let json = temp_path("ipc-route-json-invalid");
         fs::write(&json, b"{").unwrap();
-        let error = open_file_inner(&state, json.to_str().unwrap()).unwrap_err();
-        assert_eq!(error.code, "invalid_json");
-        assert!(error.parse_error.is_some());
+        let summary = open_file_inner(&state, json.to_str().unwrap()).unwrap();
+        assert_eq!(summary.mode, "document");
+        assert!(summary.root.is_none());
+        assert_eq!(
+            summary.document_error.as_ref().unwrap().code,
+            "invalid_json"
+        );
+        assert!(summary
+            .document_error
+            .as_ref()
+            .and_then(|error| error.parse_error.as_ref())
+            .is_some());
         fs::remove_file(json).unwrap();
 
         let encoding = temp_path("ipc-route-encoding").with_extension("blob");
@@ -1811,7 +1977,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_utf8_json_ipc_error_preserves_old_session_and_jsonl_stays_entry_mode() {
+    fn invalid_utf8_json_becomes_raw_document_and_jsonl_stays_entry_mode() {
         let old_path = temp_path("ipc-invalid-utf8-old");
         let json_path = temp_path("ipc-invalid-utf8-json");
         let unknown_path = temp_path("ipc-invalid-utf8-unknown").with_extension("blob");
@@ -1821,15 +1987,23 @@ mod tests {
         let state = AppState::default();
         let old = open_file_inner(&state, old_path.to_str().unwrap()).unwrap();
 
-        let json_error = open_file_inner(&state, json_path.to_str().unwrap()).unwrap_err();
-        assert_eq!(json_error.code, "unsupported_encoding");
-        assert_eq!(get_file_summary_inner(&state).unwrap(), old);
+        let json_summary = open_file_inner(&state, json_path.to_str().unwrap()).unwrap();
+        assert_eq!(json_summary.mode, "document");
+        assert!(json_summary.root.is_none());
+        assert_eq!(
+            json_summary.document_error.as_ref().unwrap().code,
+            "unsupported_encoding"
+        );
+        assert_eq!(json_summary.session_revision, old.session_revision + 1);
 
-        let unknown_error =
-            open_file_with_override(&state, unknown_path.to_str().unwrap(), Some("json"))
-                .unwrap_err();
-        assert_eq!(unknown_error.code, "unsupported_encoding");
-        assert_eq!(get_file_summary_inner(&state).unwrap(), old);
+        let unknown_summary =
+            open_file_with_override(&state, unknown_path.to_str().unwrap(), Some("json")).unwrap();
+        assert_eq!(unknown_summary.mode, "document");
+        assert!(unknown_summary.root.is_none());
+        assert_eq!(
+            unknown_summary.document_error.as_ref().unwrap().code,
+            "unsupported_encoding"
+        );
 
         let jsonl_path = temp_jsonl_path("ipc-invalid-utf8-jsonl");
         fs::write(&jsonl_path, b"{\xff}\n{}\n").unwrap();
@@ -1863,6 +2037,292 @@ mod tests {
     }
 
     #[test]
+    fn raw_only_invalid_json_summary_and_bounded_file_bytes() {
+        let path = temp_path("ipc-raw-only-invalid-json");
+        fs::write(&path, b"{").unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        assert_eq!(summary.mode, "document");
+        assert!(summary.root.is_none());
+        assert!(summary.progress.is_none());
+        let error = summary.document_error.as_ref().expect("document error");
+        assert_eq!(error.code, "invalid_json");
+        let parse = error.parse_error.as_ref().expect("parse error");
+        assert_eq!(parse.message, "expected object key");
+        assert_eq!(parse.byte_offset, 1);
+        assert_eq!(parse.line, 1);
+        assert_eq!(parse.column, 2);
+        let encoded = String::from_utf8(serde_json::to_vec(&summary).unwrap()).unwrap();
+        assert!(encoded.contains("\"documentError\""));
+        assert!(encoded.contains("\"parseError\""));
+        assert!(!encoded.contains("document_error"));
+        assert!(!encoded.contains("parse_error"));
+
+        let first =
+            read_raw_document_bytes_inner(&state, 0, usize::MAX, summary.session_revision).unwrap();
+        assert_eq!(first.start, 0);
+        assert_eq!(first.bytes, b"{");
+        assert!(!first.has_more);
+        assert_eq!(first.next_offset, None);
+        assert_eq!(
+            read_raw_document_bytes_inner(&state, 1, 1, summary.session_revision)
+                .unwrap()
+                .bytes,
+            Vec::<u8>::new()
+        );
+        assert_eq!(
+            read_raw_document_bytes_inner(&state, 0, 0, summary.session_revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            read_raw_document_bytes_inner(&state, 2, 1, summary.session_revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap().session_revision,
+            summary.session_revision
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn raw_only_invalid_utf8_and_unknown_json_override_keep_document_error() {
+        let json_path = temp_path("ipc-raw-only-invalid-utf8");
+        fs::write(&json_path, [0xff, 0x00]).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, json_path.to_str().unwrap()).unwrap();
+        assert_eq!(summary.mode, "document");
+        assert!(summary.root.is_none());
+        assert_eq!(
+            summary.document_error.as_ref().unwrap().code,
+            "unsupported_encoding"
+        );
+        let raw =
+            read_raw_document_bytes_inner(&state, 0, usize::MAX, summary.session_revision).unwrap();
+        assert_eq!(raw.bytes, vec![0xff, 0x00]);
+
+        let unknown_path = temp_path("ipc-raw-only-unknown").with_extension("blob");
+        fs::write(&unknown_path, b"{").unwrap();
+        let unknown =
+            open_file_with_override(&state, unknown_path.to_str().unwrap(), Some("json")).unwrap();
+        assert!(unknown.document_error.is_some());
+        assert_eq!(unknown.mode, "document");
+        assert_eq!(unknown.session_revision, summary.session_revision + 1);
+        fs::remove_file(json_path).unwrap();
+        fs::remove_file(unknown_path).unwrap();
+    }
+
+    #[test]
+    fn raw_document_command_rejects_parsed_sessions_and_has_camel_case_payload() {
+        let document_path = temp_path("ipc-raw-only-parsed-document");
+        fs::write(&document_path, b"{}").unwrap();
+        let state = AppState::default();
+        let document = open_file_inner(&state, document_path.to_str().unwrap()).unwrap();
+        let error =
+            read_raw_document_bytes_inner(&state, 0, 1, document.session_revision).unwrap_err();
+        assert_eq!(error.code, "invalid_request");
+        assert_eq!(
+            error.message,
+            "command requires a raw-only document session"
+        );
+        fs::remove_file(document_path).unwrap();
+
+        let dto = ByteChunkDto {
+            start: 0,
+            bytes: vec![0xff; 128 * 1024],
+            has_more: true,
+            next_offset: Some(128 * 1024),
+        };
+        let encoded = String::from_utf8(serde_json::to_vec(&dto).unwrap()).unwrap();
+        assert!(encoded.contains("hasMore"));
+        assert!(encoded.contains("nextOffset"));
+        assert!(!encoded.contains("has_more"));
+        assert!(!encoded.contains("next_offset"));
+        assert!(encoded.len() < MAX_IPC_PAYLOAD_BYTES);
+    }
+
+    #[test]
+    fn raw_document_bytes_are_capped_and_file_relative_across_chunks() {
+        let path = temp_path("ipc-raw-only-multichunk");
+        let input = vec![0xff; 300 * 1024];
+        fs::write(&path, &input).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        assert!(summary.document_error.is_some());
+
+        let first =
+            read_raw_document_bytes_inner(&state, 0, usize::MAX, summary.session_revision).unwrap();
+        assert_eq!(first.start, 0);
+        assert_eq!(first.bytes.len(), 128 * 1024);
+        assert!(first.bytes.iter().all(|&byte| byte == 0xff));
+        assert!(first.has_more);
+        assert_eq!(first.next_offset, Some(128 * 1024));
+
+        let second = read_raw_document_bytes_inner(
+            &state,
+            first.next_offset.unwrap(),
+            usize::MAX,
+            summary.session_revision,
+        )
+        .unwrap();
+        assert_eq!(second.start, 128 * 1024);
+        assert_eq!(second.bytes.len(), 128 * 1024);
+        assert!(second.has_more);
+        assert_eq!(second.next_offset, Some(256 * 1024));
+
+        let tail = read_raw_document_bytes_inner(
+            &state,
+            second.next_offset.unwrap(),
+            usize::MAX,
+            summary.session_revision,
+        )
+        .unwrap();
+        assert_eq!(tail.start, 256 * 1024);
+        assert_eq!(tail.bytes.len(), 44 * 1024);
+        assert!(!tail.has_more);
+        assert_eq!(tail.next_offset, None);
+        assert_eq!(get_file_summary_inner(&state).unwrap().session_revision, 1);
+
+        let eof = read_raw_document_bytes_inner(&state, input.len() as u64, 1, 1).unwrap();
+        assert_eq!(eof.start, input.len() as u64);
+        assert!(eof.bytes.is_empty());
+        assert!(!eof.has_more);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn raw_document_wrong_sessions_and_stale_revision_are_rejected() {
+        let raw_path = temp_path("ipc-raw-only-stale");
+        let entry_path = temp_jsonl_path("ipc-raw-only-entry");
+        let document_path = temp_path("ipc-raw-only-document");
+        fs::write(&raw_path, [0xff]).unwrap();
+        fs::write(&entry_path, b"{}\n").unwrap();
+        fs::write(&document_path, b"{}").unwrap();
+        let state = AppState::default();
+
+        let raw = open_file_inner(&state, raw_path.to_str().unwrap()).unwrap();
+        let entry = open_file_inner(&state, entry_path.to_str().unwrap()).unwrap();
+        let entry_error =
+            read_raw_document_bytes_inner(&state, 0, 1, entry.session_revision).unwrap_err();
+        assert_eq!(entry_error.code, "invalid_request");
+        assert_eq!(
+            entry_error.message,
+            "command requires a raw-only document session"
+        );
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap().session_revision,
+            entry.session_revision
+        );
+
+        let document = open_file_inner(&state, document_path.to_str().unwrap()).unwrap();
+        let stale = read_raw_document_bytes_inner(&state, 0, 1, raw.session_revision).unwrap_err();
+        assert_eq!(stale.code, "stale_session");
+        assert_eq!(document.session_revision, raw.session_revision + 2);
+
+        fs::remove_file(raw_path).unwrap();
+        fs::remove_file(entry_path).unwrap();
+        fs::remove_file(document_path).unwrap();
+    }
+
+    #[test]
+    fn raw_document_operations_reject_tree_and_entry_commands() {
+        let path = temp_path("ipc-raw-only-command-rejections");
+        fs::write(&path, b"{").unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let revision = summary.session_revision;
+
+        let root_error = get_root_node_inner(&state, revision).unwrap_err();
+        assert_eq!(root_error.code, "invalid_request");
+        assert_eq!(
+            root_error.message,
+            "command is unavailable for a raw-only document session"
+        );
+        assert_eq!(
+            get_node_summary_inner(&state, 0, revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            get_children_inner(&state, 0, 0, 1, revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            read_raw_slice_inner(&state, 0, 1, revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            read_decoded_text_inner(&state, 0, 0, 1, revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            read_selected_entry_bytes_inner(&state, 0, 1, revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            scan_entries_inner(&state, revision).unwrap_err().code,
+            "invalid_request"
+        );
+        assert_eq!(
+            list_entries_inner(&state, 0, 1, revision).unwrap_err().code,
+            "invalid_request"
+        );
+        assert_eq!(
+            select_entry_inner(&state, 0, revision).unwrap_err().code,
+            "invalid_request"
+        );
+        assert_eq!(
+            get_oversized_preview_inner(&state, 0, revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap().session_revision,
+            revision
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn raw_document_identity_changes_are_reported_without_revision_bump() {
+        let path = temp_path("ipc-raw-only-file-change");
+        fs::write(&path, [0xff]).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        fs::write(&path, [0xff, 0xfe]).unwrap();
+
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap_err().code,
+            "file_changed"
+        );
+        assert_eq!(
+            read_raw_document_bytes_inner(&state, 0, 1, summary.session_revision)
+                .unwrap_err()
+                .code,
+            "file_changed"
+        );
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap_err().code,
+            "file_changed"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn selected_entry_bytes_document_command_is_invalid_without_revision_change() {
         let path = temp_path("ipc-selected-entry-document");
         fs::write(&path, b"{\"ok\":true}").unwrap();
@@ -1880,7 +2340,7 @@ mod tests {
 
     #[test]
     fn selected_entry_bytes_dto_uses_camel_case_fields() {
-        let dto = EntryByteChunkDto {
+        let dto = ByteChunkDto {
             start: 3,
             bytes: vec![0xff, 0],
             has_more: true,
@@ -1921,20 +2381,19 @@ mod tests {
     #[test]
     fn failed_open_keeps_previous_session_and_revision() {
         let first = temp_path("ipc-open-first");
-        let invalid = temp_path("ipc-open-invalid");
+        let invalid = temp_path("ipc-open-invalid").with_extension("jsonc");
         let missing = temp_path("ipc-open-missing");
         fs::write(&first, b"{\"name\":\"Ada\"}").unwrap();
         fs::write(&invalid, b"{").unwrap();
         let state = AppState::default();
         let summary = open_file_inner(&state, first.to_str().unwrap()).unwrap();
 
-        let invalid_error = open_file_inner(&state, invalid.to_str().unwrap()).unwrap_err();
-        assert_eq!(invalid_error.code, "invalid_json");
-        let parse_error = invalid_error.parse_error.as_ref().unwrap();
-        assert_eq!(parse_error.message, "expected object key");
-        assert_eq!(parse_error.byte_offset, 1);
-        assert_eq!(parse_error.line, 1);
-        assert_eq!(parse_error.column, 2);
+        assert_eq!(
+            open_file_inner(&state, invalid.to_str().unwrap())
+                .unwrap_err()
+                .code,
+            "unsupported_format"
+        );
         assert_eq!(get_file_summary_inner(&state).unwrap(), summary);
         assert_eq!(
             open_file_inner(&state, missing.to_str().unwrap())

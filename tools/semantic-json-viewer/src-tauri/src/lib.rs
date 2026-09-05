@@ -20,6 +20,7 @@ pub fn run() {
             ipc::get_children,
             ipc::read_raw_slice,
             ipc::read_selected_entry_bytes,
+            ipc::read_raw_document_bytes,
             ipc::read_decoded_text,
             ipc::scan_entries,
             ipc::list_entries,

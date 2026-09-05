@@ -28,6 +28,7 @@ type FileSummary = {
   root: NodeDto | null;
   progress: JsonlProgressDto | null;
   manyInvalidUtf8Warning: boolean;
+  documentError: IpcErrorPayload | null;
   sessionRevision: number;
 };
 
@@ -45,11 +46,13 @@ type AppState = {
   opening: boolean;
   generation: number;
   pendingChoicePath: string | null;
+  pendingChoicePreviousError: IpcErrorPayload | null;
   mobileDrawer: "navigation" | "inspector" | null;
   tabletInspectorOpen: boolean;
   scanInFlight: { generation: number; sessionRevision: number } | null;
   scanQueued: { generation: number; sessionRevision: number } | null;
   scanStoppedRevision: number | null;
+  invalidatedRevision: number | null;
 };
 
 const state: AppState = {
@@ -60,11 +63,13 @@ const state: AppState = {
   opening: false,
   generation: 0,
   pendingChoicePath: null,
+  pendingChoicePreviousError: null,
   mobileDrawer: null,
   tabletInspectorOpen: false,
   scanInFlight: null,
   scanQueued: null,
-  scanStoppedRevision: null
+  scanStoppedRevision: null,
+  invalidatedRevision: null
 };
 
 const appShell = required<HTMLElement>("app-shell");
@@ -185,10 +190,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
-function parseErrorValue(value: unknown): ParseErrorDto | undefined {
+function parseErrorValue(value: unknown, maxByteOffset?: number): ParseErrorDto | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
@@ -196,10 +201,45 @@ function parseErrorValue(value: unknown): ParseErrorDto | undefined {
   const byteOffset = numberValue(value.byteOffset);
   const line = numberValue(value.line);
   const column = numberValue(value.column);
-  if (message === undefined || byteOffset === undefined || line === undefined || column === undefined) {
+  if (message === undefined || byteOffset === undefined || line === undefined || column === undefined
+    || line < 1 || column < 1 || maxByteOffset !== undefined && byteOffset > maxByteOffset) {
     return undefined;
   }
   return { message, byteOffset, line, column };
+}
+
+function nodeDtoValue(value: unknown, size: number): NodeDto | undefined {
+  if (!isRecord(value)) return undefined;
+  const id = numberValue(value.id);
+  const spanStart = numberValue(value.spanStart);
+  const spanEnd = numberValue(value.spanEnd);
+  const kind = typeof value.kind === "string" ? value.kind : undefined;
+  const label = typeof value.label === "string" ? value.label : undefined;
+  const labelHasMore = typeof value.labelHasMore === "boolean" ? value.labelHasMore : undefined;
+  const valuePreview = value.valuePreview === null
+    ? null
+    : typeof value.valuePreview === "string" ? value.valuePreview : undefined;
+  const valueHasMore = typeof value.valueHasMore === "boolean" ? value.valueHasMore : undefined;
+  const childCount = numberValue(value.childCount);
+  const supportedKind = kind === "object" || kind === "array" || kind === "string" || kind === "number"
+    || kind === "true" || kind === "false" || kind === "null";
+  if (id === undefined || spanStart === undefined || spanEnd === undefined || spanStart >= spanEnd || spanEnd > size
+    || !supportedKind || label === undefined || labelHasMore === undefined || valuePreview === undefined
+    || valueHasMore === undefined || childCount === undefined) return undefined;
+  return { id, kind, spanStart, spanEnd, label, labelHasMore, valuePreview, valueHasMore, childCount };
+}
+
+function documentErrorValue(value: unknown, size: number): IpcErrorPayload | null | undefined {
+  if (value === null) return null;
+  if (!isRecord(value) || typeof value.code !== "string" || typeof value.message !== "string") return undefined;
+  if (value.code === "invalid_json") {
+    const parseError = parseErrorValue(value.parseError, size);
+    return parseError ? { code: value.code, message: value.message, parseError } : undefined;
+  }
+  if (value.code === "unsupported_encoding" && !("parseError" in value)) {
+    return { code: value.code, message: value.message };
+  }
+  return undefined;
 }
 
 function ipcError(value: unknown): IpcErrorPayload {
@@ -236,6 +276,10 @@ function handleEntryError(error: unknown): void {
   handleCurrentSessionAsyncError(ipcError(error));
 }
 
+function summaryIsInvalidated(summary: FileSummary): boolean {
+  return state.invalidatedRevision === summary.sessionRevision;
+}
+
 function handleCurrentSessionAsyncError(parsed: IpcErrorPayload, stopEntryIndex = false): void {
   state.error = parsed;
   const summary = state.summary;
@@ -243,6 +287,7 @@ function handleCurrentSessionAsyncError(parsed: IpcErrorPayload, stopEntryIndex 
     state.scanStoppedRevision = summary.sessionRevision;
   }
   if (parsed.code === "file_changed" || parsed.code === "stale_session") {
+    if (summary) state.invalidatedRevision = summary.sessionRevision;
     rawView.clear();
     treeView.clear();
     if (summary?.mode === "entry") {
@@ -271,6 +316,7 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
   state.summary = { ...summary, sessionRevision: selection.sessionRevision };
   state.selectedEntry = selection.entry;
   state.error = null;
+  state.invalidatedRevision = null;
   state.scanQueued = null;
   state.scanStoppedRevision = null;
   entryList.adoptSelection(selection, selection.sessionRevision);
@@ -327,6 +373,7 @@ function handleEntryRevisionUnknown(value: unknown): void {
   state.summary = next;
   state.selectedEntry = null;
   state.error = null;
+  state.invalidatedRevision = null;
   state.scanQueued = null;
   state.scanStoppedRevision = null;
   rawView.clear("Select a valid Entry to open Raw bytes.");
@@ -337,25 +384,48 @@ function handleEntryRevisionUnknown(value: unknown): void {
   if (!next.progress.complete) void scanEntries(generation, next.sessionRevision);
 }
 
-function entrySummaryValue(value: unknown): FileSummary | undefined {
+function fileSummaryValue(value: unknown): FileSummary | undefined {
   if (!isRecord(value)) return undefined;
   const path = typeof value.path === "string" ? value.path : undefined;
   const size = numberValue(value.size);
   const sessionRevision = numberValue(value.sessionRevision);
   const warning = typeof value.manyInvalidUtf8Warning === "boolean" ? value.manyInvalidUtf8Warning : undefined;
-  const progress = jsonlProgressValue(value.progress);
-  if (path === undefined || size === undefined || sessionRevision === undefined || warning === undefined || progress === undefined || value.mode !== "entry") {
+  if (path === undefined || size === undefined || sessionRevision === undefined || warning === undefined) return undefined;
+  const rootValue = value.root;
+  const root = rootValue === null ? null : nodeDtoValue(rootValue, size);
+  const progressValue = value.progress;
+  const progress = progressValue === null ? null : jsonlProgressValue(progressValue);
+  const documentError = documentErrorValue(value.documentError, size);
+  if (rootValue !== null && root === undefined || progressValue !== null && progress === undefined
+    || documentError === undefined) return undefined;
+  const parsedRoot = root ?? null;
+
+  if (value.mode === "entry") {
+    if (parsedRoot !== null || progress === null || documentError !== null) return undefined;
+  } else if (value.mode === "collection") {
+    if (parsedRoot === null || parsedRoot.kind !== "array" || progress !== null || warning || documentError !== null) return undefined;
+  } else if (value.mode === "document") {
+    if (progress !== null || warning) return undefined;
+    if (documentError === null && (parsedRoot === null || parsedRoot.kind === "array")) return undefined;
+    if (documentError !== null && parsedRoot !== null) return undefined;
+  } else {
     return undefined;
   }
   return {
     path,
     size,
-    mode: "entry",
-    root: null,
-    progress,
+    mode: value.mode,
+    root: parsedRoot,
+    progress: progress ?? null,
     manyInvalidUtf8Warning: warning,
+    documentError,
     sessionRevision
   };
+}
+
+function entrySummaryValue(value: unknown): FileSummary | undefined {
+  const summary = fileSummaryValue(value);
+  return summary?.mode === "entry" ? summary : undefined;
 }
 
 function jsonlProgressValue(value: unknown): JsonlProgressDto | undefined {
@@ -453,32 +523,42 @@ function renderSummary(): void {
     return;
   }
 
-  const mode = modeLabel(summary.mode);
+  const invalidated = summaryIsInvalidated(summary);
+  const rawOnly = summary.documentError !== null;
+  const mode = invalidated ? "Unavailable" : rawOnly ? "Raw-only Document" : modeLabel(summary.mode);
   setText(fileName, fileLabel(summary.path));
   setText(filePath, summary.path);
-  setText(fileMode, `${mode} Mode`);
+  setText(fileMode, invalidated ? "Unavailable" : rawOnly ? mode : `${mode} Mode`);
   setText(navigationMode, mode);
-  setText(navigationState.querySelector("strong") as HTMLElement, mode === "Entry" ? "Entry index" : `${mode} outline`);
+  setText(
+    navigationState.querySelector("strong") as HTMLElement,
+    invalidated ? "Unavailable" : rawOnly ? "Raw-only document" : mode === "Entry" ? "Entry index" : `${mode} outline`
+  );
   setText(navigationState.querySelector("span:last-child") as HTMLElement, navigationCopy(summary));
   setText(readerState.querySelector("h3") as HTMLElement, readerTitle(summary));
   setText(readerState.querySelector("p") as HTMLElement, readerCopy(summary));
   setText(inspectorPath, summary.path);
   setText(inspectorSize, `${formatBytes(summary.size)} (${summary.size.toLocaleString()} bytes)`);
-  setText(inspectorMode, `${mode} Mode`);
+  setText(inspectorMode, invalidated ? "Unavailable" : rawOnly ? mode : `${mode} Mode`);
   setText(inspectorRevision, String(summary.sessionRevision));
   const stopped = state.scanStoppedRevision === summary.sessionRevision;
-  setText(inspectorProgress, summary.progress ? stopped ? `Indexing stopped · ${progressLabel(summary.progress)}` : progressLabel(summary.progress) : "Structure loaded");
+  setText(
+    inspectorProgress,
+    invalidated ? "File changed · Raw unavailable" : rawOnly ? "Raw bytes available" : summary.progress ? stopped ? `Indexing stopped · ${progressLabel(summary.progress)}` : progressLabel(summary.progress) : "Structure loaded"
+  );
   inspectorEmpty.hidden = true;
   inspectorWarning.hidden = !summary.manyInvalidUtf8Warning;
   setText(inspectorWarning, "Many entries are not valid UTF-8. The file remains open in byte-safe mode.");
-  setText(statusMode, `${mode} Mode`);
+  setText(statusMode, invalidated ? "Unavailable" : rawOnly ? mode : `${mode} Mode`);
   setText(statusSize, formatBytes(summary.size));
-  setText(statusProgress, statusProgressLabel(summary));
+  setText(statusProgress, invalidated ? "File changed · Raw unavailable" : rawOnly ? "Raw bytes available" : statusProgressLabel(summary));
   statusWarning.hidden = !summary.manyInvalidUtf8Warning;
-  setText(statusReady, state.opening ? "Opening…" : stopped ? "Indexing stopped" : summary.progress && !summary.progress.complete ? "Indexing…" : "Ready");
+  setText(statusReady, invalidated ? "Unavailable" : state.opening ? "Opening…" : stopped ? "Indexing stopped" : summary.progress && !summary.progress.complete ? "Indexing…" : "Ready");
 }
 
 function navigationCopy(summary: FileSummary): string {
+  if (summaryIsInvalidated(summary)) return "File changed · Raw unavailable";
+  if (summary.documentError) return "Raw bytes available.";
   if (summary.mode === "entry" && summary.progress) {
     if (state.scanStoppedRevision === summary.sessionRevision) return `Indexing stopped · ${summary.progress.indexedEntries.toLocaleString()} entries indexed.`;
     return summary.progress.complete ? "Indexed entries are ready." : `${summary.progress.indexedEntries.toLocaleString()} entries indexed so far.`;
@@ -487,12 +567,22 @@ function navigationCopy(summary: FileSummary): string {
 }
 
 function readerTitle(summary: FileSummary): string {
+  if (summaryIsInvalidated(summary)) return "Unavailable";
+  if (summary.documentError) {
+    return summary.documentError.code === "invalid_json" ? "Invalid JSON" : "Unsupported encoding";
+  }
   if (state.scanStoppedRevision === summary.sessionRevision) return "Indexing stopped";
   if (summary.mode === "entry" && summary.progress && !summary.progress.complete) return "Indexing in the background";
   return `${modeLabel(summary.mode)} reader ready`;
 }
 
 function readerCopy(summary: FileSummary): string {
+  if (summaryIsInvalidated(summary)) return "File changed · Raw unavailable";
+  if (summary.documentError) {
+    return summary.documentError.code === "invalid_json"
+      ? "Tree and Semantic are unavailable because this document could not be parsed. Original Raw bytes remain available."
+      : "Tree and Semantic are unavailable. Raw provides Lossy Text and Hex; source bytes are unchanged.";
+  }
   if (summary.mode === "entry" && summary.progress) {
     if (state.scanStoppedRevision === summary.sessionRevision) return `Indexing stopped at ${summary.progress.indexedEntries.toLocaleString()} entries. The partial index remains available.`;
     if (state.selectedEntry?.status === "invalidJson") return "Tree is unavailable. Original Raw bytes are available.";
@@ -516,6 +606,7 @@ function readerCopy(summary: FileSummary): string {
 }
 
 function statusProgressLabel(summary: FileSummary): string {
+  if (summaryIsInvalidated(summary)) return "File changed · Raw unavailable";
   if (!summary.progress) return "Structure ready";
   const progress = state.scanStoppedRevision === summary.sessionRevision
     ? `Indexing stopped · ${summary.progress.indexedEntries.toLocaleString()} indexed`
@@ -604,6 +695,7 @@ async function chooseFile(): Promise<void> {
       return;
     }
     const generation = ++state.generation;
+    state.pendingChoicePreviousError = state.error;
     await openPath(selected, null, generation);
   } catch (error) {
     if (pickerGeneration === state.generation) {
@@ -615,28 +707,59 @@ async function chooseFile(): Promise<void> {
   }
 }
 
+function failClosedSummary(generation: number): void {
+  if (generation !== state.generation) return;
+  state.generation += 1;
+  state.summary = null;
+  state.selectedEntry = null;
+  state.error = { code: "internal", message: "The file summary returned by the backend was invalid." };
+  state.invalidatedRevision = null;
+  state.opening = false;
+  state.selectionBusy = false;
+  state.pendingChoicePath = null;
+  state.pendingChoicePreviousError = null;
+  state.scanQueued = null;
+  state.scanStoppedRevision = null;
+  entryList.clear();
+  treeView.clear();
+  rawView.clear();
+  setActiveView("semantic");
+  render();
+  openButton.focus();
+}
+
 async function openPath(path: string, openAs: "json" | "jsonl" | null, generation: number): Promise<void> {
   try {
-    const summary = await invoke<FileSummary>("open_file", { path, openAs });
+    const value = await invoke<unknown>("open_file", { path, openAs });
     if (generation !== state.generation) return;
+    const summary = fileSummaryValue(value);
+    if (!summary) {
+      failClosedSummary(generation);
+      return;
+    }
     state.summary = summary;
-    state.error = null;
+    state.error = summary.documentError;
+    state.invalidatedRevision = null;
     state.pendingChoicePath = null;
+    state.pendingChoicePreviousError = null;
     state.scanQueued = null;
     state.scanStoppedRevision = null;
     state.opening = false;
     entryList.setOpening(false);
     state.selectedEntry = null;
-    const rootShapeValid = summary.mode === "entry" ? summary.root === null : summary.root !== null;
-    if (!rootShapeValid) {
-      state.error = { code: "internal", message: "The file summary has an inconsistent Tree root." };
-      treeView.clear();
-      rawView.clear("Raw bytes are unavailable for this inconsistent file summary.");
+    if (summary.documentError) {
+      state.selectedEntry = null;
       entryList.setSession(null);
+      treeView.clear();
+      if (!rawView.setRawDocument(summary.sessionRevision, summary.size, summary.documentError)) {
+        failClosedSummary(generation);
+        return;
+      }
       setActiveView("semantic");
       render();
       return;
     }
+    state.error = null;
     treeView.setSession({ mode: summary.mode, sessionRevision: summary.sessionRevision });
     if (summary.root) rawView.setSession(summary.sessionRevision, summary.root);
     else rawView.clear("Select a valid Entry to open Raw bytes.");
@@ -660,6 +783,8 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
       render();
       showModeChoice();
     } else {
+      state.pendingChoicePath = null;
+      state.pendingChoicePreviousError = null;
       render();
       resumeExistingScan();
       openButton.focus();
@@ -770,7 +895,10 @@ modeDialog.addEventListener("close", () => {
   const path = state.pendingChoicePath;
   if ((choice !== "json" && choice !== "jsonl") || !path) {
     state.pendingChoicePath = null;
-    if (state.error?.code === "mode_choice_required") state.error = null;
+    if (state.error?.code === "mode_choice_required") {
+      state.error = state.pendingChoicePreviousError ?? state.summary?.documentError ?? null;
+    }
+    state.pendingChoicePreviousError = null;
     render();
     resumeExistingScan();
     openButton.focus();

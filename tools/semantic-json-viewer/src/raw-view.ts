@@ -33,7 +33,13 @@ type EntryBytesScope = {
   byteEnd: number;
 };
 
-type RawScope = NodeScope | EntryBytesScope;
+type RawDocumentScope = {
+  kind: "rawDocument";
+  size: number;
+  encoding: "utf8" | "invalidUtf8";
+};
+
+type RawScope = NodeScope | EntryBytesScope | RawDocumentScope;
 
 type PageRequest = {
   epoch: number;
@@ -208,6 +214,30 @@ export class RawView {
     return true;
   }
 
+  setRawDocument(revision: number, size: unknown, documentError: unknown): boolean {
+    const scope = rawDocumentScope(size, documentError);
+    if (!scope) {
+      this.clear("Raw-only Document metadata is invalid.");
+      return false;
+    }
+    this.epoch += 1;
+    this.session = { revision };
+    this.scope = scope;
+    this.representation = "lossy";
+    this.resetPages("Select Raw to load the original file bytes.");
+    if (scope.size === 0) {
+      this.pageStarts = [0];
+      this.currentIndex = 0;
+      this.pageStart = 0;
+      this.pageEnd = 0;
+      this.text = "";
+      this.statusMessage = "Empty raw-only Document.";
+    }
+    this.render();
+    if (scope.size > 0 && this.active) this.requestPage(0, 0);
+    return true;
+  }
+
   clear(reason?: string): void {
     this.epoch += 1;
     this.session = null;
@@ -249,7 +279,9 @@ export class RawView {
   }
 
   private setRepresentation(representation: Representation): void {
-    if (this.busy || this.scope?.kind !== "entryBytes" || this.scope.status !== "invalidUtf8") return;
+    const invalidUtf8 = this.scope?.kind === "entryBytes" && this.scope.status === "invalidUtf8"
+      || this.scope?.kind === "rawDocument" && this.scope.encoding === "invalidUtf8";
+    if (this.busy || !invalidUtf8) return;
     if (this.representation === representation) return;
     this.representation = representation;
     if (this.displayBytes) {
@@ -319,21 +351,38 @@ export class RawView {
     try {
       const remaining = request.scopeEnd - request.offset;
       const requestedLength = Math.min(PAGE_BYTES, remaining);
-      if (request.scopeKind === "entryBytes" && scope.kind === "entryBytes") {
-        const value = scope.status === "oversized"
-          ? await invoke<unknown>("get_oversized_preview", {
-            ordinal: scope.entryOrdinal,
-            sessionRevision: request.revision
-          })
-          : await invoke<unknown>("read_selected_entry_bytes", {
+      if ((request.scopeKind === "entryBytes" && scope.kind === "entryBytes")
+        || (request.scopeKind === "rawDocument" && scope.kind === "rawDocument")) {
+        let value: unknown;
+        let byteStatus: "invalidJson" | "invalidUtf8" | "oversized";
+        if (scope.kind === "entryBytes") {
+          byteStatus = scope.status;
+          value = scope.status === "oversized"
+            ? await invoke<unknown>("get_oversized_preview", {
+              ordinal: scope.entryOrdinal,
+              sessionRevision: request.revision
+            })
+            : await invoke<unknown>("read_selected_entry_bytes", {
+              offset: request.offset,
+              length: requestedLength,
+              sessionRevision: request.revision
+            });
+        } else {
+          byteStatus = scope.encoding === "invalidUtf8" ? "invalidUtf8" : "invalidJson";
+          value = await invoke<unknown>("read_raw_document_bytes", {
             offset: request.offset,
             length: requestedLength,
             sessionRevision: request.revision
           });
+        }
         if (!this.isCurrent(request)) return;
-        const result = scope.status === "oversized"
+        const result = byteStatus === "oversized" && scope.kind === "entryBytes"
           ? decodeOversizedPreview(value, request, scope)
-          : decodeInvalidEntryPage(value, request, scope.status);
+          : decodeRawBytePage(
+            value,
+            request,
+            byteStatus === "invalidUtf8" ? "invalidUtf8" : "invalidJson"
+          );
         if ("error" in result) {
           this.failPage(result.error);
           return;
@@ -419,7 +468,11 @@ export class RawView {
         : this.scope.status === "oversized"
           ? "Raw preview loaded."
           : "Original UTF-8 Entry bytes · not reformatted"
-      : result.pageEnd < request.scopeEnd ? "Raw bytes loaded." : "End of raw scope.";
+      : request.scopeKind === "rawDocument" && this.scope?.kind === "rawDocument"
+        ? this.scope.encoding === "invalidUtf8"
+          ? "Original bytes · representation only"
+          : "Original file bytes · not reformatted"
+        : result.pageEnd < request.scopeEnd ? "Raw bytes loaded." : "End of raw scope.";
     this.render();
     this.restoreControl(request, true);
   }
@@ -485,7 +538,8 @@ export class RawView {
   private render(): void {
     const scope = this.scope;
     const busy = this.busy || this.pageRequest !== null;
-    const invalidUtf8 = scope?.kind === "entryBytes" && scope.status === "invalidUtf8";
+    const invalidUtf8 = (scope?.kind === "entryBytes" && scope.status === "invalidUtf8")
+      || (scope?.kind === "rawDocument" && scope.encoding === "invalidUtf8");
     const oversized = scope?.kind === "entryBytes" && scope.status === "oversized";
     this.tab.disabled = this.session === null || scope === null;
     this.tab.setAttribute("aria-disabled", String(this.tab.disabled));
@@ -537,6 +591,21 @@ export class RawView {
       scopeStart(scope) === request.scopeStart &&
       scopeEnd(scope) === request.scopeEnd;
   }
+}
+
+function rawDocumentScope(size: unknown, documentError: unknown): RawDocumentScope | null {
+  if (!safeNonNegativeInteger(size) || !isRecord(documentError)) return null;
+  const code = Reflect.get(documentError, "code");
+  const message = Reflect.get(documentError, "message");
+  if (typeof code !== "string" || typeof message !== "string") return null;
+  const parseError = Reflect.get(documentError, "parseError");
+  if (code === "invalid_json" && isRecord(parseError)) {
+    return { kind: "rawDocument", size, encoding: "utf8" };
+  }
+  if (code === "unsupported_encoding" && (parseError === undefined || parseError === null)) {
+    return { kind: "rawDocument", size, encoding: "invalidUtf8" };
+  }
+  return null;
 }
 
 function entryBytesScope(entry: unknown): EntryBytesScope | null {
@@ -598,49 +667,49 @@ function decodeOversizedPreview(value: unknown, request: PageRequest, scope: Ent
   };
 }
 
-function decodeInvalidEntryPage(
+function decodeRawBytePage(
   value: unknown,
   request: PageRequest,
   status: "invalidJson" | "invalidUtf8"
 ): RawPageResult | { error: string } {
-  if (!isRecord(value)) return { error: "Raw Entry response was not an object." };
+  if (!isRecord(value)) return { error: "Raw byte response was not an object." };
   const start = value.start;
   const rawBytes = value.bytes;
   const hasMore = value.hasMore;
   const nextOffset = value.nextOffset;
   if (!safeNonNegativeInteger(start) || start !== request.offset) {
-    return { error: "Raw Entry response did not match the requested offset." };
+    return { error: "Raw byte response did not match the requested offset." };
   }
-  if (!Array.isArray(rawBytes)) return { error: "Raw Entry response bytes were not an array." };
+  if (!Array.isArray(rawBytes)) return { error: "Raw byte response bytes were not an array." };
   const requestedLength = Math.min(PAGE_BYTES, request.scopeEnd - request.offset);
   if (rawBytes.length <= 0 || rawBytes.length > requestedLength) {
-    return { error: "Raw Entry response length was outside the requested range." };
+    return { error: "Raw byte response length was outside the requested range." };
   }
   const bytes = new Uint8Array(rawBytes.length);
   for (let index = 0; index < rawBytes.length; index += 1) {
     const byte = rawBytes[index];
     if (typeof byte !== "number" || !Number.isInteger(byte) || byte < 0 || byte > 255) {
-      return { error: "Raw Entry response contained an invalid byte." };
+      return { error: "Raw byte response contained an invalid byte." };
     }
     bytes[index] = byte;
   }
-  if (typeof hasMore !== "boolean") return { error: "Raw Entry response hasMore was invalid." };
+  if (typeof hasMore !== "boolean") return { error: "Raw byte response hasMore was invalid." };
   if (nextOffset !== null && !safeNonNegativeInteger(nextOffset)) {
-    return { error: "Raw Entry response nextOffset was invalid." };
+    return { error: "Raw byte response nextOffset was invalid." };
   }
   if (request.offset > Number.MAX_SAFE_INTEGER - bytes.length) {
-    return { error: "Raw Entry response offset overflowed." };
+    return { error: "Raw byte response offset overflowed." };
   }
   const backendEnd = request.offset + bytes.length;
-  if (backendEnd > request.scopeEnd) return { error: "Raw Entry response exceeded the Entry span." };
+  if (backendEnd > request.scopeEnd) return { error: "Raw byte response exceeded the scope." };
   const expectedHasMore = backendEnd < request.scopeEnd;
-  if (hasMore !== expectedHasMore) return { error: "Raw Entry response hasMore did not match its range." };
+  if (hasMore !== expectedHasMore) return { error: "Raw byte response hasMore did not match its range." };
   const expectedNextOffset = expectedHasMore ? backendEnd : null;
-  if (nextOffset !== expectedNextOffset) return { error: "Raw Entry response nextOffset did not match its range." };
+  if (nextOffset !== expectedNextOffset) return { error: "Raw byte response nextOffset did not match its range." };
 
   if (status === "invalidUtf8") {
     const prefixLength = hasMore ? lossyBoundaryPrefix(bytes) : null;
-    if (prefixLength === 0) return { error: "Raw Entry chunk cannot advance at a UTF-8 boundary." };
+    if (prefixLength === 0) return { error: "Raw byte chunk cannot advance at a UTF-8 boundary." };
     const displayBytes = prefixLength === null ? bytes : bytes.slice(0, prefixLength);
     return {
       text: new TextDecoder("utf-8", { fatal: false }).decode(displayBytes),
@@ -652,7 +721,7 @@ function decodeInvalidEntryPage(
   try {
     return { text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), pageEnd: backendEnd };
   } catch {
-    if (!hasMore) return { error: "Raw Entry chunk ended inside an invalid UTF-8 scalar." };
+    if (!hasMore) return { error: "Raw byte chunk ended inside an invalid UTF-8 scalar." };
     for (let trim = 1; trim <= 3; trim += 1) {
       const prefixLength = bytes.length - trim;
       if (prefixLength <= 0) break;
@@ -664,7 +733,7 @@ function decodeInvalidEntryPage(
         // Try the next possible UTF-8 suffix length.
       }
     }
-    return { error: "Raw Entry chunk could not be decoded at a UTF-8 boundary." };
+    return { error: "Raw byte chunk could not be decoded at a UTF-8 boundary." };
   }
 }
 
@@ -709,18 +778,22 @@ function scopeStart(scope: RawScope): number {
 }
 
 function scopeEnd(scope: RawScope): number {
-  return scope.kind === "node" ? scope.node.spanEnd : scope.byteEnd - scope.byteStart;
+  if (scope.kind === "node") return scope.node.spanEnd;
+  return scope.kind === "rawDocument" ? scope.size : scope.byteEnd - scope.byteStart;
 }
 
 function scopeLabel(scope: RawScope | null): string {
   if (!scope) return "Raw bytes";
-  return scope.kind === "node"
-    ? `Node #${scope.node.id} · [${scope.node.spanStart}, ${scope.node.spanEnd})`
-    : `Entry ${scope.entryOrdinal + 1} · ${scope.status === "invalidJson" ? "Invalid JSON" : scope.status === "invalidUtf8" ? "Invalid UTF-8" : "Oversized Entry"} · Entry bytes [0, ${scopeEnd(scope)})`;
+  if (scope.kind === "node") return `Node #${scope.node.id} · [${scope.node.spanStart}, ${scope.node.spanEnd})`;
+  if (scope.kind === "rawDocument") {
+    return `Raw-only Document · ${scope.encoding === "invalidUtf8" ? "Invalid UTF-8" : "Invalid JSON"} · File bytes [0, ${scope.size})`;
+  }
+  return `Entry ${scope.entryOrdinal + 1} · ${scope.status === "invalidJson" ? "Invalid JSON" : scope.status === "invalidUtf8" ? "Invalid UTF-8" : "Oversized Entry"} · Entry bytes [0, ${scopeEnd(scope)})`;
 }
 
 function pageLabel(scope: RawScope, start: number, end: number): string {
   if (scope.kind === "node") return `Bytes [${start}, ${end}) of [${scope.node.spanStart}, ${scope.node.spanEnd})`;
+  if (scope.kind === "rawDocument") return `Bytes [${start}, ${end}) of File [0, ${scope.size})`;
   if (scope.status === "oversized") {
     const tailStart = scopeEnd(scope) - 64 * 1024;
     return `Head [0, 65536) · Tail [${tailStart}, ${scopeEnd(scope)})`;
@@ -731,15 +804,21 @@ function pageLabel(scope: RawScope, start: number, end: number): string {
 function preLabel(scope: RawScope | null, representation: Representation): string {
   if (!scope) return "Raw UTF-8 bytes";
   if (scope.kind === "node") return `Raw UTF-8 bytes for Node #${scope.node.id}`;
+  if (scope.kind === "rawDocument") {
+    return scope.encoding === "invalidUtf8"
+      ? scopeStatusRepresentation(scope, representation)
+      : "Raw UTF-8 bytes for invalid JSON document";
+  }
   if (scope.status === "invalidUtf8") return scopeStatusRepresentation(scope, representation);
   if (scope.status === "oversized") return `Oversized Entry ${scope.entryOrdinal + 1} hexadecimal head and tail preview`;
   return `Raw UTF-8 bytes for Entry ${scope.entryOrdinal + 1}`;
 }
 
-function scopeStatusRepresentation(scope: EntryBytesScope, representation: Representation): string {
+function scopeStatusRepresentation(scope: EntryBytesScope | RawDocumentScope, representation: Representation): string {
+  const subject = scope.kind === "rawDocument" ? "Raw-only Document" : `Entry ${scope.entryOrdinal + 1}`;
   return representation === "hex"
-    ? `Hex bytes for Entry ${scope.entryOrdinal + 1}`
-    : `Lossy UTF-8 preview for Entry ${scope.entryOrdinal + 1}`;
+    ? `Hex bytes for ${subject}`
+    : `Lossy UTF-8 preview for ${subject}`;
 }
 
 function formatHex(start: number, bytes: Uint8Array): string {
