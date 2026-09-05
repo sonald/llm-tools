@@ -42,7 +42,12 @@ try {
   };
 
   for (let ordinal = 1; ordinal <= 60; ordinal += 1) {
-    if (ordinal === 6) {
+    if (ordinal === 40) {
+      writeEntry(JSON.stringify({
+        entry: ordinal,
+        payload: "x".repeat(400 * 1024)
+      }), "\r\n", "valid");
+    } else if (ordinal === 6) {
       writeEntry('{"invalidJson":', ordinal % 2 === 0 ? "\r\n" : "\n", "invalidJson");
     } else if (ordinal === 12) {
       const body = Buffer.concat([
@@ -97,10 +102,14 @@ try {
 
   const size = fs.statSync(outputPath).size;
   const twentieth = records[19];
+  const longValid = records[39];
   const oversized = records[60];
   const afterOversized = records[61];
   if (records.length < 70) throw new Error("fixture must contain at least 70 entries");
   if (!twentieth || twentieth.end > FIRST_CHUNK_BYTES) throw new Error("first 20 entries must fit in the first chunk");
+  if (!longValid || longValid.kind !== "valid" || longValid.end - longValid.start <= 3 * 128 * 1024) {
+    throw new Error("entry 40 must be a valid entry larger than three 128 KiB windows");
+  }
   if (!oversized || oversized.end - oversized.start !== MAX_ENTRY_BYTES + 1) {
     throw new Error("entry 61 must be exactly 16 MiB + 1 byte");
   }
@@ -109,6 +118,7 @@ try {
   if (size <= oversized.end) throw new Error("fixture must contain entries after entry 61");
 
   console.log(`wrote ${records.length} entries (${size} bytes) to ${outputPath}`);
+  console.log(`entry 40 valid range [${longValid.start}, ${longValid.end})`);
   console.log(`entry 61 oversized range [${oversized.start}, ${oversized.end})`);
 } catch (error) {
   try {
