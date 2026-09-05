@@ -276,6 +276,7 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
   entryList.adoptSelection(selection, selection.sessionRevision);
 
   const valid = selection.entry.status === "valid";
+  const invalidJson = selection.entry.status === "invalidJson";
   const rootMatchesStatus = valid ? selection.root !== null : selection.root === null;
   if (!rootMatchesStatus) {
     state.error = { code: "internal", message: "Entry selection returned an inconsistent Tree root." };
@@ -287,10 +288,25 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
       { mode: "entry", sessionRevision: selection.sessionRevision },
       valid ? selection.root : null
     );
-    if (valid && selection.root) rawView.setSession(selection.sessionRevision, selection.root);
-    else rawView.clear("Select a valid Entry to open Raw bytes.");
-    if (valid && (previousView === "tree" || previousView === "raw")) setActiveView(previousView);
-    else setActiveView("semantic");
+    let rawAvailable = false;
+    if (valid && selection.root) {
+      rawView.setSession(selection.sessionRevision, selection.root);
+      rawAvailable = true;
+    } else if (invalidJson) {
+      rawAvailable = rawView.setInvalidJsonEntry(selection.sessionRevision, selection.entry);
+    } else {
+      rawView.clear("Select a valid Entry to open Raw bytes.");
+    }
+    if (invalidJson && !rawAvailable) {
+      state.error = { code: "internal", message: "Invalid JSON Entry Raw bytes could not be opened." };
+      setActiveView("semantic");
+    } else if ((valid || invalidJson) && previousView === "raw") {
+      setActiveView("raw");
+    } else if (valid && previousView === "tree") {
+      setActiveView("tree");
+    } else {
+      setActiveView("semantic");
+    }
   }
   render();
   if (state.summary.progress && !state.summary.progress.complete) {
@@ -477,6 +493,7 @@ function readerTitle(summary: FileSummary): string {
 function readerCopy(summary: FileSummary): string {
   if (summary.mode === "entry" && summary.progress) {
     if (state.scanStoppedRevision === summary.sessionRevision) return `Indexing stopped at ${summary.progress.indexedEntries.toLocaleString()} entries. The partial index remains available.`;
+    if (state.selectedEntry?.status === "invalidJson") return "Tree is unavailable. Original Raw bytes are available.";
     if (state.selectedEntry) {
       const entry = state.selectedEntry;
       return entry.status === "valid"
