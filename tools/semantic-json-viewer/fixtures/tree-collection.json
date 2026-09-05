@@ -1,0 +1,6 @@
+[
+  {"id": 0, "name": "first", "empty": {}},
+  [],
+  {"id": 2, "nested": {"items": [true, false, null]}},
+  "scalar item"
+]
