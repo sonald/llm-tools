@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  publicDir: "src-tauri/icons",
   build: {
     outDir: "dist",
     emptyOutDir: true

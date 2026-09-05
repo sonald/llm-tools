@@ -3,49 +3,108 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f2f4f7" />
     <title>Semantic JSON Viewer</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <main class="shell">
-      <aside class="navigation" aria-label="Entries">
-        <h1>Entries</h1>
-        <p class="empty-note">No file is open.</p>
-      </aside>
-
-      <section class="workspace" aria-label="File viewer">
-        <div class="tabs" role="tablist" aria-label="Viewer modes">
-          <button class="tab is-active" type="button" role="tab" aria-selected="true" data-tab="semantic">
-            Semantic
-          </button>
-          <button class="tab" type="button" role="tab" aria-selected="false" data-tab="tree">
-            Tree
-          </button>
-          <button class="tab" type="button" role="tab" aria-selected="false" data-tab="raw">
-            Raw
-          </button>
+    <div class="app-shell" id="app-shell" aria-busy="false">
+      <header class="topbar" aria-labelledby="app-title">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">{}</span>
+          <h1 id="app-title">Semantic JSON Viewer</h1>
         </div>
-
-        <div class="panel" role="tabpanel" data-panel="semantic">
-          <p>No file is open.</p>
-          <button class="open-file" type="button" disabled>Open File</button>
-          <span class="hint">File opening is not wired yet.</span>
+        <button class="open-button" id="open-file" type="button">Open File <span class="shortcut" aria-hidden="true">Ctrl/Cmd+O</span></button>
+        <div class="file-context" aria-label="Current file">
+          <strong id="file-name">No file open</strong>
+          <span class="file-path" id="file-path">—</span>
+          <span class="mode-pill" id="file-mode">—</span>
         </div>
+        <div class="topbar-spacer"></div>
+        <button class="drawer-toggle" id="navigation-toggle" type="button" aria-controls="navigation" aria-expanded="true">Navigation</button>
+        <button class="drawer-toggle" id="inspector-toggle" type="button" aria-controls="inspector" aria-expanded="true">Inspector</button>
+      </header>
 
-        <div class="panel is-hidden" role="tabpanel" data-panel="tree">
-          <p>No file is open.</p>
+      <div class="error-region" id="error-region" role="alert" aria-live="assertive" hidden>
+        <strong id="error-title">Open failed</strong>
+        <span id="error-message"></span>
+        <span id="error-details"></span>
+      </div>
+
+      <div class="workspace">
+        <aside class="navigation" id="navigation" aria-labelledby="navigation-title">
+          <div class="pane-heading">
+            <h2 id="navigation-title">Navigation</h2>
+            <span class="pane-kicker" id="navigation-mode">—</span>
+          </div>
+          <div class="navigation-state" id="navigation-state" role="status" aria-live="polite">
+            <span class="state-icon" aria-hidden="true">·</span>
+            <strong>No file is open.</strong>
+            <span>Open a local JSON or JSONL file to begin.</span>
+          </div>
+        </aside>
+
+        <main class="reader" id="reader" aria-labelledby="reader-title">
+          <div class="reader-toolbar">
+            <h2 id="reader-title">Semantic</h2>
+            <div class="view-tabs" role="tablist" aria-label="Reader views">
+              <button class="view-tab is-active" id="semantic-tab" type="button" role="tab" aria-selected="true" aria-controls="semantic-panel">Semantic</button>
+              <button class="view-tab" id="tree-tab" type="button" role="tab" aria-selected="false" aria-controls="tree-panel" disabled aria-disabled="true">Tree</button>
+              <button class="view-tab" id="raw-tab" type="button" role="tab" aria-selected="false" aria-controls="raw-panel" disabled aria-disabled="true">Raw</button>
+            </div>
+          </div>
+          <section class="reader-panel" id="semantic-panel" role="tabpanel" aria-labelledby="semantic-tab">
+            <div class="reader-state" id="reader-state" role="status" aria-live="polite">
+              <div class="reader-glyph" aria-hidden="true">⌁</div>
+              <h3>Reader ready</h3>
+              <p>Semantic view will appear here after a file is opened.</p>
+              <button class="secondary-button" id="reader-open" type="button">Open a file</button>
+            </div>
+          </section>
+          <section class="reader-panel" id="tree-panel" role="tabpanel" aria-labelledby="tree-tab" hidden></section>
+          <section class="reader-panel" id="raw-panel" role="tabpanel" aria-labelledby="raw-tab" hidden></section>
+        </main>
+
+        <aside class="inspector" id="inspector" aria-labelledby="inspector-title">
+          <div class="pane-heading">
+            <h2 id="inspector-title">File Inspector</h2>
+            <span class="pane-kicker">read-only</span>
+          </div>
+          <dl class="inspector-list">
+            <div class="inspector-row"><dt>Path</dt><dd class="mono" id="inspector-path">—</dd></div>
+            <div class="inspector-row"><dt>Size</dt><dd id="inspector-size">—</dd></div>
+            <div class="inspector-row"><dt>Mode</dt><dd id="inspector-mode">—</dd></div>
+            <div class="inspector-row"><dt>Revision</dt><dd class="mono" id="inspector-revision">—</dd></div>
+            <div class="inspector-row inspector-progress-row"><dt>Progress</dt><dd id="inspector-progress">—</dd></div>
+          </dl>
+          <p class="warning-note" id="inspector-warning" hidden></p>
+          <p class="inspector-empty" id="inspector-empty">Select a file to inspect its identity and indexing state.</p>
+        </aside>
+      </div>
+
+      <footer class="statusbar" aria-live="polite">
+        <span id="status-mode">—</span>
+        <span id="status-size">—</span>
+        <span id="status-progress">Ready</span>
+        <span class="status-spacer"></span>
+        <span id="status-warning" class="status-warning" hidden>Encoding warning</span>
+        <span id="status-ready" class="status-ready">Ready</span>
+      </footer>
+    </div>
+
+    <dialog class="mode-dialog" id="mode-dialog" aria-labelledby="mode-dialog-title" aria-describedby="mode-dialog-copy">
+      <form method="dialog" class="mode-dialog-form">
+        <h2 id="mode-dialog-title">Choose how to open this file</h2>
+        <p id="mode-dialog-copy">The file type could not be identified automatically.</p>
+        <div class="mode-dialog-actions">
+          <button class="secondary-button" id="mode-cancel" value="cancel" type="submit">Cancel</button>
+          <button class="secondary-button" id="mode-json" value="json" type="submit">Open as JSON</button>
+          <button class="primary-button" id="mode-jsonl" value="jsonl" type="submit">Open as JSONL</button>
         </div>
+      </form>
+    </dialog>
 
-        <div class="panel is-hidden" role="tabpanel" data-panel="raw">
-          <p>No file is open.</p>
-        </div>
-      </section>
-
-      <section class="inspector" aria-label="Inspector">
-        <h1>Inspector</h1>
-        <p class="empty-note">Select a node to inspect it.</p>
-      </section>
-    </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
