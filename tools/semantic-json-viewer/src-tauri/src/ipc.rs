@@ -15,6 +15,7 @@ use crate::jsonl_entry::EntryStatus;
 use crate::jsonl_session::{
     EntrySelection, EntrySummary, JsonlProgress, JsonlSession, OversizedPreview,
 };
+use crate::semantic_detection::{Detection, PlainReason};
 use crate::tree::{NodePage, NodeProjection, TextChunk};
 
 // AppState is a singleton with one session; boxing this variant adds indirection without value.
@@ -75,6 +76,40 @@ pub struct TextChunkDto {
     pub text: String,
     pub has_more: bool,
     pub next_offset: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SemanticTypeDto {
+    PlainText,
+    Markdown,
+    NestedJson,
+    Code,
+    Html,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DetectionSourceDto {
+    ContentDetected,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlainReasonDto {
+    Fallback,
+    JsonParseFailed,
+    SizeLimit,
+    DepthLimit,
+    CumulativeLimit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StringDetectionDto {
+    pub semantic_type: SemanticTypeDto,
+    pub detection_source: DetectionSourceDto,
+    pub plain_reason: Option<PlainReasonDto>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -231,6 +266,15 @@ pub fn read_decoded_text(
     state: State<'_, AppState>,
 ) -> Result<TextChunkDto, IpcError> {
     read_decoded_text_inner(&state, node_id, offset, length, session_revision)
+}
+
+#[tauri::command]
+pub fn get_string_detection(
+    node_id: usize,
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<StringDetectionDto, IpcError> {
+    get_string_detection_inner(&state, node_id, session_revision)
 }
 
 #[tauri::command(async)]
@@ -728,6 +772,46 @@ fn read_decoded_text_inner(
     })
 }
 
+fn get_string_detection_inner(
+    state: &AppState,
+    node_id: usize,
+    session_revision: u64,
+) -> Result<StringDetectionDto, IpcError> {
+    with_session(state, session_revision, |session| {
+        let detection = match session {
+            OpenSession::Document(session) => {
+                let node = session
+                    .node(node_id)
+                    .map_err(session_error)?
+                    .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+                if node.kind != JsonKind::String {
+                    return Err(invalid_request("node does not contain decoded text"));
+                }
+                session.detect_string(node_id).map_err(session_error)?
+            }
+            OpenSession::Entry(session) => {
+                require_selected(session)?;
+                let node = session
+                    .selected_node(node_id)
+                    .map_err(session_error)?
+                    .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+                if node.kind != JsonKind::String {
+                    return Err(invalid_request("node does not contain decoded text"));
+                }
+                session.detect_string(node_id).map_err(session_error)?
+            }
+            OpenSession::RawDocument { .. } => {
+                return Err(invalid_request(
+                    "command is unavailable for a raw-only document session",
+                ));
+            }
+        };
+        detection
+            .map(string_detection_dto)
+            .ok_or_else(|| invalid_request("node does not contain decoded text"))
+    })
+}
+
 fn scan_entries_inner(
     state: &AppState,
     session_revision: u64,
@@ -1006,6 +1090,30 @@ fn text_chunk_dto(chunk: TextChunk) -> TextChunkDto {
         text: chunk.text,
         has_more: chunk.has_more,
         next_offset: chunk.next_offset,
+    }
+}
+
+fn string_detection_dto(detection: Detection) -> StringDetectionDto {
+    let (semantic_type, plain_reason) = match detection {
+        Detection::PlainText(reason) => (
+            SemanticTypeDto::PlainText,
+            Some(match reason {
+                PlainReason::Fallback => PlainReasonDto::Fallback,
+                PlainReason::JsonParseFailed => PlainReasonDto::JsonParseFailed,
+                PlainReason::SizeLimit => PlainReasonDto::SizeLimit,
+                PlainReason::DepthLimit => PlainReasonDto::DepthLimit,
+                PlainReason::CumulativeLimit => PlainReasonDto::CumulativeLimit,
+            }),
+        ),
+        Detection::Markdown => (SemanticTypeDto::Markdown, None),
+        Detection::NestedJson { .. } => (SemanticTypeDto::NestedJson, None),
+        Detection::Code => (SemanticTypeDto::Code, None),
+        Detection::Html => (SemanticTypeDto::Html, None),
+    };
+    StringDetectionDto {
+        semantic_type,
+        detection_source: DetectionSourceDto::ContentDetected,
+        plain_reason,
     }
 }
 
@@ -2480,6 +2588,387 @@ mod tests {
             "file_changed"
         );
 
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn string_detection_returns_only_content_metadata_for_documents_collections_and_entries() {
+        let document_path = temp_path("ipc-string-detection-document");
+        fs::write(
+            &document_path,
+            r##"{"source":"foo();","markdown":"# title","nested":"{\"x\":1}","html":"<p>ok</p>","plain":"hello","invalid":"{bad"}"##,
+        )
+        .unwrap();
+        let state = AppState::default();
+        let document = open_file_inner(&state, document_path.to_str().unwrap()).unwrap();
+        let root = document.root.as_ref().unwrap().id;
+        let children =
+            get_children_inner(&state, root, 0, usize::MAX, document.session_revision).unwrap();
+        let by_label = |label: &str| {
+            children
+                .nodes
+                .iter()
+                .find(|node| node.label == label)
+                .unwrap()
+                .id
+        };
+
+        let source =
+            get_string_detection_inner(&state, by_label("source"), document.session_revision)
+                .unwrap();
+        assert_eq!(source.semantic_type, SemanticTypeDto::Code);
+        assert_eq!(source.detection_source, DetectionSourceDto::ContentDetected);
+        assert_eq!(source.plain_reason, None);
+        assert_eq!(
+            get_string_detection_inner(&state, by_label("markdown"), document.session_revision)
+                .unwrap()
+                .semantic_type,
+            SemanticTypeDto::Markdown
+        );
+        assert_eq!(
+            get_string_detection_inner(&state, by_label("nested"), document.session_revision)
+                .unwrap()
+                .semantic_type,
+            SemanticTypeDto::NestedJson
+        );
+        assert_eq!(
+            get_string_detection_inner(&state, by_label("html"), document.session_revision)
+                .unwrap()
+                .semantic_type,
+            SemanticTypeDto::Html
+        );
+        assert_eq!(
+            get_string_detection_inner(&state, by_label("plain"), document.session_revision)
+                .unwrap()
+                .plain_reason,
+            Some(PlainReasonDto::Fallback)
+        );
+        assert_eq!(
+            get_string_detection_inner(&state, by_label("invalid"), document.session_revision)
+                .unwrap()
+                .plain_reason,
+            Some(PlainReasonDto::JsonParseFailed)
+        );
+
+        let collection_path = temp_path("ipc-string-detection-collection");
+        fs::write(&collection_path, br#"["foo();"]"#).unwrap();
+        let collection = open_file_inner(&state, collection_path.to_str().unwrap()).unwrap();
+        let collection_root = collection.root.as_ref().unwrap().id;
+        let array_string =
+            get_children_inner(&state, collection_root, 0, 1, collection.session_revision)
+                .unwrap()
+                .nodes[0]
+                .id;
+        assert_eq!(
+            get_string_detection_inner(&state, array_string, collection.session_revision)
+                .unwrap()
+                .semantic_type,
+            SemanticTypeDto::PlainText
+        );
+
+        let entry_path = temp_jsonl_path("ipc-string-detection-entry");
+        fs::write(&entry_path, br#"{"source":"foo();"}"#).unwrap();
+        let entry = open_file_inner(&state, entry_path.to_str().unwrap()).unwrap();
+        let selected = select_entry_inner(&state, 0, entry.session_revision).unwrap();
+        let selected_root = selected.root.as_ref().unwrap().id;
+        let selected_child =
+            get_children_inner(&state, selected_root, 0, 1, selected.session_revision)
+                .unwrap()
+                .nodes[0]
+                .id;
+        let selected_detection =
+            get_string_detection_inner(&state, selected_child, selected.session_revision).unwrap();
+        assert_eq!(selected_detection.semantic_type, SemanticTypeDto::Code);
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap().session_revision,
+            selected.session_revision
+        );
+
+        for path in [document_path, collection_path, entry_path] {
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn string_detection_uses_actual_object_keys_and_preserves_metadata_wire_shape() {
+        let path = temp_path("ipc-string-detection-keys");
+        fs::write(&path, br#"{"source":"foo();","source":"foo();"}"#).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let root = summary.root.as_ref().unwrap().id;
+        let children = get_children_inner(&state, root, 0, 10, summary.session_revision)
+            .unwrap()
+            .nodes;
+        assert_eq!(children[0].label, "source");
+        assert_eq!(children[1].label, "source#2");
+        for node in children {
+            assert_eq!(
+                get_string_detection_inner(&state, node.id, summary.session_revision)
+                    .unwrap()
+                    .semantic_type,
+                SemanticTypeDto::Code
+            );
+        }
+
+        let encoded = serde_json::to_vec(
+            &get_string_detection_inner(&state, 1, summary.session_revision).unwrap(),
+        )
+        .unwrap();
+        assert!(encoded.len() < MAX_IPC_PAYLOAD_BYTES);
+        let encoded = String::from_utf8(encoded).unwrap();
+        assert!(encoded.contains("semanticType"));
+        assert!(encoded.contains("plainReason"));
+        assert!(encoded.contains("contentDetected"));
+        assert!(encoded.contains("code"));
+        assert!(!encoded.contains("decoded"));
+        assert!(!encoded.contains("rawLexeme"));
+        assert!(!encoded.contains("nextBudget"));
+        assert!(!encoded.contains("source"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn string_detection_dto_serializes_every_wire_enum_and_null_plain_reason() {
+        let semantic_types = [
+            (SemanticTypeDto::PlainText, "plainText"),
+            (SemanticTypeDto::Markdown, "markdown"),
+            (SemanticTypeDto::NestedJson, "nestedJson"),
+            (SemanticTypeDto::Code, "code"),
+            (SemanticTypeDto::Html, "html"),
+        ];
+        for (semantic_type, wire_value) in semantic_types {
+            let dto = StringDetectionDto {
+                semantic_type,
+                detection_source: DetectionSourceDto::ContentDetected,
+                plain_reason: None,
+            };
+            let encoded = serde_json::to_value(dto).unwrap();
+            assert_eq!(encoded["semanticType"], wire_value);
+            assert_eq!(encoded["detectionSource"], "contentDetected");
+            assert_eq!(encoded["plainReason"], serde_json::Value::Null);
+            assert_eq!(encoded.as_object().unwrap().len(), 3);
+        }
+
+        let plain_reasons = [
+            (PlainReasonDto::Fallback, "fallback"),
+            (PlainReasonDto::JsonParseFailed, "jsonParseFailed"),
+            (PlainReasonDto::SizeLimit, "sizeLimit"),
+            (PlainReasonDto::DepthLimit, "depthLimit"),
+            (PlainReasonDto::CumulativeLimit, "cumulativeLimit"),
+        ];
+        for (plain_reason, wire_value) in plain_reasons {
+            let dto = StringDetectionDto {
+                semantic_type: SemanticTypeDto::PlainText,
+                detection_source: DetectionSourceDto::ContentDetected,
+                plain_reason: Some(plain_reason),
+            };
+            assert_eq!(
+                serde_json::to_value(dto).unwrap()["plainReason"],
+                wire_value
+            );
+        }
+    }
+
+    #[test]
+    fn string_detection_enforces_two_mib_boundary_without_bumping_revision() {
+        let exact_inner = format!(r#"{{"x":"{}"}}"#, "x".repeat(2 * 1024 * 1024 - 8));
+        assert_eq!(exact_inner.len(), 2 * 1024 * 1024);
+        let exact_value = serde_json::to_string(&exact_inner).unwrap();
+        let exact_path = temp_path("ipc-string-detection-exact");
+        fs::write(&exact_path, format!(r#"{{"value":{exact_value}}}"#)).unwrap();
+
+        let over_inner = format!("{exact_inner}x");
+        let over_value = serde_json::to_string(&over_inner).unwrap();
+        let over_path = temp_path("ipc-string-detection-over");
+        fs::write(&over_path, format!(r#"{{"value":{over_value}}}"#)).unwrap();
+
+        let state = AppState::default();
+        let exact = open_file_inner(&state, exact_path.to_str().unwrap()).unwrap();
+        let exact_node = get_children_inner(
+            &state,
+            exact.root.as_ref().unwrap().id,
+            0,
+            1,
+            exact.session_revision,
+        )
+        .unwrap()
+        .nodes[0]
+            .id;
+        assert_eq!(
+            get_string_detection_inner(&state, exact_node, exact.session_revision)
+                .unwrap()
+                .semantic_type,
+            SemanticTypeDto::NestedJson
+        );
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap().session_revision,
+            exact.session_revision
+        );
+
+        let over = open_file_inner(&state, over_path.to_str().unwrap()).unwrap();
+        let over_node = get_children_inner(
+            &state,
+            over.root.as_ref().unwrap().id,
+            0,
+            1,
+            over.session_revision,
+        )
+        .unwrap()
+        .nodes[0]
+            .id;
+        let detection =
+            get_string_detection_inner(&state, over_node, over.session_revision).unwrap();
+        assert_eq!(detection.semantic_type, SemanticTypeDto::PlainText);
+        assert_eq!(detection.plain_reason, Some(PlainReasonDto::SizeLimit));
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap().session_revision,
+            over.session_revision
+        );
+
+        fs::remove_file(exact_path).unwrap();
+        fs::remove_file(over_path).unwrap();
+    }
+
+    #[test]
+    fn string_detection_reports_all_session_and_node_errors_without_mutation() {
+        let no_session = AppState::default();
+        assert_eq!(
+            get_string_detection_inner(&no_session, 0, 0)
+                .unwrap_err()
+                .code,
+            "no_session"
+        );
+
+        let document_path = temp_path("ipc-string-detection-errors-document");
+        fs::write(&document_path, br#"{"value":"hello","number":1}"#).unwrap();
+        let state = AppState::default();
+        let document = open_file_inner(&state, document_path.to_str().unwrap()).unwrap();
+        let root = document.root.as_ref().unwrap().id;
+        let children = get_children_inner(&state, root, 0, 10, document.session_revision)
+            .unwrap()
+            .nodes;
+        let string_id = children[0].id;
+        let number_id = children[1].id;
+        assert_eq!(
+            get_string_detection_inner(&state, 999, document.session_revision)
+                .unwrap_err()
+                .message,
+            "node 999 was not found"
+        );
+        assert_eq!(
+            get_string_detection_inner(&state, number_id, document.session_revision)
+                .unwrap_err()
+                .message,
+            "node does not contain decoded text"
+        );
+        assert_eq!(
+            get_string_detection_inner(&state, string_id, document.session_revision)
+                .unwrap()
+                .semantic_type,
+            SemanticTypeDto::PlainText
+        );
+
+        let entry_path = temp_jsonl_path("ipc-string-detection-errors-entry");
+        fs::write(&entry_path, br#"{"value":"hello"}"#).unwrap();
+        let entry = open_file_inner(&state, entry_path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            get_string_detection_inner(&state, 0, entry.session_revision)
+                .unwrap_err()
+                .message,
+            "no valid entry is selected"
+        );
+        let selected = select_entry_inner(&state, 0, entry.session_revision).unwrap();
+        let selected_value = get_children_inner(
+            &state,
+            selected.root.as_ref().unwrap().id,
+            0,
+            1,
+            selected.session_revision,
+        )
+        .unwrap()
+        .nodes[0]
+            .id;
+        assert_eq!(
+            get_string_detection_inner(&state, selected_value, selected.session_revision)
+                .unwrap()
+                .semantic_type,
+            SemanticTypeDto::PlainText
+        );
+
+        let raw_path = temp_path("ipc-string-detection-errors-raw");
+        fs::write(&raw_path, b"{").unwrap();
+        let raw = open_file_inner(&state, raw_path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            get_string_detection_inner(&state, 0, raw.session_revision)
+                .unwrap_err()
+                .message,
+            "command is unavailable for a raw-only document session"
+        );
+        assert_eq!(
+            get_string_detection_inner(&state, 0, document.session_revision)
+                .unwrap_err()
+                .code,
+            "stale_session"
+        );
+
+        let changed_path = temp_path("ipc-string-detection-errors-changed");
+        fs::write(&changed_path, br#"{"value":"hello"}"#).unwrap();
+        let changed = open_file_inner(&state, changed_path.to_str().unwrap()).unwrap();
+        let before = fs::metadata(&changed_path).unwrap().modified().unwrap();
+        let mut timestamp_changed = false;
+        for _ in 0..100 {
+            fs::write(&changed_path, br#"{"value":"world"}"#).unwrap();
+            if fs::metadata(&changed_path).unwrap().modified().unwrap() != before {
+                timestamp_changed = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(
+            timestamp_changed,
+            "filesystem did not expose modified timestamp change"
+        );
+        assert_eq!(
+            get_string_detection_inner(&state, 1, changed.session_revision)
+                .unwrap_err()
+                .code,
+            "file_changed"
+        );
+        let next_path = temp_path("ipc-string-detection-errors-next");
+        fs::write(&next_path, br#"{"value":"next"}"#).unwrap();
+        let next = open_file_inner(&state, next_path.to_str().unwrap()).unwrap();
+        assert_eq!(next.session_revision, changed.session_revision + 1);
+
+        for path in [document_path, entry_path, raw_path, changed_path, next_path] {
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn string_detection_payload_never_contains_source_sentinel() {
+        let path = temp_path("ipc-string-detection-sentinel");
+        let sentinel = "STRING_DETECTION_SENTINEL_SHOULD_NOT_ESCAPE";
+        fs::write(&path, format!(r#"{{"source":"{sentinel}"}}"#)).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let child = get_children_inner(
+            &state,
+            summary.root.as_ref().unwrap().id,
+            0,
+            1,
+            summary.session_revision,
+        )
+        .unwrap()
+        .nodes[0]
+            .id;
+        let payload = serde_json::to_vec(
+            &get_string_detection_inner(&state, child, summary.session_revision).unwrap(),
+        )
+        .unwrap();
+        assert!(payload.len() < MAX_IPC_PAYLOAD_BYTES);
+        assert!(!payload
+            .windows(sentinel.len())
+            .any(|window| window == sentinel.as_bytes()));
         fs::remove_file(path).unwrap();
     }
 }

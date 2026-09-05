@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::file_source::FileSource;
 use crate::json::ParseError;
+use crate::semantic_detection::Detection;
 use crate::tree::{NodePage, NodeProjection, TextChunk, TreeDocument};
 
 #[derive(Debug)]
@@ -136,6 +137,11 @@ impl DocumentSession {
     ) -> io::Result<Option<TextChunk>> {
         self.ensure_current()?;
         Ok(self.tree.read_decoded_text(node_id, offset, requested_len))
+    }
+
+    pub fn detect_string(&self, node_id: usize) -> io::Result<Option<Detection>> {
+        self.ensure_current()?;
+        Ok(self.tree.detect_string(node_id))
     }
 }
 

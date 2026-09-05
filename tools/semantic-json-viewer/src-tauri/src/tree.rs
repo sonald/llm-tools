@@ -3,6 +3,7 @@ use std::str;
 use crate::json::{
     parse_json_owned, ChildLocator, JsonKind, JsonNode, ParseError, ParsedJson, SourceSpan,
 };
+use crate::semantic_detection::{detect, Detection, NestedBudget};
 
 const MAX_LABEL_OR_VALUE_CHARS: usize = 256;
 const MAX_PAGE_SIZE: usize = 200;
@@ -73,6 +74,19 @@ impl TreeDocument {
         }
         let decoded = node.decoded.as_deref()?;
         chunk_text(decoded, offset, requested_len)
+    }
+
+    pub fn detect_string(&self, node_id: usize) -> Option<Detection> {
+        let node = self.parsed.node_at(node_id)?;
+        if node.kind != JsonKind::String {
+            return None;
+        }
+        let decoded = node.decoded.as_deref()?;
+        let key = match &node.locator {
+            ChildLocator::ObjectKey { key, .. } => Some(key.as_str()),
+            ChildLocator::Root | ChildLocator::ArrayIndex(_) => None,
+        };
+        Some(detect(decoded, key, NestedBudget::default()))
     }
 
     fn projection(&self, id: usize, node: &JsonNode) -> NodeProjection {

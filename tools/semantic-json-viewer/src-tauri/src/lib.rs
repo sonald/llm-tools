@@ -23,6 +23,7 @@ pub fn run() {
             ipc::read_selected_entry_bytes,
             ipc::read_raw_document_bytes,
             ipc::read_decoded_text,
+            ipc::get_string_detection,
             ipc::scan_entries,
             ipc::list_entries,
             ipc::select_entry,
