@@ -277,6 +277,7 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
 
   const valid = selection.entry.status === "valid";
   const invalidJson = selection.entry.status === "invalidJson";
+  const invalidUtf8 = selection.entry.status === "invalidUtf8";
   const rootMatchesStatus = valid ? selection.root !== null : selection.root === null;
   if (!rootMatchesStatus) {
     state.error = { code: "internal", message: "Entry selection returned an inconsistent Tree root." };
@@ -292,15 +293,15 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
     if (valid && selection.root) {
       rawView.setSession(selection.sessionRevision, selection.root);
       rawAvailable = true;
-    } else if (invalidJson) {
-      rawAvailable = rawView.setInvalidJsonEntry(selection.sessionRevision, selection.entry);
+    } else if (invalidJson || invalidUtf8) {
+      rawAvailable = rawView.setInvalidEntry(selection.sessionRevision, selection.entry);
     } else {
       rawView.clear("Select a valid Entry to open Raw bytes.");
     }
-    if (invalidJson && !rawAvailable) {
-      state.error = { code: "internal", message: "Invalid JSON Entry Raw bytes could not be opened." };
+    if ((invalidJson || invalidUtf8) && !rawAvailable) {
+      state.error = { code: "internal", message: "Invalid Entry Raw bytes could not be opened." };
       setActiveView("semantic");
-    } else if ((valid || invalidJson) && previousView === "raw") {
+    } else if ((valid || invalidJson || invalidUtf8) && previousView === "raw") {
       setActiveView("raw");
     } else if (valid && previousView === "tree") {
       setActiveView("tree");
@@ -494,6 +495,7 @@ function readerCopy(summary: FileSummary): string {
   if (summary.mode === "entry" && summary.progress) {
     if (state.scanStoppedRevision === summary.sessionRevision) return `Indexing stopped at ${summary.progress.indexedEntries.toLocaleString()} entries. The partial index remains available.`;
     if (state.selectedEntry?.status === "invalidJson") return "Tree is unavailable. Original Raw bytes are available.";
+    if (state.selectedEntry?.status === "invalidUtf8") return "Invalid UTF-8 Entry selected. Raw provides Lossy Text and Hex. Source bytes are unchanged.";
     if (state.selectedEntry) {
       const entry = state.selectedEntry;
       return entry.status === "valid"

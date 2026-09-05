@@ -226,6 +226,12 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .raw-scope { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 
+.raw-representation-tabs { height: auto; min-height: 32px; flex: 0 0 auto; }
+
+.raw-representation-tabs .view-tab { min-height: 32px; }
+
+.raw-representation-note { min-height: 15px; color: var(--muted); font-size: 9px; line-height: 1.45; overflow-wrap: anywhere; }
+
 .raw-controls { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 6px; }
 
 .raw-controls .secondary-button { min-height: 29px; padding: 0 9px; font-size: 10px; }

@@ -24,14 +24,15 @@ type NodeScope = {
   node: NodeDto;
 };
 
-type InvalidJsonEntryScope = {
-  kind: "invalidJsonEntry";
+type EntryBytesScope = {
+  kind: "entryBytes";
+  status: "invalidJson" | "invalidUtf8";
   entryOrdinal: number;
   byteStart: number;
   byteEnd: number;
 };
 
-type RawScope = NodeScope | InvalidJsonEntryScope;
+type RawScope = NodeScope | EntryBytesScope;
 
 type PageRequest = {
   epoch: number;
@@ -54,7 +55,10 @@ type FocusControl = "previous" | "next" | "retry" | null;
 type RawPageResult = {
   text: string;
   pageEnd: number;
+  displayBytes?: Uint8Array;
 };
+
+type Representation = "lossy" | "hex";
 
 const PAGE_BYTES = 128 * 1024;
 
@@ -68,12 +72,17 @@ export class RawView {
   private readonly previous: HTMLButtonElement;
   private readonly next: HTMLButtonElement;
   private readonly retry: HTMLButtonElement;
+  private readonly representationTabs: HTMLElement;
+  private readonly lossyTab: HTMLButtonElement;
+  private readonly hexTab: HTMLButtonElement;
+  private readonly representationNote: HTMLElement;
   private readonly pre: HTMLPreElement;
   private session: RawSession | null = null;
   private scope: RawScope | null = null;
   private text: string | null = null;
   private pageStart: number | null = null;
   private pageEnd: number | null = null;
+  private displayBytes: Uint8Array | null = null;
   private pageStarts: number[] = [];
   private currentIndex = -1;
   private failedPage: FailedPage | null = null;
@@ -81,6 +90,7 @@ export class RawView {
   private statusMessage = "Select a node to open its original bytes.";
   private busy = false;
   private active = false;
+  private representation: Representation = "lossy";
   private epoch = 0;
 
   constructor(options: RawViewOptions) {
@@ -111,6 +121,29 @@ export class RawView {
     controls.append(this.previous, this.next, this.retry);
     header.append(controls);
 
+    this.representationTabs = document.createElement("div");
+    this.representationTabs.className = "view-tabs raw-representation-tabs";
+    this.representationTabs.setAttribute("role", "tablist");
+    this.representationTabs.setAttribute("aria-label", "Invalid UTF-8 representation");
+    this.lossyTab = document.createElement("button");
+    this.lossyTab.className = "view-tab";
+    this.lossyTab.type = "button";
+    this.lossyTab.setAttribute("role", "tab");
+    this.lossyTab.id = "raw-lossy-tab";
+    this.lossyTab.setAttribute("aria-controls", "raw-chunk");
+    this.lossyTab.textContent = "Lossy Text";
+    this.hexTab = document.createElement("button");
+    this.hexTab.className = "view-tab";
+    this.hexTab.type = "button";
+    this.hexTab.setAttribute("role", "tab");
+    this.hexTab.id = "raw-hex-tab";
+    this.hexTab.setAttribute("aria-controls", "raw-chunk");
+    this.hexTab.textContent = "Hex";
+    this.representationTabs.append(this.lossyTab, this.hexTab);
+    this.representationNote = document.createElement("div");
+    this.representationNote.className = "raw-representation-note";
+    this.representationNote.setAttribute("role", "note");
+
     this.pageLabel = document.createElement("div");
     this.pageLabel.className = "raw-page-label";
     this.status = document.createElement("div");
@@ -119,9 +152,10 @@ export class RawView {
     this.status.setAttribute("aria-live", "polite");
     this.pre = document.createElement("pre");
     this.pre.className = "raw-chunk";
+    this.pre.id = "raw-chunk";
     this.pre.tabIndex = 0;
 
-    this.panel.replaceChildren(header, this.pageLabel, this.status, this.pre);
+    this.panel.replaceChildren(header, this.representationTabs, this.representationNote, this.pageLabel, this.status, this.pre);
     this.previous.addEventListener("click", () => {
       this.previous.focus();
       this.previousPage();
@@ -134,6 +168,15 @@ export class RawView {
       this.retry.focus();
       this.retryPage();
     });
+    this.lossyTab.addEventListener("click", () => {
+      this.lossyTab.focus();
+      this.setRepresentation("lossy");
+    });
+    this.hexTab.addEventListener("click", () => {
+      this.hexTab.focus();
+      this.setRepresentation("hex");
+    });
+    this.representationTabs.addEventListener("keydown", (event) => this.handleRepresentationKeydown(event));
     this.clear();
   }
 
@@ -141,13 +184,14 @@ export class RawView {
     this.epoch += 1;
     this.session = root ? { revision } : null;
     this.scope = root ? { kind: "node", node: root } : null;
+    this.representation = "lossy";
     this.resetPages(root ? "Select Raw to load the original bytes." : "Select a valid node to open its original bytes.");
     this.render();
     if (root && this.active) this.requestPage(root.spanStart, 0);
   }
 
-  setInvalidJsonEntry(revision: number, entry: EntryDto): boolean {
-    const scope = invalidJsonEntryScope(entry);
+  setInvalidEntry(revision: number, entry: EntryDto): boolean {
+    const scope = entryBytesScope(entry);
     if (!scope) {
       this.clear("Raw bytes are unavailable because the Entry location is invalid.");
       return false;
@@ -155,6 +199,7 @@ export class RawView {
     this.epoch += 1;
     this.session = { revision };
     this.scope = scope;
+    this.representation = "lossy";
     this.resetPages("Select Raw to load the original Entry bytes.");
     this.render();
     if (this.active) this.requestPage(0, 0);
@@ -173,6 +218,7 @@ export class RawView {
     if (!this.session) return;
     this.epoch += 1;
     this.scope = { kind: "node", node };
+    this.representation = "lossy";
     this.resetPages("Select Raw to load the original bytes.");
     this.render();
     if (this.active) this.requestPage(node.spanStart, 0);
@@ -182,14 +228,14 @@ export class RawView {
     if (this.busy === busy) return;
     this.busy = busy;
     this.render();
-    if (!busy && this.active && this.session && this.scope && this.text === null && !this.pageRequest && !this.failedPage) {
+    if (!busy && this.active && this.session && this.scope && this.text === null && this.displayBytes === null && !this.pageRequest && !this.failedPage) {
       this.requestPage(scopeStart(this.scope), 0);
     }
   }
 
   activate(): void {
     this.active = true;
-    if (!this.session || !this.scope || this.pageRequest || this.text !== null || this.failedPage) {
+    if (!this.session || !this.scope || this.pageRequest || this.text !== null || this.displayBytes !== null || this.failedPage) {
       this.render();
       return;
     }
@@ -200,10 +246,39 @@ export class RawView {
     this.active = false;
   }
 
+  private setRepresentation(representation: Representation): void {
+    if (this.busy || this.scope?.kind !== "entryBytes" || this.scope.status !== "invalidUtf8") return;
+    if (this.representation === representation) return;
+    this.representation = representation;
+    if (this.displayBytes) {
+      this.text = representation === "hex"
+        ? formatHex(this.pageStart ?? 0, this.displayBytes)
+        : new TextDecoder("utf-8", { fatal: false }).decode(this.displayBytes);
+    }
+    this.render();
+  }
+
+  private handleRepresentationKeydown(event: KeyboardEvent): void {
+    const target = event.target;
+    if (!(target instanceof HTMLButtonElement)) return;
+    let representation: Representation | null = null;
+    if (event.key === "Home") representation = "lossy";
+    if (event.key === "End") representation = "hex";
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      representation = this.representation === "lossy" ? "hex" : "lossy";
+    }
+    if (!representation) return;
+    event.preventDefault();
+    if (this.busy) return;
+    this.setRepresentation(representation);
+    (representation === "lossy" ? this.lossyTab : this.hexTab).focus();
+  }
+
   private resetPages(statusMessage: string): void {
     this.text = null;
     this.pageStart = null;
     this.pageEnd = null;
+    this.displayBytes = null;
     this.pageStarts = [];
     this.currentIndex = -1;
     this.failedPage = null;
@@ -242,14 +317,14 @@ export class RawView {
     try {
       const remaining = request.scopeEnd - request.offset;
       const requestedLength = Math.min(PAGE_BYTES, remaining);
-      if (request.scopeKind === "invalidJsonEntry") {
+      if (request.scopeKind === "entryBytes" && scope.kind === "entryBytes") {
         const value = await invoke<unknown>("read_selected_entry_bytes", {
           offset: request.offset,
           length: requestedLength,
           sessionRevision: request.revision
         });
         if (!this.isCurrent(request)) return;
-        const result = decodeInvalidJsonEntryPage(value, request);
+        const result = decodeInvalidEntryPage(value, request, scope.status);
         if ("error" in result) {
           this.failPage(result.error);
           return;
@@ -325,9 +400,14 @@ export class RawView {
     this.currentIndex = request.historyIndex;
     this.pageStart = request.offset;
     this.pageEnd = result.pageEnd;
-    this.text = result.text;
-    this.statusMessage = request.scopeKind === "invalidJsonEntry"
-      ? "Original UTF-8 Entry bytes · not reformatted"
+    this.displayBytes = result.displayBytes ?? null;
+    this.text = this.displayBytes && this.representation === "hex"
+      ? formatHex(request.offset, this.displayBytes)
+      : result.text;
+    this.statusMessage = request.scopeKind === "entryBytes"
+      ? this.scope?.kind === "entryBytes" && this.scope.status === "invalidUtf8"
+        ? "Original bytes · representation only"
+        : "Original UTF-8 Entry bytes · not reformatted"
       : result.pageEnd < request.scopeEnd ? "Raw bytes loaded." : "End of raw scope.";
     this.render();
     this.restoreControl(request, true);
@@ -394,6 +474,7 @@ export class RawView {
   private render(): void {
     const scope = this.scope;
     const busy = this.busy || this.pageRequest !== null;
+    const invalidUtf8 = scope?.kind === "entryBytes" && scope.status === "invalidUtf8";
     this.tab.disabled = this.session === null || scope === null;
     this.tab.setAttribute("aria-disabled", String(this.tab.disabled));
     this.panel.setAttribute("aria-busy", String(busy));
@@ -402,9 +483,29 @@ export class RawView {
       ? pageLabel(scope, this.pageStart, this.pageEnd)
       : "No raw chunk loaded.";
     this.status.textContent = this.statusMessage;
-    this.pre.hidden = this.text === null;
+    this.representationTabs.hidden = !invalidUtf8;
+    this.lossyTab.setAttribute("aria-selected", String(this.representation === "lossy"));
+    this.hexTab.setAttribute("aria-selected", String(this.representation === "hex"));
+    this.lossyTab.classList.toggle("is-active", this.representation === "lossy");
+    this.hexTab.classList.toggle("is-active", this.representation === "hex");
+    this.lossyTab.tabIndex = this.representation === "lossy" ? 0 : -1;
+    this.hexTab.tabIndex = this.representation === "hex" ? 0 : -1;
+    this.representationNote.hidden = !invalidUtf8;
+    this.representationNote.textContent = invalidUtf8
+      ? this.representation === "lossy"
+        ? "This is a lossy preview. The source bytes have not been modified."
+        : "Original bytes · 16 bytes per row"
+      : "";
+    this.pre.hidden = this.text === null && this.displayBytes === null;
     this.pre.textContent = this.text ?? "";
-    this.pre.setAttribute("aria-label", preLabel(scope));
+    this.pre.setAttribute("aria-label", preLabel(scope, this.representation));
+    if (invalidUtf8) {
+      this.pre.setAttribute("role", "tabpanel");
+      this.pre.setAttribute("aria-labelledby", this.representation === "lossy" ? this.lossyTab.id : this.hexTab.id);
+    } else {
+      this.pre.removeAttribute("role");
+      this.pre.removeAttribute("aria-labelledby");
+    }
     this.previous.disabled = busy || this.currentIndex <= 0;
     this.next.disabled = busy || scope === null || this.pageEnd === null || this.pageEnd >= scopeEnd(scope);
     this.retry.hidden = this.failedPage === null;
@@ -422,18 +523,22 @@ export class RawView {
   }
 }
 
-function invalidJsonEntryScope(entry: unknown): InvalidJsonEntryScope | null {
-  if (!isRecord(entry) || entry.status !== "invalidJson" || !isRecord(entry.location)) return null;
+function entryBytesScope(entry: unknown): EntryBytesScope | null {
+  if (!isRecord(entry) || (entry.status !== "invalidJson" && entry.status !== "invalidUtf8") || !isRecord(entry.location)) return null;
   const entryOrdinal = entry.location.entryOrdinal;
   const byteStart = entry.location.byteStart;
   const byteEnd = entry.location.byteEnd;
   if (!safeNonNegativeInteger(entryOrdinal) || !safeNonNegativeInteger(byteStart) || !safeNonNegativeInteger(byteEnd) || byteEnd <= byteStart) {
     return null;
   }
-  return { kind: "invalidJsonEntry", entryOrdinal, byteStart, byteEnd };
+  return { kind: "entryBytes", status: entry.status, entryOrdinal, byteStart, byteEnd };
 }
 
-function decodeInvalidJsonEntryPage(value: unknown, request: PageRequest): RawPageResult | { error: string } {
+function decodeInvalidEntryPage(
+  value: unknown,
+  request: PageRequest,
+  status: "invalidJson" | "invalidUtf8"
+): RawPageResult | { error: string } {
   if (!isRecord(value)) return { error: "Raw Entry response was not an object." };
   const start = value.start;
   const rawBytes = value.bytes;
@@ -469,6 +574,17 @@ function decodeInvalidJsonEntryPage(value: unknown, request: PageRequest): RawPa
   const expectedNextOffset = expectedHasMore ? backendEnd : null;
   if (nextOffset !== expectedNextOffset) return { error: "Raw Entry response nextOffset did not match its range." };
 
+  if (status === "invalidUtf8") {
+    const prefixLength = hasMore ? lossyBoundaryPrefix(bytes) : null;
+    if (prefixLength === 0) return { error: "Raw Entry chunk cannot advance at a UTF-8 boundary." };
+    const displayBytes = prefixLength === null ? bytes : bytes.slice(0, prefixLength);
+    return {
+      text: new TextDecoder("utf-8", { fatal: false }).decode(displayBytes),
+      pageEnd: prefixLength === null ? backendEnd : request.offset + prefixLength,
+      displayBytes
+    };
+  }
+
   try {
     return { text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), pageEnd: backendEnd };
   } catch {
@@ -477,7 +593,8 @@ function decodeInvalidJsonEntryPage(value: unknown, request: PageRequest): RawPa
       const prefixLength = bytes.length - trim;
       if (prefixLength <= 0) break;
       try {
-        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, prefixLength));
+        const displayBytes = bytes.slice(0, prefixLength);
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(displayBytes);
         return { text, pageEnd: request.offset + prefixLength };
       } catch {
         // Try the next possible UTF-8 suffix length.
@@ -485,6 +602,42 @@ function decodeInvalidJsonEntryPage(value: unknown, request: PageRequest): RawPa
     }
     return { error: "Raw Entry chunk could not be decoded at a UTF-8 boundary." };
   }
+}
+
+function lossyBoundaryPrefix(bytes: Uint8Array): number | null {
+  for (let tailLength = 1; tailLength <= 3; tailLength += 1) {
+    const prefixLength = bytes.length - tailLength;
+    if (prefixLength < 0) continue;
+    const lead = bytes[prefixLength];
+    const width = utf8ScalarWidth(lead);
+    if (width === 0 || tailLength >= width) continue;
+    if (!utf8ScalarPrefix(bytes, prefixLength, tailLength, width)) continue;
+    return prefixLength;
+  }
+  return null;
+}
+
+function utf8ScalarWidth(lead: number): number {
+  if (lead >= 0xc2 && lead <= 0xdf) return 2;
+  if (lead >= 0xe0 && lead <= 0xef) return 3;
+  if (lead >= 0xf0 && lead <= 0xf4) return 4;
+  return 0;
+}
+
+function utf8ScalarPrefix(bytes: Uint8Array, start: number, tailLength: number, width: number): boolean {
+  if (tailLength >= width) return false;
+  for (let index = start + 1; index < bytes.length; index += 1) {
+    const byte = bytes[index];
+    if (byte < 0x80 || byte > 0xbf) return false;
+    if (index === start + 1) {
+      const lead = bytes[start];
+      if (lead === 0xe0 && byte < 0xa0) return false;
+      if (lead === 0xed && byte > 0x9f) return false;
+      if (lead === 0xf0 && byte < 0x90) return false;
+      if (lead === 0xf4 && byte > 0x8f) return false;
+    }
+  }
+  return bytes.length - start === tailLength;
 }
 
 function scopeStart(scope: RawScope): number {
@@ -499,7 +652,7 @@ function scopeLabel(scope: RawScope | null): string {
   if (!scope) return "Raw bytes";
   return scope.kind === "node"
     ? `Node #${scope.node.id} · [${scope.node.spanStart}, ${scope.node.spanEnd})`
-    : `Entry ${scope.entryOrdinal + 1} · Invalid JSON · Entry bytes [0, ${scopeEnd(scope)})`;
+    : `Entry ${scope.entryOrdinal + 1} · ${scope.status === "invalidJson" ? "Invalid JSON" : "Invalid UTF-8"} · Entry bytes [0, ${scopeEnd(scope)})`;
 }
 
 function pageLabel(scope: RawScope, start: number, end: number): string {
@@ -508,9 +661,28 @@ function pageLabel(scope: RawScope, start: number, end: number): string {
     : `Bytes [${start}, ${end}) of Entry [0, ${scopeEnd(scope)})`;
 }
 
-function preLabel(scope: RawScope | null): string {
+function preLabel(scope: RawScope | null, representation: Representation): string {
   if (!scope) return "Raw UTF-8 bytes";
-  return scope.kind === "node" ? `Raw UTF-8 bytes for Node #${scope.node.id}` : `Raw UTF-8 bytes for Entry ${scope.entryOrdinal + 1}`;
+  if (scope.kind === "node") return `Raw UTF-8 bytes for Node #${scope.node.id}`;
+  if (scope.status === "invalidUtf8") return scopeStatusRepresentation(scope, representation);
+  return `Raw UTF-8 bytes for Entry ${scope.entryOrdinal + 1}`;
+}
+
+function scopeStatusRepresentation(scope: EntryBytesScope, representation: Representation): string {
+  return representation === "hex"
+    ? `Hex bytes for Entry ${scope.entryOrdinal + 1}`
+    : `Lossy UTF-8 preview for Entry ${scope.entryOrdinal + 1}`;
+}
+
+function formatHex(start: number, bytes: Uint8Array): string {
+  const lines: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 16) {
+    const row = bytes.subarray(offset, offset + 16);
+    const hex = Array.from(row, (byte) => byte.toString(16).padStart(2, "0"));
+    const ascii = Array.from(row, (byte) => byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : ".").join("");
+    lines.push(`${(start + offset).toString(16).padStart(8, "0")}  ${hex.join(" ").padEnd(16 * 3 - 1, " ")}  |${ascii.padEnd(16, " ")}|`);
+  }
+  return lines.join("\n");
 }
 
 function safeNonNegativeInteger(value: unknown): value is number {
