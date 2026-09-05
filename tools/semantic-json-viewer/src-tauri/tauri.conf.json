@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Semantic JSON Viewer",
         "width": 1200,
         "height": 800

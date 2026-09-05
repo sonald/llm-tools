@@ -10,6 +10,7 @@ pub mod tree;
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(ipc::AppState::default())
         .invoke_handler(tauri::generate_handler![
             ipc::open_file,

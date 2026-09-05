@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "Main window file picker access",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open"]
+}
