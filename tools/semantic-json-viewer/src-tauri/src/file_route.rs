@@ -31,6 +31,7 @@ pub enum OpenDecision {
     },
     NeedsModeChoice,
     InvalidJson(ParseError),
+    InvalidUtf8Document,
     UnsupportedEncoding,
     UnsupportedFraming,
     UnsupportedFormat,
@@ -94,7 +95,8 @@ pub(crate) fn route_with_override(
     };
     if matches!(
         decision,
-        OpenDecision::UnsupportedEncoding
+        OpenDecision::InvalidUtf8Document
+            | OpenDecision::UnsupportedEncoding
             | OpenDecision::UnsupportedFraming
             | OpenDecision::UnsupportedFormat
     ) {
@@ -136,7 +138,7 @@ pub fn route_bytes(path: &Path, reported_size: u64, bytes: &[u8]) -> OpenDecisio
 
 fn route_json(bytes: &[u8]) -> OpenDecision {
     if from_utf8(bytes).is_err() {
-        return OpenDecision::UnsupportedEncoding;
+        return OpenDecision::InvalidUtf8Document;
     }
 
     match parse_json(bytes) {
@@ -508,7 +510,7 @@ mod tests {
     fn rejects_invalid_utf8_json_documents() {
         assert_eq!(
             route_bytes(Path::new("data.json"), 2, b"{\xff}"),
-            OpenDecision::UnsupportedEncoding
+            OpenDecision::InvalidUtf8Document
         );
     }
 
@@ -558,6 +560,14 @@ mod tests {
     }
 
     #[test]
+    fn invalid_utf8_json_document_stays_terminal_with_entry_override() {
+        assert_eq!(
+            route_with_override(Path::new("data.json"), 3, b"{\xff}", Some(FileMode::Entry)),
+            Ok(OpenDecision::InvalidUtf8Document)
+        );
+    }
+
+    #[test]
     fn unknown_non_bom_bad_bytes_require_choice_but_can_open_as_jsonl() {
         let bytes = b"\xff\n{}\n";
         assert_eq!(
@@ -583,7 +593,7 @@ mod tests {
                 bytes,
                 Some(FileMode::Document)
             ),
-            Ok(OpenDecision::UnsupportedEncoding)
+            Ok(OpenDecision::InvalidUtf8Document)
         );
     }
 

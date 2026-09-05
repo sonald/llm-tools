@@ -373,6 +373,7 @@ fn decision_mode(decision: OpenDecision) -> Result<(FileMode, bool), IpcError> {
             ..
         } => Ok((mode, many_invalid_utf8_warning)),
         OpenDecision::InvalidJson(error) => Err(invalid_json(error)),
+        OpenDecision::InvalidUtf8Document => Err(unsupported_encoding()),
         OpenDecision::UnsupportedEncoding => Err(unsupported_encoding()),
         OpenDecision::UnsupportedFraming => Err(unsupported_framing()),
         OpenDecision::UnsupportedFormat => Err(unsupported_format()),
@@ -1807,6 +1808,58 @@ mod tests {
             );
         }
         fs::remove_file(oversized_path).unwrap();
+    }
+
+    #[test]
+    fn invalid_utf8_json_ipc_error_preserves_old_session_and_jsonl_stays_entry_mode() {
+        let old_path = temp_path("ipc-invalid-utf8-old");
+        let json_path = temp_path("ipc-invalid-utf8-json");
+        let unknown_path = temp_path("ipc-invalid-utf8-unknown").with_extension("blob");
+        fs::write(&old_path, b"{\"old\":true}").unwrap();
+        fs::write(&json_path, b"{\xff}").unwrap();
+        fs::write(&unknown_path, [0xff]).unwrap();
+        let state = AppState::default();
+        let old = open_file_inner(&state, old_path.to_str().unwrap()).unwrap();
+
+        let json_error = open_file_inner(&state, json_path.to_str().unwrap()).unwrap_err();
+        assert_eq!(json_error.code, "unsupported_encoding");
+        assert_eq!(get_file_summary_inner(&state).unwrap(), old);
+
+        let unknown_error =
+            open_file_with_override(&state, unknown_path.to_str().unwrap(), Some("json"))
+                .unwrap_err();
+        assert_eq!(unknown_error.code, "unsupported_encoding");
+        assert_eq!(get_file_summary_inner(&state).unwrap(), old);
+
+        let jsonl_path = temp_jsonl_path("ipc-invalid-utf8-jsonl");
+        fs::write(&jsonl_path, b"{\xff}\n{}\n").unwrap();
+        let jsonl = open_file_inner(&state, jsonl_path.to_str().unwrap()).unwrap();
+        assert_eq!(jsonl.mode, "entry");
+        let page = list_entries_inner(&state, 0, 50, jsonl.session_revision).unwrap();
+        assert_eq!(page.entries[0].status, "invalidUtf8");
+
+        fs::remove_file(old_path).unwrap();
+        fs::remove_file(json_path).unwrap();
+        fs::remove_file(unknown_path).unwrap();
+        fs::remove_file(jsonl_path).unwrap();
+    }
+
+    #[test]
+    fn invalid_utf8_json_entry_override_stays_unsupported_and_preserves_session() {
+        let old_path = temp_path("ipc-invalid-utf8-override-old");
+        let json_path = temp_path("ipc-invalid-utf8-override-json");
+        fs::write(&old_path, b"{\"old\":true}").unwrap();
+        fs::write(&json_path, b"{\xff}").unwrap();
+        let state = AppState::default();
+        let old = open_file_inner(&state, old_path.to_str().unwrap()).unwrap();
+
+        let error = open_file_with_override(&state, json_path.to_str().unwrap(), Some("jsonl"))
+            .unwrap_err();
+        assert_eq!(error.code, "unsupported_encoding");
+        assert_eq!(get_file_summary_inner(&state).unwrap(), old);
+
+        fs::remove_file(old_path).unwrap();
+        fs::remove_file(json_path).unwrap();
     }
 
     #[test]
