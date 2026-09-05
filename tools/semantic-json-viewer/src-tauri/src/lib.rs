@@ -6,6 +6,7 @@ pub mod json;
 pub mod jsonl_entry;
 pub mod jsonl_index;
 pub mod jsonl_session;
+pub mod semantic_detection;
 pub mod tree;
 
 pub fn run() {

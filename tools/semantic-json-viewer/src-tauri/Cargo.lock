@@ -2642,6 +2642,7 @@ dependencies = [
 name = "semantic-json-viewer"
 version = "0.1.0"
 dependencies = [
+ "dom_query",
  "serde",
  "serde_json",
  "tauri",
