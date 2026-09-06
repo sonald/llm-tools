@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { renderCode, type CodeRenderReason } from "./code-renderer";
 import { renderSafeMarkdown } from "./markdown-renderer";
 
 export type ContentTarget = {
@@ -71,6 +72,7 @@ export class ContentViewer {
   private restoreFocusOnClose: boolean | null = null;
   private representation: "rendered" | "decoded" | null = null;
   private markdownRenderFailed = false;
+  private codeRenderReason: CodeRenderReason | null = null;
 
   constructor(options: ContentViewerOptions) {
     this.elements = options.elements;
@@ -106,6 +108,7 @@ export class ContentViewer {
     this.clearContent();
     this.representation = null;
     this.markdownRenderFailed = false;
+    this.codeRenderReason = null;
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
     this.elements.alert.hidden = true;
@@ -157,6 +160,7 @@ export class ContentViewer {
     this.clearContent();
     this.representation = null;
     this.markdownRenderFailed = false;
+    this.codeRenderReason = null;
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
@@ -225,8 +229,9 @@ export class ContentViewer {
     this.nextOffset = chunk.nextOffset;
     this.elements.content.classList.remove("is-markdown");
     this.markdownRenderFailed = false;
-    const canRenderMarkdown = initial && this.detection?.semanticType === "markdown" && !chunk.hasMore;
-    if (canRenderMarkdown) {
+    this.codeRenderReason = null;
+    const canRenderSemantic = initial && !chunk.hasMore;
+    if (canRenderSemantic && this.detection?.semanticType === "markdown") {
       const fragment = renderSafeMarkdown(chunk.text);
       if (fragment) {
         this.elements.content.replaceChildren(fragment);
@@ -237,6 +242,11 @@ export class ContentViewer {
         this.representation = "decoded";
         this.markdownRenderFailed = true;
       }
+    } else if (canRenderSemantic && this.detection?.semanticType === "code") {
+      const result = renderCode(chunk.text);
+      this.elements.content.replaceChildren(result.fragment);
+      this.representation = "rendered";
+      this.codeRenderReason = result.reason;
     } else {
       this.elements.content.textContent = chunk.text;
       this.representation = "decoded";
@@ -244,7 +254,7 @@ export class ContentViewer {
     this.renderMetadata();
     this.elements.alert.hidden = true;
     if (this.representation === "rendered") {
-      this.setStatus("Rendered Markdown ready");
+      this.setStatus(this.detection?.semanticType === "code" ? "Rendered Code ready" : "Rendered Markdown ready");
     } else if (chunk.text.length === 0 && !chunk.hasMore) {
       this.setStatus("Empty string");
     } else {
@@ -288,6 +298,7 @@ export class ContentViewer {
     this.clearContent();
     this.representation = null;
     this.markdownRenderFailed = false;
+    this.codeRenderReason = null;
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
@@ -339,12 +350,16 @@ export class ContentViewer {
       : this.representation === "rendered" ? "Rendered" : "Decoded Source";
     if (detection.semanticType === "plainText") {
       this.elements.rendererNote.textContent = "";
+    } else if (detection.semanticType === "code" && this.representation === "rendered") {
+      this.elements.rendererNote.textContent = codeRendererNote(this.codeRenderReason);
     } else if (this.representation === "rendered") {
       this.elements.rendererNote.textContent = "Safe Markdown";
     } else if (this.markdownRenderFailed) {
       this.elements.rendererNote.textContent = "Semantic rendering failed.\nShowing plain text instead.";
     } else if (detection.semanticType === "markdown") {
       this.elements.rendererNote.textContent = "Markdown rendering requires a complete source page; showing decoded source.";
+    } else if (detection.semanticType === "code") {
+      this.elements.rendererNote.textContent = "Code rendering requires a complete source page; showing decoded source.";
     } else {
       this.elements.rendererNote.textContent = "Renderer is not available yet; showing decoded source.";
     }
@@ -453,6 +468,17 @@ function plainReasonLabel(value: Exclude<StringDetection["plainReason"], null>):
   if (value === "depthLimit") return "Automatic nested JSON detection stopped at the maximum depth limit of 10.";
   if (value === "cumulativeLimit") return "Automatic nested JSON detection stopped at the cumulative limit of 8 MiB.";
   return "Plain Text fallback";
+}
+
+function codeRendererNote(reason: CodeRenderReason | null): string {
+  if (reason === "sizeLimit" || reason === "lineLimit") {
+    return "Syntax highlighting disabled for large content.";
+  }
+  if (reason === "timeLimit" || reason === "nodeLimit" || reason === "rendererError") {
+    return "Syntax highlighting unavailable; showing plain code.";
+  }
+  if (reason === "generic") return "Generic Code";
+  return "Code";
 }
 
 function formatPath(segments: string[], truncated: boolean): string {

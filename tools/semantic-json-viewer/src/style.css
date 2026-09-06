@@ -419,6 +419,40 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .content-viewer-content:focus-visible { outline: 2px solid #4987ff; outline-offset: 2px; }
 
+.sjv-code {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  min-width: 0;
+  margin: 0;
+  padding: 11px 12px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: #fbfcfd;
+  font: 10px/1.6 "SFMono-Regular", Consolas, monospace;
+  tab-size: 2;
+}
+
+.sjv-code-source { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.sjv-code-gutter { padding-right: 12px; color: var(--faint); user-select: none; text-align: right; white-space: pre; }
+
+.sjv-code-plain .sjv-code-source { white-space: pre-wrap; }
+
+.sjv-token-comment { color: #708090; }
+.sjv-token-string, .sjv-token-char { color: #a03b68; }
+.sjv-token-keyword, .sjv-token-operator, .sjv-token-important { color: #7652a5; }
+.sjv-token-number, .sjv-token-boolean, .sjv-token-constant { color: #9a5d16; }
+.sjv-token-function, .sjv-token-class-name, .sjv-token-builtin { color: #2c6a9f; }
+.sjv-token-property, .sjv-token-attr-name, .sjv-token-tag { color: #2f6f53; }
+.sjv-token-regex, .sjv-token-symbol, .sjv-token-variable { color: #8b4c2f; }
+.sjv-token-punctuation, .sjv-token-plain-text, .sjv-token-generic { color: inherit; }
+.sjv-token-inserted { color: var(--green); }
+.sjv-token-deleted { color: var(--danger); }
+.sjv-token-bold { font-weight: 700; }
+.sjv-token-italic { font-style: italic; }
+
 .content-viewer-content.is-markdown { font: 13px/1.65 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; white-space: normal; }
 
 .content-viewer-content.is-markdown > :first-child { margin-top: 0; }

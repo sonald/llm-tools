@@ -90,6 +90,7 @@ function parseAgentJson(output) {
 function browserExpression(fixtures, commonSource) {
   return `(async()=>{
 const {renderSafeMarkdown}=await import("/src/markdown-renderer.ts");
+const {renderCode}=await import("/src/code-renderer.ts");
 const {ContentViewer}=await import("/src/content-viewer.ts");
 const fixtures=${JSON.stringify(fixtures)};
 const commonSource=${JSON.stringify(commonSource)};
@@ -98,6 +99,9 @@ let assertions=0;
 const check=(condition,message)=>{assertions+=1;if(!condition)throw new Error(message);};
 const allowedTags=new Set(["h1","h2","h3","h4","h5","h6","p","ul","ol","li","blockquote","table","thead","tbody","tr","th","td","strong","em","code","pre","br","hr","span"]);
 const allowedClasses=new Set(["safe-markdown-link","safe-markdown-del","safe-markdown-align-left","safe-markdown-align-center","safe-markdown-align-right"]);
+const allowedCodeClasses=new Set(["sjv-code","sjv-code-source","sjv-code-gutter","sjv-code-highlighted","sjv-code-plain","sjv-token-keyword","sjv-token-string","sjv-token-comment","sjv-token-number","sjv-token-operator","sjv-token-function","sjv-token-class-name","sjv-token-char","sjv-token-boolean","sjv-token-punctuation","sjv-token-property","sjv-token-tag","sjv-token-attr-name","sjv-token-attr-value","sjv-token-regex","sjv-token-builtin","sjv-token-constant","sjv-token-symbol","sjv-token-inserted","sjv-token-deleted","sjv-token-important","sjv-token-bold","sjv-token-italic","sjv-token-variable","sjv-token-namespace","sjv-token-parameter","sjv-token-interpolation","sjv-token-directive","sjv-token-decorator","sjv-token-annotation","sjv-token-selector","sjv-token-plain-text","sjv-token-generic"]);
+const allowedCodeLanguageClasses=new Set(["python","javascript","typescript","rust","c","cpp","java","go","shell","sql","json","yaml","generic"].map((language)=>"sjv-code-language-"+language));
+const allowedCodeReasonClasses=new Set(["generic","sizeLimit","lineLimit","timeLimit","nodeLimit","rendererError"].map((reason)=>"sjv-code-reason-"+reason));
 const forbiddenUrlAttributes=new Set(["href","src","srcset","srcdoc","action","formaction","style"]);
 const inspect=(fragment,label)=>{
   check(fragment instanceof DocumentFragment,label+" did not return a detached fragment");
@@ -106,8 +110,9 @@ const inspect=(fragment,label)=>{
     const tag=element.localName;
     check(allowedTags.has(tag),label+" emitted "+tag);
     for(const attribute of element.attributes){
-      if(attribute.name==="class") check(allowedClasses.has(attribute.value),label+" emitted an unknown class");
+      if(attribute.name==="class") for(const className of attribute.value.split(/\\s+/).filter(Boolean)) check(allowedClasses.has(className)||allowedCodeClasses.has(className)||allowedCodeLanguageClasses.has(className)||allowedCodeReasonClasses.has(className),label+" emitted an unknown class "+className);
       else if(tag==="ol"&&attribute.name==="start") check(/^-?[0-9]+$/.test(attribute.value),label+" emitted an unsafe list start");
+      else if(attribute.name==="aria-hidden") check(attribute.value==="true",label+" emitted an unsafe aria-hidden value");
       else check(false,label+" emitted attribute "+attribute.name);
     }
   }
@@ -142,6 +147,15 @@ const ordered=common.querySelector("ol");
 check(ordered instanceof HTMLOListElement&&ordered.start===42,"ordered list start 42 was not preserved numerically");
 check(common.querySelector("td.safe-markdown-align-center")?.textContent==="C","center table alignment class is missing");
 check(common.querySelector("td.safe-markdown-align-right")?.textContent==="R","right table alignment class is missing");
+const fence=String.fromCharCode(96).repeat(3);
+const fencedCodeSource="def greet(name):"+nl+"    return name";
+const fenced=inspect(renderSafeMarkdown(fence+"python"+nl+fencedCodeSource+nl+fence),"fenced code");
+const fencedPre=fenced.querySelector("pre");
+check(fenced.querySelectorAll("pre").length===1&&fencedPre?.classList.contains("sjv-code"),"fenced code did not use the Code Renderer wrapper");
+check(fencedPre?.classList.contains("sjv-code-language-python"),"fenced code language was not forwarded to Code Renderer");
+check(fenced.querySelector("code")?.textContent===fencedCodeSource,"fenced code source was changed");
+const manyFencedBlocks=Array.from({length:1000},()=>fence+"js"+nl+"const x = 1;"+nl+fence).join(nl);
+check(renderSafeMarkdown(manyFencedBlocks)===null,"multiple fenced blocks bypassed the Markdown node budget");
 const styleHost=document.createElement("div");
 styleHost.className="content-viewer-content is-markdown";
 styleHost.append(common.cloneNode(true));
@@ -149,6 +163,118 @@ document.body.append(styleHost);
 check(getComputedStyle(styleHost.querySelector("td.safe-markdown-align-center")).textAlign==="center","center alignment CSS is missing");
 check(getComputedStyle(styleHost.querySelector("td.safe-markdown-align-right")).textAlign==="right","right alignment CSS is missing");
 styleHost.remove();
+
+const codeAllowedClasses=new Set(["sjv-code","sjv-code-source","sjv-code-gutter","sjv-code-highlighted","sjv-code-plain","sjv-token-keyword","sjv-token-string","sjv-token-comment","sjv-token-number","sjv-token-operator","sjv-token-function","sjv-token-class-name","sjv-token-char","sjv-token-boolean","sjv-token-punctuation","sjv-token-property","sjv-token-tag","sjv-token-attr-name","sjv-token-attr-value","sjv-token-regex","sjv-token-builtin","sjv-token-constant","sjv-token-symbol","sjv-token-inserted","sjv-token-deleted","sjv-token-important","sjv-token-bold","sjv-token-italic","sjv-token-variable","sjv-token-namespace","sjv-token-parameter","sjv-token-interpolation","sjv-token-directive","sjv-token-decorator","sjv-token-annotation","sjv-token-selector","sjv-token-plain-text","sjv-token-generic"]);
+const codeLanguageClasses=new Set(["python","javascript","typescript","rust","c","cpp","java","go","shell","sql","json","yaml","generic"].map((language)=>"sjv-code-language-"+language));
+const codeReasonClasses=new Set(["generic","sizeLimit","lineLimit","timeLimit","nodeLimit","rendererError"].map((reason)=>"sjv-code-reason-"+reason));
+const inspectCode=(result,label,source)=>{
+  check(result.fragment instanceof DocumentFragment,label+" did not return a detached fragment");
+  check(!result.fragment.isConnected,label+" fragment is connected");
+  const pre=result.fragment.querySelector("pre");
+  const code=result.fragment.querySelector("code");
+  check(pre!==null&&code!==null,label+" did not emit pre/code");
+  check(code.textContent===source,label+" changed source text");
+  for(const element of result.fragment.querySelectorAll("*")){
+    check(["pre","code","span"].includes(element.localName),label+" emitted "+element.localName);
+    for(const attribute of element.attributes){
+      if(attribute.name==="class") for(const className of attribute.value.split(/\\s+/).filter(Boolean)) check(codeAllowedClasses.has(className)||codeLanguageClasses.has(className)||codeReasonClasses.has(className),label+" emitted unknown class "+className);
+      else if(attribute.name==="aria-hidden") check(attribute.value==="true"&&!code.contains(element),label+" attached line-number metadata to code");
+      else check(false,label+" emitted attribute "+attribute.name);
+    }
+  }
+  check(result.fragment.querySelectorAll("a,img,iframe,script,style,form,button,input,textarea,select,object,video,audio").length===0,label+" emitted an executable or remote element");
+  const gutter=pre.querySelector(".sjv-code-gutter");
+  if(source.length>0) check(gutter!==null,label+" omitted independent line numbers");
+  if(gutter) check(gutter.getAttribute("aria-hidden")==="true"&&!code.contains(gutter),label+" line numbers are not independent");
+  return {pre,code};
+};
+
+const codeSamples=[
+  ["python","def greet(name):"+nl+"    return name",["python","py"]],
+  ["javascript","const answer = 42;",["javascript","js","jsx","mjs","cjs"]],
+  ["typescript","interface User { id: number; }",["typescript","ts","tsx","mts","cts"]],
+  ["rust","fn main() { println!(name); }",["rust","rs"]],
+  ["c","int main(void) { return 0; }",["c"]],
+  ["cpp","std::cout << 1;",["cpp","c++","cxx","cc","hpp","hxx"]],
+  ["java","public class Main { public static void main(String[] args) {} }",["java"]],
+  ["go","package main"+nl+"func main() {}",["go","golang"]],
+  ["shell","#!/bin/bash"+nl+"echo hi",["shell","sh","bash","zsh"]],
+  ["sql","SELECT id FROM users WHERE id = 1;",["sql"]],
+  ["json","{key: true}",["json"]],
+  ["yaml","name: viewer"+nl+"items:"+nl+"  - one",["yaml","yml"]]
+];
+for(const [expected,source,aliases] of codeSamples) for(const alias of aliases){
+  const result=renderCode(source,alias);
+  check(result.language===expected,expected+" alias "+alias+" resolved to "+result.language);
+  check(result.presentation==="highlighted"&&result.reason===null,expected+" alias "+alias+" did not highlight");
+  inspectCode(result,expected+" alias "+alias,source);
+}
+const unknown=renderCode("const answer = 42;","made-up-language");
+check(unknown.language===null&&unknown.presentation==="plain"&&unknown.reason==="generic","explicit unknown language was guessed");
+inspectCode(unknown,"explicit unknown", "const answer = 42;");
+const detectorSamples=[
+  ["python","def greet(name):"+nl+"    return name"],
+  ["javascript","const answer = 42;"],
+  ["typescript","interface User { id: number; }"],
+  ["rust","fn main() { println!(name); }"],
+  ["c","#include <stdio.h>"+nl+"int main(void) { return 0; }"],
+  ["cpp","std::cout << 1;"],
+  ["java","public class Main { public static void main(String[] args) {} }"],
+  ["go","package main"+nl+"func main() {}"],
+  ["shell","#!/bin/bash"+nl+"echo hi"],
+  ["sql","SELECT id FROM users WHERE id = 1;"],
+  ["json","{"+String.fromCharCode(34)+"key"+String.fromCharCode(34)+": true}"],
+  ["yaml","name: viewer"+nl+"items:"+nl+"  - one"]
+];
+for(const [expected,source] of detectorSamples) check(renderCode(source).language===expected,expected+" cheap detector missed a strong sample");
+const prefix="const x = 1;";
+const detectorBoundary=prefix+" ".repeat(262144-prefix.length);
+check(new TextEncoder().encode(detectorBoundary).byteLength===262144,"cheap detector boundary fixture is not 256 KiB");
+const boundaryResult=renderCode(detectorBoundary);
+check(boundaryResult.language==="javascript"&&boundaryResult.presentation==="highlighted","256 KiB detector boundary was not accepted");
+inspectCode(boundaryResult,"256 KiB detector boundary",detectorBoundary);
+const detectorOver=prefix+" ".repeat(262145-prefix.length);
+const overResult=renderCode(detectorOver);
+check(overResult.language===null&&overResult.presentation==="plain"&&overResult.reason==="generic","over-256 KiB source was auto-detected");
+inspectCode(overResult,"over-256 KiB source",detectorOver);
+const exactMiB=prefix+" ".repeat(1048576-prefix.length);
+const exactMiBResult=renderCode(exactMiB,"js");
+check(exactMiBResult.presentation==="highlighted"&&exactMiBResult.reason===null,"1 MiB boundary was rejected");
+inspectCode(exactMiBResult,"1 MiB boundary",exactMiB);
+const overMiBResult=renderCode(prefix+" ".repeat(1048577-prefix.length),"js");
+check(overMiBResult.presentation==="plain"&&overMiBResult.reason==="sizeLimit","over-1 MiB source was highlighted");
+inspectCode(overMiBResult,"over-1 MiB source",prefix+" ".repeat(1048577-prefix.length));
+const exactLines=prefix+nl.repeat(19999);
+const exactLinesResult=renderCode(exactLines,"js");
+check(exactLinesResult.presentation==="highlighted"&&exactLinesResult.reason===null,"20,000-line boundary was rejected");
+check(exactLinesResult.fragment.querySelector(".sjv-code-gutter")?.textContent?.split(nl).length===20000,"20,000-line gutter is wrong");
+const overLines=prefix+nl.repeat(20000);
+const overLinesResult=renderCode(overLines,"js");
+check(overLinesResult.presentation==="plain"&&overLinesResult.reason==="lineLimit","over-20,000-line source was highlighted");
+inspectCode(overLinesResult,"over-20,000-line source",overLines);
+const mixedLines="a"+String.fromCharCode(13,10)+"b"+String.fromCharCode(10)+"c"+String.fromCharCode(13)+"d"+String.fromCharCode(10);
+const mixedLinesResult=renderCode(mixedLines,"js");
+check(mixedLinesResult.fragment.querySelector(".sjv-code-gutter")?.textContent==="1"+nl+"2"+nl+"3"+nl+"4"+nl+"5","CRLF/LF/CR/trailing line count is wrong");
+const emptyResult=renderCode("");
+check(emptyResult.language===null&&emptyResult.reason==="generic"&&emptyResult.fragment.querySelector("code")?.textContent==="","empty source contract is wrong");
+const nodeResult=renderCode((prefix+nl).repeat(5000),"js");
+check(nodeResult.presentation==="plain"&&nodeResult.reason==="nodeLimit","DOM node limit did not trigger a plain fallback");
+inspectCode(nodeResult,"DOM node limit",(prefix+nl).repeat(5000));
+const originalPerformanceDescriptor=Object.getOwnPropertyDescriptor(performance,"now");
+const originalPerformanceNow=performance.now.bind(performance);
+let performanceCalls=0;
+Object.defineProperty(performance,"now",{configurable:true,writable:true,value:()=>originalPerformanceNow()+(performanceCalls++===0?0:1000)});
+const timeResult=renderCode(prefix,"js");
+if(originalPerformanceDescriptor) Object.defineProperty(performance,"now",originalPerformanceDescriptor); else delete performance.now;
+check(timeResult.presentation==="plain"&&timeResult.reason==="timeLimit","100 ms code budget did not trigger a time fallback");
+inspectCode(timeResult,"time limit",prefix);
+const originalCreateElement=document.createElement.bind(document);
+let failOneSpan=true;
+document.createElement=(tag,...args)=>{if(tag==="span"&&failOneSpan){failOneSpan=false;throw new Error("forced renderer failure");}return originalCreateElement(tag,...args);};
+const rendererErrorResult=renderCode(prefix,"js");
+document.createElement=originalCreateElement;
+check(rendererErrorResult.presentation==="plain"&&rendererErrorResult.reason==="rendererError","renderer exception did not trigger a plain fallback");
+inspectCode(rendererErrorResult,"renderer exception",prefix);
 
 const exactBytes=renderSafeMarkdown("x".repeat(128*1024));
 check(exactBytes!==null,"128 KiB input was rejected");
@@ -178,6 +304,56 @@ const makeViewer=()=>{
   document.body.append(dialog);
   return {dialog,elements};
 };
+const codeViewerParts=makeViewer();
+const codeSource="const value = 42;";
+const codeViewer=new ContentViewer({elements:codeViewerParts.elements,invoke:async(command)=>{
+  if(command==="get_string_detection") return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  return {start:0,text:codeSource,hasMore:false,nextOffset:null};
+}});
+await codeViewer.open({revision:1,nodeId:3,spanStart:0,spanEnd:new TextEncoder().encode(codeSource).byteLength,scopeLabel:"Document",pathSegments:["$","code"],pathTruncated:false});
+check(codeViewerParts.elements.representation.textContent==="Rendered","code Content Viewer representation is not Rendered");
+check(codeViewerParts.elements.status.textContent==="Rendered Code ready","code Content Viewer status is not exact");
+check(codeViewerParts.elements.content.querySelector("pre.sjv-code-language-javascript")!==null,"code Content Viewer did not reuse Code Renderer");
+check(codeViewerParts.elements.content.querySelectorAll("pre").length===1,"code Content Viewer emitted duplicate pre wrappers");
+check(codeViewerParts.elements.content.querySelector(".sjv-code-source")?.textContent===codeSource,"code Content Viewer changed source text");
+codeViewer.close();
+codeViewerParts.dialog.remove();
+const genericCodeParts=makeViewer();
+const genericCodeSource="opaque source text";
+const genericCodeViewer=new ContentViewer({elements:genericCodeParts.elements,invoke:async(command)=>{
+  if(command==="get_string_detection") return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  return {start:0,text:genericCodeSource,hasMore:false,nextOffset:null};
+}});
+await genericCodeViewer.open({revision:1,nodeId:4,spanStart:0,spanEnd:new TextEncoder().encode(genericCodeSource).byteLength,scopeLabel:"Document",pathSegments:["$","code"],pathTruncated:false});
+check(genericCodeParts.elements.representation.textContent==="Rendered","generic code Content Viewer representation is not Rendered");
+check(genericCodeParts.elements.status.textContent==="Rendered Code ready","generic code Content Viewer status is not exact");
+check(genericCodeParts.elements.rendererNote.textContent==="Generic Code","generic code Content Viewer note is not exact");
+check(genericCodeParts.elements.content.querySelector("pre.sjv-code-language-generic")!==null,"generic code Content Viewer did not emit Generic Code");
+genericCodeViewer.close();
+genericCodeParts.dialog.remove();
+const limitedCodeParts=makeViewer();
+const limitedCodeSource=prefix+nl.repeat(20000);
+const limitedCodeViewer=new ContentViewer({elements:limitedCodeParts.elements,invoke:async(command)=>{
+  if(command==="get_string_detection") return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  return {start:0,text:limitedCodeSource,hasMore:false,nextOffset:null};
+}});
+await limitedCodeViewer.open({revision:1,nodeId:6,spanStart:0,spanEnd:new TextEncoder().encode(limitedCodeSource).byteLength,scopeLabel:"Document",pathSegments:["$","code"],pathTruncated:false});
+check(limitedCodeParts.elements.representation.textContent==="Rendered"&&limitedCodeParts.elements.status.textContent==="Rendered Code ready","limited code Content Viewer did not keep Rendered Code state");
+check(limitedCodeParts.elements.rendererNote.textContent==="Syntax highlighting disabled for large content.","limited code Content Viewer note is not exact");
+check(limitedCodeParts.elements.content.querySelector("pre.sjv-code-plain.sjv-code-reason-lineLimit")!==null,"limited code Content Viewer did not retain plain code fallback");
+limitedCodeViewer.close();
+limitedCodeParts.dialog.remove();
+const pagedCodeParts=makeViewer();
+const pagedCodeSource="const value = 42;";
+const pagedCodeViewer=new ContentViewer({elements:pagedCodeParts.elements,invoke:async(command)=>{
+  if(command==="get_string_detection") return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  return {start:0,text:pagedCodeSource,hasMore:true,nextOffset:new TextEncoder().encode(pagedCodeSource).byteLength};
+}});
+await pagedCodeViewer.open({revision:1,nodeId:5,spanStart:0,spanEnd:new TextEncoder().encode(pagedCodeSource).byteLength,scopeLabel:"Document",pathSegments:["$","code"],pathTruncated:false});
+check(pagedCodeParts.elements.representation.textContent==="Decoded Source","paged code was rendered before complete source page");
+check(pagedCodeParts.elements.content.querySelector("pre")===null&&pagedCodeParts.elements.next.disabled===false,"paged code controls are wrong");
+pagedCodeViewer.close();
+pagedCodeParts.dialog.remove();
 const fallbackSource=Array.from({length:5001},(_,index)=>"fallback"+index).join(nl+nl);
 const fallback=makeViewer();
 const fallbackViewer=new ContentViewer({elements:fallback.elements,invoke:async(command)=>command==="get_string_detection"?{semanticType:"markdown",detectionSource:"contentDetected",plainReason:null}:{start:0,text:fallbackSource,hasMore:false,nextOffset:null}});

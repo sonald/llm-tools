@@ -1,5 +1,6 @@
 import { marked } from "marked";
 import type { Token, Tokens } from "marked";
+import { renderCode } from "./code-renderer";
 
 const MAX_INPUT_BYTES = 128 * 1024;
 const MAX_NODES = 10_000;
@@ -34,6 +35,16 @@ class RenderBudget {
     if (!value) return;
     this.reserveNode();
     parent.append(document.createTextNode(value));
+  }
+
+  appendFragment(parent: Parent, fragment: DocumentFragment): void {
+    this.check();
+    let nodes = fragment.querySelectorAll("*").length;
+    const walker = document.createTreeWalker(fragment, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) nodes += 1;
+    if (this.nodeCount + nodes > MAX_NODES) throw new Error("Markdown rendering exceeded its node budget.");
+    this.nodeCount += nodes;
+    parent.append(fragment);
   }
 
   private reserveNode(): void {
@@ -119,9 +130,8 @@ class SafeMarkdownRenderer {
         return;
       }
       case "code": {
-        const pre = this.budget.element(parent, "pre");
-        const code = this.budget.element(pre, "code");
-        this.budget.text(code, token.text);
+        const rendered = renderCode(token.text, token.lang);
+        this.budget.appendFragment(parent, rendered.fragment);
         return;
       }
       case "br":
