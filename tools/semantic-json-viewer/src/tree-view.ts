@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ContentTarget } from "./content-viewer";
 
-export type TreeMode = "document" | "collection" | "entry";
+export type TreeMode = "document" | "collection" | "entry" | "nested";
 
 export type NodeDto = {
   id: number;
@@ -21,10 +21,13 @@ type NodePageDto = {
   nextCursor: number | null;
 };
 
-type TreeSession = {
+export type TreeSession = {
   mode: TreeMode;
   sessionRevision: number;
-  scopeLabel: string;
+  scopeId: number | null;
+  sourceSize: number;
+  ariaLabel: string;
+  scopeLabel?: string;
 };
 
 type NodeRecord = {
@@ -42,7 +45,7 @@ type NodeRecord = {
 type TreeViewOptions = {
   panel: HTMLElement;
   tab: HTMLButtonElement;
-  inspector: HTMLElement;
+  inspector: HTMLElement | null;
   fields: {
     id: HTMLElement;
     label: HTMLElement;
@@ -50,26 +53,47 @@ type TreeViewOptions = {
     span: HTMLElement;
     children: HTMLElement;
     value: HTMLElement;
-  };
+  } | null;
   onSelection: (node: NodeDto) => void;
   onStringSelection: (target: ContentTarget | null) => void;
   onStringOpen: (target: ContentTarget, opener: HTMLElement) => void;
   onError: (error: unknown) => void;
+  invoke?: typeof invoke;
 };
 
-type FocusKey = number | `load:${number}` | `retry:${number}` | null;
+export type FocusKey = number | `load:${number}` | `retry:${number}` | null;
+
+export type TreeViewSnapshot = {
+  session: TreeSession;
+  rootId: number | null;
+  rootError: string | null;
+  selectedId: number | null;
+  focusKey: FocusKey;
+  records: Array<{
+    id: number;
+    node: NodeDto;
+    parentId: number | null;
+    children: number[];
+    expanded: boolean;
+    loaded: boolean;
+    hasMore: boolean;
+    nextCursor: number | null;
+    error: string | null;
+  }>;
+};
 
 const CHILD_PAGE_SIZE = 200;
 
 export class TreeView {
   private readonly panel: HTMLElement;
   private readonly tab: HTMLButtonElement;
-  private readonly inspector: HTMLElement;
+  private readonly inspector: HTMLElement | null;
   private readonly fields: TreeViewOptions["fields"];
   private readonly onSelection: (node: NodeDto) => void;
   private readonly onStringSelection: (target: ContentTarget | null) => void;
   private readonly onStringOpen: (target: ContentTarget, opener: HTMLElement) => void;
   private readonly onError: (error: unknown) => void;
+  private readonly invokeRequest: typeof invoke;
   private session: TreeSession | null = null;
   private generation = 0;
   private rootId: number | null = null;
@@ -88,28 +112,91 @@ export class TreeView {
     this.onStringSelection = options.onStringSelection;
     this.onStringOpen = options.onStringOpen;
     this.onError = options.onError;
+    this.invokeRequest = options.invoke ?? invoke;
     this.panel.addEventListener("click", (event) => this.handleClick(event));
     this.panel.addEventListener("keydown", (event) => this.handleKeydown(event));
     this.clear();
   }
 
-  setSession(session: TreeSession, seededRoot?: NodeDto | null): void {
+  setSession(session: TreeSession, seededRoot?: unknown | null): void {
     this.generation += 1;
     this.session = session;
-    this.rootId = seededRoot?.id ?? null;
+    const root = seededRoot === undefined || seededRoot === null
+      ? null
+      : validateNodeDto(seededRoot, session.sourceSize);
+    this.rootId = root?.id ?? null;
     this.rootLoading = false;
-    this.rootError = null;
+    this.rootError = seededRoot !== undefined && seededRoot !== null && root === undefined
+      ? "The tree root response was invalid."
+      : null;
     this.selectedId = null;
-    this.focusKey = seededRoot?.id ?? null;
+    this.focusKey = root?.id ?? null;
     this.records.clear();
-    if (seededRoot) this.records.set(seededRoot.id, this.newRecord(seededRoot, null));
+    if (root) this.records.set(root.id, this.newRecord(root, null));
     this.onStringSelection(null);
     const enabled = session.mode !== "entry" || seededRoot !== undefined && seededRoot !== null;
     this.tab.disabled = !enabled;
     this.tab.setAttribute("aria-disabled", String(!enabled));
     this.clearInspector();
-    if (seededRoot) this.renderTree();
+    if (root) this.renderTree();
+    else if (this.rootError !== null) this.renderRootError();
     else this.renderPlaceholder(enabled ? "Open Tree to load the document root." : "Select a valid Entry to enable Tree.");
+  }
+
+  snapshot(): TreeViewSnapshot | null {
+    if (!this.session) return null;
+    return {
+      session: { ...this.session },
+      rootId: this.rootId,
+      rootError: this.rootError,
+      selectedId: this.selectedId,
+      focusKey: this.focusKey,
+      records: Array.from(this.records.entries()).map(([id, record]) => ({
+        id,
+        node: { ...record.node },
+        parentId: record.parentId,
+        children: record.children.slice(),
+        expanded: record.expanded,
+        loaded: record.loaded,
+        hasMore: record.hasMore,
+        nextCursor: record.nextCursor,
+        error: record.error
+      }))
+    };
+  }
+
+  restore(snapshot: TreeViewSnapshot | null): void {
+    if (!snapshot) return;
+    this.generation += 1;
+    this.session = { ...snapshot.session };
+    this.rootId = snapshot.rootId;
+    this.rootLoading = false;
+    this.rootError = snapshot.rootError;
+    this.selectedId = snapshot.selectedId;
+    this.focusKey = snapshot.focusKey;
+    this.records.clear();
+    for (const saved of snapshot.records) {
+      this.records.set(saved.id, {
+        node: { ...saved.node },
+        parentId: saved.parentId,
+        children: saved.children.slice(),
+        expanded: saved.expanded,
+        loaded: saved.loaded,
+        loading: false,
+        hasMore: saved.hasMore,
+        nextCursor: saved.nextCursor,
+        error: saved.error
+      });
+    }
+    this.tab.disabled = this.session.mode === "entry" && this.rootId === null;
+    this.tab.setAttribute("aria-disabled", String(this.tab.disabled));
+    this.onStringSelection(this.selectedId === null ? null : this.records.get(this.selectedId)?.node.kind === "string"
+      ? this.contentTarget(this.records.get(this.selectedId)!)
+      : null);
+    if (this.rootId !== null && this.records.has(this.rootId)) this.renderTree();
+    else if (this.rootError !== null) this.renderRootError();
+    else this.renderPlaceholder(this.session.mode === "entry" ? "Select a valid Entry to enable Tree." : "Open Tree to load the document root.");
+    this.restoreFocus();
   }
 
   clear(): void {
@@ -155,8 +242,13 @@ export class TreeView {
     this.rootError = null;
     this.renderLoading();
     try {
-      const node = await invoke<NodeDto>("get_root_node", { sessionRevision: session.sessionRevision });
+      const value = await this.invokeRequest<unknown>("get_root_node", {
+        sessionRevision: session.sessionRevision,
+        scopeId: session.scopeId
+      });
       if (!this.isCurrent(generation, session)) return;
+      const node = validateNodeDto(value, session.sourceSize);
+      if (!node) throw new Error("The tree root response was invalid.");
       this.rootLoading = false;
       this.rootId = node.id;
       this.records.set(node.id, this.newRecord(node, null));
@@ -184,13 +276,16 @@ export class TreeView {
     record.error = null;
     this.renderTree();
     try {
-      const page = await invoke<NodePageDto>("get_children", {
+      const value = await this.invokeRequest<unknown>("get_children", {
         nodeId: record.node.id,
         cursor,
         limit: CHILD_PAGE_SIZE,
-        sessionRevision: session.sessionRevision
+        sessionRevision: session.sessionRevision,
+        scopeId: session.scopeId
       });
       if (!this.isCurrent(generation, session)) return;
+      const page = validateNodePage(value, cursor, record.node.childCount, session.sourceSize, record.children);
+      if (!page) throw new Error("The tree children response was invalid.");
       record.loading = false;
       record.loaded = true;
       record.hasMore = page.hasMore;
@@ -389,7 +484,7 @@ export class TreeView {
     const root = document.createElement("div");
     root.className = "tree-root";
     root.setAttribute("role", "tree");
-    root.setAttribute("aria-label", "JSON structure");
+    root.setAttribute("aria-label", this.session?.ariaLabel ?? "JSON structure");
     root.setAttribute("aria-busy", String(this.rootLoading));
     if (this.rootId === null) {
       this.renderLoading(root);
@@ -527,6 +622,7 @@ export class TreeView {
   }
 
   private renderInspector(node: NodeDto | null): void {
+    if (!this.inspector || !this.fields) return;
     this.inspector.hidden = node === null;
     if (!node) {
       this.clearInspector();
@@ -542,6 +638,7 @@ export class TreeView {
   }
 
   private clearInspector(): void {
+    if (!this.inspector || !this.fields) return;
     this.inspector.hidden = true;
     for (const field of Object.values(this.fields)) field.textContent = "—";
   }
@@ -599,14 +696,17 @@ export class TreeView {
       nodeId: record.node.id,
       spanStart: record.node.spanStart,
       spanEnd: record.node.spanEnd,
-      scopeLabel: session.scopeLabel,
+      scopeId: session.scopeId,
+      scopeLabel: session.scopeLabel ?? session.ariaLabel,
       pathSegments,
       pathTruncated
     };
   }
 
   private isCurrent(generation: number, session: TreeSession): boolean {
-    return this.generation === generation && this.session?.sessionRevision === session.sessionRevision;
+    return this.generation === generation
+      && this.session?.sessionRevision === session.sessionRevision
+      && this.session.scopeId === session.scopeId;
   }
 
   private isGlobalError(error: unknown): boolean {
@@ -628,4 +728,63 @@ function errorMessage(error: unknown): string {
   }
   if (error instanceof Error) return error.message;
   return "The tree request failed.";
+}
+
+const TREE_KINDS = new Set(["object", "array", "string", "number", "true", "false", "null"]);
+
+function validateNodeDto(value: unknown, sourceSize: number): NodeDto | undefined {
+  if (!isRecord(value) || !safeNonNegative(sourceSize)) return undefined;
+  const id = safeNonNegative(value.id);
+  const spanStart = safeNonNegative(value.spanStart);
+  const spanEnd = safeNonNegative(value.spanEnd);
+  const kind = typeof value.kind === "string" ? value.kind : undefined;
+  const label = typeof value.label === "string" ? value.label : undefined;
+  const labelHasMore = typeof value.labelHasMore === "boolean" ? value.labelHasMore : undefined;
+  const valuePreview = value.valuePreview === null
+    ? null
+    : typeof value.valuePreview === "string" ? value.valuePreview : undefined;
+  const valueHasMore = typeof value.valueHasMore === "boolean" ? value.valueHasMore : undefined;
+  const childCount = safeNonNegative(value.childCount);
+  if (id === undefined || spanStart === undefined || spanEnd === undefined || spanStart >= spanEnd
+    || spanEnd > sourceSize || kind === undefined || !TREE_KINDS.has(kind) || label === undefined
+    || labelHasMore === undefined || valuePreview === undefined || valueHasMore === undefined || childCount === undefined) {
+    return undefined;
+  }
+  return { id, kind, spanStart, spanEnd, label, labelHasMore, valuePreview, valueHasMore, childCount };
+}
+
+function validateNodePage(
+  value: unknown,
+  cursor: number,
+  childCount: number,
+  sourceSize: number,
+  loadedChildren: number[]
+): NodePageDto | undefined {
+  if (!isRecord(value) || safeNonNegative(cursor) === undefined || safeNonNegative(childCount) === undefined
+    || cursor > childCount || !Array.isArray(value.nodes) || value.nodes.length > CHILD_PAGE_SIZE
+    || typeof value.hasMore !== "boolean") return undefined;
+  const nodes: NodeDto[] = [];
+  const pageIds = new Set<number>();
+  for (const item of value.nodes) {
+    const node = validateNodeDto(item, sourceSize);
+    if (!node || pageIds.has(node.id) || loadedChildren.includes(node.id)) return undefined;
+    pageIds.add(node.id);
+    nodes.push(node);
+  }
+  const nextCursor = value.nextCursor === null ? null : safeNonNegative(value.nextCursor);
+  if (nextCursor === undefined) return undefined;
+  if (value.hasMore) {
+    if (nodes.length === 0 || nextCursor !== cursor + nodes.length || nextCursor >= childCount) return undefined;
+  } else if (nextCursor !== null || cursor + nodes.length !== childCount) {
+    return undefined;
+  }
+  return { nodes, hasMore: value.hasMore, nextCursor };
+}
+
+function safeNonNegative(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

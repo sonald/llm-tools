@@ -374,6 +374,291 @@ check(rendered.elements.content.classList.contains("is-markdown"),"successful re
 check(rendered.elements.content.querySelector("h1")?.textContent==="rendered","successful Markdown DOM is missing heading");
 renderedViewer.close();
 rendered.dialog.remove();
+
+const nestedDocumentIds=[
+  "content-viewer-nested-navigation","content-viewer-nested-back","content-viewer-nested-breadcrumbs",
+  "content-viewer-representations","content-viewer-parsed-tab","content-viewer-decoded-tab",
+  "content-viewer-raw-lexeme-tab","content-viewer-parsed-panel","content-viewer-parsed-tree","content-viewer-text-panel"
+];
+for(const id of nestedDocumentIds) check(document.getElementById(id)!==null,"document is missing "+id);
+const documentNestedBack=document.getElementById("content-viewer-nested-back");
+const documentNestedNavigation=document.getElementById("content-viewer-nested-navigation");
+const documentNestedBreadcrumbs=document.getElementById("content-viewer-nested-breadcrumbs");
+const documentNestedRepresentations=document.getElementById("content-viewer-representations");
+check(documentNestedNavigation?.getAttribute("aria-label")==="Nested JSON navigation","Nested navigation label changed");
+check(documentNestedBack?.getAttribute("aria-label")==="Back to parent nested JSON"&&documentNestedBack?.getAttribute("aria-controls")==="content-viewer-parsed-panel","Nested Back ARIA contract changed");
+check(documentNestedBreadcrumbs?.getAttribute("aria-label")==="Nested JSON breadcrumb","Nested breadcrumb label changed");
+check(documentNestedRepresentations?.getAttribute("role")==="tablist"&&documentNestedRepresentations?.getAttribute("aria-label")==="Nested JSON representations","Nested representation tablist ARIA contract changed");
+for(const [id,controls] of [["content-viewer-parsed-tab","content-viewer-parsed-panel"],["content-viewer-decoded-tab","content-viewer-text-panel"],["content-viewer-raw-lexeme-tab","content-viewer-text-panel"]]) {
+  const tab=document.getElementById(id);
+  check(tab?.getAttribute("role")==="tab"&&tab?.getAttribute("aria-controls")===controls,"Nested tab ARIA contract changed for "+id);
+}
+const documentParsedPanel=document.getElementById("content-viewer-parsed-panel");
+const documentTextPanel=document.getElementById("content-viewer-text-panel");
+check(documentParsedPanel?.getAttribute("role")==="tabpanel"&&documentParsedPanel?.getAttribute("aria-labelledby")==="content-viewer-parsed-tab","Parsed panel ARIA contract changed");
+check(documentTextPanel?.getAttribute("role")==="region"&&!documentTextPanel?.hasAttribute("aria-labelledby")&&documentTextPanel?.getAttribute("aria-label")==="Decoded source","Text panel ARIA contract changed");
+
+const settle=async()=>{await Promise.resolve();await new Promise((resolve)=>setTimeout(resolve,0));};
+const makeNestedViewer=()=>{
+  const parts=makeViewer();
+  parts.dialog.className="content-viewer-dialog";
+  const element=(tag)=>document.createElement(tag);
+  const navigation=element("nav");
+  const back=element("button");
+  const breadcrumb=element("ol");
+  const representations=element("div");
+  const parsedTab=element("button");
+  const decodedTab=element("button");
+  const rawTab=element("button");
+  const parsedPanel=element("section");
+  const parsedTree=element("div");
+  const shell=element("div");
+  const header=element("header");
+  const meta=element("section");
+  const contentRegion=element("section");
+  const toolbar=element("div");
+  const textPanel=element("section");
+  const body=element("div");
+  shell.className="content-viewer-shell";
+  header.className="content-viewer-header";
+  meta.className="content-viewer-meta";
+  navigation.className="nested-navigation";
+  representations.className="nested-representations";
+  parsedPanel.className="nested-parsed-panel";
+  parsedTree.className="nested-tree";
+  contentRegion.className="content-viewer-stage";
+  toolbar.className="content-viewer-toolbar";
+  textPanel.className="content-viewer-text-panel";
+  body.className="content-viewer-body";
+  parts.elements.content.className="content-viewer-content";
+  navigation.append(back,breadcrumb);
+  representations.append(parsedTab,decodedTab,rawTab);
+  parsedPanel.append(parsedTree);
+  header.append(parts.elements.title,parts.elements.close);
+  meta.append(parts.elements.scope,parts.elements.path,parts.elements.node,parts.elements.spanLabel,parts.elements.span,parts.elements.semanticType,parts.elements.detectionSource,parts.elements.plainReason,parts.elements.representation);
+  toolbar.append(parts.elements.range,parts.elements.status,parts.elements.previous,parts.elements.next);
+  body.append(parts.elements.content);
+  textPanel.append(body);
+  contentRegion.append(toolbar,parsedPanel,textPanel);
+  shell.append(header,meta,navigation,representations,parts.elements.rendererNote,parts.elements.alert,contentRegion);
+  parts.dialog.replaceChildren(shell);
+  parts.elements.nested={navigation,back,breadcrumb,representations,parsedTab,decodedTab,rawTab,parsedPanel,parsedTree,sharedTextPanel:textPanel};
+  return parts;
+};
+const node=(id,kind,start,end,label,children,value=null)=>({id,kind,spanStart:start,spanEnd:end,label,labelHasMore:false,valuePreview:value,valueHasMore:false,childCount:children});
+const nestedSource='{"child":"{\\"leaf\\":true}"}';
+const nestedBytes=new TextEncoder().encode(nestedSource).byteLength;
+const leafSource='{"leaf":true}';
+const leafBytes=new TextEncoder().encode(leafSource).byteLength;
+const nestedRoot=node(0,"object",0,nestedBytes,"$",1);
+const nestedChild=node(1,"string",9,nestedBytes-1,"child",0,"{\\"leaf\\":true}");
+const leafRoot=node(10,"object",0,leafBytes,"$",0);
+const nestedCalls=[];
+let failNestedChildClose=true;
+let failNestedRootCleanup=true;
+const nestedInvoke=async(command,args)=>{
+  nestedCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
+  if(command==="open_nested_json"){
+    if(args.parentScopeId===null) return {scopeId:1,parentScopeId:null,sourceNodeId:7,root:nestedRoot,depth:1,maxDepth:5,parsedBytes:nestedBytes,cumulativeBytes:nestedBytes,sessionRevision:9};
+    return {scopeId:2,parentScopeId:1,sourceNodeId:1,root:leafRoot,depth:2,maxDepth:5,parsedBytes:leafBytes,cumulativeBytes:nestedBytes+leafBytes,sessionRevision:9};
+  }
+  if(command==="get_children"&&args.scopeId===1) return {nodes:[nestedChild],hasMore:false,nextCursor:null};
+  if(command==="read_decoded_text"){
+    const text=args.scopeId===null?leafSource:nestedSource;
+    return {start:args.offset,text,hasMore:false,nextOffset:null};
+  }
+  if(command==="read_raw_slice") return {start:args.sourceStart,text:nestedSource,hasMore:false,nextOffset:null};
+  if(command==="close_nested_scope"){
+    if(args.scopeId===2&&failNestedChildClose){failNestedChildClose=false;throw new Error("temporary child close failure");}
+    if(args.scopeId===1&&failNestedRootCleanup){failNestedRootCleanup=false;throw new Error("temporary root cleanup failure");}
+    return undefined;
+  }
+  throw new Error("unexpected nested command "+command);
+};
+const nestedParts=makeNestedViewer();
+const nestedViewer=new ContentViewer({elements:nestedParts.elements,invoke:nestedInvoke});
+const nestedTarget={revision:9,nodeId:7,spanStart:100,spanEnd:100+nestedBytes,scopeId:null,scopeLabel:"Document",pathSegments:["$","payload"],pathTruncated:false};
+await nestedViewer.open(nestedTarget,nestedParts.elements.close);
+await settle();
+check(nestedCalls.map((call)=>call.command).join("→")==="get_string_detection→open_nested_json","Nested initial calls were not exactly detection→open without a read");
+check(nestedCalls[1]?.command==="open_nested_json"&&nestedCalls[1].args.parentScopeId===null&&nestedCalls[1].args.maxDepth===null,"Nested root call did not carry null parent/maxDepth");
+check(nestedParts.elements.close===document.activeElement,"Nested initial focus did not remain on Close");
+check(nestedParts.elements.nested.back.hidden,"Nested root Back should be hidden");
+check(nestedParts.elements.nested.parsedTab.getAttribute("aria-selected")==="true","Nested root did not default to Parsed");
+check(nestedParts.elements.range.textContent==="Parsed bytes [0, "+nestedBytes+") · depth 1/5","Nested root Parsed range is not exact");
+const nestedDisclosure=nestedParts.elements.nested.parsedTree.querySelector(".tree-disclosure");
+check(nestedDisclosure!==null,"Nested root disclosure is missing");
+nestedDisclosure.click();
+await settle();
+const nestedChildButton=nestedParts.elements.nested.parsedTree.querySelector('[data-node-id="1"]');
+check(nestedChildButton!==null,"Nested child node did not load: "+JSON.stringify(nestedCalls)+" / "+JSON.stringify(nestedChild)+" / "+nestedParts.elements.nested.parsedTree.textContent);
+nestedChildButton.dispatchEvent(new MouseEvent("click",{bubbles:true,detail:2}));
+await settle();
+check(nestedCalls.some((call)=>call.command==="open_nested_json"&&call.args.parentScopeId===1&&call.args.maxDepth===null),"Nested child call did not use current parent scope/null maxDepth");
+check(!nestedParts.elements.nested.back.hidden,"Nested child Back should be visible");
+check(nestedParts.elements.nested.parsedTree.querySelector('[data-node-id="10"]')===document.activeElement,"Nested child root did not receive focus");
+nestedParts.elements.nested.back.click();
+await settle();
+check(nestedCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===2).length===1,"Nested Back did not close child exactly once");
+check(!nestedParts.elements.alert.hidden,"Failed Nested Back did not expose its error");
+nestedParts.elements.nested.back.click();
+await settle();
+check(nestedCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===2).length===2,"Nested Back retry did not issue one bounded retry");
+check(nestedParts.elements.alert.hidden,"Successful Nested Back retry did not clear the old alert");
+check(nestedParts.elements.nested.parsedTab===document.activeElement,"Nested Back did not restore Parsed tab focus");
+check(nestedParts.elements.nested.back.hidden,"Nested root Back should be hidden after returning from child");
+check(nestedParts.elements.nested.parsedTree.querySelector('[data-node-id="0"]')?.getAttribute("aria-expanded")==="true","Nested Back did not restore parent expansion");
+const nestedOpenCount=()=>nestedCalls.filter((call)=>call.command==="open_nested_json").length;
+const openCallsBeforeRepresentations=nestedOpenCount();
+nestedParts.elements.nested.decodedTab.click();
+await settle();
+check(!nestedParts.elements.alert.hidden&&nestedParts.elements.alert.textContent.includes("nested text response was invalid"),"Early-terminal Nested Decoded chunk was accepted");
+check(nestedOpenCount()===openCallsBeforeRepresentations,"Switching to Nested Decoded added an open call");
+nestedParts.elements.nested.rawTab.click();
+await settle();
+check(nestedOpenCount()===openCallsBeforeRepresentations,"Switching to Nested Raw added an open call");
+const rawCall=nestedCalls.findLast((call)=>call.command==="read_raw_slice");
+check(rawCall?.args.sourceStart===nestedTarget.spanStart&&rawCall?.args.length===Math.min(128*1024,nestedTarget.spanEnd-nestedTarget.spanStart),"Nested Raw request lost parent-scope absolute range");
+check(nestedParts.elements.range.textContent==="Parent scope bytes ["+nestedTarget.spanStart+", "+nestedTarget.spanEnd+") of ["+nestedTarget.spanStart+", "+nestedTarget.spanEnd+")","Nested Raw range did not display the exact absolute span");
+nestedParts.elements.nested.parsedTab.click();
+await settle();
+check(nestedOpenCount()===openCallsBeforeRepresentations,"Switching back to Nested Parsed added an open call");
+check(nestedParts.elements.range.getClientRects().length>0&&nestedParts.elements.range.offsetParent!==null,"Nested range toolbar is not visible in the shared content wrapper");
+nestedViewer.close();
+await settle();
+check(nestedCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===1).length===2,"Nested root cleanup did not perform one bounded retry");
+nestedParts.dialog.remove();
+
+const whitespaceParts=makeNestedViewer();
+const whitespaceSource=String.fromCharCode(32,10,123,34,108,101,97,102,34,58,116,114,117,101,125,9);
+const whitespaceBytes=new TextEncoder().encode(whitespaceSource).byteLength;
+const whitespaceRoot=node(20,"object",2,whitespaceBytes-1,"$",0);
+const whitespaceCalls=[];
+const whitespaceTarget={revision:9,nodeId:8,spanStart:200,spanEnd:200+whitespaceBytes,scopeId:null,scopeLabel:"Document",pathSegments:["$","whitespace"],pathTruncated:false};
+const whitespaceViewer=new ContentViewer({elements:whitespaceParts.elements,invoke:async(command,args)=>{
+  whitespaceCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
+  if(command==="open_nested_json") return {scopeId:4,parentScopeId:null,sourceNodeId:8,root:whitespaceRoot,depth:1,maxDepth:5,parsedBytes:whitespaceBytes,cumulativeBytes:whitespaceBytes,sessionRevision:9};
+  if(command==="close_nested_scope") return undefined;
+  throw new Error("unexpected whitespace nested command "+command);
+}});
+await whitespaceViewer.open(whitespaceTarget,whitespaceParts.elements.close);
+await settle();
+check(whitespaceCalls.map((call)=>call.command).join("→")==="get_string_detection→open_nested_json"&&whitespaceParts.elements.alert.hidden,"Whitespace-padded nested root was not accepted");
+check(whitespaceParts.elements.nested.parsedTree.querySelector('[data-node-id="20"]')!==null,"Whitespace-padded nested root was not shown");
+whitespaceViewer.close();
+await settle();
+check(whitespaceCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===4).length===1,"Whitespace nested root close was not exactly once");
+whitespaceParts.dialog.remove();
+
+const malformedChildParts=makeNestedViewer();
+const malformedChildCalls=[];
+const malformedChildViewer=new ContentViewer({elements:malformedChildParts.elements,invoke:async(command,args)=>{
+  malformedChildCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
+  if(command==="open_nested_json") {
+    if(args.parentScopeId===null) return {scopeId:5,parentScopeId:null,sourceNodeId:7,root:nestedRoot,depth:1,maxDepth:5,parsedBytes:nestedBytes,cumulativeBytes:nestedBytes,sessionRevision:9};
+    return {scopeId:6,parentScopeId:5,sourceNodeId:1,root:leafRoot,depth:2,maxDepth:5,parsedBytes:leafBytes,cumulativeBytes:nestedBytes+leafBytes+1,sessionRevision:9};
+  }
+  if(command==="get_children"&&args.scopeId===5) return {nodes:[nestedChild],hasMore:false,nextCursor:null};
+  if(command==="close_nested_scope") return undefined;
+  throw new Error("unexpected malformed child command "+command);
+}});
+await malformedChildViewer.open(nestedTarget,malformedChildParts.elements.close);
+await settle();
+malformedChildParts.elements.nested.parsedTree.querySelector(".tree-disclosure")?.click();
+await settle();
+malformedChildParts.elements.nested.parsedTree.querySelector('[data-node-id="1"]')?.dispatchEvent(new MouseEvent("click",{bubbles:true,detail:2}));
+await settle();
+check(malformedChildParts.elements.alert.textContent.includes("scope response was invalid"),"Malformed cumulative child scope was not rejected");
+check(malformedChildCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===6).length===1,"Malformed cumulative child scope was not best-effort closed");
+malformedChildViewer.close();
+await settle();
+malformedChildParts.dialog.remove();
+
+const depthFailureParts=makeNestedViewer();
+const depthFailureCalls=[];
+const depthFailureTarget={revision:9,nodeId:77,spanStart:300,spanEnd:300+nestedBytes,scopeId:null,scopeLabel:"Document",pathSegments:["$","depth"],pathTruncated:false};
+const depthFailureRoot=(depth)=>node(1000+depth-1,"object",0,10,"$",1);
+const depthFailureChild=(depth)=>node(2000+depth,"string",1,9,"child",0,"1234567890");
+const depthFailureViewer=new ContentViewer({elements:depthFailureParts.elements,invoke:async(command,args)=>{
+  depthFailureCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
+  if(command==="open_nested_json") {
+    if(args.parentScopeId===null) return {scopeId:100,parentScopeId:null,sourceNodeId:77,root:depthFailureRoot(1),depth:1,maxDepth:5,parsedBytes:10,cumulativeBytes:10,sessionRevision:9};
+    if(args.parentScopeId===104) throw {code:"invalid_request",message:"nested JSON depth limit reached"};
+    const depth=args.parentScopeId-99;
+    const nextDepth=depth+1;
+    return {scopeId:99+nextDepth,parentScopeId:args.parentScopeId,sourceNodeId:args.nodeId,root:depthFailureRoot(nextDepth),depth:nextDepth,maxDepth:5,parsedBytes:10,cumulativeBytes:10*nextDepth,sessionRevision:9};
+  }
+  if(command==="get_children") {
+    const depth=args.scopeId-99;
+    return {nodes:[depthFailureChild(depth)],hasMore:false,nextCursor:null};
+  }
+  if(command==="read_decoded_text") return {start:0,text:"1234567890",hasMore:false,nextOffset:null};
+  if(command==="read_raw_slice") return {start:args.sourceStart,text:"12345678",hasMore:false,nextOffset:null};
+  if(command==="close_nested_scope") return undefined;
+  throw new Error("unexpected depth failure command "+command);
+}});
+await depthFailureViewer.open(depthFailureTarget,depthFailureParts.elements.close);
+await settle();
+const descendDepthFailure=async(depth)=>{
+  const disclosure=depthFailureParts.elements.nested.parsedTree.querySelector(".tree-disclosure");
+  check(disclosure!==null,"Depth failure disclosure is missing at depth "+depth);
+  disclosure.click();
+  await settle();
+  const child=depthFailureParts.elements.nested.parsedTree.querySelector("[data-node-id='"+(2000+depth)+"']");
+  check(child!==null,"Depth failure child is missing at depth "+depth);
+  child.dispatchEvent(new MouseEvent("click",{bubbles:true,detail:2}));
+  await settle();
+};
+for(let depth=1;depth<5;depth++) await descendDepthFailure(depth);
+check(depthFailureParts.elements.range.textContent==="Parsed bytes [0, 10) · depth 5/5","Depth failure setup did not reach depth 5");
+const depthFailureFinalDisclosure=depthFailureParts.elements.nested.parsedTree.querySelector(".tree-disclosure");
+check(depthFailureFinalDisclosure!==null,"Depth failure final disclosure is missing");
+depthFailureFinalDisclosure.click();
+await settle();
+const depthFailureFinalChild=depthFailureParts.elements.nested.parsedTree.querySelector("[data-node-id='"+2005+"']");
+check(depthFailureFinalChild!==null,"Depth failure final child is missing");
+const depthFailureTreeBefore=depthFailureParts.elements.nested.parsedTree.textContent;
+const depthFailureScopeCallsBefore=depthFailureCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===104).length;
+depthFailureFinalChild.dispatchEvent(new MouseEvent("click",{bubbles:true,detail:2}));
+await settle();
+check(depthFailureParts.elements.nested.parsedTree.textContent===depthFailureTreeBefore,"Depth-limit child failure changed the current tree");
+check(depthFailureParts.elements.range.textContent==="Parsed bytes [0, 10) · depth 5/5","Depth-limit child failure lost the Parsed range");
+check(depthFailureParts.elements.status.textContent==="Parsed nested JSON ready","Depth-limit child failure lost the Parsed status");
+check(!depthFailureParts.elements.alert.hidden&&depthFailureParts.elements.alert.textContent.includes("nested JSON depth limit reached"),"Depth-limit child failure did not expose its alert");
+check(depthFailureParts.elements.nested.parsedTab.getAttribute("aria-selected")==="true"&&!depthFailureParts.elements.nested.back.hidden,"Depth-limit child failure changed the current frame representation");
+check(depthFailureCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===104).length===depthFailureScopeCallsBefore,"Depth-limit child failure closed the current scope");
+depthFailureParts.elements.nested.decodedTab.click();
+await settle();
+check(depthFailureParts.elements.status.textContent==="Decoded nested string ready"&&depthFailureParts.elements.content.textContent==="1234567890","Decoded tab was unusable after a local child failure");
+depthFailureParts.elements.nested.rawTab.click();
+await settle();
+check(depthFailureParts.elements.status.textContent==="Raw nested lexeme ready"&&depthFailureParts.elements.content.textContent==="12345678","Raw tab was unusable after a local child failure");
+depthFailureParts.elements.nested.parsedTab.click();
+await settle();
+check(depthFailureParts.elements.range.textContent==="Parsed bytes [0, 10) · depth 5/5"&&depthFailureParts.elements.status.textContent==="Parsed nested JSON ready","Parsed tab did not restore the depth-5 state");
+depthFailureViewer.close();
+await settle();
+depthFailureParts.dialog.remove();
+
+const malformedParts=makeNestedViewer();
+const malformedCalls=[];
+const malformedViewer=new ContentViewer({elements:malformedParts.elements,invoke:async(command,args)=>{
+  malformedCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
+  if(command==="open_nested_json") return {scopeId:3,parentScopeId:null,sourceNodeId:7,root:nestedRoot,depth:1,maxDepth:5,parsedBytes:2*1024*1024+1,cumulativeBytes:2*1024*1024+1,sessionRevision:9};
+  if(command==="close_nested_scope") return undefined;
+  throw new Error("unexpected malformed command "+command);
+}});
+await malformedViewer.open(nestedTarget,malformedParts.elements.close);
+await settle();
+check(malformedParts.elements.alert.textContent.includes("scope response was invalid"),"Nested oversized scope was not rejected");
+check(malformedCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===3).length===1,"Malformed successful nested scope was not best-effort closed");
+malformedViewer.close();
+malformedParts.dialog.remove();
 return {assertions};
 })()`;
 }

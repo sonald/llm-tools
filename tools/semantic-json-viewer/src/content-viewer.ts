@@ -1,12 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderCode, type CodeRenderReason } from "./code-renderer";
 import { renderSafeMarkdown } from "./markdown-renderer";
+import { TreeView, type NodeDto, type TreeViewSnapshot } from "./tree-view";
 
 export type ContentTarget = {
   revision: number;
   nodeId: number;
   spanStart: number;
   spanEnd: number;
+  scopeId: number | null;
   scopeLabel: string;
   pathSegments: string[];
   pathTruncated: boolean;
@@ -32,6 +34,20 @@ export type ContentViewerElements = {
   content: HTMLElement;
   previous: HTMLButtonElement;
   next: HTMLButtonElement;
+  nested?: NestedViewerElements;
+};
+
+export type NestedViewerElements = {
+  navigation: HTMLElement;
+  back: HTMLButtonElement;
+  breadcrumb: HTMLOListElement;
+  representations: HTMLElement;
+  parsedTab: HTMLButtonElement;
+  decodedTab: HTMLButtonElement;
+  rawTab: HTMLButtonElement;
+  parsedPanel: HTMLElement;
+  parsedTree: HTMLElement;
+  sharedTextPanel: HTMLElement;
 };
 
 type StringDetection = {
@@ -54,6 +70,34 @@ type ContentViewerOptions = {
   onClose?: (restoreFocus: boolean) => void;
 };
 
+type NestedScope = {
+  scopeId: number;
+  parentScopeId: number | null;
+  sourceNodeId: number;
+  root: NodeDto;
+  depth: number;
+  maxDepth: number;
+  parsedBytes: number;
+  cumulativeBytes: number;
+  sessionRevision: number;
+};
+
+type TextState = {
+  offsets: number[];
+  offsetIndex: number;
+  nextOffset: number | null;
+  current: TextChunk | null;
+  pages: Map<number, TextChunk>;
+};
+
+type NestedFrame = {
+  scope: NestedScope;
+  source: ContentTarget;
+  parentSnapshot: TreeViewSnapshot | null;
+  decoded: TextState;
+  raw: TextState;
+};
+
 const TEXT_CHUNK_BYTES = 128 * 1024;
 
 export class ContentViewer {
@@ -73,15 +117,42 @@ export class ContentViewer {
   private representation: "rendered" | "decoded" | null = null;
   private markdownRenderFailed = false;
   private codeRenderReason: CodeRenderReason | null = null;
+  private readonly nestedElements: NestedViewerElements | null;
+  private readonly nestedTree: TreeView | null;
+  private nestedFrames: NestedFrame[] = [];
+  private nestedRepresentation: "parsed" | "decoded" | "raw" | null = null;
+  private readonly closedScopeIds = new Set<string>();
+  private readonly closingScopes = new Map<string, Promise<void>>();
+  private readonly rootCloseAttempts = new Map<string, number>();
+  private nestedBusy = false;
 
   constructor(options: ContentViewerOptions) {
     this.elements = options.elements;
     this.invokeRequest = options.invoke ?? invoke;
     this.onSessionError = options.onSessionError ?? (() => undefined);
     this.onClose = options.onClose;
+    this.nestedElements = options.elements.nested ?? null;
+    this.nestedTree = this.nestedElements
+      ? new TreeView({
+        panel: this.nestedElements.parsedTree,
+        tab: this.nestedElements.parsedTab,
+        inspector: null,
+        fields: null,
+        onSelection: () => undefined,
+        onStringSelection: () => undefined,
+        onStringOpen: (target) => { void this.openNestedChild(target); },
+        onError: (error) => this.handleFailure(error),
+        invoke: this.invokeRequest
+      })
+      : null;
     this.elements.close.addEventListener("click", () => this.close());
     this.elements.previous.addEventListener("click", () => void this.readPrevious());
     this.elements.next.addEventListener("click", () => void this.readNext());
+    this.nestedElements?.back.addEventListener("click", () => void this.backNested());
+    this.nestedElements?.parsedTab.addEventListener("click", () => this.activateNestedRepresentation("parsed"));
+    this.nestedElements?.decodedTab.addEventListener("click", () => this.activateNestedRepresentation("decoded"));
+    this.nestedElements?.rawTab.addEventListener("click", () => this.activateNestedRepresentation("raw"));
+    this.nestedElements?.representations.addEventListener("keydown", (event) => this.handleNestedTabKeydown(event));
     this.elements.dialog.addEventListener("cancel", () => {
       // Let the platform close the dialog and let the close event restore focus.
       this.restoreFocusOnClose = true;
@@ -95,6 +166,7 @@ export class ContentViewer {
   }
 
   async open(target: ContentTarget, opener: HTMLElement | null = null): Promise<void> {
+    this.releaseNestedScopes();
     this.generation += 1;
     const generation = this.generation;
     this.restoreFocusOnClose = null;
@@ -106,9 +178,13 @@ export class ContentViewer {
     this.offsetIndex = 0;
     this.nextOffset = null;
     this.clearContent();
+    this.elements.range.textContent = "—";
     this.representation = null;
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
+    this.nestedRepresentation = null;
+    this.nestedBusy = false;
+    this.setNestedVisible(false);
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
     this.elements.alert.hidden = true;
@@ -124,7 +200,8 @@ export class ContentViewer {
     try {
       const detectionValue = await this.invokeRequest<unknown>("get_string_detection", {
         nodeId: target.nodeId,
-        sessionRevision: target.revision
+        sessionRevision: target.revision,
+        scopeId: target.scopeId
       });
       if (!this.isCurrent(generation, target)) return;
       const detection = validateDetection(detectionValue);
@@ -132,11 +209,17 @@ export class ContentViewer {
       this.detection = detection;
       this.renderMetadata();
 
+      if (detection.semanticType === "nestedJson") {
+        await this.openNestedRoot(target, generation);
+        return;
+      }
+
       const chunkValue = await this.invokeRequest<unknown>("read_decoded_text", {
         nodeId: target.nodeId,
         offset: 0,
         length: TEXT_CHUNK_BYTES,
-        sessionRevision: target.revision
+        sessionRevision: target.revision,
+        scopeId: target.scopeId
       });
       if (!this.isCurrent(generation, target)) return;
       const chunk = validateChunk(chunkValue, 0, rawSpanLength(target));
@@ -149,6 +232,7 @@ export class ContentViewer {
   }
 
   clear(restoreFocus = true): void {
+    this.releaseNestedScopes();
     this.restoreFocusOnClose = restoreFocus;
     this.generation += 1;
     this.target = null;
@@ -161,6 +245,9 @@ export class ContentViewer {
     this.representation = null;
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
+    this.nestedRepresentation = null;
+    this.nestedBusy = false;
+    this.setNestedVisible(false);
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
@@ -173,6 +260,7 @@ export class ContentViewer {
 
   close(): void {
     this.restoreFocusOnClose = true;
+    this.releaseNestedScopes();
     if (this.elements.dialog.open) {
       this.elements.dialog.close();
     } else {
@@ -181,12 +269,20 @@ export class ContentViewer {
   }
 
   private async readNext(): Promise<void> {
+    if (this.nestedRepresentation === "decoded" || this.nestedRepresentation === "raw") {
+      await this.readNestedPage("next");
+      return;
+    }
     if (this.busy || !this.target || this.nextOffset === null) return;
     const offset = this.nextOffset;
     await this.readPage(offset, "next");
   }
 
   private async readPrevious(): Promise<void> {
+    if (this.nestedRepresentation === "decoded" || this.nestedRepresentation === "raw") {
+      await this.readNestedPage("previous");
+      return;
+    }
     if (this.busy || !this.target || this.offsetIndex <= 0) return;
     await this.readPage(this.offsets[this.offsetIndex - 1], "previous", this.offsets[this.offsetIndex]);
   }
@@ -205,7 +301,8 @@ export class ContentViewer {
         nodeId: target.nodeId,
         offset,
         length: TEXT_CHUNK_BYTES,
-        sessionRevision: target.revision
+        sessionRevision: target.revision,
+        scopeId: target.scopeId
       });
       if (!this.isCurrent(generation, target)) return;
       const chunk = validateChunk(value, offset, rawSpanLength(target), expectedNextOffset);
@@ -266,6 +363,469 @@ export class ContentViewer {
     this.renderPaging();
   }
 
+  private async openNestedRoot(target: ContentTarget, generation: number): Promise<void> {
+    const nested = this.nestedElements;
+    const tree = this.nestedTree;
+    if (!nested || !tree) {
+      const value = await this.invokeRequest<unknown>("read_decoded_text", {
+        nodeId: target.nodeId,
+        offset: 0,
+        length: TEXT_CHUNK_BYTES,
+        sessionRevision: target.revision,
+        scopeId: target.scopeId
+      });
+      if (!this.isCurrent(generation, target)) return;
+      const chunk = validateChunk(value, 0, rawSpanLength(target));
+      if (!chunk) throw new Error("The decoded text response was invalid.");
+      this.installChunk(chunk, true);
+      return;
+    }
+    this.nestedBusy = true;
+    this.setStatus("Loading parsed nested JSON…");
+    this.renderPaging();
+    try {
+      const value = await this.invokeRequest<unknown>("open_nested_json", {
+        parentScopeId: target.scopeId,
+        nodeId: target.nodeId,
+        maxDepth: null,
+        sessionRevision: target.revision
+      });
+      if (!this.isCurrent(generation, target)) {
+        this.bestEffortCloseScope(value, target.revision);
+        return;
+      }
+      const scope = validateNestedScope(value, target, null);
+      if (!scope) {
+        this.bestEffortCloseScope(value, target.revision);
+        throw new Error("The nested JSON scope response was invalid.");
+      }
+      const frame: NestedFrame = {
+        scope,
+        source: cloneTarget(target),
+        parentSnapshot: null,
+        decoded: newTextState(),
+        raw: newTextState()
+      };
+      this.nestedFrames = [frame];
+      this.nestedRepresentation = "parsed";
+      this.nestedBusy = false;
+      this.busy = false;
+      tree.setSession({
+        mode: "nested",
+        sessionRevision: scope.sessionRevision,
+        scopeId: scope.scopeId,
+        sourceSize: scope.parsedBytes,
+        ariaLabel: "Parsed nested JSON structure",
+        scopeLabel: target.scopeLabel
+      }, scope.root);
+      this.setNestedVisible(true);
+      this.elements.dialog.removeAttribute("aria-busy");
+      this.elements.content.removeAttribute("aria-busy");
+      this.setStatus("Parsed nested JSON ready");
+      this.renderMetadata();
+      this.renderPaging();
+    } catch (error) {
+      if (!this.isCurrent(generation, target)) return;
+      this.nestedBusy = false;
+      this.handleFailure(error);
+    }
+  }
+
+  private async openNestedChild(target: ContentTarget): Promise<void> {
+    const parent = this.nestedFrames.at(-1);
+    const tree = this.nestedTree;
+    if (!parent || !tree || this.nestedBusy || target.scopeId !== parent.scope.scopeId) return;
+    const generation = this.generation;
+    const parentSnapshot = tree.snapshot();
+    this.nestedBusy = true;
+    this.elements.range.textContent = "—";
+    this.setStatus("Loading parsed nested JSON…");
+    this.renderPaging();
+    try {
+      const value = await this.invokeRequest<unknown>("open_nested_json", {
+        parentScopeId: parent.scope.scopeId,
+        nodeId: target.nodeId,
+        maxDepth: null,
+        sessionRevision: parent.scope.sessionRevision
+      });
+      if (generation !== this.generation || this.nestedFrames.at(-1)?.scope.scopeId !== parent.scope.scopeId) {
+        this.bestEffortCloseScope(value, parent.scope.sessionRevision);
+        return;
+      }
+      const source = cloneTarget({
+        ...target,
+        scopeLabel: parent.source.scopeLabel,
+        pathSegments: [...parent.source.pathSegments, ...target.pathSegments.slice(1)]
+      });
+      const scope = validateNestedScope(value, source, parent.scope);
+      if (!scope) {
+        this.bestEffortCloseScope(value, parent.scope.sessionRevision);
+        throw new Error("The nested JSON scope response was invalid.");
+      }
+      this.nestedFrames.push({ scope, source, parentSnapshot, decoded: newTextState(), raw: newTextState() });
+      this.target = source;
+      this.detection = { semanticType: "nestedJson", detectionSource: "contentDetected", plainReason: null };
+      this.nestedRepresentation = "parsed";
+      this.nestedBusy = false;
+      tree.setSession({
+        mode: "nested",
+        sessionRevision: scope.sessionRevision,
+        scopeId: scope.scopeId,
+        sourceSize: scope.parsedBytes,
+        ariaLabel: "Parsed nested JSON structure",
+        scopeLabel: source.scopeLabel
+      }, scope.root);
+      this.renderNestedBreadcrumb();
+      this.setNestedVisible(true);
+      this.setStatus("Parsed nested JSON ready");
+      this.renderMetadata();
+      this.renderPaging();
+      focusNestedRoot(this.nestedElements?.parsedTree ?? null);
+    } catch (error) {
+      if (generation !== this.generation) return;
+      this.nestedBusy = false;
+      if (errorCode(error) === "file_changed" || errorCode(error) === "stale_session") {
+        this.handleFailure(error);
+        return;
+      }
+      this.renderMetadata();
+      this.elements.alert.hidden = false;
+      this.elements.alert.textContent = `Content could not be opened: ${errorMessage(error)}`;
+      this.setStatus(this.nestedRepresentation === "decoded"
+        ? "Decoded nested string ready"
+        : this.nestedRepresentation === "raw" ? "Raw nested lexeme ready" : "Parsed nested JSON ready");
+      this.renderPaging();
+    }
+  }
+
+  private async backNested(): Promise<void> {
+    const frame = this.nestedFrames.at(-1);
+    if (!frame || this.nestedBusy) return;
+    const generation = ++this.generation;
+    this.nestedBusy = true;
+    this.elements.range.textContent = "—";
+    this.setStatus("Closing nested JSON…");
+    this.renderPaging();
+    try {
+      await this.closeScope(frame.scope.scopeId, frame.scope.sessionRevision);
+      if (generation !== this.generation) return;
+      this.elements.alert.hidden = true;
+      this.nestedFrames.pop();
+      this.nestedBusy = false;
+      if (this.nestedFrames.length === 0) {
+        this.nestedRepresentation = null;
+        this.nestedTree?.clear();
+        this.setNestedVisible(false);
+        this.close();
+        return;
+      }
+      const parent = this.nestedFrames.at(-1);
+      if (!parent) return;
+      this.target = parent.source;
+      this.detection = { semanticType: "nestedJson", detectionSource: "contentDetected", plainReason: null };
+      this.nestedRepresentation = "parsed";
+      this.nestedTree?.restore(frame.parentSnapshot);
+      if (!frame.parentSnapshot) this.setNestedTreeSession(parent);
+      this.setNestedVisible(true);
+      this.setStatus("Parsed nested JSON ready");
+      this.renderMetadata();
+      this.renderPaging();
+      focusNestedBackOrParsed(this.nestedElements, this.nestedFrames.length);
+    } catch (error) {
+      if (generation !== this.generation) return;
+      if (errorCode(error) === "not_found") {
+        this.nestedFrames.pop();
+        this.nestedBusy = false;
+        if (this.nestedFrames.length === 0) this.close();
+        else {
+          this.backToParentAfterCleanup(frame.parentSnapshot);
+        }
+        return;
+      }
+      this.nestedBusy = false;
+      this.handleFailure(error);
+    }
+  }
+
+  private backToParentAfterCleanup(snapshot: TreeViewSnapshot | null): void {
+    const parent = this.nestedFrames.at(-1);
+    if (!parent) return;
+    this.elements.alert.hidden = true;
+    this.target = parent.source;
+    this.nestedRepresentation = "parsed";
+    this.nestedTree?.restore(snapshot);
+    if (!snapshot) this.setNestedTreeSession(parent);
+    this.setNestedVisible(true);
+    this.renderMetadata();
+    this.renderPaging();
+    focusNestedBackOrParsed(this.nestedElements, this.nestedFrames.length);
+  }
+
+  private activateNestedRepresentation(representation: "parsed" | "decoded" | "raw"): void {
+    if (!this.nestedFrames.length || this.nestedBusy) return;
+    this.nestedRepresentation = representation;
+    this.setNestedVisible(true);
+    this.renderMetadata();
+    this.renderPaging();
+    if (representation === "parsed") {
+      this.setStatus("Parsed nested JSON ready");
+    } else {
+      const frame = this.nestedFrames.at(-1);
+      const state = frame ? textState(frame, representation) : null;
+      if (state?.current) this.installNestedChunk(frame!, representation, state.current);
+      else void this.readNestedPage("initial");
+    }
+  }
+
+  private handleNestedTabKeydown(event: Event): void {
+    if (!(event instanceof KeyboardEvent) || !this.nestedElements) return;
+    const tabs = [this.nestedElements.parsedTab, this.nestedElements.decodedTab, this.nestedElements.rawTab];
+    const current = tabs.indexOf(event.target as HTMLButtonElement);
+    if (current < 0) return;
+    if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+      event.preventDefault();
+      const direction = event.key === "ArrowRight" ? 1 : -1;
+      tabs[(current + direction + tabs.length) % tabs.length].focus();
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      (event.key === "Home" ? tabs[0] : tabs.at(-1))?.focus();
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      this.activateNestedRepresentation(current === 0 ? "parsed" : current === 1 ? "decoded" : "raw");
+    }
+  }
+
+  private async readNestedPage(direction: "initial" | "next" | "previous"): Promise<void> {
+    const frame = this.nestedFrames.at(-1);
+    const representation = this.nestedRepresentation;
+    if (!frame || (representation !== "decoded" && representation !== "raw") || this.nestedBusy) return;
+    const state = textState(frame, representation);
+    let offset: number;
+    if (direction === "initial") offset = state.offsets[state.offsetIndex] ?? 0;
+    else if (direction === "next") {
+      if (state.nextOffset === null) return;
+      offset = state.nextOffset;
+    } else {
+      if (state.offsetIndex <= 0) return;
+      offset = state.offsets[state.offsetIndex - 1];
+    }
+    const cached = state.pages.get(offset);
+    if (cached) {
+      if (direction === "next") {
+        state.offsets = state.offsets.slice(0, state.offsetIndex + 1);
+        state.offsets.push(offset);
+        state.offsetIndex += 1;
+      } else if (direction === "previous") state.offsetIndex -= 1;
+      this.installNestedChunk(frame, representation, cached);
+      return;
+    }
+    const generation = this.generation;
+    this.nestedBusy = true;
+    this.elements.dialog.setAttribute("aria-busy", "true");
+    this.elements.content.setAttribute("aria-busy", "true");
+    this.renderNestedRange();
+    this.setStatus(representation === "decoded" ? "Loading decoded nested string…" : "Loading raw nested lexeme…");
+    this.renderPaging();
+    try {
+      const boundary = representation === "decoded" ? frame.scope.parsedBytes : rawSpanLength(frame.source);
+      const rawStart = frame.source.spanStart + offset;
+      const requestLength = representation === "raw"
+        ? Math.min(TEXT_CHUNK_BYTES, frame.source.spanEnd - rawStart)
+        : TEXT_CHUNK_BYTES;
+      const value = await this.invokeRequest<unknown>(representation === "decoded" ? "read_decoded_text" : "read_raw_slice", representation === "decoded"
+        ? { nodeId: frame.source.nodeId, offset, length: TEXT_CHUNK_BYTES, sessionRevision: frame.scope.sessionRevision, scopeId: frame.source.scopeId }
+        : { sourceStart: rawStart, length: requestLength, sessionRevision: frame.scope.sessionRevision, scopeId: frame.source.scopeId });
+      if (generation !== this.generation || this.nestedFrames.at(-1) !== frame || this.nestedRepresentation !== representation) return;
+      const chunk = representation === "raw"
+        ? normalizeRawChunk(value, rawStart, frame.source.spanStart, frame.source.spanEnd, requestLength)
+        : validateChunk(value, offset, boundary, undefined, true);
+      if (!chunk) throw new Error("The nested text response was invalid.");
+      if (direction === "next") {
+        state.offsets = state.offsets.slice(0, state.offsetIndex + 1);
+        state.offsets.push(chunk.start);
+        state.offsetIndex += 1;
+      } else if (direction === "previous") state.offsetIndex -= 1;
+      state.current = chunk;
+      state.pages.set(chunk.start, chunk);
+      this.installNestedChunk(frame, representation, chunk);
+    } catch (error) {
+      if (generation !== this.generation) return;
+      this.nestedBusy = false;
+      this.elements.alert.hidden = false;
+      this.elements.alert.textContent = `Content could not be opened: ${errorMessage(error)}`;
+      if (errorCode(error) === "file_changed" || errorCode(error) === "stale_session") {
+        this.handleFailure(error);
+      } else {
+        this.setStatus("Unable to load nested text");
+        this.renderPaging();
+      }
+    }
+  }
+
+  private installNestedChunk(frame: NestedFrame, representation: "decoded" | "raw", chunk: TextChunk): void {
+    const state = textState(frame, representation);
+    state.current = chunk;
+    state.pages.set(chunk.start, chunk);
+    state.nextOffset = chunk.nextOffset;
+    this.nestedBusy = false;
+    this.elements.content.classList.remove("is-markdown");
+    this.elements.content.textContent = chunk.text;
+    this.setStatus(representation === "decoded" ? "Decoded nested string ready" : "Raw nested lexeme ready");
+    this.elements.alert.hidden = true;
+    this.elements.dialog.removeAttribute("aria-busy");
+    this.elements.content.removeAttribute("aria-busy");
+    this.renderMetadata();
+    this.renderPaging();
+  }
+
+  private setNestedVisible(active: boolean): void {
+    const nested = this.nestedElements;
+    if (!nested) return;
+    nested.navigation.hidden = !active;
+    nested.representations.hidden = !active;
+    nested.back.hidden = !active || this.nestedFrames.length <= 1;
+    nested.back.setAttribute("aria-controls", "content-viewer-parsed-panel");
+    nested.parsedPanel.hidden = !active || this.nestedRepresentation !== "parsed";
+    nested.sharedTextPanel.hidden = active && this.nestedRepresentation === "parsed";
+    if (active) {
+      const tabs = [nested.parsedTab, nested.decodedTab, nested.rawTab];
+      const activeTab = this.nestedRepresentation === "parsed" ? nested.parsedTab : this.nestedRepresentation === "decoded" ? nested.decodedTab : nested.rawTab;
+      for (const tab of tabs) {
+        const selected = tab === activeTab;
+        tab.classList.toggle("is-active", selected);
+        tab.setAttribute("aria-selected", String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+      }
+      this.renderNestedBreadcrumb();
+    }
+    this.setSharedTextPanelSemantics();
+    this.renderNestedRange();
+  }
+
+  private renderNestedBreadcrumb(): void {
+    const nested = this.nestedElements;
+    if (!nested) return;
+    nested.breadcrumb.replaceChildren();
+    for (const [index, frame] of this.nestedFrames.entries()) {
+      const item = document.createElement("li");
+      const label = index === 0 ? formatPath(frame.source.pathSegments, frame.source.pathTruncated) : `Level ${frame.scope.depth}`;
+      item.textContent = label;
+      if (index === this.nestedFrames.length - 1) item.setAttribute("aria-current", "page");
+      nested.breadcrumb.append(item);
+    }
+  }
+
+  private setNestedTreeSession(frame: NestedFrame): void {
+    this.nestedTree?.setSession({
+      mode: "nested",
+      sessionRevision: frame.scope.sessionRevision,
+      scopeId: frame.scope.scopeId,
+      sourceSize: frame.scope.parsedBytes,
+      ariaLabel: "Parsed nested JSON structure",
+      scopeLabel: frame.source.scopeLabel
+    }, frame.scope.root);
+  }
+
+  private setSharedTextPanelSemantics(): void {
+    const nested = this.nestedElements;
+    if (!nested) return;
+    const nestedText = this.nestedRepresentation === "decoded" || this.nestedRepresentation === "raw";
+    const tab = this.nestedRepresentation === "decoded" ? nested.decodedTab
+      : this.nestedRepresentation === "raw" ? nested.rawTab : null;
+    if (nestedText && tab) {
+      nested.sharedTextPanel.setAttribute("role", "tabpanel");
+      nested.sharedTextPanel.setAttribute("aria-labelledby", tab.id);
+      nested.sharedTextPanel.removeAttribute("aria-label");
+      this.elements.content.setAttribute("aria-label", this.nestedRepresentation === "decoded" ? "Decoded String" : "Raw Lexeme");
+    } else {
+      nested.sharedTextPanel.setAttribute("role", "region");
+      nested.sharedTextPanel.removeAttribute("aria-labelledby");
+      nested.sharedTextPanel.setAttribute("aria-label", "Decoded source");
+      this.elements.content.setAttribute("aria-label", "Decoded source");
+    }
+  }
+
+  private renderNestedRange(): void {
+    const frame = this.nestedFrames.at(-1);
+    const representation = this.nestedRepresentation;
+    if (!frame || representation === null) return;
+    if (representation === "parsed") {
+      this.elements.range.textContent = `Parsed bytes [0, ${frame.scope.parsedBytes}) · depth ${frame.scope.depth}/${frame.scope.maxDepth}`;
+      return;
+    }
+    const state = textState(frame, representation);
+    const chunk = state.current;
+    if (!chunk || this.nestedBusy) {
+      this.elements.range.textContent = representation === "decoded"
+        ? `Decoded bytes [0, 0) of [0, ${frame.scope.parsedBytes})`
+        : `Parent scope bytes [${frame.source.spanStart}, ${frame.source.spanStart}) of [${frame.source.spanStart}, ${frame.source.spanEnd})`;
+      return;
+    }
+    const end = chunk.start + utf8ByteLength(chunk.text);
+    if (representation === "decoded") {
+      this.elements.range.textContent = `Decoded bytes [${chunk.start}, ${end}) of [0, ${frame.scope.parsedBytes})`;
+    } else {
+      const absoluteStart = frame.source.spanStart + chunk.start;
+      this.elements.range.textContent = `Parent scope bytes [${absoluteStart}, ${absoluteStart + utf8ByteLength(chunk.text)}) of [${frame.source.spanStart}, ${frame.source.spanEnd})`;
+    }
+  }
+
+  private async closeScope(scopeId: number, sessionRevision: number): Promise<void> {
+    const key = scopeKey(sessionRevision, scopeId);
+    if (this.closedScopeIds.has(key)) return;
+    const pending = this.closingScopes.get(key);
+    if (pending) return pending;
+    const request = this.invokeRequest<unknown>("close_nested_scope", { scopeId, sessionRevision }).then(
+      () => {
+        this.closedScopeIds.add(key);
+      },
+      (error: unknown) => {
+        if (errorCode(error) === "not_found" || errorCode(error) === "stale_session") {
+          this.closedScopeIds.add(key);
+        }
+        throw error;
+      }
+    ).finally(() => this.closingScopes.delete(key));
+    this.closingScopes.set(key, request);
+    return request;
+  }
+
+  private bestEffortCloseScope(value: unknown, sessionRevision: number): void {
+    const candidate = nestedScopeCandidate(value, sessionRevision);
+    if (!candidate) return;
+    const key = scopeKey(candidate.sessionRevision, candidate.scopeId);
+    if ((this.rootCloseAttempts.get(key) ?? 0) >= 2) return;
+    void this.closeScope(candidate.scopeId, candidate.sessionRevision).catch(() => undefined);
+  }
+
+  private releaseNestedScopes(): void {
+    const root = this.nestedFrames[0];
+    if (root) {
+      const revision = root.scope.sessionRevision;
+      const key = scopeKey(revision, root.scope.scopeId);
+      if (!this.rootCloseAttempts.has(key)) {
+        this.rootCloseAttempts.set(key, 1);
+        void this.closeRootScope(root.scope.scopeId, revision, key);
+      }
+    }
+    this.nestedFrames = [];
+    this.nestedTree?.clear();
+    this.nestedRepresentation = null;
+    this.nestedBusy = false;
+    this.elements.range.textContent = "—";
+    this.setNestedVisible(false);
+  }
+
+  private async closeRootScope(scopeId: number, sessionRevision: number, key: string): Promise<void> {
+    try {
+      await this.closeScope(scopeId, sessionRevision);
+    } catch (error) {
+      if (isTerminalCloseError(error)) return;
+      this.rootCloseAttempts.set(key, 2);
+      await this.closeScope(scopeId, sessionRevision).catch(() => undefined);
+    }
+  }
+
   private handleFailure(error: unknown): void {
     this.busy = false;
     this.elements.dialog.removeAttribute("aria-busy");
@@ -283,6 +843,7 @@ export class ContentViewer {
   }
 
   private finishClose(): void {
+    this.releaseNestedScopes();
     const opener = this.opener;
     const restoreFocus = this.restoreFocusOnClose ?? true;
     const wasOpen = this.elements.dialog.open;
@@ -299,6 +860,10 @@ export class ContentViewer {
     this.representation = null;
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
+    this.nestedRepresentation = null;
+    this.nestedBusy = false;
+    this.elements.range.textContent = "—";
+    this.setNestedVisible(false);
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
@@ -332,7 +897,9 @@ export class ContentViewer {
     this.elements.scope.textContent = target.scopeLabel;
     this.elements.path.textContent = formatPath(target.pathSegments, target.pathTruncated);
     this.elements.node.textContent = `#${target.nodeId}`;
-    this.elements.spanLabel.textContent = target.scopeLabel.startsWith("Entry") ? "Entry-relative span" : "File-relative span";
+    this.elements.spanLabel.textContent = target.scopeId !== null
+      ? "Nested-relative span"
+      : target.scopeLabel.startsWith("Entry") ? "Entry-relative span" : "File-relative span";
     this.elements.span.textContent = `[${target.spanStart}, ${target.spanEnd})`;
     if (!detection) {
       this.elements.semanticType.textContent = "Detecting…";
@@ -345,9 +912,19 @@ export class ContentViewer {
     this.elements.semanticType.textContent = semanticTypeLabel(detection.semanticType);
     this.elements.detectionSource.textContent = "Content-detected";
     this.elements.plainReason.textContent = detection.plainReason === null ? "—" : plainReasonLabel(detection.plainReason);
-    this.elements.representation.textContent = detection.semanticType === "plainText"
+    this.elements.representation.textContent = this.nestedRepresentation !== null
+      ? nestedRepresentationLabel(this.nestedRepresentation)
+      : detection.semanticType === "plainText"
       ? "Plain Text"
       : this.representation === "rendered" ? "Rendered" : "Decoded Source";
+    if (this.nestedRepresentation !== null) {
+      this.elements.rendererNote.textContent = this.nestedRepresentation === "parsed"
+        ? "Parsed nested JSON tree."
+        : this.nestedRepresentation === "decoded" ? "Decoded nested JSON string."
+          : "Raw nested JSON lexeme.";
+      this.renderNestedRange();
+      return;
+    }
     if (detection.semanticType === "plainText") {
       this.elements.rendererNote.textContent = "";
     } else if (detection.semanticType === "code" && this.representation === "rendered") {
@@ -366,6 +943,20 @@ export class ContentViewer {
   }
 
   private renderPaging(): void {
+    if (this.nestedRepresentation === "parsed") {
+      this.elements.previous.disabled = true;
+      this.elements.next.disabled = true;
+      this.elements.close.disabled = false;
+      return;
+    }
+    if (this.nestedRepresentation === "decoded" || this.nestedRepresentation === "raw") {
+      const frame = this.nestedFrames.at(-1);
+      const state = frame ? textState(frame, this.nestedRepresentation) : null;
+      this.elements.previous.disabled = this.nestedBusy || !state || state.offsetIndex <= 0;
+      this.elements.next.disabled = this.nestedBusy || !state || state.nextOffset === null;
+      this.elements.close.disabled = false;
+      return;
+    }
     this.elements.previous.disabled = this.busy || this.offsetIndex <= 0;
     this.elements.next.disabled = this.busy || this.nextOffset === null;
     this.elements.close.disabled = false;
@@ -375,6 +966,7 @@ export class ContentViewer {
     this.elements.dialog.setAttribute("aria-busy", "false");
     this.elements.content.setAttribute("aria-busy", "false");
     this.elements.alert.hidden = true;
+    this.setNestedVisible(false);
     this.renderMetadata();
     this.renderPaging();
   }
@@ -389,7 +981,12 @@ export class ContentViewer {
   }
 
   private isCurrent(generation: number, target: ContentTarget): boolean {
-    return this.generation === generation && this.target?.revision === target.revision && this.target.nodeId === target.nodeId;
+    return this.generation === generation
+      && this.target?.revision === target.revision
+      && this.target.nodeId === target.nodeId
+      && this.target.scopeId === target.scopeId
+      && this.target.spanStart === target.spanStart
+      && this.target.spanEnd === target.spanEnd;
   }
 }
 
@@ -399,10 +996,90 @@ function cloneTarget(target: ContentTarget): ContentTarget {
     nodeId: target.nodeId,
     spanStart: target.spanStart,
     spanEnd: target.spanEnd,
+    scopeId: target.scopeId,
     scopeLabel: target.scopeLabel,
     pathSegments: target.pathSegments.slice(),
     pathTruncated: target.pathTruncated
   };
+}
+
+function newTextState(): TextState {
+  return { offsets: [0], offsetIndex: 0, nextOffset: null, current: null, pages: new Map() };
+}
+
+function textState(frame: NestedFrame, representation: "decoded" | "raw"): TextState {
+  return representation === "decoded" ? frame.decoded : frame.raw;
+}
+
+function validateNestedScope(value: unknown, source: ContentTarget, parent: NestedScope | null): NestedScope | undefined {
+  if (!isRecord(value)) return undefined;
+  const scopeId = safeOffset(value.scopeId);
+  const parentScopeId = value.parentScopeId === null ? null : safeOffset(value.parentScopeId);
+  const sourceNodeId = safeOffset(value.sourceNodeId);
+  const depth = safeOffset(value.depth);
+  const maxDepth = safeOffset(value.maxDepth);
+  const parsedBytes = safeOffset(value.parsedBytes);
+  const cumulativeBytes = safeOffset(value.cumulativeBytes);
+  const sessionRevision = safeOffset(value.sessionRevision);
+  const maxInputBytes = 2 * 1024 * 1024;
+  const maxCumulativeBytes = 8 * 1024 * 1024;
+  if (scopeId === undefined || parentScopeId === undefined || sourceNodeId === undefined || depth === undefined
+    || maxDepth === undefined || parsedBytes === undefined || cumulativeBytes === undefined || sessionRevision === undefined
+    || sessionRevision !== source.revision || scopeId === 0 || depth < 1 || depth > 10 || maxDepth < 1 || maxDepth > 10
+    || depth > maxDepth || parsedBytes === 0 || parsedBytes > maxInputBytes || cumulativeBytes === 0
+    || cumulativeBytes > maxCumulativeBytes || sourceNodeId !== source.nodeId
+    || parentScopeId !== (parent?.scopeId ?? source.scopeId)) return undefined;
+  const root = validateNestedNode(value.root, parsedBytes);
+  if (!root || (root.kind !== "object" && root.kind !== "array")) return undefined;
+  if (parent && (depth !== parent.depth + 1 || cumulativeBytes !== parent.cumulativeBytes + parsedBytes || maxDepth !== parent.maxDepth)) return undefined;
+  if (!parent && (depth !== 1 || cumulativeBytes !== parsedBytes)) return undefined;
+  return { scopeId, parentScopeId, sourceNodeId, root, depth, maxDepth, parsedBytes, cumulativeBytes, sessionRevision };
+}
+
+function nestedScopeCandidate(value: unknown, sessionRevision: number): { scopeId: number; sessionRevision: number } | undefined {
+  if (!isRecord(value)) return undefined;
+  const scopeId = safeOffset(value.scopeId);
+  const revision = safeOffset(value.sessionRevision);
+  return scopeId !== undefined && scopeId > 0 && revision === sessionRevision
+    ? { scopeId, sessionRevision: revision }
+    : undefined;
+}
+
+function scopeKey(sessionRevision: number, scopeId: number): string {
+  return `${sessionRevision}:${scopeId}`;
+}
+
+function validateNestedNode(value: unknown, sourceSize: number): NodeDto | undefined {
+  if (!isRecord(value) || !safeOffset(sourceSize)) return undefined;
+  const id = safeOffset(value.id);
+  const spanStart = safeOffset(value.spanStart);
+  const spanEnd = safeOffset(value.spanEnd);
+  const kind = typeof value.kind === "string" ? value.kind : undefined;
+  const label = typeof value.label === "string" ? value.label : undefined;
+  const labelHasMore = typeof value.labelHasMore === "boolean" ? value.labelHasMore : undefined;
+  const valuePreview = value.valuePreview === null ? null : typeof value.valuePreview === "string" ? value.valuePreview : undefined;
+  const valueHasMore = typeof value.valueHasMore === "boolean" ? value.valueHasMore : undefined;
+  const childCount = safeOffset(value.childCount);
+  if (id === undefined || spanStart === undefined || spanEnd === undefined || spanStart >= spanEnd || spanEnd > sourceSize
+    || !kind || !["object", "array", "string", "number", "true", "false", "null"].includes(kind)
+    || label === undefined || labelHasMore === undefined || valuePreview === undefined || valueHasMore === undefined || childCount === undefined) return undefined;
+  return { id, kind, spanStart, spanEnd, label, labelHasMore, valuePreview, valueHasMore, childCount };
+}
+
+function focusNestedRoot(panel: HTMLElement | null): void {
+  if (!panel) return;
+  queueMicrotask(() => panel.querySelector<HTMLElement>("[role=treeitem]")?.focus());
+}
+
+function focusNestedBackOrParsed(elements: NestedViewerElements | null, depth: number): void {
+  if (!elements) return;
+  queueMicrotask(() => (depth > 1 ? elements.back : elements.parsedTab).focus());
+}
+
+function nestedRepresentationLabel(value: "parsed" | "decoded" | "raw"): string {
+  if (value === "parsed") return "Parsed";
+  if (value === "decoded") return "Decoded String";
+  return "Raw Lexeme";
 }
 
 function validateDetection(value: unknown): StringDetection | undefined {
@@ -419,7 +1096,13 @@ function validateDetection(value: unknown): StringDetection | undefined {
   return plainReason === null ? { semanticType, detectionSource, plainReason } : undefined;
 }
 
-function validateChunk(value: unknown, requestedOffset: number, rawSpanLength: number, expectedNextOffset?: number): TextChunk | undefined {
+function validateChunk(
+  value: unknown,
+  requestedOffset: number,
+  rawSpanLength: number,
+  expectedNextOffset?: number,
+  requireTerminalEnd = false
+): TextChunk | undefined {
   if (!isRecord(value)) return undefined;
   if (!Number.isSafeInteger(rawSpanLength) || rawSpanLength < 0) return undefined;
   const start = safeOffset(value.start);
@@ -435,11 +1118,34 @@ function validateChunk(value: unknown, requestedOffset: number, rawSpanLength: n
   if (start > Number.MAX_SAFE_INTEGER - byteLength) return undefined;
   if (hasMore) {
     if (nextOffset === null || nextOffset !== start + byteLength || nextOffset <= start || nextOffset > rawSpanLength) return undefined;
-  } else if (nextOffset !== null) {
+  } else if (nextOffset !== null || requireTerminalEnd && start + byteLength !== rawSpanLength) {
     return undefined;
   }
   if (expectedNextOffset !== undefined && nextOffset !== expectedNextOffset) return undefined;
   return { start, text, hasMore, nextOffset };
+}
+
+function normalizeRawChunk(
+  value: unknown,
+  requestedAbsoluteStart: number,
+  spanStart: number,
+  spanEnd: number,
+  requestLength: number
+): TextChunk | undefined {
+  if (!isRecord(value) || typeof value.text !== "string" || typeof value.hasMore !== "boolean"
+    || value.nextOffset !== null && safeOffset(value.nextOffset) === undefined) return undefined;
+  const start = safeOffset(value.start);
+  if (start === undefined || start !== requestedAbsoluteStart || start < spanStart || start > spanEnd) return undefined;
+  const byteLength = utf8ByteLength(value.text);
+  if (byteLength === 0 || byteLength > requestLength || byteLength > spanEnd - start) return undefined;
+  const end = start + byteLength;
+  const hasMore = end < spanEnd;
+  return {
+    start: start - spanStart,
+    text: value.text,
+    hasMore,
+    nextOffset: hasMore ? end - spanStart : null
+  };
 }
 
 function safeOffset(value: unknown): number | undefined {
@@ -508,6 +1214,10 @@ function canRestoreFocus(element: HTMLElement | null): element is HTMLElement {
 
 function errorCode(error: unknown): string | undefined {
   return isRecord(error) && typeof error.code === "string" ? error.code : undefined;
+}
+
+function isTerminalCloseError(error: unknown): boolean {
+  return errorCode(error) === "not_found" || errorCode(error) === "stale_session";
 }
 
 function errorMessage(error: unknown): string {

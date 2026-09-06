@@ -152,6 +152,16 @@ const contentViewerAlert = required<HTMLElement>("content-viewer-alert");
 const contentViewerContent = required<HTMLElement>("content-viewer-content");
 const contentViewerPrevious = required<HTMLButtonElement>("content-viewer-previous");
 const contentViewerNext = required<HTMLButtonElement>("content-viewer-next");
+const nestedNavigation = required<HTMLElement>("content-viewer-nested-navigation");
+const nestedBack = required<HTMLButtonElement>("content-viewer-nested-back");
+const nestedBreadcrumb = required<HTMLOListElement>("content-viewer-nested-breadcrumbs");
+const nestedRepresentations = required<HTMLElement>("content-viewer-representations");
+const parsedTab = required<HTMLButtonElement>("content-viewer-parsed-tab");
+const decodedTab = required<HTMLButtonElement>("content-viewer-decoded-tab");
+const nestedRawTab = required<HTMLButtonElement>("content-viewer-raw-lexeme-tab");
+const parsedPanel = required<HTMLElement>("content-viewer-parsed-panel");
+const parsedTree = required<HTMLElement>("content-viewer-parsed-tree");
+const sharedTextPanel = required<HTMLElement>("content-viewer-text-panel");
 
 const PREVIEW_ARIA_LABEL = "Preview selected string in Content Viewer";
 const previewButton = required<HTMLButtonElement>("content-viewer-preview");
@@ -179,7 +189,19 @@ const contentViewer = new ContentViewer({
     alert: contentViewerAlert,
     content: contentViewerContent,
     previous: contentViewerPrevious,
-    next: contentViewerNext
+    next: contentViewerNext,
+    nested: {
+      navigation: nestedNavigation,
+      back: nestedBack,
+      breadcrumb: nestedBreadcrumb,
+      representations: nestedRepresentations,
+      parsedTab,
+      decodedTab,
+      rawTab: nestedRawTab,
+      parsedPanel,
+      parsedTree,
+      sharedTextPanel
+    }
   },
   invoke,
   onSessionError: (error) => handleCurrentSessionAsyncError(ipcError(error)),
@@ -410,12 +432,26 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
   const rootMatchesStatus = valid ? selection.root !== null : selection.root === null;
   if (!rootMatchesStatus) {
     state.error = { code: "internal", message: "Entry selection returned an inconsistent Tree root." };
-    treeView.setSession({ mode: "entry", sessionRevision: selection.sessionRevision, scopeLabel: entryScopeLabel(selection.entry.location.entryOrdinal) }, null);
+    treeView.setSession({
+      mode: "entry",
+      sessionRevision: selection.sessionRevision,
+      scopeId: null,
+      sourceSize: entrySourceSize(selection.entry),
+      ariaLabel: "JSON Entry structure",
+      scopeLabel: entryScopeLabel(selection.entry.location.entryOrdinal)
+    }, null);
     rawView.clear("Tree is unavailable because the Entry selection was inconsistent.");
     setActiveView("semantic");
   } else {
     treeView.setSession(
-      { mode: "entry", sessionRevision: selection.sessionRevision, scopeLabel: entryScopeLabel(selection.entry.location.entryOrdinal) },
+      {
+        mode: "entry",
+        sessionRevision: selection.sessionRevision,
+        scopeId: null,
+        sourceSize: entrySourceSize(selection.entry),
+        ariaLabel: "JSON Entry structure",
+        scopeLabel: entryScopeLabel(selection.entry.location.entryOrdinal)
+      },
       valid ? selection.root : null
     );
     let rawAvailable = false;
@@ -461,7 +497,14 @@ function handleEntryRevisionUnknown(value: unknown): void {
   state.scanStoppedRevision = null;
   rawView.clear("Select a valid Entry to open Raw bytes.");
   entryList.resync(next.sessionRevision, next.progress);
-  treeView.setSession({ mode: "entry", sessionRevision: next.sessionRevision, scopeLabel: "Entry" }, null);
+  treeView.setSession({
+    mode: "entry",
+    sessionRevision: next.sessionRevision,
+    scopeId: null,
+    sourceSize: 1,
+    ariaLabel: "JSON Entry structure",
+    scopeLabel: "Entry"
+  }, null);
   setActiveView("semantic");
   render();
   if (!next.progress.complete) void scanEntries(generation, next.sessionRevision);
@@ -532,6 +575,11 @@ function modeLabel(mode: FileMode): string {
 
 function entryScopeLabel(ordinal: number): string {
   return `Entry ${ordinal + 1}`;
+}
+
+function entrySourceSize(entry: EntrySelectionDto["entry"]): number {
+  const { byteStart, byteEnd } = entry.location;
+  return byteEnd >= byteStart ? byteEnd - byteStart : 0;
 }
 
 function fileLabel(path: string): string {
@@ -851,7 +899,14 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
       return;
     }
     state.error = null;
-    treeView.setSession({ mode: summary.mode, sessionRevision: summary.sessionRevision, scopeLabel: modeLabel(summary.mode) });
+    treeView.setSession({
+      mode: summary.mode,
+      sessionRevision: summary.sessionRevision,
+      scopeId: null,
+      sourceSize: summary.size,
+      ariaLabel: "JSON structure",
+      scopeLabel: modeLabel(summary.mode)
+    });
     if (summary.root) rawView.setSession(summary.sessionRevision, summary.root);
     else rawView.clear("Select a valid Entry to open Raw bytes.");
     entryList.setSession(summary.mode === "entry" && summary.progress ? {

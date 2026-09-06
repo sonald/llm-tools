@@ -174,10 +174,21 @@
           </dl>
         </section>
 
+        <nav class="nested-navigation" id="content-viewer-nested-navigation" aria-label="Nested JSON navigation" hidden>
+          <button class="secondary-button" id="content-viewer-nested-back" type="button" aria-label="Back to parent nested JSON" aria-controls="content-viewer-parsed-panel" hidden>Back</button>
+          <ol id="content-viewer-nested-breadcrumbs" aria-label="Nested JSON breadcrumb"></ol>
+        </nav>
+
+        <div class="nested-representations" id="content-viewer-representations" role="tablist" aria-label="Nested JSON representations" hidden>
+          <button class="view-tab is-active" id="content-viewer-parsed-tab" type="button" role="tab" aria-selected="true" aria-controls="content-viewer-parsed-panel" tabindex="0">Parsed</button>
+          <button class="view-tab" id="content-viewer-decoded-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Decoded String</button>
+          <button class="view-tab" id="content-viewer-raw-lexeme-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Raw Lexeme</button>
+        </div>
+
         <p class="content-viewer-renderer-note" id="content-viewer-renderer-note" role="note"></p>
         <div class="content-viewer-alert" id="content-viewer-alert" role="alert" aria-live="assertive" hidden></div>
 
-        <section class="content-viewer-content-region" aria-label="Decoded source">
+        <section class="content-viewer-stage" aria-label="Content viewer output">
           <div class="content-viewer-toolbar">
             <span class="content-viewer-range" id="content-viewer-range">—</span>
             <span class="content-viewer-status" id="content-viewer-status" role="status" aria-live="polite"></span>
@@ -185,9 +196,14 @@
             <button class="secondary-button" id="content-viewer-previous" type="button" aria-controls="content-viewer-content" disabled>Prev</button>
             <button class="secondary-button" id="content-viewer-next" type="button" aria-controls="content-viewer-content" disabled>Next</button>
           </div>
-          <div class="content-viewer-body">
-            <div class="content-viewer-content" id="content-viewer-content" tabindex="0" aria-label="Decoded source" aria-busy="false"></div>
-          </div>
+          <section class="nested-parsed-panel" id="content-viewer-parsed-panel" role="tabpanel" aria-labelledby="content-viewer-parsed-tab" hidden>
+            <div class="nested-tree" id="content-viewer-parsed-tree"></div>
+          </section>
+          <section class="content-viewer-text-panel" id="content-viewer-text-panel" role="region" aria-label="Decoded source">
+            <div class="content-viewer-body">
+              <div class="content-viewer-content" id="content-viewer-content" tabindex="0" aria-label="Decoded source" aria-busy="false"></div>
+            </div>
+          </section>
         </section>
       </div>
     </dialog>
