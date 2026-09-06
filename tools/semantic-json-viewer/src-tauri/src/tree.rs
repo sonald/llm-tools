@@ -3,6 +3,7 @@ use std::str;
 use crate::json::{
     parse_json_owned, ChildLocator, JsonKind, JsonNode, ParseError, ParsedJson, SourceSpan,
 };
+use crate::search::{self, SearchError, SearchPage, SearchRequest};
 use crate::semantic_detection::{detect, Detection, NestedBudget};
 
 const MAX_LABEL_OR_VALUE_CHARS: usize = 256;
@@ -105,26 +106,12 @@ impl TreeDocument {
         Some(detect(decoded, key, budget))
     }
 
+    pub fn search(&self, request: SearchRequest) -> Result<SearchPage, SearchError> {
+        search::search(&self.parsed, request)
+    }
+
     fn projection(&self, id: usize, node: &JsonNode) -> NodeProjection {
-        let (label, label_has_more) = match &node.locator {
-            ChildLocator::Root => ("$".to_owned(), false),
-            ChildLocator::ArrayIndex(index) => (format!("[{index}]"), false),
-            ChildLocator::ObjectKey {
-                key, occurrence: 1, ..
-            } => {
-                let (label, label_has_more) = truncate_chars(key, MAX_LABEL_OR_VALUE_CHARS);
-                (label, label_has_more)
-            }
-            ChildLocator::ObjectKey {
-                key, occurrence, ..
-            } => {
-                let suffix = format!("#{occurrence}");
-                let key_limit = MAX_LABEL_OR_VALUE_CHARS.saturating_sub(suffix.chars().count());
-                let (mut label, label_has_more) = truncate_chars(key, key_limit);
-                label.push_str(&suffix);
-                (label, label_has_more)
-            }
-        };
+        let (label, label_has_more) = node_label(&node.locator);
 
         let value = match node.kind {
             JsonKind::String => node.decoded.as_deref(),
@@ -151,6 +138,28 @@ impl TreeDocument {
             value_preview,
             value_has_more,
             child_count: node.children.len(),
+        }
+    }
+}
+
+fn node_label(locator: &ChildLocator) -> (String, bool) {
+    match locator {
+        ChildLocator::Root => ("$".to_owned(), false),
+        ChildLocator::ArrayIndex(index) => (format!("[{index}]"), false),
+        ChildLocator::ObjectKey {
+            key, occurrence: 1, ..
+        } => {
+            let (label, label_has_more) = truncate_chars(key, MAX_LABEL_OR_VALUE_CHARS);
+            (label, label_has_more)
+        }
+        ChildLocator::ObjectKey {
+            key, occurrence, ..
+        } => {
+            let suffix = format!("#{occurrence}");
+            let key_limit = MAX_LABEL_OR_VALUE_CHARS.saturating_sub(suffix.chars().count());
+            let (mut label, label_has_more) = truncate_chars(key, key_limit);
+            label.push_str(&suffix);
+            (label, label_has_more)
         }
     }
 }
