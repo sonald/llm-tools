@@ -149,7 +149,7 @@ const contentViewerRendererNote = required<HTMLElement>("content-viewer-renderer
 const contentViewerRange = required<HTMLElement>("content-viewer-range");
 const contentViewerStatus = required<HTMLElement>("content-viewer-status");
 const contentViewerAlert = required<HTMLElement>("content-viewer-alert");
-const contentViewerContent = required<HTMLPreElement>("content-viewer-content");
+const contentViewerContent = required<HTMLElement>("content-viewer-content");
 const contentViewerPrevious = required<HTMLButtonElement>("content-viewer-previous");
 const contentViewerNext = required<HTMLButtonElement>("content-viewer-next");
 

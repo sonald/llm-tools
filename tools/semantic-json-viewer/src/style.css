@@ -419,6 +419,62 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .content-viewer-content:focus-visible { outline: 2px solid #4987ff; outline-offset: 2px; }
 
+.content-viewer-content.is-markdown { font: 13px/1.65 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; white-space: normal; }
+
+.content-viewer-content.is-markdown > :first-child { margin-top: 0; }
+
+.content-viewer-content.is-markdown > :last-child { margin-bottom: 0; }
+
+.content-viewer-content.is-markdown h1,
+.content-viewer-content.is-markdown h2,
+.content-viewer-content.is-markdown h3,
+.content-viewer-content.is-markdown h4,
+.content-viewer-content.is-markdown h5,
+.content-viewer-content.is-markdown h6 { margin: 1.1em 0 .45em; line-height: 1.25; }
+
+.content-viewer-content.is-markdown h1 { font-size: 1.8em; }
+.content-viewer-content.is-markdown h2 { font-size: 1.5em; }
+.content-viewer-content.is-markdown h3 { font-size: 1.25em; }
+.content-viewer-content.is-markdown h4 { font-size: 1.1em; }
+.content-viewer-content.is-markdown h5, .content-viewer-content.is-markdown h6 { font-size: 1em; }
+
+.content-viewer-content.is-markdown p,
+.content-viewer-content.is-markdown ul,
+.content-viewer-content.is-markdown ol,
+.content-viewer-content.is-markdown blockquote,
+.content-viewer-content.is-markdown table,
+.content-viewer-content.is-markdown pre { margin: .75em 0; }
+
+.content-viewer-content.is-markdown ul,
+.content-viewer-content.is-markdown ol { padding-left: 1.65em; }
+
+.content-viewer-content.is-markdown li + li { margin-top: .22em; }
+
+.content-viewer-content.is-markdown blockquote { margin-left: .4em; padding: .1em 1em; border-left: 3px solid var(--line-strong); color: var(--muted); }
+
+.content-viewer-content.is-markdown code { padding: .1em .3em; border-radius: 3px; color: #7d3f1d; background: var(--surface-muted); font: .9em "SFMono-Regular", Consolas, monospace; }
+
+.content-viewer-content.is-markdown pre { overflow: auto; padding: 11px 12px; border: 1px solid var(--line); border-radius: 6px; background: #fbfcfd; white-space: pre-wrap; }
+
+.content-viewer-content.is-markdown pre code { padding: 0; color: inherit; background: transparent; font-size: .9em; }
+
+.content-viewer-content.is-markdown table { width: 100%; border-collapse: collapse; font-size: .92em; }
+
+.content-viewer-content.is-markdown th,
+.content-viewer-content.is-markdown td { padding: 6px 8px; border: 1px solid var(--line-strong); text-align: left; vertical-align: top; }
+
+.content-viewer-content.is-markdown th { background: var(--surface-muted); font-weight: 700; }
+
+.content-viewer-content.is-markdown .safe-markdown-align-left { text-align: left; }
+
+.content-viewer-content.is-markdown .safe-markdown-align-center { text-align: center; }
+
+.content-viewer-content.is-markdown .safe-markdown-align-right { text-align: right; }
+
+.content-viewer-content.is-markdown .safe-markdown-link { color: var(--blue); text-decoration: underline; text-decoration-style: dotted; }
+
+.content-viewer-content.is-markdown .safe-markdown-del { text-decoration: line-through; }
+
 @media (min-width: 768px) and (max-width: 1050px) {
   .workspace { grid-template-columns: 220px minmax(0, 1fr); }
   .inspector { position: fixed; z-index: 20; top: 73px; right: 24px; bottom: 48px; display: none; width: min(380px, calc(100vw - 260px)); border: 1px solid var(--line-strong); box-shadow: -16px 0 42px rgb(12 18 28 / 24%); }

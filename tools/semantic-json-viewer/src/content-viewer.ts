@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { renderSafeMarkdown } from "./markdown-renderer";
 
 export type ContentTarget = {
   revision: number;
@@ -27,7 +28,7 @@ export type ContentViewerElements = {
   range: HTMLElement;
   status: HTMLElement;
   alert: HTMLElement;
-  content: HTMLPreElement;
+  content: HTMLElement;
   previous: HTMLButtonElement;
   next: HTMLButtonElement;
 };
@@ -68,6 +69,8 @@ export class ContentViewer {
   private offsetIndex = -1;
   private nextOffset: number | null = null;
   private restoreFocusOnClose: boolean | null = null;
+  private representation: "rendered" | "decoded" | null = null;
+  private markdownRenderFailed = false;
 
   constructor(options: ContentViewerOptions) {
     this.elements = options.elements;
@@ -100,7 +103,9 @@ export class ContentViewer {
     this.offsets = [0];
     this.offsetIndex = 0;
     this.nextOffset = null;
-    this.elements.content.textContent = "";
+    this.clearContent();
+    this.representation = null;
+    this.markdownRenderFailed = false;
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
     this.elements.alert.hidden = true;
@@ -133,7 +138,7 @@ export class ContentViewer {
       if (!this.isCurrent(generation, target)) return;
       const chunk = validateChunk(chunkValue, 0, rawSpanLength(target));
       if (!chunk) throw new Error("The decoded text response was invalid.");
-      this.installChunk(chunk);
+      this.installChunk(chunk, true);
     } catch (error) {
       if (!this.isCurrent(generation, target)) return;
       this.handleFailure(error);
@@ -149,7 +154,9 @@ export class ContentViewer {
     this.offsets = [];
     this.offsetIndex = -1;
     this.nextOffset = null;
-    this.elements.content.textContent = "";
+    this.clearContent();
+    this.representation = null;
+    this.markdownRenderFailed = false;
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
@@ -213,12 +220,32 @@ export class ContentViewer {
     }
   }
 
-  private installChunk(chunk: TextChunk): void {
+  private installChunk(chunk: TextChunk, initial = false): void {
     this.busy = false;
     this.nextOffset = chunk.nextOffset;
-    this.elements.content.textContent = chunk.text;
+    this.elements.content.classList.remove("is-markdown");
+    this.markdownRenderFailed = false;
+    const canRenderMarkdown = initial && this.detection?.semanticType === "markdown" && !chunk.hasMore;
+    if (canRenderMarkdown) {
+      const fragment = renderSafeMarkdown(chunk.text);
+      if (fragment) {
+        this.elements.content.replaceChildren(fragment);
+        this.elements.content.classList.add("is-markdown");
+        this.representation = "rendered";
+      } else {
+        this.elements.content.textContent = chunk.text;
+        this.representation = "decoded";
+        this.markdownRenderFailed = true;
+      }
+    } else {
+      this.elements.content.textContent = chunk.text;
+      this.representation = "decoded";
+    }
+    this.renderMetadata();
     this.elements.alert.hidden = true;
-    if (chunk.text.length === 0 && !chunk.hasMore) {
+    if (this.representation === "rendered") {
+      this.setStatus("Rendered Markdown ready");
+    } else if (chunk.text.length === 0 && !chunk.hasMore) {
       this.setStatus("Empty string");
     } else {
       this.setStatus("Decoded source ready");
@@ -258,7 +285,9 @@ export class ContentViewer {
     this.offsets = [];
     this.offsetIndex = -1;
     this.nextOffset = null;
-    this.elements.content.textContent = "";
+    this.clearContent();
+    this.representation = null;
+    this.markdownRenderFailed = false;
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
@@ -305,10 +334,20 @@ export class ContentViewer {
     this.elements.semanticType.textContent = semanticTypeLabel(detection.semanticType);
     this.elements.detectionSource.textContent = "Content-detected";
     this.elements.plainReason.textContent = detection.plainReason === null ? "—" : plainReasonLabel(detection.plainReason);
-    this.elements.representation.textContent = detection.semanticType === "plainText" ? "Plain Text" : "Decoded Source";
-    this.elements.rendererNote.textContent = detection.semanticType === "plainText"
-      ? ""
-      : "Renderer is not available yet; showing decoded source.";
+    this.elements.representation.textContent = detection.semanticType === "plainText"
+      ? "Plain Text"
+      : this.representation === "rendered" ? "Rendered" : "Decoded Source";
+    if (detection.semanticType === "plainText") {
+      this.elements.rendererNote.textContent = "";
+    } else if (this.representation === "rendered") {
+      this.elements.rendererNote.textContent = "Safe Markdown";
+    } else if (this.markdownRenderFailed) {
+      this.elements.rendererNote.textContent = "Semantic rendering failed.\nShowing plain text instead.";
+    } else if (detection.semanticType === "markdown") {
+      this.elements.rendererNote.textContent = "Markdown rendering requires a complete source page; showing decoded source.";
+    } else {
+      this.elements.rendererNote.textContent = "Renderer is not available yet; showing decoded source.";
+    }
   }
 
   private renderPaging(): void {
@@ -327,6 +366,11 @@ export class ContentViewer {
 
   private setStatus(value: string): void {
     this.elements.status.textContent = value;
+  }
+
+  private clearContent(): void {
+    this.elements.content.textContent = "";
+    this.elements.content.classList.remove("is-markdown");
   }
 
   private isCurrent(generation: number, target: ContentTarget): boolean {
