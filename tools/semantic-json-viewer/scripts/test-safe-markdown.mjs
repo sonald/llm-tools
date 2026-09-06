@@ -285,11 +285,27 @@ document.createElement=originalCreateElement;
 check(rendererErrorResult.presentation==="plain"&&rendererErrorResult.reason==="rendererError","renderer exception did not trigger a plain fallback");
 inspectCode(rendererErrorResult,"renderer exception",prefix);
 
-const exactBytes=renderSafeMarkdown("x".repeat(128*1024));
-check(exactBytes!==null,"128 KiB input was rejected");
-check(renderSafeMarkdown("x".repeat(128*1024+1))===null,"input over 128 KiB was accepted");
-check(renderSafeMarkdown("😀".repeat(32768))!==null,"UTF-8 exact 128 KiB input was rejected");
-check(renderSafeMarkdown("😀".repeat(32769))===null,"UTF-8 input over 128 KiB was accepted");
+const markdownRendererSource=await fetch("/src/markdown-renderer.ts").then((response)=>response.text());
+const quote=String.fromCharCode(34);
+const markdownImportUrl=markdownRendererSource.split(quote).find((value)=>value.includes("marked.js"));
+if(!markdownImportUrl) throw new Error("Could not locate Vite's shared marked module");
+const markdownModule=await import(markdownImportUrl);
+const originalMarkdownLexer=markdownModule.marked.lexer;
+let markdownLexerCalls=0;
+markdownModule.marked.lexer=()=>{markdownLexerCalls+=1;return [];};
+const markdownLimitSource="x".repeat(32*1024*1024);
+check(new TextEncoder().encode(markdownLimitSource).byteLength===32*1024*1024,"32 MiB Markdown boundary fixture is wrong");
+const markdownLimitDescriptor=Object.getOwnPropertyDescriptor(performance,"now");
+const markdownLimitNow=performance.now();
+Object.defineProperty(performance,"now",{configurable:true,writable:true,value:()=>markdownLimitNow});
+const markdownExactResult=renderSafeMarkdown(markdownLimitSource);
+const markdownOverResult=renderSafeMarkdown("x".repeat(32*1024*1024+1));
+if(markdownLimitDescriptor) Object.defineProperty(performance,"now",markdownLimitDescriptor); else delete performance.now;
+check(markdownExactResult!==null,"32 MiB Markdown input was rejected");
+check(markdownLexerCalls===1,"32 MiB Markdown boundary did not reach the renderer");
+check(markdownOverResult===null,"input over 32 MiB was accepted");
+check(markdownLexerCalls===1,"over-32 MiB Markdown reached the renderer");
+markdownModule.marked.lexer=originalMarkdownLexer;
 const paragraphs=Array.from({length:5000},(_,index)=>"p"+index).join(nl+nl);
 check(renderSafeMarkdown(paragraphs)!==null,"10,000-node input was rejected");
 check(renderSafeMarkdown(Array.from({length:5001},(_,index)=>"p"+index).join(nl+nl))===null,"over 10,000 nodes was accepted");
@@ -356,11 +372,11 @@ const pagedCodeParts=makeViewer();
 const pagedCodeSource="const value = 42;";
 const pagedCodeViewer=new ContentViewer({elements:pagedCodeParts.elements,invoke:async(command)=>{
   if(command==="get_string_detection") return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
-  return {start:0,text:pagedCodeSource,hasMore:true,nextOffset:new TextEncoder().encode(pagedCodeSource).byteLength};
+  return {start:0,text:pagedCodeSource,hasMore:false,nextOffset:null};
 }});
 await pagedCodeViewer.open({revision:1,nodeId:5,spanStart:0,spanEnd:new TextEncoder().encode(pagedCodeSource).byteLength,scopeLabel:"Document",pathSegments:["$","code"],pathTruncated:false});
-check(pagedCodeParts.elements.representation.textContent==="Decoded Source","paged code was rendered before complete source page");
-check(pagedCodeParts.elements.content.querySelector("pre")===null&&pagedCodeParts.elements.next.disabled===false,"paged code controls are wrong");
+check(pagedCodeParts.elements.representation.textContent==="Rendered","complete code was not rendered");
+check(pagedCodeParts.elements.content.querySelector("pre")!==null&&pagedCodeParts.elements.next.disabled===true,"complete code controls are wrong");
 pagedCodeViewer.close();
 pagedCodeParts.dialog.remove();
 const fallbackSource=Array.from({length:5001},(_,index)=>"fallback"+index).join(nl+nl);
@@ -383,6 +399,217 @@ check(rendered.elements.content.classList.contains("is-markdown"),"successful re
 check(rendered.elements.content.querySelector("h1")?.textContent==="rendered","successful Markdown DOM is missing heading");
 renderedViewer.close();
 rendered.dialog.remove();
+
+const withStableRenderClock=async(work)=>{
+  const descriptor=Object.getOwnPropertyDescriptor(performance,"now");
+  const fixedNow=performance.now();
+  Object.defineProperty(performance,"now",{configurable:true,writable:true,value:()=>fixedNow});
+  try{return await work();}
+  finally{if(descriptor) Object.defineProperty(performance,"now",descriptor); else delete performance.now;}
+};
+const collectorPageBytes=128*1024;
+const pagedResponse=(pages,offset)=>{
+  const index=offset/collectorPageBytes;
+  const text=pages[index];
+  if(typeof text!=="string") throw new Error("missing collector page "+offset);
+  const bytes=new TextEncoder().encode(text).byteLength;
+  const hasMore=index<pages.length-1;
+  return {start:offset,text,hasMore,nextOffset:hasMore?offset+bytes:null};
+};
+
+const fallbackLargeSource=Array.from({length:10001},(_,index)=>"fallback-"+index+" "+"x".repeat(16)).join(nl+nl);
+const fallbackLargePages=[];
+for(let start=0;start<fallbackLargeSource.length;start+=collectorPageBytes) fallbackLargePages.push(fallbackLargeSource.slice(start,start+collectorPageBytes));
+const fallbackLargeParts=makeViewer();
+const fallbackLargeCalls=[];
+const fallbackLargeViewer=new ContentViewer({elements:fallbackLargeParts.elements,invoke:async(command,args)=>{
+  fallbackLargeCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"markdown",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return pagedResponse(fallbackLargePages,args.offset);
+  throw new Error("unexpected large fallback command "+command);
+}});
+await withStableRenderClock(()=>fallbackLargeViewer.open({revision:20,nodeId:200,spanStart:0,spanEnd:fallbackLargeSource.length,scopeId:null,scopeLabel:"Document",pathSegments:["$","fallback-large"],pathTruncated:false},fallbackLargeParts.elements.close));
+check(fallbackLargePages.length>1&&fallbackLargeCalls.filter((call)=>call.command==="read_decoded_text").length===fallbackLargePages.length,"large Markdown fallback did not collect all pages");
+check(fallbackLargeParts.elements.representation.textContent==="Decoded Source"&&fallbackLargeParts.elements.content.textContent===fallbackLargePages[0],"failed Markdown render did not retain one source page");
+check(fallbackLargeParts.elements.next.disabled===false&&fallbackLargeParts.elements.rendererNote.textContent==="Semantic rendering failed."+nl+"Showing plain text instead.","failed Markdown render lost paging or fallback note");
+fallbackLargeViewer.close();
+fallbackLargeParts.dialog.remove();
+
+const onePagePlusPrefix="# one page plus one byte"+nl+nl;
+const onePagePlusSource=onePagePlusPrefix+"x".repeat(collectorPageBytes-onePagePlusPrefix.length)+"!";
+const onePagePlusPages=[onePagePlusSource.slice(0,collectorPageBytes),onePagePlusSource.slice(collectorPageBytes)];
+const onePagePlusParts=makeViewer();
+const onePagePlusCalls=[];
+const onePagePlusViewer=new ContentViewer({elements:onePagePlusParts.elements,invoke:async(command,args)=>{
+  onePagePlusCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"markdown",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return pagedResponse(onePagePlusPages,args.offset);
+  throw new Error("unexpected one-page-plus command "+command);
+}});
+await withStableRenderClock(()=>onePagePlusViewer.open({revision:21,nodeId:201,spanStart:0,spanEnd:onePagePlusSource.length,scopeId:null,scopeLabel:"Document",pathSegments:["$","one-page-plus"],pathTruncated:false},onePagePlusParts.elements.close));
+check(onePagePlusCalls.filter((call)=>call.command==="read_decoded_text").length===2,"128 KiB+1 Markdown did not fetch exactly two pages");
+check(onePagePlusCalls.filter((call)=>call.command==="read_decoded_text").map((call)=>call.args.offset).join(",")==="0,"+collectorPageBytes,"128 KiB+1 Markdown offsets were not sequential");
+check(onePagePlusParts.elements.representation.textContent==="Rendered"&&onePagePlusParts.elements.content.classList.contains("is-markdown"),"128 KiB+1 Markdown did not render after collection");
+check(onePagePlusParts.elements.content.textContent.endsWith("!"),"128 KiB+1 Markdown did not retain the second-page sentinel");
+onePagePlusViewer.close();
+onePagePlusParts.dialog.remove();
+
+const utfCollectorPage0="😀".repeat(32768);
+const utfCollectorPage1="é".repeat(65536);
+const utfCollectorPages=[utfCollectorPage0,utfCollectorPage1];
+const utfCollectorSource=utfCollectorPages.join("");
+const utfCollectorParts=makeViewer();
+const utfCollectorCalls=[];
+const utfCollectorViewer=new ContentViewer({elements:utfCollectorParts.elements,invoke:async(command,args)=>{
+  utfCollectorCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"markdown",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return pagedResponse(utfCollectorPages,args.offset);
+  throw new Error("unexpected UTF-8 collector command "+command);
+}});
+await withStableRenderClock(()=>utfCollectorViewer.open({revision:22,nodeId:202,spanStart:0,spanEnd:new TextEncoder().encode(utfCollectorSource).byteLength,scopeId:null,scopeLabel:"Document",pathSegments:["$","utf8"],pathTruncated:false},utfCollectorParts.elements.close));
+check(new TextEncoder().encode(utfCollectorPage0).byteLength===collectorPageBytes&&new TextEncoder().encode(utfCollectorPage1).byteLength===collectorPageBytes,"collector UTF-8 pages are not exactly 128 KiB");
+check(utfCollectorCalls.filter((call)=>call.command==="read_decoded_text").map((call)=>call.args.offset).join(",")==="0,"+collectorPageBytes,"collector UTF-8 offsets were not byte based");
+check(utfCollectorParts.elements.content.textContent===utfCollectorSource&&!utfCollectorParts.elements.content.textContent.includes("�"),"collector UTF-8 pages were truncated or replaced");
+utfCollectorViewer.close();
+utfCollectorParts.dialog.remove();
+
+const markdownAutoLimit=2*1024*1024;
+const markdownAutoPages=markdownAutoLimit/collectorPageBytes;
+const markdownExactHead="# exact two MiB"+nl+nl;
+const markdownExactPages=[markdownExactHead+".".repeat(collectorPageBytes-markdownExactHead.length),...Array.from({length:markdownAutoPages-1},()=>".".repeat(collectorPageBytes))];
+markdownExactPages[markdownAutoPages-1]=".".repeat(collectorPageBytes-1)+"!";
+const markdownExactParts=makeViewer();
+const markdownExactCalls=[];
+const markdownExactViewer=new ContentViewer({elements:markdownExactParts.elements,invoke:async(command,args)=>{
+  markdownExactCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"markdown",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return pagedResponse(markdownExactPages,args.offset);
+  throw new Error("unexpected exact Markdown command "+command);
+}});
+await withStableRenderClock(()=>markdownExactViewer.open({revision:23,nodeId:203,spanStart:0,spanEnd:markdownAutoLimit,scopeId:null,scopeLabel:"Document",pathSegments:["$","markdown-2m"],pathTruncated:false},markdownExactParts.elements.close));
+check(markdownExactCalls.filter((call)=>call.command==="read_decoded_text").length===markdownAutoPages,"2 MiB Markdown did not collect all 128 KiB pages");
+check(markdownExactParts.elements.representation.textContent==="Rendered"&&markdownExactParts.elements.content.classList.contains("is-markdown"),"2 MiB Markdown was not fully rendered");
+check(markdownExactParts.elements.content.textContent.includes("exact two MiB")&&markdownExactParts.elements.content.textContent.endsWith("!"),"2 MiB Markdown lost the collected tail");
+markdownExactViewer.close();
+markdownExactParts.dialog.remove();
+
+const markdownOverPages=[...markdownExactPages,"!"];
+const markdownOverParts=makeViewer();
+const markdownOverCalls=[];
+const markdownOverViewer=new ContentViewer({elements:markdownOverParts.elements,invoke:async(command,args)=>{
+  markdownOverCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"markdown",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return pagedResponse(markdownOverPages,args.offset);
+  throw new Error("unexpected over-limit Markdown command "+command);
+}});
+const originalGateMarkdownLexer=markdownModule.marked.lexer;
+let gateMarkdownLexerCalls=0;
+markdownModule.marked.lexer=()=>{gateMarkdownLexerCalls+=1;return [];};
+await markdownOverViewer.open({revision:24,nodeId:204,spanStart:0,spanEnd:markdownAutoLimit+1,scopeId:null,scopeLabel:"Document",pathSegments:["$","markdown-over"],pathTruncated:false},markdownOverParts.elements.close);
+markdownModule.marked.lexer=originalGateMarkdownLexer;
+check(markdownOverCalls.filter((call)=>call.command==="read_decoded_text").length===markdownAutoPages,"over-2 MiB Markdown read past the overlimit gate");
+check(markdownOverParts.elements.representation.textContent==="Decoded Source"&&markdownOverParts.elements.content.textContent===markdownExactPages[0],"over-2 MiB Markdown did not retain only its first source page");
+check(markdownOverParts.elements.rendererNote.textContent==="Markdown rendering skipped because content exceeds 2 MiB.","over-2 MiB Markdown note is not explicit");
+check(markdownOverParts.elements.next.disabled===false&&gateMarkdownLexerCalls===0,"over-2 MiB Markdown bypassed the read/renderer gate");
+markdownOverViewer.close();
+markdownOverParts.dialog.remove();
+
+const codeAutoLimit=1024*1024;
+const codeAutoPages=codeAutoLimit/collectorPageBytes;
+const codeExactHead="const value = 42;"+nl;
+const codeExactPages=[codeExactHead+" ".repeat(collectorPageBytes-codeExactHead.length),...Array.from({length:codeAutoPages-1},()=>" ".repeat(collectorPageBytes))];
+const codeExactParts=makeViewer();
+const codeExactCalls=[];
+const codeExactViewer=new ContentViewer({elements:codeExactParts.elements,invoke:async(command,args)=>{
+  codeExactCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return pagedResponse(codeExactPages,args.offset);
+  throw new Error("unexpected exact Code command "+command);
+}});
+await withStableRenderClock(()=>codeExactViewer.open({revision:25,nodeId:205,spanStart:0,spanEnd:codeAutoLimit,scopeId:null,scopeLabel:"Document",pathSegments:["$","code-1m"],pathTruncated:false},codeExactParts.elements.close));
+check(codeExactCalls.filter((call)=>call.command==="read_decoded_text").length===codeAutoPages,"1 MiB Code did not collect all 128 KiB pages");
+check(codeExactParts.elements.representation.textContent==="Rendered"&&codeExactParts.elements.content.querySelector("pre")!==null,"1 MiB Code was not fully rendered");
+check(codeExactParts.elements.content.querySelector(".sjv-code-source")?.textContent===codeExactPages.join(""),"1 MiB Code changed collected source");
+codeExactViewer.close();
+codeExactParts.dialog.remove();
+
+const codeOverPages=[...codeExactPages,"!"];
+const codeOverParts=makeViewer();
+const codeOverCalls=[];
+const codeOverViewer=new ContentViewer({elements:codeOverParts.elements,invoke:async(command,args)=>{
+  codeOverCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return pagedResponse(codeOverPages,args.offset);
+  throw new Error("unexpected over-limit Code command "+command);
+}});
+const codeRendererSource=await fetch("/src/code-renderer.ts").then((response)=>response.text());
+const prismImportUrl=codeRendererSource.split(quote).find((value)=>value.includes("prism-core.js"));
+if(!prismImportUrl) throw new Error("Could not locate Vite's shared Prism module");
+const prismModule=await import(prismImportUrl);
+const originalGatePrismTokenize=prismModule.default.tokenize;
+let gatePrismTokenizeCalls=0;
+prismModule.default.tokenize=(...args)=>{gatePrismTokenizeCalls+=1;return originalGatePrismTokenize(...args);};
+await codeOverViewer.open({revision:26,nodeId:206,spanStart:0,spanEnd:codeAutoLimit+1,scopeId:null,scopeLabel:"Document",pathSegments:["$","code-over"],pathTruncated:false},codeOverParts.elements.close);
+prismModule.default.tokenize=originalGatePrismTokenize;
+check(codeOverCalls.filter((call)=>call.command==="read_decoded_text").length===codeAutoPages,"over-1 MiB Code read past the overlimit gate");
+check(codeOverParts.elements.representation.textContent==="Decoded Source"&&codeOverParts.elements.content.textContent===codeExactPages[0],"over-1 MiB Code did not retain only its first source page");
+check(codeOverParts.elements.rendererNote.textContent==="Syntax highlighting disabled for large content.","over-1 MiB Code note is not exact");
+check(codeOverParts.elements.next.disabled===false&&codeOverParts.elements.content.querySelector("pre")===null&&gatePrismTokenizeCalls===0,"over-1 MiB Code bypassed the read/renderer gate");
+codeOverViewer.close();
+codeOverParts.dialog.remove();
+
+const invalidCollectorCases=[
+  ["invalid start",(offset)=>({start:offset-1,text:"bad",hasMore:false,nextOffset:null})],
+  ["repeated offset",(offset)=>({start:offset,text:"bad",hasMore:true,nextOffset:offset})],
+  ["backward offset",(offset)=>({start:offset,text:"bad",hasMore:true,nextOffset:offset-1})],
+  ["oversized page",(offset)=>({start:offset,text:"x".repeat(collectorPageBytes+1),hasMore:false,nextOffset:null})]
+];
+for(const [caseId,invalidPage] of invalidCollectorCases){
+  const parts=makeViewer();
+  const calls=[];
+  const viewer=new ContentViewer({elements:parts.elements,invoke:async(command,args)=>{
+    calls.push({command,args});
+    if(command==="get_string_detection") return {semanticType:"markdown",detectionSource:"contentDetected",plainReason:null};
+    if(command==="read_decoded_text") {
+      if(args.offset===0) return {start:0,text:"x".repeat(collectorPageBytes),hasMore:true,nextOffset:collectorPageBytes};
+      return invalidPage(args.offset);
+    }
+    throw new Error("unexpected "+caseId+" command");
+  }});
+  await viewer.open({revision:27,nodeId:207,spanStart:0,spanEnd:collectorPageBytes*2+1,scopeId:null,scopeLabel:"Document",pathSegments:["$",caseId],pathTruncated:false},parts.elements.close);
+  check(parts.elements.alert.textContent.includes("decoded text response was invalid"),caseId+" collector response was accepted");
+  check(calls.filter((call)=>call.command==="read_decoded_text").length===2,caseId+" collector read count changed unexpectedly");
+  check(parts.elements.content.textContent===""&&parts.elements.representation.textContent!=="Rendered",caseId+" invalid collector appended content");
+  viewer.close();
+  parts.dialog.remove();
+}
+
+let resolveLateCollector;
+const lateCollectorPage=new Promise((resolve)=>{resolveLateCollector=resolve;});
+const collectorSettle=async()=>{await Promise.resolve();await new Promise((resolve)=>setTimeout(resolve,0));};
+const lateCollectorParts=makeViewer();
+const lateCollectorCalls=[];
+const lateCollectorViewer=new ContentViewer({elements:lateCollectorParts.elements,invoke:async(command,args)=>{
+  lateCollectorCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"markdown",detectionSource:"contentDetected",plainReason:null};
+  if(command!=="read_decoded_text") throw new Error("unexpected late collector command "+command);
+  if(args.nodeId===208) {
+    if(args.offset===0) return {start:0,text:"s".repeat(collectorPageBytes),hasMore:true,nextOffset:collectorPageBytes};
+    return lateCollectorPage;
+  }
+  return {start:0,text:"# fresh",hasMore:false,nextOffset:null};
+}});
+const lateTarget={revision:28,nodeId:208,spanStart:0,spanEnd:collectorPageBytes+1,scopeId:null,scopeLabel:"Document",pathSegments:["$","stale"],pathTruncated:false};
+const collectorLateOpen=lateCollectorViewer.open(lateTarget,lateCollectorParts.elements.close);
+await collectorSettle();
+check(lateCollectorCalls.some((call)=>call.command==="read_decoded_text"&&call.args.nodeId===208&&call.args.offset===collectorPageBytes),"late collector did not reach its pending second page");
+await withStableRenderClock(()=>lateCollectorViewer.open({revision:28,nodeId:209,spanStart:0,spanEnd:8,scopeId:null,scopeLabel:"Document",pathSegments:["$","fresh"],pathTruncated:false},lateCollectorParts.elements.close));
+resolveLateCollector({start:collectorPageBytes,text:"!",hasMore:false,nextOffset:null});
+await collectorLateOpen;
+check(lateCollectorParts.elements.content.querySelector("h1")?.textContent==="fresh"&&lateCollectorParts.elements.path.textContent==="$ .fresh".replace("$ ","$"),"late collector response repopulated the current viewer");
+check(lateCollectorParts.elements.content.textContent!=="s".repeat(collectorPageBytes)+"!","late collector retained stale source");
+lateCollectorViewer.close();
+lateCollectorParts.dialog.remove();
 
 const nestedDocumentIds=[
   "content-viewer-nested-navigation","content-viewer-nested-back","content-viewer-nested-breadcrumbs",
@@ -783,6 +1010,34 @@ htmlViewer.close();
 await settle();
 check(htmlParts.elements.html.previewFrame.srcdoc==="","HTML close did not clear iframe srcdoc");
 htmlParts.dialog.remove();
+
+const singleHtmlSource="<article>single-page source</article>";
+const singleHtmlParts=makeHtmlViewer();
+const singleHtmlCalls=[];
+const singleHtmlViewer=new ContentViewer({elements:singleHtmlParts.elements,invoke:async(command,args)=>{
+  singleHtmlCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"html",detectionSource:"contentDetected",plainReason:null};
+  if(command==="get_html_preview") return {html:"<article>single-page preview</article>",reason:null};
+  if(command==="read_decoded_text") return {start:0,text:singleHtmlSource,hasMore:false,nextOffset:null};
+  throw new Error("unexpected single-page HTML command "+command);
+}});
+const singleHtmlTarget={...htmlTarget,nodeId:45,spanStart:0,spanEnd:new TextEncoder().encode(singleHtmlSource).byteLength};
+await singleHtmlViewer.open(singleHtmlTarget,singleHtmlParts.elements.close);
+await settle();
+singleHtmlParts.elements.html.sourceTab.click();
+await settle();
+const singleHtmlCallsAfterSource=singleHtmlCalls.length;
+const singleHtmlRange="[0, "+new TextEncoder().encode(singleHtmlSource).byteLength+")";
+check(singleHtmlParts.elements.content.textContent===singleHtmlSource&&singleHtmlParts.elements.range.textContent===singleHtmlRange,"single-page HTML Source did not load its terminal page");
+singleHtmlParts.elements.html.previewTab.click();
+await settle();
+check(singleHtmlCalls.length===singleHtmlCallsAfterSource&&singleHtmlParts.elements.html.previewFrame.srcdoc.includes("single-page preview"),"single-page HTML Source to Preview repeated IPC or lost Preview");
+singleHtmlParts.elements.html.sourceTab.click();
+await settle();
+check(singleHtmlCalls.length===singleHtmlCallsAfterSource&&singleHtmlParts.elements.content.textContent===singleHtmlSource&&singleHtmlParts.elements.range.textContent===singleHtmlRange,"single-page HTML Preview to Source did not restore cached text and range");
+singleHtmlViewer.close();
+await settle();
+singleHtmlParts.dialog.remove();
 
 const waitForFrameLoad=async(frame,marker,label,timeoutMs=3000)=>{
   await new Promise((resolve,reject)=>{

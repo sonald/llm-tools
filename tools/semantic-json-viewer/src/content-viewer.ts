@@ -72,6 +72,14 @@ type TextChunk = {
   nextOffset: number | null;
 };
 
+type SemanticType = "markdown" | "code";
+
+type CollectedText = {
+  first: TextChunk;
+  text: string | null;
+  overLimit: boolean;
+};
+
 type ContentViewerOptions = {
   elements: ContentViewerElements;
   invoke?: typeof invoke;
@@ -114,8 +122,12 @@ type NestedFrame = {
 
 const TEXT_CHUNK_BYTES = 128 * 1024;
 const DECODED_PAGE_CACHE_BYTES = 32 * 1024 * 1024;
+const MARKDOWN_AUTO_RENDER_LIMIT_BYTES = 2 * 1024 * 1024;
+const CODE_AUTO_RENDER_LIMIT_BYTES = 1 * 1024 * 1024;
 const HTML_INPUT_LIMIT_BYTES = 512 * 1024;
 const HTML_OUTPUT_LIMIT_BYTES = 1024 * 1024;
+const MARKDOWN_OVER_LIMIT_NOTE = "Markdown rendering skipped because content exceeds 2 MiB.";
+const MARKDOWN_OVER_LIMIT_STATUS = "Markdown source exceeds 2 MiB; showing decoded source.";
 const HTML_PREVIEW_NOTE = "Isolated HTML Preview · Opaque origin · scripts, network, forms, navigation, file access and application IPC blocked.";
 const HTML_RENDER_FAILURE_NOTE = "Semantic rendering failed. Showing plain text instead.";
 const HTML_SIZE_LIMIT_NOTE = `HTML Preview disabled because content exceeds ${HTML_INPUT_LIMIT_BYTES / 1024} KiB.`;
@@ -136,6 +148,7 @@ export class ContentViewer {
   private nextOffset: number | null = null;
   private restoreFocusOnClose: boolean | null = null;
   private representation: "rendered" | "decoded" | null = null;
+  private semanticLimit: SemanticType | null = null;
   private markdownRenderFailed = false;
   private codeRenderReason: CodeRenderReason | null = null;
   private readonly nestedElements: NestedViewerElements | null;
@@ -213,6 +226,7 @@ export class ContentViewer {
     this.clearContent();
     this.elements.range.textContent = "—";
     this.representation = null;
+    this.semanticLimit = null;
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
     this.nestedRepresentation = null;
@@ -258,6 +272,11 @@ export class ContentViewer {
         return;
       }
 
+      if (detection.semanticType === "markdown" || detection.semanticType === "code") {
+        await this.openSemantic(target, generation, detection.semanticType);
+        return;
+      }
+
       const chunkValue = await this.invokeRequest<unknown>("read_decoded_text", {
         nodeId: target.nodeId,
         offset: 0,
@@ -288,6 +307,7 @@ export class ContentViewer {
     this.nextOffset = null;
     this.clearContent();
     this.representation = null;
+    this.semanticLimit = null;
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
     this.nestedRepresentation = null;
@@ -387,14 +407,67 @@ export class ContentViewer {
     }
   }
 
-  private installChunk(chunk: TextChunk, initial = false): void {
+  private async openSemantic(target: ContentTarget, generation: number, semanticType: SemanticType): Promise<void> {
+    const limit = semanticType === "markdown"
+      ? MARKDOWN_AUTO_RENDER_LIMIT_BYTES
+      : CODE_AUTO_RENDER_LIMIT_BYTES;
+    const collected = await this.collectSemanticSource(target, generation, limit);
+    if (!collected) return;
+    this.semanticLimit = collected.overLimit ? semanticType : null;
+    const chunk = collected.overLimit
+      ? collected.first
+      : { start: 0, text: collected.text ?? "", hasMore: false, nextOffset: null };
+    this.installChunk(chunk, true, collected.overLimit ? null : collected.first);
+  }
+
+  private async collectSemanticSource(
+    target: ContentTarget,
+    generation: number,
+    limit: number
+  ): Promise<CollectedText | null> {
+    const parts: string[] = [];
+    let totalBytes = 0;
+    let offset = 0;
+    let first: TextChunk | undefined;
+    while (true) {
+      const value = await this.invokeRequest<unknown>("read_decoded_text", {
+        nodeId: target.nodeId,
+        offset,
+        length: TEXT_CHUNK_BYTES,
+        sessionRevision: target.revision,
+        scopeId: target.scopeId
+      });
+      if (!this.isCurrent(generation, target)) return null;
+      const chunk = validateChunk(value, offset, rawSpanLength(target));
+      if (!chunk) throw new Error("The decoded text response was invalid.");
+      const firstChunk = first ?? chunk;
+      first = firstChunk;
+      const byteLength = utf8ByteLength(chunk.text);
+      if (byteLength > limit - totalBytes) {
+        return { first: firstChunk, text: null, overLimit: true };
+      }
+      parts.push(chunk.text);
+      totalBytes += byteLength;
+      if (totalBytes === limit && chunk.hasMore) {
+        return { first: firstChunk, text: null, overLimit: true };
+      }
+      if (!chunk.hasMore) {
+        return { first: firstChunk, text: parts.join(""), overLimit: false };
+      }
+      if (chunk.nextOffset === null) throw new Error("The decoded text response was invalid.");
+      offset = chunk.nextOffset;
+    }
+  }
+
+  private installChunk(chunk: TextChunk, initial = false, sourceFallback: TextChunk | null = null): void {
     this.busy = false;
-    this.cacheDecodedPage(chunk);
-    this.nextOffset = chunk.nextOffset;
     this.elements.content.classList.remove("is-markdown");
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
-    const canRenderSemantic = initial && !chunk.hasMore;
+    const canRenderSemantic = initial && !chunk.hasMore && this.semanticLimit === null
+      && (this.detection?.semanticType === "markdown" || this.detection?.semanticType === "code");
+    let sourceChunk = chunk;
+    let cacheChunk: TextChunk | null = canRenderSemantic ? null : chunk;
     if (canRenderSemantic && this.detection?.semanticType === "markdown") {
       const fragment = renderSafeMarkdown(chunk.text);
       if (fragment) {
@@ -402,7 +475,9 @@ export class ContentViewer {
         this.elements.content.classList.add("is-markdown");
         this.representation = "rendered";
       } else {
-        this.elements.content.textContent = chunk.text;
+        sourceChunk = sourceFallback ?? chunk;
+        cacheChunk = sourceChunk;
+        this.elements.content.textContent = sourceChunk.text;
         this.representation = "decoded";
         this.markdownRenderFailed = true;
       }
@@ -415,20 +490,24 @@ export class ContentViewer {
       this.elements.content.textContent = chunk.text;
       this.representation = "decoded";
     }
+    if (cacheChunk) this.cacheDecodedPage(cacheChunk);
+    this.nextOffset = sourceChunk.nextOffset;
     if (this.detection?.semanticType === "html") {
       this.htmlRepresentation = "source";
       this.setHtmlVisible(true);
     }
     this.renderMetadata();
     this.elements.alert.hidden = true;
-    if (this.representation === "rendered") {
+    if (this.semanticLimit === "markdown") {
+      this.setStatus(MARKDOWN_OVER_LIMIT_STATUS);
+    } else if (this.representation === "rendered") {
       this.setStatus(this.detection?.semanticType === "code" ? "Rendered Code ready" : "Rendered Markdown ready");
-    } else if (chunk.text.length === 0 && !chunk.hasMore) {
+    } else if (sourceChunk.text.length === 0 && !sourceChunk.hasMore) {
       this.setStatus("Empty string");
     } else {
       this.setStatus("Decoded source ready");
     }
-    this.elements.range.textContent = `[${chunk.start}, ${chunk.start + utf8ByteLength(chunk.text)})`;
+    this.elements.range.textContent = `[${sourceChunk.start}, ${sourceChunk.start + utf8ByteLength(sourceChunk.text)})`;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
     this.renderPaging();
@@ -1131,6 +1210,7 @@ export class ContentViewer {
     this.nextOffset = null;
     this.clearContent();
     this.representation = null;
+    this.semanticLimit = null;
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
     this.nestedRepresentation = null;
@@ -1210,6 +1290,10 @@ export class ContentViewer {
       this.elements.rendererNote.textContent = this.htmlNote;
     } else if (detection.semanticType === "plainText") {
       this.elements.rendererNote.textContent = "";
+    } else if (detection.semanticType === "markdown" && this.semanticLimit === "markdown") {
+      this.elements.rendererNote.textContent = MARKDOWN_OVER_LIMIT_NOTE;
+    } else if (detection.semanticType === "code" && this.semanticLimit === "code") {
+      this.elements.rendererNote.textContent = "Syntax highlighting disabled for large content.";
     } else if (detection.semanticType === "code" && this.representation === "rendered") {
       this.elements.rendererNote.textContent = codeRendererNote(this.codeRenderReason);
     } else if (this.representation === "rendered") {

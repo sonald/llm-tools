@@ -2,7 +2,7 @@ import { marked } from "marked";
 import type { Token, Tokens } from "marked";
 import { renderCode } from "./code-renderer";
 
-const MAX_INPUT_BYTES = 128 * 1024;
+const MAX_INPUT_BYTES = 32 * 1024 * 1024;
 const MAX_NODES = 10_000;
 const MAX_DEPTH = 32;
 const MAX_RENDER_MS = 100;
