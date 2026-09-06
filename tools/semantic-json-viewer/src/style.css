@@ -476,7 +476,7 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .sjv-code-gutter { padding-right: 12px; color: var(--faint); user-select: none; text-align: right; white-space: pre; }
 
-.sjv-code-plain .sjv-code-source { white-space: pre-wrap; }
+.sjv-code-plain .sjv-code-source { white-space: pre; overflow-wrap: normal; }
 
 .sjv-token-comment { color: #708090; }
 .sjv-token-string, .sjv-token-char { color: #a03b68; }

@@ -47,6 +47,13 @@ export type CodeRenderResult = {
   reason: CodeRenderReason | null;
 };
 
+export type CodeLineState = {
+  line: number;
+  previousWasCR: boolean;
+};
+
+type PlainCodeReason = Extract<CodeRenderReason, "sizeLimit" | "lineLimit">;
+
 const LANGUAGE_ALIASES: Readonly<Record<string, CodeLanguage>> = {
   python: "python",
   py: "python",
@@ -153,9 +160,15 @@ export function renderCode(source: string, languageHint?: string | null): CodeRe
   const bytes = utf8ByteLength(text);
   const lines = countLines(text);
   const hint = firstHintWord(languageHint);
+  const limitReason = highlightLimitReason(bytes, lines);
+  if (limitReason !== null) {
+    return renderPlainCodePage(text, hint === null ? null : LANGUAGE_ALIASES[hint] ?? null, limitReason, {
+      line: 1,
+      previousWasCR: false
+    });
+  }
   const language = resolveLanguage(text, bytes, hint);
-  const limitReason = highlightLimitReason(bytes, lines, language, hint);
-  if (limitReason !== null || language === null) {
+  if (language === null) {
     return plainResult(text, language, limitReason ?? "generic");
   }
 
@@ -180,21 +193,53 @@ export function renderCode(source: string, languageHint?: string | null): CodeRe
   }
 }
 
+export function scanCodeLines(text: string, state: CodeLineState): CodeLineState {
+  let line = state.line;
+  let previousWasCR = state.previousWasCR;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === "\r") {
+      line += 1;
+      previousWasCR = true;
+    } else if (character === "\n") {
+      if (!previousWasCR) line += 1;
+      previousWasCR = false;
+    } else {
+      previousWasCR = false;
+    }
+  }
+  return { line, previousWasCR };
+}
+
+export function renderPlainCodePage(
+  source: string,
+  language: CodeLanguage | null,
+  reason: PlainCodeReason,
+  state: CodeLineState
+): CodeRenderResult {
+  const text = typeof source === "string" ? source : "";
+  const fragment = createCodeFragment(
+    text,
+    language,
+    "plain",
+    reason,
+    countLines(text),
+    createBudget(performance.now()),
+    undefined,
+    lineNumbersForPage(text, state)
+  );
+  return { fragment, language, presentation: "plain", reason };
+}
+
 function resolveLanguage(source: string, bytes: number, hint: string | null): CodeLanguage | null {
   if (hint !== null) return LANGUAGE_ALIASES[hint] ?? null;
   if (bytes > DETECTOR_MAX_BYTES) return null;
   return detectLanguage(source);
 }
 
-function highlightLimitReason(
-  bytes: number,
-  lines: number,
-  language: CodeLanguage | null,
-  hint: string | null
-): CodeRenderReason | null {
+function highlightLimitReason(bytes: number, lines: number): PlainCodeReason | null {
   if (bytes > HIGHLIGHT_MAX_BYTES) return "sizeLimit";
   if (lines > HIGHLIGHT_MAX_LINES) return "lineLimit";
-  if (language === null && hint === null) return "generic";
   return null;
 }
 
@@ -241,7 +286,8 @@ function createCodeFragment(
   reason: CodeRenderReason | null,
   lines: number,
   budget: RenderBudget,
-  tokens?: PrismTokenValue[]
+  tokens?: PrismTokenValue[],
+  gutterText = lineNumbers(lines)
 ): DocumentFragment {
   const fragment = document.createDocumentFragment();
   const pre = document.createElement("pre");
@@ -253,7 +299,7 @@ function createCodeFragment(
     const gutter = document.createElement("span");
     gutter.className = "sjv-code-gutter";
     gutter.setAttribute("aria-hidden", "true");
-    gutter.append(document.createTextNode(lineNumbers(lines)));
+    gutter.append(document.createTextNode(gutterText));
     pre.append(gutter);
     budget.reserve();
     budget.reserve();
@@ -308,6 +354,9 @@ function appendToken(token: PrismToken, parent: HTMLElement, budget: RenderBudge
 }
 
 function plainResult(source: string, language: CodeLanguage | null, reason: CodeRenderReason): CodeRenderResult {
+  if (reason === "sizeLimit" || reason === "lineLimit") {
+    return renderPlainCodePage(source, language, reason, { line: 1, previousWasCR: false });
+  }
   const fragment = createCodeFragment(
     source,
     language,
@@ -355,6 +404,33 @@ function codeClassName(language: CodeLanguage | null, presentation: "highlighted
 
 function lineNumbers(lines: number): string {
   return Array.from({ length: lines }, (_, index) => String(index + 1)).join("\n");
+}
+
+function lineNumbersForPage(source: string, state: CodeLineState): string {
+  if (source.length === 0) return "";
+  let line = state.line;
+  let previousWasCR = state.previousWasCR;
+  const boundaryLF = previousWasCR && source[0] === "\n";
+  const labels = [boundaryLF ? "" : String(line)];
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === "\r") {
+      line += 1;
+      previousWasCR = true;
+      labels.push(String(line));
+    } else if (character === "\n") {
+      if (previousWasCR) {
+        if (index === 0 && boundaryLF) labels.push(String(line));
+      } else {
+        line += 1;
+        labels.push(String(line));
+      }
+      previousWasCR = false;
+    } else {
+      previousWasCR = false;
+    }
+  }
+  return labels.join("\n");
 }
 
 function countLines(source: string): number {

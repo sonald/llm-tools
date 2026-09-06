@@ -99,7 +99,7 @@ function harEntries(value) {
 function browserExpression(fixtures, commonSource) {
   return `(async()=>{
 const {renderSafeMarkdown}=await import("/src/markdown-renderer.ts");
-const {renderCode}=await import("/src/code-renderer.ts");
+const {renderCode,renderPlainCodePage,scanCodeLines}=await import("/src/code-renderer.ts");
 const {ContentViewer}=await import("/src/content-viewer.ts");
 const fixtures=${JSON.stringify(fixtures)};
 const commonSource=${JSON.stringify(commonSource)};
@@ -267,6 +267,48 @@ inspectCode(overLinesResult,"over-20,000-line source",overLines);
 const mixedLines="a"+String.fromCharCode(13,10)+"b"+String.fromCharCode(10)+"c"+String.fromCharCode(13)+"d"+String.fromCharCode(10);
 const mixedLinesResult=renderCode(mixedLines,"js");
 check(mixedLinesResult.fragment.querySelector(".sjv-code-gutter")?.textContent==="1"+nl+"2"+nl+"3"+nl+"4"+nl+"5","CRLF/LF/CR/trailing line count is wrong");
+const codeLineState={line:1,previousWasCR:false};
+const afterCR=scanCodeLines("a"+String.fromCharCode(13),codeLineState);
+check(afterCR.line===2&&afterCR.previousWasCR===true,"CR did not advance one line or preserve its boundary state");
+const afterCRLF=scanCodeLines(String.fromCharCode(10)+"b",afterCR);
+check(afterCRLF.line===2&&afterCRLF.previousWasCR===false,"CRLF across pages advanced two lines");
+check(codeLineState.line===1&&codeLineState.previousWasCR===false,"line scanner mutated its input state");
+const page0=renderPlainCodePage("prefix", "javascript", "lineLimit", codeLineState);
+const page1State=scanCodeLines("prefix",codeLineState);
+const page1=renderPlainCodePage("suffix"+nl+"next", "javascript", "sizeLimit", page1State);
+check(page0.presentation==="plain"&&page0.reason==="lineLimit"&&page0.fragment.querySelector(".sjv-code-gutter")?.textContent==="1","plain page renderer changed its reason or first absolute line");
+check(page1.fragment.querySelector(".sjv-code-gutter")?.textContent==="1"+nl+"2","mid-line page did not repeat the absolute line number");
+const boundaryPage=renderPlainCodePage(String.fromCharCode(10)+"after", "javascript", "lineLimit", afterCR);
+check(boundaryPage.fragment.querySelector(".sjv-code-gutter")?.textContent===""+nl+"2","LF completing a prior CR did not preserve the boundary gutter slot");
+check(boundaryPage.fragment.querySelector(".sjv-code-source")?.textContent===String.fromCharCode(10)+"after","plain page renderer changed source text");
+const geometryHost=document.createElement("div");
+geometryHost.className="content-viewer-content";
+geometryHost.style.width="320px";
+geometryHost.style.height="180px";
+geometryHost.style.overflow="auto";
+const geometryLine="L".repeat(2048);
+const geometrySource=geometryLine+nl+"second-real-line";
+const geometryFragment=renderPlainCodePage(geometrySource,null,"sizeLimit",{line:42,previousWasCR:false}).fragment;
+geometryHost.append(geometryFragment);
+document.body.append(geometryHost);
+const geometryPre=geometryHost.querySelector("pre");
+const geometryCode=geometryHost.querySelector(".sjv-code-source");
+const geometryGutter=geometryHost.querySelector(".sjv-code-gutter");
+const geometryCodeText=geometryCode?.firstChild;
+const geometryGutterText=geometryGutter?.firstChild;
+check(geometryPre!==null&&geometryCode instanceof HTMLElement&&geometryGutter instanceof HTMLElement&&geometryCodeText instanceof Text&&geometryGutterText instanceof Text,"plain code geometry fixture did not emit the expected source/gutter text nodes");
+const geometryRange=(node,start,end)=>{const range=document.createRange();range.setStart(node,start);range.setEnd(node,end);return range;};
+const firstGeometryLine=geometryRange(geometryCodeText,0,geometryLine.length).getClientRects();
+const firstGeometrySourceRect=geometryRange(geometryCodeText,0,1).getBoundingClientRect();
+const secondGeometrySourceRect=geometryRange(geometryCodeText,geometryLine.length+1,geometryLine.length+2).getBoundingClientRect();
+const firstGeometryGutterRect=geometryRange(geometryGutterText,0,1).getBoundingClientRect();
+const secondGeometryGutterRect=geometryRange(geometryGutterText,3,4).getBoundingClientRect();
+const geometryStyle=getComputedStyle(geometryCode);
+check(geometryStyle.whiteSpace==="pre"&&geometryStyle.overflowWrap==="normal","large plain Code still enables soft wrapping");
+check(firstGeometryLine.length===1&&geometryPre.scrollWidth>geometryPre.clientWidth,"large plain Code did not use one unwrapped line with horizontal scrolling");
+check(secondGeometrySourceRect.top>firstGeometrySourceRect.top&&Math.abs(secondGeometrySourceRect.top-secondGeometryGutterRect.top)<2&&Math.abs(firstGeometrySourceRect.top-firstGeometryGutterRect.top)<2,"plain Code gutter rows do not align with the two real source lines");
+check(geometryCode.textContent===geometrySource&&geometryGutter.textContent==="42"+nl+"43","plain Code geometry changed source text or absolute gutter lines");
+geometryHost.remove();
 const emptyResult=renderCode("");
 check(emptyResult.language===null&&emptyResult.reason==="generic"&&emptyResult.fragment.querySelector("code")?.textContent==="","empty source contract is wrong");
 const nodeResult=renderCode((prefix+nl).repeat(5000),"js");
@@ -660,11 +702,154 @@ prismModule.default.tokenize=(...args)=>{gatePrismTokenizeCalls+=1;return origin
 await codeOverViewer.open({revision:26,nodeId:206,spanStart:0,spanEnd:codeAutoLimit+1,scopeId:null,scopeLabel:"Document",pathSegments:["$","code-over"],pathTruncated:false},codeOverParts.elements.close);
 prismModule.default.tokenize=originalGatePrismTokenize;
 check(codeOverCalls.filter((call)=>call.command==="read_decoded_text").length===codeAutoPages,"over-1 MiB Code read past the overlimit gate");
-check(codeOverParts.elements.representation.textContent==="Decoded Source"&&codeOverParts.elements.content.textContent===codeExactPages[0],"over-1 MiB Code did not retain only its first source page");
+check(codeOverParts.elements.representation.textContent==="Rendered"&&codeOverParts.elements.content.querySelector(".sjv-code-source")?.textContent===codeExactPages[0],"over-1 MiB Code did not retain only its first source page");
 check(codeOverParts.elements.rendererNote.textContent==="Syntax highlighting disabled for large content.","over-1 MiB Code note is not exact");
-check(codeOverParts.elements.next.disabled===false&&codeOverParts.elements.content.querySelector("pre")===null&&gatePrismTokenizeCalls===0,"over-1 MiB Code bypassed the read/renderer gate");
+check(codeOverParts.elements.next.disabled===false&&codeOverParts.elements.content.querySelector("pre.sjv-code-plain.sjv-code-reason-sizeLimit")!==null&&gatePrismTokenizeCalls===0,"over-1 MiB Code bypassed the read/renderer gate");
 codeOverViewer.close();
 codeOverParts.dialog.remove();
+
+const bytePaged=(pages)=>{
+  const starts=[];
+  let offset=0;
+  for(const page of pages){starts.push(offset);offset+=new TextEncoder().encode(page).byteLength;}
+  return {starts,spanEnd:offset,response(requested){
+    const index=starts.indexOf(requested);
+    if(index<0) throw new Error("unexpected byte page offset "+requested);
+    const text=pages[index];
+    return {start:requested,text,hasMore:index<pages.length-1,nextOffset:index<pages.length-1?starts[index+1]:null};
+  }};
+};
+const codeLineSource=(count)=>Array.from({length:count},(_,index)=>("line"+String(index).padStart(6,"0")+" ".repeat(12))).join(nl);
+const exactCodeLineSource=codeLineSource(20000);
+const exactCodeLinePages=[];
+for(let offset=0;offset<exactCodeLineSource.length;offset+=collectorPageBytes) exactCodeLinePages.push(exactCodeLineSource.slice(offset,offset+collectorPageBytes));
+const exactCodeLinePaged=bytePaged(exactCodeLinePages);
+const exactCodeLineParts=makeViewer();
+const exactCodeLineCalls=[];
+const exactCodeLineViewer=new ContentViewer({elements:exactCodeLineParts.elements,invoke:async(command,args)=>{
+  exactCodeLineCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return exactCodeLinePaged.response(args.offset);
+  throw new Error("unexpected exact 20k code command");
+}});
+await withStableRenderClock(()=>exactCodeLineViewer.open({revision:35,nodeId:305,spanStart:0,spanEnd:exactCodeLinePaged.spanEnd,scopeId:null,scopeLabel:"Document",pathSegments:["$","code-20k"],pathTruncated:false},exactCodeLineParts.elements.close));
+check(exactCodeLineCalls.filter((call)=>call.command==="read_decoded_text").length===exactCodeLinePages.length,"exact 20,000-line Code did not collect every actual page");
+check(exactCodeLineParts.elements.rendererNote.textContent!=="Syntax highlighting disabled for large content."&&exactCodeLineParts.elements.content.textContent.includes("line019999"),"exact 20,000-line Code was treated as over the line limit: "+exactCodeLineParts.elements.rendererNote.textContent+" / "+exactCodeLineCalls.filter((call)=>call.command==="read_decoded_text").length);
+exactCodeLineViewer.close();
+exactCodeLineParts.dialog.remove();
+
+const overCodeLineSource=exactCodeLineSource+nl+"line20000"+"z".repeat(200000);
+const overCodeLinePages=[];
+for(let offset=0;offset<overCodeLineSource.length;offset+=collectorPageBytes) overCodeLinePages.push(overCodeLineSource.slice(offset,offset+collectorPageBytes));
+const overCodeLinePaged=bytePaged(overCodeLinePages);
+const overCodeLineParts=makeViewer();
+const overCodeLineCalls=[];
+const overCodeLineViewer=new ContentViewer({elements:overCodeLineParts.elements,invoke:async(command,args)=>{
+  overCodeLineCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return overCodeLinePaged.response(args.offset);
+  throw new Error("unexpected over 20k code command");
+}});
+await withStableRenderClock(()=>overCodeLineViewer.open({revision:36,nodeId:306,spanStart:0,spanEnd:overCodeLinePaged.spanEnd,scopeId:null,scopeLabel:"Document",pathSegments:["$","code-20k-plus"],pathTruncated:false},overCodeLineParts.elements.close));
+check(overCodeLineCalls.filter((call)=>call.command==="read_decoded_text").length<overCodeLinePages.length,"over-20,000-line Code read after the first confirmed line limit");
+check(overCodeLineParts.elements.rendererNote.textContent==="Syntax highlighting disabled for large content."&&overCodeLineParts.elements.content.querySelector("pre.sjv-code-reason-lineLimit")!==null,"over-20,000-line Code did not keep a plain line-limited first page");
+check(overCodeLineParts.elements.next.disabled===false&&overCodeLineParts.elements.content.querySelector(".sjv-code-gutter")?.textContent?.startsWith("1"),"over-20,000-line Code lost the first-page absolute gutter");
+overCodeLineViewer.close();
+overCodeLineParts.dialog.remove();
+
+const unicodeCodePages=["€".repeat(43690),"é".repeat(65536),...Array.from({length:6},()=>"x".repeat(collectorPageBytes)),"!!!"];
+const unicodeCodePaged=bytePaged(unicodeCodePages);
+const unicodeCodeParts=makeViewer();
+const unicodeCodeCalls=[];
+const unicodeCodeViewer=new ContentViewer({elements:unicodeCodeParts.elements,invoke:async(command,args)=>{
+  unicodeCodeCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return unicodeCodePaged.response(args.offset);
+  throw new Error("unexpected Unicode code command");
+}});
+await unicodeCodeViewer.open({revision:37,nodeId:307,spanStart:0,spanEnd:unicodeCodePaged.spanEnd,scopeId:null,scopeLabel:"Document",pathSegments:["$","unicode-code"],pathTruncated:false},unicodeCodeParts.elements.close);
+const unicodeCodeReads=unicodeCodeCalls.filter((call)=>call.command==="read_decoded_text");
+check(unicodeCodeReads.length===9&&unicodeCodeReads.at(1)?.args.offset===unicodeCodePaged.starts[1]&&unicodeCodePaged.starts[1]!==collectorPageBytes&&unicodeCodeReads.at(-1)?.args.offset===unicodeCodePaged.starts[8],"Unicode Code collector used actual nextOffset values: "+JSON.stringify(unicodeCodeReads.map((call)=>call.args.offset))+" / "+JSON.stringify(unicodeCodePaged.starts));
+check(unicodeCodeParts.elements.content.querySelector(".sjv-code-source")?.textContent===unicodeCodePages[0]&&unicodeCodeParts.elements.next.disabled===false,"Unicode large Code changed its first page or lost Next");
+unicodeCodeViewer.close();
+unicodeCodeParts.dialog.remove();
+
+const crlfCodePage0="p0-"+"x".repeat(collectorPageBytes-4)+String.fromCharCode(13);
+const crlfCodePage1=String.fromCharCode(10)+"line2"+nl+"line3"+"x".repeat(collectorPageBytes-(nl+"line2"+nl+"line3").length);
+const crlfCodePages=[crlfCodePage0,crlfCodePage1,...Array.from({length:6},()=>"x".repeat(collectorPageBytes)),"!"];
+const crlfCodeParts=makeViewer();
+const crlfCodeCalls=[];
+const crlfCodeViewer=new ContentViewer({elements:crlfCodeParts.elements,invoke:async(command,args)=>{
+  crlfCodeCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return pagedResponse(crlfCodePages,args.offset);
+  throw new Error("unexpected CRLF Code command");
+}});
+await crlfCodeViewer.open({revision:39,nodeId:309,spanStart:0,spanEnd:codeAutoLimit+1,scopeId:null,scopeLabel:"Document",pathSegments:["$","crlf-code"],pathTruncated:false},crlfCodeParts.elements.close);
+check(new TextEncoder().encode(crlfCodePage0).byteLength===collectorPageBytes&&new TextEncoder().encode(crlfCodePage1).byteLength===collectorPageBytes,"CRLF Code boundary pages are not exactly 128 KiB");
+check(crlfCodeParts.elements.content.querySelector(".sjv-code-source")?.textContent===crlfCodePage0&&crlfCodeParts.elements.next.disabled===false,"CRLF Code did not retain page 0 or expose Next");
+crlfCodeParts.elements.next.click();
+await renderAsSettle();
+const crlfPage1Gutter=crlfCodeParts.elements.content.querySelector(".sjv-code-gutter")?.textContent;
+check(crlfPage1Gutter===""+nl+"2"+nl+"3","LF after page 0 CR did not keep an empty boundary slot or absolute lines 2/3");
+check(crlfCodeParts.elements.content.querySelector(".sjv-code-source")?.textContent===crlfCodePage1&&crlfCodeParts.elements.content.textContent.includes(crlfCodePage1),"CRLF Code page 1 changed its source text");
+crlfCodeParts.elements.previous.click();
+await renderAsSettle();
+check(crlfCodeParts.elements.content.querySelector(".sjv-code-source")?.textContent===crlfCodePage0,"CRLF Code Previous did not restore page 0 source");
+check(crlfCodeCalls.filter((call)=>call.command==="read_decoded_text"&&call.args.offset===collectorPageBytes).length===2,"CRLF Code Next did not use the validated page-1 checkpoint");
+crlfCodeViewer.close();
+crlfCodeParts.dialog.remove();
+
+const largeCodeCachePageCount=258;
+const largeCodeCachePages=Array.from({length:largeCodeCachePageCount},(_,index)=>"cache-page-"+index+nl+"x".repeat(collectorPageBytes-("cache-page-"+index+nl).length));
+const largeCodeCachePaged=bytePaged(largeCodeCachePages);
+const largeCodeCacheParts=makeViewer();
+const largeCodeCacheCalls=[];
+const largeCodeCacheViewer=new ContentViewer({elements:largeCodeCacheParts.elements,invoke:async(command,args)=>{
+  largeCodeCacheCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return largeCodeCachePaged.response(args.offset);
+  throw new Error("unexpected cache Code command");
+}});
+await largeCodeCacheViewer.open({revision:38,nodeId:308,spanStart:0,spanEnd:largeCodeCachePaged.spanEnd,scopeId:null,scopeLabel:"Document",pathSegments:["$","cache-code"],pathTruncated:false},largeCodeCacheParts.elements.close);
+let largeCodeCacheFirstPage1Gutter="";
+for(let index=1;index<largeCodeCachePageCount;index+=1){largeCodeCacheParts.elements.next.click();await renderAsSettle();if(index===1) largeCodeCacheFirstPage1Gutter=largeCodeCacheParts.elements.content.querySelector(".sjv-code-gutter")?.textContent??"";}
+let largeCodeCacheRereadPage1Gutter="";
+for(let index=largeCodeCachePageCount-1;index>0;index-=1){largeCodeCacheParts.elements.previous.click();await renderAsSettle();if(index===2) largeCodeCacheRereadPage1Gutter=largeCodeCacheParts.elements.content.querySelector(".sjv-code-gutter")?.textContent??"";}
+const largeCodeCachePage0Reads=largeCodeCacheCalls.filter((call)=>call.command==="read_decoded_text"&&call.args.offset===0).length;
+check(largeCodeCachePage0Reads===2&&largeCodeCacheParts.elements.content.querySelector(".sjv-code-source")?.textContent===largeCodeCachePages[0],">32 MiB Code cache eviction did not reread page 0");
+check(largeCodeCacheParts.elements.content.querySelector(".sjv-code-gutter")?.textContent?.startsWith("1"),"reread Code page lost its absolute line checkpoint");
+const largeCodeCachePage1Reads=largeCodeCacheCalls.filter((call)=>call.command==="read_decoded_text"&&call.args.offset===largeCodeCachePaged.starts[1]).length;
+check(largeCodeCachePage1Reads===3&&largeCodeCacheFirstPage1Gutter!=="1"&&largeCodeCacheRereadPage1Gutter===largeCodeCacheFirstPage1Gutter,"nonzero Code cache refetch lost the page-start line checkpoint: "+largeCodeCachePage1Reads+" / "+JSON.stringify([largeCodeCacheFirstPage1Gutter,largeCodeCacheRereadPage1Gutter]));
+largeCodeCacheViewer.close();
+largeCodeCacheParts.dialog.remove();
+
+const resetCodeParts=makeViewer();
+const resetCodeCalls=[];
+const resetCodeViewer=new ContentViewer({elements:resetCodeParts.elements,invoke:async(command,args)=>{
+  resetCodeCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return pagedResponse(codeOverPages,args.offset);
+  throw new Error("unexpected Render As reset command");
+}});
+await resetCodeViewer.open({revision:39,nodeId:309,spanStart:0,spanEnd:codeAutoLimit+1,scopeId:null,scopeLabel:"Document",pathSegments:["$","render-as-reset"],pathTruncated:false},resetCodeParts.elements.close);
+resetCodeParts.elements.next.click();
+await renderAsSettle();
+check(resetCodeParts.elements.content.querySelector(".sjv-code-gutter")?.textContent?.startsWith("2"),"Code Next did not advance to the second absolute line state");
+const resetReadsBefore=resetCodeCalls.filter((call)=>call.command==="read_decoded_text").length;
+resetCodeParts.elements.renderAs.value="javascript";
+resetCodeParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+const languageResetReads=resetCodeCalls.filter((call)=>call.command==="read_decoded_text").slice(resetReadsBefore);
+check(languageResetReads[0]?.args.offset===0&&resetCodeParts.elements.previous.disabled&&resetCodeParts.elements.content.querySelector(".sjv-code-gutter")?.textContent?.startsWith("1"),"language Render As change did not reset Code paging to line 1/offset 0");
+const autoResetReadsBefore=resetCodeCalls.filter((call)=>call.command==="read_decoded_text").length;
+resetCodeParts.elements.renderAs.value="auto";
+resetCodeParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+const autoResetReads=resetCodeCalls.filter((call)=>call.command==="read_decoded_text").slice(autoResetReadsBefore);
+check(autoResetReads[0]?.args.offset===0&&resetCodeParts.elements.content.querySelector(".sjv-code-gutter")?.textContent?.startsWith("1"),"Auto Render As change did not reset Code paging to line 1/offset 0");
+resetCodeViewer.close();
+resetCodeParts.dialog.remove();
 
 const invalidCollectorCases=[
   ["invalid start",(offset)=>({start:offset-1,text:"bad",hasMore:false,nextOffset:null})],
@@ -812,6 +997,47 @@ for(const [language,source] of codeSamples){
   await renderAsSettle();
   parts.dialog.remove();
 }
+
+const nestedCodeSource=codeExactPages.join("")+"!";
+const nestedCodeBytes=new TextEncoder().encode(nestedCodeSource).byteLength;
+const nestedCodeParsedBytes=nestedCodeBytes+2;
+const nestedCodeRoot=node(400,"object",0,nestedCodeParsedBytes,"$",1);
+const nestedCodeChild=node(401,"string",1,1+nestedCodeBytes,"code",0,null);
+const nestedCodeParts=makeNestedViewer();
+const nestedCodeCalls=[];
+const nestedCodeInvoke=async(command,args)=>{
+  nestedCodeCalls.push({command,args});
+  if(command==="get_string_detection") return args.nodeId===401
+    ? {semanticType:"code",detectionSource:"contentDetected",plainReason:null}
+    : {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
+  if(command==="open_nested_json") return {scopeId:401,parentScopeId:null,sourceNodeId:400,root:nestedCodeRoot,depth:1,maxDepth:5,parsedBytes:nestedCodeParsedBytes,cumulativeBytes:nestedCodeParsedBytes,sessionRevision:40};
+  if(command==="get_children") return {nodes:[nestedCodeChild],hasMore:false,nextCursor:null};
+  if(command==="read_decoded_text") return pagedResponse(codeOverPages,args.offset);
+  if(command==="close_nested_scope") return undefined;
+  throw new Error("unexpected nested large Code command "+command);
+};
+const nestedCodeViewer=new ContentViewer({elements:nestedCodeParts.elements,invoke:nestedCodeInvoke});
+await nestedCodeViewer.open({revision:40,nodeId:400,spanStart:0,spanEnd:nestedCodeParsedBytes,scopeId:null,scopeLabel:"Document",pathSegments:["$","nested-code"],pathTruncated:false},nestedCodeParts.elements.close);
+await renderAsSettle();
+nestedCodeParts.elements.nested.parsedTree.querySelector(".tree-disclosure")?.click();
+await renderAsSettle();
+nestedCodeParts.elements.nested.parsedTree.querySelector('[data-node-id="401"]')?.dispatchEvent(new MouseEvent("click",{bubbles:true,detail:2}));
+await renderAsSettle();
+check(nestedCodeParts.elements.rendererNote.textContent==="Syntax highlighting disabled for large content."&&nestedCodeParts.elements.content.querySelector("pre.sjv-code-reason-sizeLimit")!==null,"nested large Code did not use the bounded plain renderer");
+nestedCodeParts.elements.next.click();
+await renderAsSettle();
+check(nestedCodeParts.elements.content.querySelector(".sjv-code-gutter")?.textContent?.startsWith("2"),"nested Code Next did not advance its absolute line state");
+nestedCodeParts.elements.renderAs.value="javascript";
+nestedCodeParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(nestedCodeParts.elements.previous.disabled&&nestedCodeParts.elements.content.querySelector(".sjv-code-gutter")?.textContent?.startsWith("1"),"nested language Render As change did not reset to line 1");
+nestedCodeParts.elements.renderAs.value="auto";
+nestedCodeParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(nestedCodeParts.elements.content.querySelector(".sjv-code-gutter")?.textContent?.startsWith("1"),"nested Auto Render As change did not reset to line 1");
+nestedCodeViewer.close();
+await renderAsSettle();
+nestedCodeParts.dialog.remove();
 
 let resolveManualNestedScope;
 let resolveManualNestedClose;

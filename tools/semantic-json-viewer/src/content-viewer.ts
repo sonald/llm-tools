@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import { renderCode, type CodeLanguage, type CodeRenderReason } from "./code-renderer";
+import {
+  renderCode,
+  renderPlainCodePage,
+  scanCodeLines,
+  type CodeLanguage,
+  type CodeLineState,
+  type CodeRenderReason
+} from "./code-renderer";
 import { renderSafeMarkdown } from "./markdown-renderer";
 import { TreeView, type NodeDto, type TreeViewSnapshot } from "./tree-view";
 
@@ -72,6 +79,7 @@ type TextChunk = {
   text: string;
   hasMore: boolean;
   nextOffset: number | null;
+  lineState: CodeLineState;
 };
 
 type SemanticType = "markdown" | "code";
@@ -82,6 +90,7 @@ type CollectedText = {
   first: TextChunk;
   text: string | null;
   overLimit: boolean;
+  overLimitReason: "sizeLimit" | "lineLimit" | null;
 };
 
 type ContentViewerOptions = {
@@ -132,6 +141,7 @@ const DECODED_PAGE_CACHE_BYTES = 32 * 1024 * 1024;
 const MARKDOWN_AUTO_RENDER_LIMIT_BYTES = 2 * 1024 * 1024;
 const MARKDOWN_ANYWAY_LIMIT_BYTES = 32 * 1024 * 1024;
 const CODE_AUTO_RENDER_LIMIT_BYTES = 1 * 1024 * 1024;
+const CODE_AUTO_RENDER_LIMIT_LINES = 20_000;
 const HTML_INPUT_LIMIT_BYTES = 512 * 1024;
 const HTML_OUTPUT_LIMIT_BYTES = 1024 * 1024;
 const MARKDOWN_OVER_LIMIT_NOTE = "Markdown rendering skipped because content exceeds 2 MiB.";
@@ -162,6 +172,7 @@ export class ContentViewer {
   private semanticLimit: SemanticType | null = null;
   private markdownRenderFailed = false;
   private codeRenderReason: CodeRenderReason | null = null;
+  private codeLimitReason: "sizeLimit" | "lineLimit" | null = null;
   private readonly nestedElements: NestedViewerElements | null;
   private readonly nestedTree: TreeView | null;
   private readonly htmlElements: HtmlViewerElements | null;
@@ -181,6 +192,7 @@ export class ContentViewer {
   private semanticLimitBytes: number | null = null;
   private readonly decodedPages = new Map<number, TextChunk>();
   private decodedPageCacheBytes = 0;
+  private readonly codeLineCheckpoints = new Map<number, CodeLineState>();
   private readonly closedScopeIds = new Set<string>();
   private readonly closingScopes = new Map<string, Promise<void>>();
   private readonly rootCloseAttempts = new Map<string, number>();
@@ -271,6 +283,7 @@ export class ContentViewer {
     this.codeLanguageHint = null;
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
+    this.codeLimitReason = null;
     this.nestedRepresentation = null;
     this.nestedBusy = false;
     this.htmlRepresentation = null;
@@ -278,6 +291,7 @@ export class ContentViewer {
     this.htmlPreviewUnavailable = false;
     this.htmlNote = "";
     this.clearDecodedPages();
+    this.clearCodeLineCheckpoints();
     this.setNestedVisible(false);
     this.setHtmlVisible(false);
     this.elements.dialog.setAttribute("aria-busy", "true");
@@ -332,6 +346,7 @@ export class ContentViewer {
     this.renderOverride = "auto";
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
+    this.codeLimitReason = null;
     this.nestedRepresentation = null;
     this.nestedBusy = false;
     this.htmlRepresentation = null;
@@ -339,6 +354,7 @@ export class ContentViewer {
     this.htmlPreviewUnavailable = false;
     this.htmlNote = "";
     this.clearDecodedPages();
+    this.clearCodeLineCheckpoints();
     this.setNestedVisible(false);
     this.setHtmlVisible(false);
     this.elements.alert.hidden = true;
@@ -408,6 +424,7 @@ export class ContentViewer {
     this.setStatus("Loading decoded source…");
     this.renderPaging();
     try {
+      const pageStartState = this.codeLineCheckpoints.get(offset) ?? { line: 1, previousWasCR: false };
       const value = await this.invokeRequest<unknown>("read_decoded_text", {
         nodeId: target.nodeId,
         offset,
@@ -416,7 +433,7 @@ export class ContentViewer {
         scopeId: target.scopeId
       });
       if (!this.isCurrent(generation, target)) return;
-      const chunk = validateChunk(value, offset, rawSpanLength(target), expectedNextOffset);
+      const chunk = validateChunk(value, offset, rawSpanLength(target), expectedNextOffset, false, pageStartState);
       if (!chunk) throw new Error("The decoded text response was invalid.");
       if (direction === "next") {
         this.offsets = this.offsets.slice(0, this.offsetIndex + 1);
@@ -515,13 +532,22 @@ export class ContentViewer {
     const limit = semanticType === "markdown"
       ? allowMarkdownAnyway ? MARKDOWN_ANYWAY_LIMIT_BYTES : MARKDOWN_AUTO_RENDER_LIMIT_BYTES
       : CODE_AUTO_RENDER_LIMIT_BYTES;
-    const collected = await this.collectSemanticSource(target, generation, limit);
+    const collected = await this.collectSemanticSource(target, generation, limit, semanticType === "code");
     if (!collected) return;
     this.semanticLimit = collected.overLimit ? semanticType : null;
     this.semanticLimitBytes = collected.overLimit ? limit : null;
+    this.codeLimitReason = semanticType === "code" && collected.overLimit
+      ? collected.overLimitReason ?? "sizeLimit"
+      : null;
     const chunk = collected.overLimit
       ? collected.first
-      : { start: 0, text: collected.text ?? "", hasMore: false, nextOffset: null };
+      : {
+        start: 0,
+        text: collected.text ?? "",
+        hasMore: false,
+        nextOffset: null,
+        lineState: { line: 1, previousWasCR: false }
+      };
     this.installChunk(chunk, true, collected.overLimit ? null : collected.first);
   }
 
@@ -652,12 +678,14 @@ export class ContentViewer {
     this.nextOffset = null;
     this.clearContent();
     this.clearDecodedPages();
+    this.clearCodeLineCheckpoints();
     this.representation = null;
     this.semanticLimit = null;
     this.semanticLimitBytes = null;
     this.nestedRepresentation = null;
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
+    this.codeLimitReason = null;
     this.htmlRepresentation = null;
     this.htmlPreview = null;
     this.htmlPreviewUnavailable = false;
@@ -697,12 +725,14 @@ export class ContentViewer {
   private async collectSemanticSource(
     target: ContentTarget,
     generation: number,
-    limit: number
+    limit: number,
+    trackCodeLines = false
   ): Promise<CollectedText | null> {
     const parts: string[] = [];
     let totalBytes = 0;
     let offset = 0;
     let first: TextChunk | undefined;
+    let lineState: CodeLineState = { line: 1, previousWasCR: false };
     while (true) {
       const value = await this.invokeRequest<unknown>("read_decoded_text", {
         nodeId: target.nodeId,
@@ -712,24 +742,31 @@ export class ContentViewer {
         scopeId: target.scopeId
       });
       if (!this.isCurrent(generation, target)) return null;
-      const chunk = validateChunk(value, offset, rawSpanLength(target));
+      const chunk = validateChunk(value, offset, rawSpanLength(target), undefined, false, lineState);
       if (!chunk) throw new Error("The decoded text response was invalid.");
       const firstChunk = first ?? chunk;
       first = firstChunk;
       const byteLength = utf8ByteLength(chunk.text);
+      const nextLineState = scanCodeLines(chunk.text, lineState);
+      this.codeLineCheckpoints.set(chunk.start, lineState);
+      if (chunk.nextOffset !== null) this.codeLineCheckpoints.set(chunk.nextOffset, nextLineState);
+      if (trackCodeLines && nextLineState.line > CODE_AUTO_RENDER_LIMIT_LINES) {
+        return { first: firstChunk, text: null, overLimit: true, overLimitReason: "lineLimit" };
+      }
       if (byteLength > limit - totalBytes) {
-        return { first: firstChunk, text: null, overLimit: true };
+        return { first: firstChunk, text: null, overLimit: true, overLimitReason: "sizeLimit" };
       }
       parts.push(chunk.text);
       totalBytes += byteLength;
       if (totalBytes === limit && chunk.hasMore) {
-        return { first: firstChunk, text: null, overLimit: true };
+        return { first: firstChunk, text: null, overLimit: true, overLimitReason: "sizeLimit" };
       }
       if (!chunk.hasMore) {
-        return { first: firstChunk, text: parts.join(""), overLimit: false };
+        return { first: firstChunk, text: parts.join(""), overLimit: false, overLimitReason: null };
       }
       if (chunk.nextOffset === null) throw new Error("The decoded text response was invalid.");
       offset = chunk.nextOffset;
+      lineState = nextLineState;
     }
   }
 
@@ -742,7 +779,17 @@ export class ContentViewer {
       && (this.renderMode === "markdown" || this.renderMode === "code");
     let sourceChunk = chunk;
     let cacheChunk: TextChunk | null = canRenderSemantic ? null : chunk;
-    if (canRenderSemantic && this.renderMode === "markdown") {
+    if (this.renderMode === "code" && this.semanticLimit === "code") {
+      const result = renderPlainCodePage(
+        chunk.text,
+        this.codeLanguageHint,
+        this.codeLimitReason ?? "sizeLimit",
+        chunk.lineState
+      );
+      this.elements.content.replaceChildren(result.fragment);
+      this.representation = "rendered";
+      this.codeRenderReason = result.reason;
+    } else if (canRenderSemantic && this.renderMode === "markdown") {
       const fragment = renderSafeMarkdown(chunk.text);
       if (fragment) {
         this.elements.content.replaceChildren(fragment);
@@ -765,6 +812,7 @@ export class ContentViewer {
       this.representation = "decoded";
     }
     if (cacheChunk) this.cacheDecodedPage(cacheChunk);
+    this.rememberCodeChunk(sourceChunk);
     this.nextOffset = sourceChunk.nextOffset;
     if (this.renderMode === "html") {
       this.htmlRepresentation = "source";
@@ -1489,9 +1537,22 @@ export class ContentViewer {
     }
   }
 
+  private rememberCodeChunk(chunk: TextChunk): void {
+    if (this.renderMode !== "code") return;
+    this.codeLineCheckpoints.set(chunk.start, chunk.lineState);
+    if (chunk.nextOffset !== null) {
+      this.codeLineCheckpoints.set(chunk.nextOffset, scanCodeLines(chunk.text, chunk.lineState));
+    }
+  }
+
   private clearDecodedPages(): void {
     this.decodedPages.clear();
     this.decodedPageCacheBytes = 0;
+  }
+
+  private clearCodeLineCheckpoints(): void {
+    this.codeLineCheckpoints.clear();
+    this.codeLineCheckpoints.set(0, { line: 1, previousWasCR: false });
   }
 
   private renderNestedRange(): void {
@@ -1624,6 +1685,7 @@ export class ContentViewer {
     this.renderOverride = "auto";
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
+    this.codeLimitReason = null;
     this.nestedRepresentation = null;
     this.nestedBusy = false;
     this.htmlRepresentation = null;
@@ -1631,6 +1693,7 @@ export class ContentViewer {
     this.htmlPreviewUnavailable = false;
     this.htmlNote = "";
     this.clearDecodedPages();
+    this.clearCodeLineCheckpoints();
     this.elements.range.textContent = "—";
     this.setNestedVisible(false);
     this.setHtmlVisible(false);
@@ -1916,7 +1979,8 @@ function validateChunk(
   requestedOffset: number,
   rawSpanLength: number,
   expectedNextOffset?: number,
-  requireTerminalEnd = false
+  requireTerminalEnd = false,
+  pageStartState: CodeLineState = { line: 1, previousWasCR: false }
 ): TextChunk | undefined {
   if (!isRecord(value)) return undefined;
   if (!Number.isSafeInteger(rawSpanLength) || rawSpanLength < 0) return undefined;
@@ -1937,7 +2001,7 @@ function validateChunk(
     return undefined;
   }
   if (expectedNextOffset !== undefined && nextOffset !== expectedNextOffset) return undefined;
-  return { start, text, hasMore, nextOffset };
+  return { start, text, hasMore, nextOffset, lineState: pageStartState };
 }
 
 function normalizeRawChunk(
@@ -1959,7 +2023,8 @@ function normalizeRawChunk(
     start: start - spanStart,
     text: value.text,
     hasMore,
-    nextOffset: hasMore ? end - spanStart : null
+    nextOffset: hasMore ? end - spanStart : null,
+    lineState: { line: 1, previousWasCR: false }
   };
 }
 
