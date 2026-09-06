@@ -327,6 +327,10 @@ mod tests {
         result.html.expect("HTML preview should be available")
     }
 
+    fn sanitize_with_test_deadline(source: &str) -> HtmlPreview {
+        sanitize_html_with_deadline(source, Instant::now() + Duration::from_secs(5))
+    }
+
     #[test]
     fn allowlist_strips_attributes_and_escapes_text() {
         assert_eq!(
@@ -368,10 +372,10 @@ mod tests {
             "x".repeat(MAX_INPUT_BYTES - prefix.len() - suffix.len())
         );
         assert_eq!(exact.len(), MAX_INPUT_BYTES);
-        assert_eq!(sanitize_html(&exact).reason, None);
+        assert_eq!(sanitize_with_test_deadline(&exact).reason, None);
         let over = format!("{exact}x");
         assert_eq!(
-            sanitize_html(&over),
+            sanitize_with_test_deadline(&over),
             HtmlPreview {
                 html: None,
                 reason: Some(HtmlPreviewReason::SizeLimit),
@@ -383,7 +387,7 @@ mod tests {
     fn node_and_depth_limits_are_render_limits() {
         let siblings = (0..5_001).map(|_| "<span>x</span>").collect::<String>();
         assert_eq!(
-            sanitize_html(&siblings).reason,
+            sanitize_with_test_deadline(&siblings).reason,
             Some(HtmlPreviewReason::RenderLimit)
         );
 
@@ -393,7 +397,7 @@ mod tests {
             "</div>".repeat(MAX_DEPTH + 1)
         );
         assert_eq!(
-            sanitize_html(&deep).reason,
+            sanitize_with_test_deadline(&deep).reason,
             Some(HtmlPreviewReason::RenderLimit)
         );
     }
@@ -401,11 +405,11 @@ mod tests {
     #[test]
     fn exact_node_limit_counts_elements_and_text_nodes() {
         let exactly = (0..5_000).map(|_| "<span>x</span>").collect::<String>();
-        assert_eq!(sanitize_html(&exactly).reason, None);
+        assert_eq!(sanitize_with_test_deadline(&exactly).reason, None);
 
         let over = format!("x{exactly}");
         assert_eq!(
-            sanitize_html(&over).reason,
+            sanitize_with_test_deadline(&over).reason,
             Some(HtmlPreviewReason::RenderLimit)
         );
     }
@@ -417,7 +421,7 @@ mod tests {
             "<div>".repeat(MAX_DEPTH),
             "</div>".repeat(MAX_DEPTH)
         );
-        assert_eq!(sanitize_html(&at_limit).reason, None);
+        assert_eq!(sanitize_with_test_deadline(&at_limit).reason, None);
 
         let over = format!(
             "{}x{}",
@@ -425,7 +429,7 @@ mod tests {
             "</div>".repeat(MAX_DEPTH + 1)
         );
         assert_eq!(
-            sanitize_html(&over).reason,
+            sanitize_with_test_deadline(&over).reason,
             Some(HtmlPreviewReason::RenderLimit)
         );
     }
@@ -435,7 +439,7 @@ mod tests {
         let many_nodes = (0..5_000).map(|_| "<span>x</span>").collect::<String>();
         let over_nodes = format!("<template>{many_nodes}</template><p>safe</p>");
         assert_eq!(
-            sanitize_html(&over_nodes).reason,
+            sanitize_with_test_deadline(&over_nodes).reason,
             Some(HtmlPreviewReason::RenderLimit)
         );
 
@@ -444,14 +448,14 @@ mod tests {
             "<div>".repeat(MAX_DEPTH - 1),
             "</div>".repeat(MAX_DEPTH - 1)
         );
-        assert_eq!(sanitize_html(&at_depth).reason, None);
+        assert_eq!(sanitize_with_test_deadline(&at_depth).reason, None);
         let over_depth = format!(
             "<template>{}x{}</template>",
             "<div>".repeat(MAX_DEPTH),
             "</div>".repeat(MAX_DEPTH)
         );
         assert_eq!(
-            sanitize_html(&over_depth).reason,
+            sanitize_with_test_deadline(&over_depth).reason,
             Some(HtmlPreviewReason::RenderLimit)
         );
 
@@ -462,7 +466,7 @@ mod tests {
     #[test]
     fn output_and_deadline_limits_are_render_limits() {
         let escaped = format!("<p>{}</p>", ">".repeat(270_000));
-        let escaped_result = sanitize_html(&escaped);
+        let escaped_result = sanitize_with_test_deadline(&escaped);
         assert_eq!(
             escaped_result.reason,
             Some(HtmlPreviewReason::RenderLimit),
@@ -480,7 +484,7 @@ mod tests {
     fn serialized_preview_payload_stays_below_one_mib_at_boundary() {
         let count = (MAX_OUTPUT_JSON_BYTES - HTML_PREVIEW_JSON_OVERHEAD - 2 - 7 - 1) / 4;
         let source = format!("<p>{}</p>", ">".repeat(count));
-        let result = sanitize_html(&source);
+        let result = sanitize_with_test_deadline(&source);
         assert_eq!(result.reason, None, "preview={result:?}");
         let dto = crate::ipc::HtmlPreviewDto {
             html: result.html,
@@ -489,7 +493,7 @@ mod tests {
         assert!(serde_json::to_vec(&dto).unwrap().len() < MAX_OUTPUT_JSON_BYTES);
 
         let over_source = format!("<p>{}</p>", ">".repeat(count + 1));
-        let over_result = sanitize_html(&over_source);
+        let over_result = sanitize_with_test_deadline(&over_source);
         assert_eq!(
             over_result.reason,
             Some(HtmlPreviewReason::RenderLimit),

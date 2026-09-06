@@ -6,6 +6,7 @@ pub(crate) const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_HEURISTIC_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_CUMULATIVE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const HARD_MAX_DEPTH: u8 = 10;
+const HTML_DOCTYPE_PREFIX: &str = "<!doctype";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlainReason {
@@ -148,7 +149,15 @@ fn looks_like_html(input: &str) -> bool {
         return false;
     }
 
-    let document = Document::fragment(candidate);
+    let document = if starts_like_html_document(candidate) {
+        if starts_with_html_doctype(candidate) {
+            Document::from(candidate)
+        } else {
+            Document::from(format!("<!doctype html>{candidate}"))
+        }
+    } else {
+        Document::fragment(candidate)
+    };
     if !document.errors.borrow().is_empty() {
         return false;
     }
@@ -182,6 +191,27 @@ fn looks_like_html(input: &str) -> bool {
             let name = name.as_ref();
             !is_ambiguous_generic_tag(candidate, name)
         })
+}
+
+fn starts_like_html_document(input: &str) -> bool {
+    let doctype = starts_with_html_doctype(input);
+    let Some(html) = input.strip_prefix('<') else {
+        return doctype;
+    };
+    doctype
+        || html
+            .get(..4)
+            .is_some_and(|name| name.eq_ignore_ascii_case("html"))
+            && html
+                .as_bytes()
+                .get(4)
+                .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'))
+}
+
+fn starts_with_html_doctype(input: &str) -> bool {
+    input
+        .get(..HTML_DOCTYPE_PREFIX.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(HTML_DOCTYPE_PREFIX))
 }
 
 fn is_ambiguous_generic_tag(input: &str, name: &str) -> bool {
@@ -235,8 +265,8 @@ fn has_balanced_html_tags(source: &str) -> bool {
 
         if next == b'!' {
             if !source[start..]
-                .get(..8)
-                .is_some_and(|token| token.eq_ignore_ascii_case("<!doctype"))
+                .get(..HTML_DOCTYPE_PREFIX.len())
+                .is_some_and(|token| token.eq_ignore_ascii_case(HTML_DOCTYPE_PREFIX))
             {
                 return false;
             }
@@ -537,16 +567,21 @@ mod tests {
 
     impl GeneratedFixtures {
         fn new() -> Self {
+            Self::with_script("generate-semantic-fixtures.mjs", "m1")
+        }
+
+        fn with_script(script_name: &str, prefix: &str) -> Self {
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock is before Unix epoch")
                 .as_nanos();
             let path = std::env::temp_dir().join(format!(
-                "semantic-json-viewer-m1-fixtures-{}-{nanos}",
+                "semantic-json-viewer-{prefix}-fixtures-{}-{nanos}",
                 std::process::id()
             ));
             let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../fixtures/generate-semantic-fixtures.mjs");
+                .join("../fixtures")
+                .join(script_name);
             let output = Command::new("node")
                 .arg(script)
                 .arg(&path)
@@ -702,6 +737,20 @@ mod tests {
     }
 
     #[test]
+    fn generated_f11_html_document_is_html() {
+        let fixtures = GeneratedFixtures::with_script("generate-security-fixtures.mjs", "f11");
+        let fixture = fixtures.read("security-html.json");
+        let source = fixture["data"]
+            .as_str()
+            .expect("F-11 HTML fixture data must be a string");
+
+        assert_eq!(
+            detect(source, None, NestedBudget::default()),
+            Detection::Html
+        );
+    }
+
+    #[test]
     fn exact_boundaries_are_allowed_and_cumulative_budget_is_checked() {
         assert!(NestedBudget::with_max_depth(0).is_none());
         assert!(NestedBudget::with_max_depth(11).is_none());
@@ -779,13 +828,41 @@ mod tests {
             Detection::PlainText(PlainReason::Fallback)
         );
         assert_eq!(
+            detect("<T>", None, NestedBudget::default()),
+            Detection::PlainText(PlainReason::Fallback)
+        );
+        assert_eq!(
             detect("<div><div></div>", None, NestedBudget::default()),
+            Detection::PlainText(PlainReason::Fallback)
+        );
+        assert_eq!(
+            detect(
+                "<?xml version=\"1.0\"?><html><body><p>xml</p></body></html>",
+                None,
+                NestedBudget::default()
+            ),
             Detection::PlainText(PlainReason::Fallback)
         );
     }
 
     #[test]
     fn accepts_complete_siblings_and_normalized_html_without_root_text() {
+        assert_eq!(
+            detect(
+                "<html><head></head><body><p>ok</p></body></html>",
+                None,
+                NestedBudget::default()
+            ),
+            Detection::Html
+        );
+        assert_eq!(
+            detect(
+                "<!doctype html><html><head><meta charset=\"utf-8\"></head><body><p>ok</p></body></html>",
+                None,
+                NestedBudget::default()
+            ),
+            Detection::Html
+        );
         assert_eq!(
             detect("<p>one</p><p>two</p>", None, NestedBudget::default()),
             Detection::Html
