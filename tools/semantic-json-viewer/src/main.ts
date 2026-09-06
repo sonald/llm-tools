@@ -162,6 +162,11 @@ const nestedRawTab = required<HTMLButtonElement>("content-viewer-raw-lexeme-tab"
 const parsedPanel = required<HTMLElement>("content-viewer-parsed-panel");
 const parsedTree = required<HTMLElement>("content-viewer-parsed-tree");
 const sharedTextPanel = required<HTMLElement>("content-viewer-text-panel");
+const htmlRepresentations = required<HTMLElement>("content-viewer-html-representations");
+const htmlPreviewTab = required<HTMLButtonElement>("content-viewer-html-preview-tab");
+const htmlSourceTab = required<HTMLButtonElement>("content-viewer-html-source-tab");
+const htmlPreviewPanel = required<HTMLElement>("content-viewer-html-preview-panel");
+const htmlPreviewFrame = required<HTMLIFrameElement>("content-viewer-html-preview-frame");
 
 const PREVIEW_ARIA_LABEL = "Preview selected string in Content Viewer";
 const previewButton = required<HTMLButtonElement>("content-viewer-preview");
@@ -201,6 +206,13 @@ const contentViewer = new ContentViewer({
       parsedPanel,
       parsedTree,
       sharedTextPanel
+    },
+    html: {
+      representations: htmlRepresentations,
+      previewTab: htmlPreviewTab,
+      sourceTab: htmlSourceTab,
+      previewPanel: htmlPreviewPanel,
+      previewFrame: htmlPreviewFrame
     }
   },
   invoke,

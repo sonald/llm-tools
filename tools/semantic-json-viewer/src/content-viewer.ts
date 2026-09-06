@@ -35,6 +35,7 @@ export type ContentViewerElements = {
   previous: HTMLButtonElement;
   next: HTMLButtonElement;
   nested?: NestedViewerElements;
+  html?: HtmlViewerElements;
 };
 
 export type NestedViewerElements = {
@@ -48,6 +49,14 @@ export type NestedViewerElements = {
   parsedPanel: HTMLElement;
   parsedTree: HTMLElement;
   sharedTextPanel: HTMLElement;
+};
+
+export type HtmlViewerElements = {
+  representations: HTMLElement;
+  previewTab: HTMLButtonElement;
+  sourceTab: HTMLButtonElement;
+  previewPanel: HTMLElement;
+  previewFrame: HTMLIFrameElement;
 };
 
 type StringDetection = {
@@ -90,6 +99,11 @@ type TextState = {
   pages: Map<number, TextChunk>;
 };
 
+type HtmlPreviewResult = {
+  html: string | null;
+  reason: "sizeLimit" | "renderLimit" | null;
+};
+
 type NestedFrame = {
   scope: NestedScope;
   source: ContentTarget;
@@ -99,6 +113,13 @@ type NestedFrame = {
 };
 
 const TEXT_CHUNK_BYTES = 128 * 1024;
+const DECODED_PAGE_CACHE_BYTES = 32 * 1024 * 1024;
+const HTML_INPUT_LIMIT_BYTES = 512 * 1024;
+const HTML_OUTPUT_LIMIT_BYTES = 1024 * 1024;
+const HTML_PREVIEW_NOTE = "Isolated HTML Preview · Opaque origin · scripts, network, forms, navigation, file access and application IPC blocked.";
+const HTML_RENDER_FAILURE_NOTE = "Semantic rendering failed. Showing plain text instead.";
+const HTML_SIZE_LIMIT_NOTE = `HTML Preview disabled because content exceeds ${HTML_INPUT_LIMIT_BYTES / 1024} KiB.`;
+const HTML_PREVIEW_CSP = "default-src 'none'; script-src 'none'; connect-src 'none'; img-src 'none'; media-src 'none'; font-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; style-src 'unsafe-inline';";
 
 export class ContentViewer {
   private readonly elements: ContentViewerElements;
@@ -119,8 +140,15 @@ export class ContentViewer {
   private codeRenderReason: CodeRenderReason | null = null;
   private readonly nestedElements: NestedViewerElements | null;
   private readonly nestedTree: TreeView | null;
+  private readonly htmlElements: HtmlViewerElements | null;
   private nestedFrames: NestedFrame[] = [];
   private nestedRepresentation: "parsed" | "decoded" | "raw" | null = null;
+  private htmlRepresentation: "preview" | "source" | null = null;
+  private htmlPreview: string | null = null;
+  private htmlPreviewUnavailable = false;
+  private htmlNote = "";
+  private readonly decodedPages = new Map<number, TextChunk>();
+  private decodedPageCacheBytes = 0;
   private readonly closedScopeIds = new Set<string>();
   private readonly closingScopes = new Map<string, Promise<void>>();
   private readonly rootCloseAttempts = new Map<string, number>();
@@ -132,6 +160,7 @@ export class ContentViewer {
     this.onSessionError = options.onSessionError ?? (() => undefined);
     this.onClose = options.onClose;
     this.nestedElements = options.elements.nested ?? null;
+    this.htmlElements = options.elements.html ?? null;
     this.nestedTree = this.nestedElements
       ? new TreeView({
         panel: this.nestedElements.parsedTree,
@@ -153,6 +182,9 @@ export class ContentViewer {
     this.nestedElements?.decodedTab.addEventListener("click", () => this.activateNestedRepresentation("decoded"));
     this.nestedElements?.rawTab.addEventListener("click", () => this.activateNestedRepresentation("raw"));
     this.nestedElements?.representations.addEventListener("keydown", (event) => this.handleNestedTabKeydown(event));
+    this.htmlElements?.previewTab.addEventListener("click", () => this.activateHtmlRepresentation("preview"));
+    this.htmlElements?.sourceTab.addEventListener("click", () => this.activateHtmlRepresentation("source"));
+    this.htmlElements?.representations.addEventListener("keydown", (event) => this.handleHtmlTabKeydown(event));
     this.elements.dialog.addEventListener("cancel", () => {
       // Let the platform close the dialog and let the close event restore focus.
       this.restoreFocusOnClose = true;
@@ -167,6 +199,7 @@ export class ContentViewer {
 
   async open(target: ContentTarget, opener: HTMLElement | null = null): Promise<void> {
     this.releaseNestedScopes();
+    this.clearHtmlPreviewFrame();
     this.generation += 1;
     const generation = this.generation;
     this.restoreFocusOnClose = null;
@@ -184,7 +217,13 @@ export class ContentViewer {
     this.codeRenderReason = null;
     this.nestedRepresentation = null;
     this.nestedBusy = false;
+    this.htmlRepresentation = null;
+    this.htmlPreview = null;
+    this.htmlPreviewUnavailable = false;
+    this.htmlNote = "";
+    this.clearDecodedPages();
     this.setNestedVisible(false);
+    this.setHtmlVisible(false);
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
     this.elements.alert.hidden = true;
@@ -214,6 +253,11 @@ export class ContentViewer {
         return;
       }
 
+      if (detection.semanticType === "html") {
+        await this.openHtml(target, generation);
+        return;
+      }
+
       const chunkValue = await this.invokeRequest<unknown>("read_decoded_text", {
         nodeId: target.nodeId,
         offset: 0,
@@ -233,6 +277,7 @@ export class ContentViewer {
 
   clear(restoreFocus = true): void {
     this.releaseNestedScopes();
+    this.clearHtmlPreviewFrame();
     this.restoreFocusOnClose = restoreFocus;
     this.generation += 1;
     this.target = null;
@@ -247,7 +292,13 @@ export class ContentViewer {
     this.codeRenderReason = null;
     this.nestedRepresentation = null;
     this.nestedBusy = false;
+    this.htmlRepresentation = null;
+    this.htmlPreview = null;
+    this.htmlPreviewUnavailable = false;
+    this.htmlNote = "";
+    this.clearDecodedPages();
     this.setNestedVisible(false);
+    this.setHtmlVisible(false);
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
@@ -261,6 +312,7 @@ export class ContentViewer {
   close(): void {
     this.restoreFocusOnClose = true;
     this.releaseNestedScopes();
+    this.clearHtmlPreviewFrame();
     if (this.elements.dialog.open) {
       this.elements.dialog.close();
     } else {
@@ -273,6 +325,7 @@ export class ContentViewer {
       await this.readNestedPage("next");
       return;
     }
+    if (this.htmlRepresentation === "preview") return;
     if (this.busy || !this.target || this.nextOffset === null) return;
     const offset = this.nextOffset;
     await this.readPage(offset, "next");
@@ -283,6 +336,7 @@ export class ContentViewer {
       await this.readNestedPage("previous");
       return;
     }
+    if (this.htmlRepresentation === "preview") return;
     if (this.busy || !this.target || this.offsetIndex <= 0) return;
     await this.readPage(this.offsets[this.offsetIndex - 1], "previous", this.offsets[this.offsetIndex]);
   }
@@ -290,6 +344,18 @@ export class ContentViewer {
   private async readPage(offset: number, direction: "next" | "previous", expectedNextOffset?: number): Promise<void> {
     const target = this.target;
     if (!target) return;
+    const cached = this.decodedPages.get(offset);
+    if (cached) {
+      if (direction === "next") {
+        this.offsets = this.offsets.slice(0, this.offsetIndex + 1);
+        this.offsets.push(offset);
+        this.offsetIndex += 1;
+      } else {
+        this.offsetIndex -= 1;
+      }
+      this.installChunk(cached);
+      return;
+    }
     const generation = this.generation;
     this.busy = true;
     this.elements.dialog.setAttribute("aria-busy", "true");
@@ -323,6 +389,7 @@ export class ContentViewer {
 
   private installChunk(chunk: TextChunk, initial = false): void {
     this.busy = false;
+    this.cacheDecodedPage(chunk);
     this.nextOffset = chunk.nextOffset;
     this.elements.content.classList.remove("is-markdown");
     this.markdownRenderFailed = false;
@@ -347,6 +414,10 @@ export class ContentViewer {
     } else {
       this.elements.content.textContent = chunk.text;
       this.representation = "decoded";
+    }
+    if (this.detection?.semanticType === "html") {
+      this.htmlRepresentation = "source";
+      this.setHtmlVisible(true);
     }
     this.renderMetadata();
     this.elements.alert.hidden = true;
@@ -429,6 +500,147 @@ export class ContentViewer {
       this.nestedBusy = false;
       this.handleFailure(error);
     }
+  }
+
+  private async openHtml(target: ContentTarget, generation: number): Promise<void> {
+    this.setStatus("Loading isolated HTML Preview…");
+    this.renderPaging();
+    try {
+      const value = await this.invokeRequest<unknown>("get_html_preview", {
+        nodeId: target.nodeId,
+        scopeId: target.scopeId,
+        sessionRevision: target.revision
+      });
+      if (!this.isCurrent(generation, target)) return;
+      const preview = validateHtmlPreview(value);
+      if (!preview) {
+        this.htmlPreviewUnavailable = true;
+        await this.openHtmlSource(target, generation, HTML_RENDER_FAILURE_NOTE);
+        return;
+      }
+      if (preview.reason === "sizeLimit") {
+        this.htmlPreviewUnavailable = true;
+        await this.openHtmlSource(target, generation, HTML_SIZE_LIMIT_NOTE);
+        return;
+      }
+      if (preview.reason === "renderLimit") {
+        this.htmlPreviewUnavailable = true;
+        await this.openHtmlSource(target, generation, HTML_RENDER_FAILURE_NOTE);
+        return;
+      }
+      if (!this.htmlElements || preview.html === null) {
+        await this.openHtmlSource(target, generation, HTML_RENDER_FAILURE_NOTE);
+        return;
+      }
+      this.htmlPreview = preview.html;
+      this.htmlPreviewUnavailable = false;
+      this.htmlNote = HTML_PREVIEW_NOTE;
+      this.htmlRepresentation = "preview";
+      this.busy = false;
+      this.setHtmlVisible(true);
+      this.elements.dialog.removeAttribute("aria-busy");
+      this.elements.content.removeAttribute("aria-busy");
+      this.setStatus("HTML Preview ready");
+      this.renderMetadata();
+      this.renderPaging();
+      this.writeHtmlPreview(preview.html, generation, target);
+    } catch (error) {
+      if (!this.isCurrent(generation, target)) return;
+      const code = errorCode(error);
+      if (code === "file_changed" || code === "stale_session") {
+        this.handleFailure(error);
+        return;
+      }
+      this.htmlPreviewUnavailable = true;
+      await this.openHtmlSource(target, generation, HTML_RENDER_FAILURE_NOTE);
+    }
+  }
+
+  private async openHtmlSource(target: ContentTarget, generation: number, note: string): Promise<void> {
+    if (!this.isCurrent(generation, target)) return;
+    this.htmlRepresentation = "source";
+    this.htmlNote = note;
+    this.setHtmlVisible(true);
+    this.busy = true;
+    this.elements.dialog.setAttribute("aria-busy", "true");
+    this.elements.content.setAttribute("aria-busy", "true");
+    this.setStatus("Loading HTML Source…");
+    this.renderMetadata();
+    this.renderPaging();
+    const cached = this.decodedPages.get(0);
+    if (cached) {
+      this.installChunk(cached, true);
+      return;
+    }
+    try {
+      const value = await this.invokeRequest<unknown>("read_decoded_text", {
+        nodeId: target.nodeId,
+        offset: 0,
+        length: TEXT_CHUNK_BYTES,
+        sessionRevision: target.revision,
+        scopeId: target.scopeId
+      });
+      if (!this.isCurrent(generation, target) || this.htmlRepresentation !== "source") return;
+      const chunk = validateChunk(value, 0, rawSpanLength(target));
+      if (!chunk) throw new Error("The decoded text response was invalid.");
+      this.installChunk(chunk, true);
+    } catch (error) {
+      if (!this.isCurrent(generation, target)) return;
+      this.handleFailure(error);
+    }
+  }
+
+  private activateHtmlRepresentation(representation: "preview" | "source"): void {
+    if (this.detection?.semanticType !== "html" || this.busy) return;
+    if (representation === "preview") {
+      if (this.htmlPreviewUnavailable || this.htmlPreview === null || !this.htmlElements) return;
+      this.htmlRepresentation = "preview";
+      this.htmlNote = HTML_PREVIEW_NOTE;
+      this.elements.range.textContent = "—";
+      this.setHtmlVisible(true);
+      this.setStatus("HTML Preview ready");
+      this.renderMetadata();
+      this.renderPaging();
+      this.writeHtmlPreview(this.htmlPreview, this.generation, this.target);
+      return;
+    }
+    this.htmlRepresentation = "source";
+    this.htmlNote = "";
+    this.setHtmlVisible(true);
+    this.renderMetadata();
+    this.renderPaging();
+    const current = this.decodedPages.get(this.offsets[this.offsetIndex] ?? 0);
+    if (current) {
+      this.installChunk(current);
+      return;
+    }
+    const target = this.target;
+    if (target) void this.openHtmlSource(target, this.generation, "");
+  }
+
+  private handleHtmlTabKeydown(event: Event): void {
+    if (!(event instanceof KeyboardEvent) || !this.htmlElements) return;
+    const tabs = [this.htmlElements.previewTab, this.htmlElements.sourceTab];
+    const current = tabs.indexOf(event.target as HTMLButtonElement);
+    if (current < 0) return;
+    if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+      event.preventDefault();
+      const direction = event.key === "ArrowRight" ? 1 : -1;
+      tabs[(current + direction + tabs.length) % tabs.length].focus();
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      (event.key === "Home" ? tabs[0] : tabs[1]).focus();
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      this.activateHtmlRepresentation(current === 0 ? "preview" : "source");
+    }
+  }
+
+  private writeHtmlPreview(html: string, generation: number, target: ContentTarget | null): void {
+    if (!this.htmlElements || !target || this.detection?.semanticType !== "html" || this.htmlRepresentation !== "preview") return;
+    if (generation !== this.generation || this.target?.nodeId !== target.nodeId || this.target.scopeId !== target.scopeId
+      || this.target.revision !== target.revision) return;
+    this.htmlElements.previewFrame.srcdoc = htmlPreviewDocument(html);
   }
 
   private async openNestedChild(target: ContentTarget): Promise<void> {
@@ -686,7 +898,8 @@ export class ContentViewer {
     nested.back.hidden = !active || this.nestedFrames.length <= 1;
     nested.back.setAttribute("aria-controls", "content-viewer-parsed-panel");
     nested.parsedPanel.hidden = !active || this.nestedRepresentation !== "parsed";
-    nested.sharedTextPanel.hidden = active && this.nestedRepresentation === "parsed";
+    nested.sharedTextPanel.hidden = (active && this.nestedRepresentation === "parsed")
+      || this.htmlRepresentation === "preview";
     if (active) {
       const tabs = [nested.parsedTab, nested.decodedTab, nested.rawTab];
       const activeTab = this.nestedRepresentation === "parsed" ? nested.parsedTab : this.nestedRepresentation === "decoded" ? nested.decodedTab : nested.rawTab;
@@ -728,21 +941,80 @@ export class ContentViewer {
 
   private setSharedTextPanelSemantics(): void {
     const nested = this.nestedElements;
-    if (!nested) return;
+    const html = this.htmlElements;
+    if (!nested && !html) return;
+    if (html && this.detection?.semanticType === "html" && this.htmlRepresentation === "source") {
+      this.elements.content.setAttribute("aria-label", "HTML Source");
+      if (nested) {
+        nested.sharedTextPanel.setAttribute("role", "tabpanel");
+        nested.sharedTextPanel.setAttribute("aria-labelledby", html.sourceTab.id);
+        nested.sharedTextPanel.removeAttribute("aria-label");
+      }
+      return;
+    }
     const nestedText = this.nestedRepresentation === "decoded" || this.nestedRepresentation === "raw";
-    const tab = this.nestedRepresentation === "decoded" ? nested.decodedTab
-      : this.nestedRepresentation === "raw" ? nested.rawTab : null;
-    if (nestedText && tab) {
+    const tab = nested && this.nestedRepresentation === "decoded" ? nested.decodedTab
+      : nested && this.nestedRepresentation === "raw" ? nested.rawTab : null;
+    if (nested && nestedText && tab) {
       nested.sharedTextPanel.setAttribute("role", "tabpanel");
       nested.sharedTextPanel.setAttribute("aria-labelledby", tab.id);
       nested.sharedTextPanel.removeAttribute("aria-label");
       this.elements.content.setAttribute("aria-label", this.nestedRepresentation === "decoded" ? "Decoded String" : "Raw Lexeme");
-    } else {
+    } else if (nested) {
       nested.sharedTextPanel.setAttribute("role", "region");
       nested.sharedTextPanel.removeAttribute("aria-labelledby");
       nested.sharedTextPanel.setAttribute("aria-label", "Decoded source");
       this.elements.content.setAttribute("aria-label", "Decoded source");
     }
+  }
+
+  private setHtmlVisible(active: boolean): void {
+    const html = this.htmlElements;
+    if (!html) return;
+    const visible = active && this.detection?.semanticType === "html" && this.htmlRepresentation !== null;
+    html.representations.hidden = !visible;
+    html.previewPanel.hidden = !visible || this.htmlRepresentation !== "preview";
+    html.previewTab.disabled = !visible || this.htmlPreviewUnavailable || this.htmlPreview === null;
+    html.sourceTab.disabled = !visible;
+    const tabs = [html.previewTab, html.sourceTab];
+    const activeTab = this.htmlRepresentation === "preview" ? html.previewTab : html.sourceTab;
+    for (const tab of tabs) {
+      const selected = visible && tab === activeTab;
+      tab.classList.toggle("is-active", selected);
+      tab.setAttribute("aria-selected", String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+    }
+    if (this.nestedElements) {
+      this.nestedElements.sharedTextPanel.hidden = (this.nestedRepresentation === "parsed")
+        || (visible && this.htmlRepresentation === "preview");
+    }
+    this.setSharedTextPanelSemantics();
+  }
+
+  private clearHtmlPreviewFrame(): void {
+    if (this.htmlElements) this.htmlElements.previewFrame.srcdoc = "";
+  }
+
+  private cacheDecodedPage(chunk: TextChunk): void {
+    const previous = this.decodedPages.get(chunk.start);
+    if (previous) {
+      this.decodedPageCacheBytes -= utf8ByteLength(previous.text);
+      this.decodedPages.delete(chunk.start);
+    }
+    this.decodedPages.set(chunk.start, chunk);
+    this.decodedPageCacheBytes += utf8ByteLength(chunk.text);
+    while (this.decodedPageCacheBytes > DECODED_PAGE_CACHE_BYTES && this.decodedPages.size > 1) {
+      const oldestOffset = this.decodedPages.keys().next().value;
+      if (typeof oldestOffset !== "number") break;
+      const oldest = this.decodedPages.get(oldestOffset);
+      this.decodedPages.delete(oldestOffset);
+      if (oldest) this.decodedPageCacheBytes -= utf8ByteLength(oldest.text);
+    }
+  }
+
+  private clearDecodedPages(): void {
+    this.decodedPages.clear();
+    this.decodedPageCacheBytes = 0;
   }
 
   private renderNestedRange(): void {
@@ -844,6 +1116,7 @@ export class ContentViewer {
 
   private finishClose(): void {
     this.releaseNestedScopes();
+    this.clearHtmlPreviewFrame();
     const opener = this.opener;
     const restoreFocus = this.restoreFocusOnClose ?? true;
     const wasOpen = this.elements.dialog.open;
@@ -862,8 +1135,14 @@ export class ContentViewer {
     this.codeRenderReason = null;
     this.nestedRepresentation = null;
     this.nestedBusy = false;
+    this.htmlRepresentation = null;
+    this.htmlPreview = null;
+    this.htmlPreviewUnavailable = false;
+    this.htmlNote = "";
+    this.clearDecodedPages();
     this.elements.range.textContent = "—";
     this.setNestedVisible(false);
+    this.setHtmlVisible(false);
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
@@ -914,6 +1193,8 @@ export class ContentViewer {
     this.elements.plainReason.textContent = detection.plainReason === null ? "—" : plainReasonLabel(detection.plainReason);
     this.elements.representation.textContent = this.nestedRepresentation !== null
       ? nestedRepresentationLabel(this.nestedRepresentation)
+      : detection.semanticType === "html"
+      ? this.htmlRepresentation === "preview" ? "Preview" : this.htmlRepresentation === "source" ? "Source" : "Loading…"
       : detection.semanticType === "plainText"
       ? "Plain Text"
       : this.representation === "rendered" ? "Rendered" : "Decoded Source";
@@ -925,7 +1206,9 @@ export class ContentViewer {
       this.renderNestedRange();
       return;
     }
-    if (detection.semanticType === "plainText") {
+    if (detection.semanticType === "html") {
+      this.elements.rendererNote.textContent = this.htmlNote;
+    } else if (detection.semanticType === "plainText") {
       this.elements.rendererNote.textContent = "";
     } else if (detection.semanticType === "code" && this.representation === "rendered") {
       this.elements.rendererNote.textContent = codeRendererNote(this.codeRenderReason);
@@ -957,6 +1240,12 @@ export class ContentViewer {
       this.elements.close.disabled = false;
       return;
     }
+    if (this.htmlRepresentation === "preview") {
+      this.elements.previous.disabled = true;
+      this.elements.next.disabled = true;
+      this.elements.close.disabled = false;
+      return;
+    }
     this.elements.previous.disabled = this.busy || this.offsetIndex <= 0;
     this.elements.next.disabled = this.busy || this.nextOffset === null;
     this.elements.close.disabled = false;
@@ -967,6 +1256,7 @@ export class ContentViewer {
     this.elements.content.setAttribute("aria-busy", "false");
     this.elements.alert.hidden = true;
     this.setNestedVisible(false);
+    this.setHtmlVisible(false);
     this.renderMetadata();
     this.renderPaging();
   }
@@ -1094,6 +1384,24 @@ function validateDetection(value: unknown): StringDetection | undefined {
     return isPlainReason(plainReason) ? { semanticType, detectionSource, plainReason } : undefined;
   }
   return plainReason === null ? { semanticType, detectionSource, plainReason } : undefined;
+}
+
+function validateHtmlPreview(value: unknown): HtmlPreviewResult | undefined {
+  if (!isRecord(value)) return undefined;
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !keys.includes("html") || !keys.includes("reason")) return undefined;
+  const html = value.html === null ? null : typeof value.html === "string" ? value.html : undefined;
+  const reason = value.reason === null || value.reason === "sizeLimit" || value.reason === "renderLimit"
+    ? value.reason : undefined;
+  if (html === undefined || reason === undefined || html === null && reason === null || html !== null && reason !== null) {
+    return undefined;
+  }
+  if (html !== null && utf8ByteLength(html) >= HTML_OUTPUT_LIMIT_BYTES) return undefined;
+  return { html, reason };
+}
+
+function htmlPreviewDocument(html: string): string {
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${HTML_PREVIEW_CSP}"></head><body>${html}</body></html>`;
 }
 
 function validateChunk(

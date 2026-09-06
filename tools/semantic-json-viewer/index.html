@@ -185,6 +185,11 @@
           <button class="view-tab" id="content-viewer-raw-lexeme-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Raw Lexeme</button>
         </div>
 
+        <div class="html-representations" id="content-viewer-html-representations" role="tablist" aria-label="HTML representations" hidden>
+          <button class="view-tab is-active" id="content-viewer-html-preview-tab" type="button" role="tab" aria-selected="true" aria-controls="content-viewer-html-preview-panel" tabindex="0">Preview</button>
+          <button class="view-tab" id="content-viewer-html-source-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Source</button>
+        </div>
+
         <p class="content-viewer-renderer-note" id="content-viewer-renderer-note" role="note"></p>
         <div class="content-viewer-alert" id="content-viewer-alert" role="alert" aria-live="assertive" hidden></div>
 
@@ -198,6 +203,9 @@
           </div>
           <section class="nested-parsed-panel" id="content-viewer-parsed-panel" role="tabpanel" aria-labelledby="content-viewer-parsed-tab" hidden>
             <div class="nested-tree" id="content-viewer-parsed-tree"></div>
+          </section>
+          <section class="content-viewer-html-preview-panel" id="content-viewer-html-preview-panel" role="tabpanel" aria-labelledby="content-viewer-html-preview-tab" hidden>
+            <iframe class="content-viewer-html-preview-frame" id="content-viewer-html-preview-frame" title="Isolated HTML preview" sandbox="" referrerpolicy="no-referrer"></iframe>
           </section>
           <section class="content-viewer-text-panel" id="content-viewer-text-panel" role="region" aria-label="Decoded source">
             <div class="content-viewer-body">

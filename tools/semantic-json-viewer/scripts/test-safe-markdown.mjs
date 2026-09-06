@@ -13,10 +13,12 @@ const fixtureScript = resolve(root, "fixtures/generate-security-fixtures.mjs");
 const fixtureDir = "/tmp/semantic-json-viewer-security-fixtures";
 const viteBin = resolve(root, "node_modules/vite/bin/vite.js");
 const session = `sjv-safe-markdown-${process.pid}`;
+const harPath = `/tmp/semantic-json-viewer-safe-markdown-${process.pid}.har`;
 
 let vite;
 let serverPort;
 let assertions = 0;
+let harStarted = false;
 
 const check = (condition, message) => {
   assertions += 1;
@@ -85,6 +87,13 @@ function parseAgentJson(output) {
     if (start >= 0) return JSON.parse(text.slice(start));
     throw new Error(`Browser returned non-JSON output: ${text}`);
   }
+}
+
+function harEntries(value) {
+  if (!value || typeof value !== "object" || !value.log || !Array.isArray(value.log.entries)) {
+    throw new Error("agent-browser HAR did not contain a log.entries array.");
+  }
+  return value.log.entries;
 }
 
 function browserExpression(fixtures, commonSource) {
@@ -659,9 +668,396 @@ check(malformedParts.elements.alert.textContent.includes("scope response was inv
 check(malformedCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===3).length===1,"Malformed successful nested scope was not best-effort closed");
 malformedViewer.close();
 malformedParts.dialog.remove();
+
+const htmlDocumentIds=[
+  "content-viewer-html-representations","content-viewer-html-preview-tab","content-viewer-html-source-tab",
+  "content-viewer-html-preview-panel","content-viewer-html-preview-frame"
+];
+for(const id of htmlDocumentIds) check(document.getElementById(id)!==null,"document is missing "+id);
+const htmlDocumentRepresentations=document.getElementById("content-viewer-html-representations");
+const htmlDocumentPreviewTab=document.getElementById("content-viewer-html-preview-tab");
+const htmlDocumentSourceTab=document.getElementById("content-viewer-html-source-tab");
+const htmlDocumentPreviewPanel=document.getElementById("content-viewer-html-preview-panel");
+const htmlDocumentPreviewFrame=document.getElementById("content-viewer-html-preview-frame");
+check(htmlDocumentRepresentations?.getAttribute("role")==="tablist"&&htmlDocumentRepresentations?.getAttribute("aria-label")==="HTML representations","HTML representation tablist ARIA contract changed");
+check(htmlDocumentPreviewTab?.textContent==="Preview"&&htmlDocumentSourceTab?.textContent==="Source","HTML tab labels changed");
+check(htmlDocumentPreviewTab?.getAttribute("role")==="tab"&&htmlDocumentPreviewTab?.getAttribute("aria-controls")==="content-viewer-html-preview-panel","HTML Preview tab ARIA contract changed");
+check(htmlDocumentSourceTab?.getAttribute("role")==="tab"&&htmlDocumentSourceTab?.getAttribute("aria-controls")==="content-viewer-text-panel","HTML Source tab ARIA contract changed");
+check(htmlDocumentPreviewPanel?.getAttribute("role")==="tabpanel"&&htmlDocumentPreviewPanel?.getAttribute("aria-labelledby")==="content-viewer-html-preview-tab","HTML Preview panel ARIA contract changed");
+check(htmlDocumentPreviewFrame?.getAttribute("title")==="Isolated HTML preview"&&htmlDocumentPreviewFrame?.getAttribute("sandbox")===""&&htmlDocumentPreviewFrame?.getAttribute("referrerpolicy")==="no-referrer","HTML iframe isolation attributes changed");
+check(!htmlDocumentPreviewFrame?.hasAttribute("src")&&!htmlDocumentPreviewFrame?.hasAttribute("allow"),"HTML iframe exposes src or allow attributes");
+check(htmlDocumentPreviewFrame?.className==="content-viewer-html-preview-frame","HTML iframe class does not match the real DOM contract");
+
+const makeHtmlViewer=()=>{
+  const parts=makeNestedViewer();
+  const element=(tag)=>document.createElement(tag);
+  const realPreviewFrame=document.getElementById("content-viewer-html-preview-frame");
+  const representations=element("div");
+  const previewTab=element("button");
+  const sourceTab=element("button");
+  const previewPanel=element("section");
+  const previewFrame=element("iframe");
+  const shell=parts.dialog.querySelector(".content-viewer-shell");
+  const stage=parts.dialog.querySelector(".content-viewer-stage");
+  representations.className="html-representations";
+  representations.setAttribute("role","tablist");
+  representations.setAttribute("aria-label","HTML representations");
+  previewTab.className="view-tab";
+  previewTab.setAttribute("role","tab");
+  previewTab.setAttribute("aria-controls","html-preview-panel-test");
+  previewTab.textContent="Preview";
+  sourceTab.className="view-tab";
+  sourceTab.setAttribute("role","tab");
+  sourceTab.setAttribute("aria-controls","content-viewer-text-panel");
+  sourceTab.textContent="Source";
+  previewPanel.className="content-viewer-html-preview-panel";
+  previewPanel.id="html-preview-panel-test";
+  previewFrame.className=realPreviewFrame?.className??"";
+  previewPanel.setAttribute("role","tabpanel");
+  previewPanel.setAttribute("aria-labelledby","html-preview-tab-test");
+  previewTab.id="html-preview-tab-test";
+  previewFrame.title="Isolated HTML preview";
+  previewFrame.setAttribute("sandbox","");
+  previewFrame.setAttribute("referrerpolicy","no-referrer");
+  representations.append(previewTab,sourceTab);
+  previewPanel.append(previewFrame);
+  shell?.insertBefore(representations,parts.elements.rendererNote);
+  stage?.append(previewPanel);
+  parts.elements.html={representations,previewTab,sourceTab,previewPanel,previewFrame};
+  return parts;
+};
+const htmlSourceA="A".repeat(128*1024);
+const htmlSourceB="B".repeat(128*1024);
+const htmlSource=htmlSourceA+htmlSourceB;
+const htmlSourceBytes=new TextEncoder().encode(htmlSource).byteLength;
+const htmlTarget={revision:11,nodeId:42,spanStart:500,spanEnd:500+htmlSourceBytes,scopeId:null,scopeLabel:"Document",pathSegments:["$","html"],pathTruncated:false};
+const htmlCalls=[];
+const htmlInvoke=async(command,args)=>{
+  htmlCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"html",detectionSource:"contentDetected",plainReason:null};
+  if(command==="get_html_preview") return {html:"<article><h1>safe preview</h1></article>",reason:null};
+  if(command==="read_decoded_text") {
+    if(args.offset===0) return {start:0,text:htmlSourceA,hasMore:true,nextOffset:htmlSourceA.length};
+    if(args.offset===htmlSourceA.length) return {start:args.offset,text:htmlSourceB,hasMore:false,nextOffset:null};
+  }
+  throw new Error("unexpected HTML command "+command);
+};
+const htmlParts=makeHtmlViewer();
+const htmlViewer=new ContentViewer({elements:htmlParts.elements,invoke:htmlInvoke});
+await htmlViewer.open(htmlTarget,htmlParts.elements.close);
+await settle();
+check(htmlCalls.map((call)=>call.command).join("→")==="get_string_detection→get_html_preview","HTML initial IPC sequence changed");
+check(htmlCalls.filter((call)=>call.command==="read_decoded_text").length===0,"successful HTML Preview read decoded source eagerly");
+check(htmlParts.elements.html.previewTab.getAttribute("aria-selected")==="true"&&!htmlParts.elements.html.sourceTab.disabled,"HTML Preview did not default active");
+const expectedCsp="default-src 'none'; script-src 'none'; connect-src 'none'; img-src 'none'; media-src 'none'; font-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; style-src 'unsafe-inline';";
+check(htmlParts.elements.html.previewFrame.srcdoc.includes(expectedCsp),"HTML Preview did not install the exact CSP");
+check(htmlParts.elements.html.previewFrame.srcdoc.includes("<article><h1>safe preview</h1></article>"),"HTML Preview did not use core sanitized HTML");
+check(htmlParts.elements.html.previewFrame.getAttribute("sandbox")===""&&!htmlParts.elements.html.previewFrame.hasAttribute("src")&&!htmlParts.elements.html.previewFrame.hasAttribute("allow"),"HTML Preview iframe isolation contract changed");
+check(htmlParts.elements.rendererNote.textContent==="Isolated HTML Preview · Opaque origin · scripts, network, forms, navigation, file access and application IPC blocked.","HTML Preview security note is not exact");
+check(htmlParts.elements.html.previewPanel.hidden===false&&htmlParts.elements.nested.representations.hidden,"HTML and Nested tablists are not mutually exclusive");
+htmlParts.elements.html.previewTab.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowRight",bubbles:true}));
+check(document.activeElement===htmlParts.elements.html.sourceTab,"HTML ArrowRight did not move focus without activation");
+htmlParts.elements.html.sourceTab.click();
+await settle();
+check(htmlCalls.filter((call)=>call.command==="read_decoded_text").length===1,"HTML Source did not lazily read exactly once");
+  check(htmlParts.elements.html.sourceTab.getAttribute("aria-selected")==="true"&&htmlParts.elements.html.previewPanel.hidden,"HTML Source did not activate its shared text panel");
+  check(htmlParts.elements.content.textContent===htmlSourceA&&htmlParts.elements.next.disabled===false,"HTML Source first page is wrong");
+  check(htmlParts.elements.range.textContent==="[0, "+new TextEncoder().encode(htmlSourceA).byteLength+")","HTML Source first page range is wrong");
+  const htmlCallsAfterSource=htmlCalls.length;
+  htmlParts.elements.html.previewTab.click();
+  await settle();
+  check(htmlCalls.length===htmlCallsAfterSource&&htmlParts.elements.html.previewFrame.srcdoc.includes("safe preview"),"switching HTML Source to Preview repeated IPC or lost preview");
+  check(htmlParts.elements.range.textContent==="—","HTML Preview retained the Source range");
+  htmlParts.elements.html.sourceTab.click();
+  await settle();
+  check(htmlCalls.length===htmlCallsAfterSource&&htmlParts.elements.content.textContent===htmlSourceA,"switching HTML Preview to Source did not use its page cache");
+  check(htmlParts.elements.range.textContent==="[0, "+new TextEncoder().encode(htmlSourceA).byteLength+")","switching HTML Preview to Source did not restore the Source range");
+htmlParts.elements.next.click();
+await settle();
+check(htmlParts.elements.content.textContent===htmlSourceB,"HTML Source did not load the second page");
+const htmlCallsAfterSecondPage=htmlCalls.length;
+htmlParts.elements.previous.click();
+await settle();
+check(htmlParts.elements.content.textContent===htmlSourceA&&htmlCalls.length===htmlCallsAfterSecondPage,"HTML Source previous page did not use cache");
+htmlViewer.close();
+await settle();
+check(htmlParts.elements.html.previewFrame.srcdoc==="","HTML close did not clear iframe srcdoc");
+htmlParts.dialog.remove();
+
+const waitForFrameLoad=async(frame,marker,label,timeoutMs=3000)=>{
+  await new Promise((resolve,reject)=>{
+    let timer;
+    const onLoad=()=>{
+      if(!frame.srcdoc.includes(marker)) return;
+      clearTimeout(timer);
+      frame.removeEventListener("load",onLoad);
+      resolve();
+    };
+    timer=setTimeout(()=>{
+      frame.removeEventListener("load",onLoad);
+      reject(new Error(label+" iframe did not emit load for the current srcdoc within "+timeoutMs+" ms"));
+    },timeoutMs);
+    frame.addEventListener("load",onLoad);
+  });
+};
+const hostileParts=makeHtmlViewer();
+const hostileCalls=[];
+const hostileViewer=new ContentViewer({elements:hostileParts.elements,invoke:async(command,args)=>{
+  hostileCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"html",detectionSource:"contentDetected",plainReason:null};
+  if(command==="get_html_preview") return {html:fixtures.htmlSource,reason:null};
+  throw new Error("unexpected hostile command "+command);
+}});
+const hostileFrame=hostileParts.elements.html.previewFrame;
+const hostileFrameLoad=waitForFrameLoad(hostileFrame,fixtures.truth.probeToken,"hostile");
+let hostileMessages=0;
+const hostileMessageHandler=(event)=>{if(event.data===fixtures.truth.probeToken) hostileMessages+=1;};
+window.addEventListener("message",hostileMessageHandler);
+const hostBodyBefore=window.document.body.getAttribute("data-f11-probe");
+const hostTopBefore=window.location.href;
+let hostTauriCalls=0;
+const previousTauri=window.__TAURI_INTERNALS__;
+window.__TAURI_INTERNALS__={invoke:()=>{hostTauriCalls+=1;}};
+await hostileViewer.open({...htmlTarget,nodeId:43},hostileParts.elements.close);
+await settle();
+await hostileFrameLoad;
+check(hostileFrame.srcdoc.includes("<script")&&hostileFrame.getAttribute("sandbox")===""&&(!hostileFrame.hasAttribute("allow-scripts")&&!hostileFrame.hasAttribute("allow-same-origin")),"hostile core HTML was not placed behind empty sandbox");
+check(hostileFrame.srcdoc.includes(expectedCsp),"hostile HTML lost the exact CSP second boundary");
+check(hostileFrame.srcdoc.includes(fixtures.htmlSource),"hostile HTML DTO did not use the complete F-11 fixture source");
+check(!Object.prototype.hasOwnProperty.call(window,"__sjvProbe"),"hostile HTML polluted the host window");
+check(hostileMessages===0,"hostile HTML delivered a probe postMessage to the host");
+check(hostTauriCalls===0,"hostile HTML reached the host Tauri probe");
+check(window.document.body.getAttribute("data-f11-probe")===hostBodyBefore,"hostile HTML mutated the host DOM");
+check(window.location.href===hostTopBefore,"hostile HTML navigated the top window");
+check(hostileCalls.filter((call)=>call.command==="read_decoded_text").length===0,"hostile HTML Preview read decoded source eagerly");
+window.removeEventListener("message",hostileMessageHandler);
+if(previousTauri===undefined) delete window.__TAURI_INTERNALS__; else window.__TAURI_INTERNALS__=previousTauri;
+hostileViewer.clear();
+await settle();
+check(hostileFrame.srcdoc==="","HTML clear did not clear iframe srcdoc");
+hostileParts.dialog.remove();
+
+const limitCases=[
+  ["sizeLimit","HTML Preview disabled because content exceeds 512 KiB."],
+  ["renderLimit","Semantic rendering failed. Showing plain text instead."],
+  ["malformed","Semantic rendering failed. Showing plain text instead."]
+];
+for(const [caseId,expectedNote] of limitCases){
+  const parts=makeHtmlViewer();
+  const calls=[];
+  const viewer=new ContentViewer({elements:parts.elements,invoke:async(command,args)=>{
+    calls.push({command,args});
+    if(command==="get_string_detection") return {semanticType:"html",detectionSource:"contentDetected",plainReason:null};
+    if(command==="get_html_preview") return caseId==="malformed"?{html:7,reason:null}:{html:null,reason:caseId==="sizeLimit"?"sizeLimit":"renderLimit"};
+    if(command==="read_decoded_text") return {start:0,text:"<p>source fallback</p>",hasMore:false,nextOffset:null};
+    throw new Error("unexpected limit command "+command);
+  }});
+  await viewer.open({...htmlTarget,nodeId:50+limitCases.findIndex((entry)=>entry[0]===caseId)},parts.elements.close);
+  await settle();
+  check(parts.elements.html.sourceTab.getAttribute("aria-selected")==="true"&&parts.elements.html.previewPanel.hidden,"HTML "+caseId+" did not fall back to Source");
+  check(parts.elements.html.previewTab.disabled,"HTML "+caseId+" left Preview bypass enabled");
+  check(parts.elements.rendererNote.textContent===expectedNote,"HTML "+caseId+" note changed");
+  check(parts.elements.content.textContent==="<p>source fallback</p>","HTML "+caseId+" lost Source text");
+  check(calls.map((call)=>call.command).join("→")==="get_string_detection→get_html_preview→read_decoded_text","HTML "+caseId+" IPC sequence changed");
+  viewer.close();
+  await settle();
+  parts.dialog.remove();
+}
+
+const unicodePage0="😀".repeat(32768);
+const unicodePage1="é".repeat(65536);
+const unicodePageBytes=128*1024;
+const unicodeSource=unicodePage0+unicodePage1;
+const unicodeParts=makeHtmlViewer();
+const unicodeCalls=[];
+const unicodeViewer=new ContentViewer({elements:unicodeParts.elements,invoke:async(command,args)=>{
+  unicodeCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"html",detectionSource:"contentDetected",plainReason:null};
+  if(command==="get_html_preview") return {html:null,reason:"sizeLimit"};
+  if(command==="read_decoded_text") {
+    if(args.offset===0) return {start:0,text:unicodePage0,hasMore:true,nextOffset:unicodePageBytes};
+    if(args.offset===unicodePageBytes) return {start:unicodePageBytes,text:unicodePage1,hasMore:false,nextOffset:null};
+  }
+  throw new Error("unexpected Unicode paging command "+command);
+}});
+const unicodeTarget={revision:12,nodeId:44,spanStart:700,spanEnd:700+new TextEncoder().encode(unicodeSource).byteLength,scopeId:null,scopeLabel:"Document",pathSegments:["$","unicode"],pathTruncated:false};
+await unicodeViewer.open(unicodeTarget,unicodeParts.elements.close);
+await settle();
+check(new TextEncoder().encode(unicodePage0).byteLength===unicodePageBytes&&new TextEncoder().encode(unicodePage1).byteLength===unicodePageBytes,"Unicode page fixture is not exactly 128 KiB per page");
+check(unicodeCalls[2]?.command==="read_decoded_text"&&unicodeCalls[2].args.offset===0&&unicodeCalls[2].args.length===unicodePageBytes,"Unicode Source did not request page 0 with byte offsets");
+check(unicodeParts.elements.content.textContent===unicodePage0&&!unicodeParts.elements.content.textContent.includes("�"),"Unicode page 0 was truncated or replaced");
+unicodeParts.elements.next.click();
+await settle();
+check(unicodeCalls[3]?.command==="read_decoded_text"&&unicodeCalls[3].args.offset===unicodePageBytes&&unicodeCalls[3].args.length===unicodePageBytes,"Unicode Source did not request page 1 with the exact byte offset");
+check(unicodeParts.elements.content.textContent===unicodePage1&&!unicodeParts.elements.content.textContent.includes("�"),"Unicode page 1 was truncated or replaced");
+check(unicodePage0+unicodePage1===unicodeSource,"Unicode paging fixture has an overlap or omission");
+const unicodeCallsAfterNext=unicodeCalls.length;
+unicodeParts.elements.previous.click();
+await settle();
+check(unicodeCalls.length===unicodeCallsAfterNext&&unicodeParts.elements.content.textContent===unicodePage0&&!unicodeParts.elements.content.textContent.includes("�"),"Unicode Previous reread or corrupted page 0");
+unicodeViewer.close();
+await settle();
+unicodeParts.dialog.remove();
+
+const invalidHtmlDtos=[
+  ["oversized",{html:"x".repeat(1024*1024),reason:null}],
+  ["both",{html:"<p>preview</p>",reason:"renderLimit"}],
+  ["neither",{html:null,reason:null}],
+  ["extra",{html:null,reason:"sizeLimit",unexpected:true}]
+];
+for(const [caseId,dto] of invalidHtmlDtos){
+  const parts=makeHtmlViewer();
+  const calls=[];
+  const viewer=new ContentViewer({elements:parts.elements,invoke:async(command,args)=>{
+    calls.push({command,args});
+    if(command==="get_string_detection") return {semanticType:"html",detectionSource:"contentDetected",plainReason:null};
+    if(command==="get_html_preview") return dto;
+    if(command==="read_decoded_text") return {start:0,text:"invalid DTO source fallback",hasMore:false,nextOffset:null};
+    throw new Error("unexpected invalid DTO command "+command);
+  }});
+  await viewer.open({...htmlTarget,nodeId:60+invalidHtmlDtos.findIndex((entry)=>entry[0]===caseId)},parts.elements.close);
+  await settle();
+  check(parts.elements.html.sourceTab.getAttribute("aria-selected")==="true"&&parts.elements.html.previewPanel.hidden&&parts.elements.html.previewTab.disabled,"HTML "+caseId+" DTO did not force Source fallback");
+  check(parts.elements.content.textContent==="invalid DTO source fallback"&&parts.elements.rendererNote.textContent==="Semantic rendering failed. Showing plain text instead.","HTML "+caseId+" DTO lost the fallback source or note");
+  check(calls.map((call)=>call.command).join("→")==="get_string_detection→get_html_preview→read_decoded_text","HTML "+caseId+" DTO IPC sequence changed");
+  viewer.close();
+  await settle();
+  parts.dialog.remove();
+}
+
+const ordinaryFailureParts=makeHtmlViewer();
+const ordinaryFailureCalls=[];
+let ordinaryFailureSessionError;
+const ordinaryFailureViewer=new ContentViewer({elements:ordinaryFailureParts.elements,onSessionError:(error)=>{ordinaryFailureSessionError=error;},invoke:async(command,args)=>{
+  ordinaryFailureCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"html",detectionSource:"contentDetected",plainReason:null};
+  if(command==="get_html_preview") throw {code:"preview_failed",message:"preview unavailable"};
+  if(command==="read_decoded_text") return {start:0,text:"ordinary failure source",hasMore:false,nextOffset:null};
+  throw new Error("unexpected ordinary failure command "+command);
+}});
+await ordinaryFailureViewer.open({...htmlTarget,nodeId:75},ordinaryFailureParts.elements.close);
+await settle();
+check(ordinaryFailureParts.elements.html.sourceTab.getAttribute("aria-selected")==="true"&&ordinaryFailureParts.elements.html.previewPanel.hidden,"ordinary get_html_preview failure did not fall back to Source");
+check(ordinaryFailureParts.elements.content.textContent==="ordinary failure source"&&ordinaryFailureParts.elements.rendererNote.textContent==="Semantic rendering failed. Showing plain text instead.","ordinary HTML preview failure lost Source fallback");
+check(ordinaryFailureSessionError===undefined&&ordinaryFailureCalls.map((call)=>call.command).join("→")==="get_string_detection→get_html_preview→read_decoded_text","ordinary HTML preview failure was misclassified as a session failure");
+ordinaryFailureViewer.close();
+await settle();
+ordinaryFailureParts.dialog.remove();
+
+const sourceChangedParts=makeHtmlViewer();
+const sourceChangedCalls=[];
+let sourceChangedSessionError;
+const sourceChangedViewer=new ContentViewer({elements:sourceChangedParts.elements,onSessionError:(error)=>{sourceChangedSessionError=error;},invoke:async(command,args)=>{
+  sourceChangedCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"html",detectionSource:"contentDetected",plainReason:null};
+  if(command==="get_html_preview") return {html:"<article>preview before change</article>",reason:null};
+  if(command==="read_decoded_text") throw {code:"file_changed",message:"the file changed on disk"};
+  throw new Error("unexpected Source file_changed command "+command);
+}});
+await sourceChangedViewer.open({...htmlTarget,nodeId:76},sourceChangedParts.elements.close);
+await settle();
+check(sourceChangedParts.elements.html.previewFrame.srcdoc.includes("preview before change"),"HTML Source file_changed setup did not install Preview");
+sourceChangedParts.elements.html.sourceTab.click();
+await settle();
+check(sourceChangedSessionError?.code==="file_changed"&&!sourceChangedViewer.isOpen&&sourceChangedParts.elements.html.previewFrame.srcdoc==="","HTML Source file_changed did not clear srcdoc and invalidate the session");
+check(sourceChangedCalls.map((call)=>call.command).join("→")==="get_string_detection→get_html_preview→read_decoded_text","HTML Source file_changed IPC sequence changed");
+sourceChangedParts.dialog.remove();
+
+const cachePageBytes=128*1024;
+const cachePageCount=257;
+const cacheTotalBytes=cachePageBytes*cachePageCount;
+const cachePage=(index)=>{
+  const marker="CACHE_PAGE_"+index+":";
+  return marker+".".repeat(cachePageBytes-marker.length);
+};
+const cacheParts=makeViewer();
+const cacheReadOffsets=[];
+const cacheBodyChildren=()=>document.body.childElementCount;
+const cacheViewer=new ContentViewer({elements:cacheParts.elements,invoke:async(command,args)=>{
+  if(command==="get_string_detection") return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"};
+  if(command==="read_decoded_text") {
+    cacheReadOffsets.push(args.offset);
+    const index=args.offset/cachePageBytes;
+    if(!Number.isInteger(index)||index<0||index>=cachePageCount||args.length!==cachePageBytes) throw new Error("unexpected cache page request");
+    return {start:args.offset,text:cachePage(index),hasMore:index<cachePageCount-1,nextOffset:index<cachePageCount-1?args.offset+cachePageBytes:null};
+  }
+  throw new Error("unexpected decoded cache command "+command);
+}});
+const cacheTarget={revision:13,nodeId:77,spanStart:0,spanEnd:cacheTotalBytes,scopeId:null,scopeLabel:"Document",pathSegments:["$","cache"],pathTruncated:false};
+const cacheBodyBefore=cacheBodyChildren();
+await cacheViewer.open(cacheTarget,cacheParts.elements.close);
+await settle();
+for(let index=1;index<cachePageCount;index++){
+  cacheParts.elements.next.click();
+  await settle();
+}
+check(cacheReadOffsets.length===cachePageCount&&cacheReadOffsets.at(-1)===(cachePageCount-1)*cachePageBytes,"bounded cache setup did not fetch each 128 KiB page");
+check(new TextEncoder().encode(cacheParts.elements.content.textContent).byteLength<=cachePageBytes&&cacheParts.elements.content.textContent.startsWith("CACHE_PAGE_256:"),"bounded cache navigation materialized an oversized DOM");
+for(let index=cachePageCount-1;index>0;index--){
+  cacheParts.elements.previous.click();
+  await settle();
+}
+check(cacheParts.elements.content.textContent.startsWith("CACHE_PAGE_0:")&&cacheReadOffsets.filter((offset)=>offset===0).length===2,"bounded cache did not evict page 0 for an IPC refetch");
+check(cacheBodyChildren()===cacheBodyBefore&&new TextEncoder().encode(cacheParts.elements.content.textContent).byteLength<=cachePageBytes,"bounded cache grew the DOM beyond one page");
+cacheViewer.close();
+await settle();
+cacheParts.dialog.remove();
+
+const lateParts=makeHtmlViewer();
+let resolveLate;
+const latePromise=new Promise((resolve)=>{resolveLate=resolve;});
+const lateViewer=new ContentViewer({elements:lateParts.elements,invoke:async(command)=>{
+  if(command==="get_string_detection") return {semanticType:"html",detectionSource:"contentDetected",plainReason:null};
+  if(command==="get_html_preview") return latePromise;
+  throw new Error("unexpected late command");
+}});
+const lateOpen=lateViewer.open({...htmlTarget,nodeId:80},lateParts.elements.close);
+await settle();
+lateViewer.clear();
+resolveLate({html:"<script>window.__sjvLate=1</script>",reason:null});
+await lateOpen;
+await settle();
+check(lateParts.elements.html.previewFrame.srcdoc===""&&lateParts.elements.content.textContent==="","late HTML response repopulated a cleared viewer");
+lateParts.dialog.remove();
+
+const errorParts=makeHtmlViewer();
+let sessionError;
+const errorViewer=new ContentViewer({elements:errorParts.elements,onSessionError:(error)=>{sessionError=error;},invoke:async(command)=>{
+  if(command==="get_string_detection") return {semanticType:"html",detectionSource:"contentDetected",plainReason:null};
+  if(command==="get_html_preview") throw {code:"file_changed",message:"the file changed on disk"};
+  throw new Error("unexpected error command");
+}});
+await errorViewer.open({...htmlTarget,nodeId:90},errorParts.elements.close);
+await settle();
+check(sessionError?.code==="file_changed"&&errorParts.elements.html.previewFrame.srcdoc===""&&!errorViewer.isOpen,"HTML global error did not invalidate the viewer");
+errorParts.dialog.remove();
 return {assertions};
 })()`;
 }
+
+const layoutExpression = `(()=>{
+const dialog=document.getElementById("content-viewer-dialog");
+const stage=document.querySelector("#content-viewer-dialog .content-viewer-stage");
+const panel=document.getElementById("content-viewer-html-preview-panel");
+const frame=document.getElementById("content-viewer-html-preview-frame");
+const htmlTabs=document.getElementById("content-viewer-html-representations");
+const parsed=document.getElementById("content-viewer-parsed-panel");
+const text=document.getElementById("content-viewer-text-panel");
+if(!dialog||!stage||!panel||!frame||!htmlTabs||!parsed||!text) throw new Error("real HTML layout nodes are missing");
+const wasOpen=dialog.open;
+const hidden=new Map([[htmlTabs,htmlTabs.hidden],[panel,panel.hidden],[parsed,parsed.hidden],[text,text.hidden]]);
+if(!wasOpen) dialog.showModal();
+htmlTabs.hidden=false;
+panel.hidden=false;
+parsed.hidden=true;
+text.hidden=true;
+const rect=(element)=>{const value=element.getBoundingClientRect();return {left:value.left,top:value.top,right:value.right,bottom:value.bottom,width:value.width,height:value.height,scrollWidth:element.scrollWidth,clientWidth:element.clientWidth,scrollHeight:element.scrollHeight,clientHeight:element.clientHeight};};
+const computed=getComputedStyle(frame);
+const result={viewportWidth:innerWidth,viewportHeight:innerHeight,dialog:rect(dialog),stage:rect(stage),panel:rect(panel),frame:rect(frame),frameClass:frame.className,computed:{display:computed.display,width:computed.width,height:computed.height,minWidth:computed.minWidth,minHeight:computed.minHeight,flex:computed.flex},document:{scrollWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth,bodyScrollWidth:document.body.scrollWidth,bodyClientWidth:document.body.clientWidth}};
+for(const [element,value] of hidden) element.hidden=value;
+if(!wasOpen) dialog.close();
+return result;
+})()`;
 
 async function stopProcess(process) {
   if (!process || process.exitCode !== null) return;
@@ -700,13 +1096,42 @@ try {
     '<div onclick="bad()">raw html</div>',
     "```html\n<script>SJV_F11_PROBE_V1</script>\n```",
   ].join("\n\n");
+  await runAgent(["network","har","start"]);
+  harStarted = true;
   const result = parseAgentJson((await runAgent(["eval", browserExpression(fixtures, commonSource)])).stdout);
+  await runAgent(["network","har","stop",harPath]);
+  harStarted = false;
   assertions += result.assertions;
+  for (const width of [320,768,1024,1440]) {
+    await runAgent(["set","viewport",String(width),"900"]);
+    const layout = parseAgentJson((await runAgent(["eval",layoutExpression])).stdout);
+    const epsilon = 1.5;
+    check(layout.viewportWidth === width, `responsive layout used the wrong viewport width ${layout.viewportWidth}`);
+    check(layout.frameClass === "content-viewer-html-preview-frame", `responsive ${width}px iframe class drifted from the real DOM`);
+    check(layout.panel.width > 0 && layout.panel.height > 0 && layout.frame.width > 0 && layout.frame.height > 0, `responsive ${width}px HTML panel/frame is not visible`);
+    check(Math.abs(layout.frame.left-layout.panel.left)<=epsilon&&Math.abs(layout.frame.right-layout.panel.right)<=epsilon, `responsive ${width}px iframe does not fill the panel horizontally`);
+    check(Math.abs(layout.frame.top-layout.panel.top)<=epsilon&&Math.abs(layout.frame.bottom-layout.panel.bottom)<=epsilon, `responsive ${width}px iframe does not fill the panel vertically`);
+    check(layout.panel.scrollWidth<=layout.panel.clientWidth+epsilon&&layout.stage.scrollWidth<=layout.stage.clientWidth+epsilon&&layout.dialog.scrollWidth<=layout.dialog.clientWidth+epsilon, `responsive ${width}px HTML layout has horizontal overflow`);
+    check(layout.document.scrollWidth<=layout.document.clientWidth+epsilon&&layout.document.bodyScrollWidth<=layout.document.bodyClientWidth+epsilon, `responsive ${width}px document has horizontal overflow`);
+    check(Math.abs(Number.parseFloat(layout.computed.width)-layout.frame.width)<=epsilon&&Math.abs(Number.parseFloat(layout.computed.height)-layout.frame.height)<=epsilon, `responsive ${width}px computed iframe size disagrees with its bounds`);
+  }
+  const har = JSON.parse(await readFile(harPath,"utf8"));
+  const entries = harEntries(har);
+  const requestUrls = entries.map((entry)=>entry?.request?.url).filter((url)=>typeof url === "string");
+  const sentinels = fixtures.truth.cases.flatMap((fixtureCase)=>fixtureCase.vectors.map((vector)=>vector.sentinel));
+  const hostileUrls = requestUrls.filter((url)=>/\.invalid(?:[/:?#]|$)/i.test(url)||sentinels.some((sentinel)=>url.startsWith(sentinel)));
+  const hostileHttpUrls = requestUrls.filter((url)=>/^https?:\/\//i.test(url)&&(/\.invalid(?:[/:?#]|$)/i.test(url)||sentinels.some((sentinel)=>url.startsWith(sentinel))));
+  const dataUrls = requestUrls.filter((url)=>url.startsWith("data:"));
+  check(hostileUrls.length===0, `HAR observed hostile .invalid/sentinel requests: ${hostileUrls.join(", ")}`);
+  check(hostileHttpUrls.length===0, `HAR observed hostile http resource requests: ${hostileHttpUrls.join(", ")}`);
+  check(dataUrls.length===0, `HAR observed data: resource requests: ${dataUrls.join(", ")}`);
+  console.log(`PASS: HTML HAR entries=${entries.length} hostileRequests=${hostileUrls.length} hostileHttpRequests=${hostileHttpUrls.length} dataRequests=${dataUrls.length}`);
   console.log(`PASS: safe markdown assertions=${assertions}`);
 } catch (error) {
   console.error(`FAIL: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 } finally {
+  if (harStarted) await runAgent(["network","har","stop",harPath], true).catch(() => undefined);
   await runAgent(["close"], true).catch(() => undefined);
   await stopProcess(vite);
 }
