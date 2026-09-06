@@ -129,6 +129,9 @@ const inspect=(fragment,label)=>{
   return fragment;
 };
 const before=document.body.childElementCount;
+const renderAsControl=document.getElementById("content-viewer-render-as");
+check(renderAsControl instanceof HTMLSelectElement&&renderAsControl.getAttribute("aria-label")==="Render As","real Render As select is missing or not native");
+check(renderAsControl?.closest("label")?.textContent?.includes("Render As")===true,"real Render As label is missing");
 const htmlFragment=inspect(renderSafeMarkdown(fixtures.htmlSource),"F-11 HTML");
 const markdownFragment=inspect(renderSafeMarkdown(fixtures.markdownSource),"F-11 Markdown");
 check(document.body.childElementCount===before,"renderer polluted the active document");
@@ -324,7 +327,9 @@ check(timed===null,"100 ms budget was not enforced");
 const makeViewer=()=>{
   const dialog=document.createElement("dialog");
   const element=(tag)=>document.createElement(tag);
-  const elements={dialog,close:element("button"),title:element("span"),scope:element("span"),path:element("span"),node:element("span"),spanLabel:element("span"),span:element("span"),semanticType:element("span"),detectionSource:element("span"),plainReason:element("span"),representation:element("span"),rendererNote:element("span"),range:element("span"),status:element("span"),alert:element("span"),content:element("div"),previous:element("button"),next:element("button")};
+  const renderAs=document.createElement("select");
+  for(const value of ["auto","plainText","markdown","nestedJson","html","code","python","javascript","typescript","rust","c","cpp","java","go","shell","sql","json","yaml"]){const option=document.createElement("option");option.value=value;option.textContent=value;renderAs.append(option);}
+  const elements={dialog,close:element("button"),title:element("span"),scope:element("span"),path:element("span"),node:element("span"),spanLabel:element("span"),span:element("span"),semanticType:element("span"),detectionSource:element("span"),plainReason:element("span"),representation:element("span"),rendererNote:element("span"),range:element("span"),status:element("span"),alert:element("span"),content:element("div"),renderAs,markdownAnyway:element("button"),previous:element("button"),next:element("button")};
   for(const value of Object.values(elements)) if(value!==dialog) dialog.append(value);
   document.body.append(dialog);
   return {dialog,elements};
@@ -399,6 +404,60 @@ check(rendered.elements.content.classList.contains("is-markdown"),"successful re
 check(rendered.elements.content.querySelector("h1")?.textContent==="rendered","successful Markdown DOM is missing heading");
 renderedViewer.close();
 rendered.dialog.remove();
+
+const renderAsSource="# manual"+nl+nl+"**override**";
+const renderAsSettle=async()=>{await Promise.resolve();await new Promise((resolve)=>setTimeout(resolve,0));};
+const renderAsParts=makeViewer();
+const renderAsInvoke=async(command,args)=>{
+  if(command==="get_string_detection") return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"};
+  if(command==="read_decoded_text") return {start:args.offset,text:renderAsSource,hasMore:false,nextOffset:null};
+  throw new Error("unexpected Render As command "+command);
+};
+const renderAsViewer=new ContentViewer({elements:renderAsParts.elements,invoke:renderAsInvoke});
+check([...renderAsParts.elements.renderAs.options].map((option)=>option.value).join(",")==="auto,plainText,markdown,nestedJson,html,code,python,javascript,typescript,rust,c,cpp,java,go,shell,sql,json,yaml","Render As option contract changed");
+await renderAsViewer.open({revision:31,nodeId:301,spanStart:0,spanEnd:new TextEncoder().encode(renderAsSource).byteLength,scopeId:null,scopeLabel:"Document",pathSegments:["$","text"],pathTruncated:false},renderAsParts.elements.close);
+check(renderAsParts.elements.renderAs.value==="auto"&&renderAsParts.elements.detectionSource.textContent==="Content-detected"&&renderAsParts.elements.representation.textContent==="Plain Text","Auto/plain Render As setup changed");
+renderAsParts.elements.renderAs.value="markdown";
+renderAsParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(renderAsParts.elements.renderAs.value==="markdown"&&renderAsParts.elements.content.querySelector("h1")?.textContent==="manual","Manual Markdown override did not render");
+check(renderAsParts.elements.detectionSource.textContent==="Content-detected"&&renderAsParts.elements.rendererNote.textContent.startsWith("User override: Markdown"),"Manual override was presented as detector output");
+renderAsViewer.close();
+await renderAsSettle();
+await renderAsViewer.open({revision:31,nodeId:301,spanStart:0,spanEnd:new TextEncoder().encode(renderAsSource).byteLength,scopeId:null,scopeLabel:"Document",pathSegments:["$","text"],pathTruncated:false},renderAsParts.elements.close);
+check(renderAsParts.elements.renderAs.value==="markdown"&&renderAsParts.elements.content.querySelector("h1")?.textContent==="manual","Close/reopen did not retain Render As override");
+renderAsParts.elements.renderAs.value="auto";
+renderAsParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(renderAsParts.elements.renderAs.value==="auto"&&renderAsParts.elements.representation.textContent==="Plain Text"&&renderAsParts.elements.content.textContent===renderAsSource,"Auto did not delete the override");
+await renderAsViewer.open({revision:32,nodeId:301,spanStart:0,spanEnd:new TextEncoder().encode(renderAsSource).byteLength,scopeId:null,scopeLabel:"Document",pathSegments:["$","text"],pathTruncated:false},renderAsParts.elements.close);
+check(renderAsParts.elements.renderAs.value==="auto"&&renderAsParts.elements.representation.textContent==="Plain Text","Revision change did not clear Render As overrides");
+renderAsViewer.close();
+renderAsParts.dialog.remove();
+
+const immediateParts=makeViewer();
+const immediateSource="# immediate";
+const immediateInvoke=async(command,args)=>{
+  if(command==="get_string_detection") return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"};
+  if(command==="read_decoded_text") return {start:args.offset,text:immediateSource,hasMore:false,nextOffset:null};
+  throw new Error("unexpected immediate reopen command");
+};
+const immediateViewer=new ContentViewer({elements:immediateParts.elements,invoke:immediateInvoke});
+const immediateTarget={revision:41,nodeId:401,spanStart:0,spanEnd:new TextEncoder().encode(immediateSource).byteLength,scopeId:null,scopeLabel:"Document",pathSegments:["$","immediate"],pathTruncated:false};
+await immediateViewer.open(immediateTarget,immediateParts.elements.close);
+immediateParts.elements.renderAs.value="markdown";
+immediateParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(immediateParts.elements.renderAs.value==="markdown"&&immediateParts.elements.content.querySelector("h1")?.textContent==="immediate","Immediate reopen setup did not install the override");
+immediateViewer.close();
+const immediateReopen=immediateViewer.open(immediateTarget,immediateParts.elements.close);
+await immediateReopen;
+await renderAsSettle();
+await renderAsSettle();
+check(immediateViewer.isOpen&&immediateParts.elements.renderAs.value==="markdown"&&immediateParts.elements.content.querySelector("h1")?.textContent==="immediate"&&immediateParts.elements.close===document.activeElement,"Late close event cleared the immediately reopened viewer");
+immediateViewer.close();
+await renderAsSettle();
+immediateParts.dialog.remove();
 
 const withStableRenderClock=async(work)=>{
   const descriptor=Object.getOwnPropertyDescriptor(performance,"now");
@@ -510,9 +569,58 @@ markdownModule.marked.lexer=originalGateMarkdownLexer;
 check(markdownOverCalls.filter((call)=>call.command==="read_decoded_text").length===markdownAutoPages,"over-2 MiB Markdown read past the overlimit gate");
 check(markdownOverParts.elements.representation.textContent==="Decoded Source"&&markdownOverParts.elements.content.textContent===markdownExactPages[0],"over-2 MiB Markdown did not retain only its first source page");
 check(markdownOverParts.elements.rendererNote.textContent==="Markdown rendering skipped because content exceeds 2 MiB.","over-2 MiB Markdown note is not explicit");
-check(markdownOverParts.elements.next.disabled===false&&gateMarkdownLexerCalls===0,"over-2 MiB Markdown bypassed the read/renderer gate");
+check(markdownOverParts.elements.next.disabled===false&&gateMarkdownLexerCalls===0&&markdownOverParts.elements.markdownAnyway.hidden===false&&markdownOverParts.elements.markdownAnyway.disabled===false&&document.body.contains(markdownOverParts.elements.markdownAnyway),"over-2 MiB Markdown bypassed the read/renderer gate or hid the reachable Anyway action");
+const markdownAnywayLexer=markdownModule.marked.lexer;
+let markdownAnywayLexerCalls=0;
+markdownModule.marked.lexer=(...args)=>{markdownAnywayLexerCalls+=1;return markdownAnywayLexer(...args);};
+const markdownAnywayReadsBefore=markdownOverCalls.filter((call)=>call.command==="read_decoded_text").length;
+markdownOverParts.elements.markdownAnyway.click();
+await renderAsSettle();
+markdownModule.marked.lexer=markdownAnywayLexer;
+check(markdownOverCalls.filter((call)=>call.command==="read_decoded_text").length===markdownAnywayReadsBefore+markdownOverPages.length,"Render Markdown Anyway did not attempt the complete source within 32 MiB");
+check(markdownAnywayLexerCalls>0,"Render Markdown Anyway never attempted Markdown rendering");
+check(markdownOverParts.elements.markdownAnyway.hidden===true&&markdownOverParts.elements.next.disabled===true&&markdownOverParts.elements.content.textContent.endsWith("!"),"within-limit Markdown Anyway did not finish as a bounded source/render result");
 markdownOverViewer.close();
 markdownOverParts.dialog.remove();
+
+const markdownHardLimit=32*1024*1024;
+const markdownHardSpan=markdownHardLimit+1;
+const markdownHardPageCount=markdownHardLimit/collectorPageBytes;
+const markdownHardHead="# hard limit"+nl+nl;
+const markdownHardPage=(offset)=>{
+  if(!Number.isInteger(offset)||offset<0||offset%collectorPageBytes!==0||offset>=markdownHardLimit) throw new Error("unexpected hard-limit page "+offset);
+  const size=Math.min(collectorPageBytes,markdownHardSpan-offset);
+  const head=offset===0?markdownHardHead:"";
+  return {start:offset,text:head+".".repeat(size-head.length),hasMore:offset+size<markdownHardSpan,nextOffset:offset+size<markdownHardSpan?offset+size:null};
+};
+const markdownHardParts=makeViewer();
+const markdownHardCalls=[];
+const markdownHardViewer=new ContentViewer({elements:markdownHardParts.elements,invoke:async(command,args)=>{
+  markdownHardCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"markdown",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return markdownHardPage(args.offset);
+  throw new Error("unexpected hard-limit Markdown command");
+}});
+const markdownHardBodyBefore=document.body.childElementCount;
+await markdownHardViewer.open({revision:29,nodeId:209,spanStart:0,spanEnd:markdownHardSpan,scopeId:null,scopeLabel:"Document",pathSegments:["$","markdown-hard"],pathTruncated:false},markdownHardParts.elements.close);
+check(markdownHardCalls.filter((call)=>call.command==="read_decoded_text").length===markdownAutoPages&&markdownHardParts.elements.markdownAnyway.hidden===false&&markdownHardParts.elements.markdownAnyway.disabled===false,"over-32 MiB Markdown did not expose the initial bounded Anyway action");
+const markdownHardLexer=markdownModule.marked.lexer;
+let markdownHardLexerCalls=0;
+markdownModule.marked.lexer=(...args)=>{markdownHardLexerCalls+=1;return markdownHardLexer(...args);};
+const markdownHardInitialReads=markdownHardCalls.filter((call)=>call.command==="read_decoded_text").length;
+markdownHardParts.elements.markdownAnyway.click();
+await renderAsSettle();
+markdownModule.marked.lexer=markdownHardLexer;
+const markdownHardReads=markdownHardCalls.filter((call)=>call.command==="read_decoded_text").slice(markdownHardInitialReads);
+check(markdownHardReads.length===markdownHardPageCount&&markdownHardReads.at(-1)?.args.offset===markdownHardLimit-collectorPageBytes&&!markdownHardReads.some((call)=>call.args.offset===markdownHardLimit),"over-32 MiB Markdown did not stop reading at 32 MiB");
+check(markdownHardParts.elements.representation.textContent==="Decoded Source"&&markdownHardParts.elements.content.textContent===markdownHardPage(0).text&&markdownHardParts.elements.next.disabled===false,"over-32 MiB Markdown did not retain bounded Source paging");
+check(markdownHardParts.elements.markdownAnyway.hidden===true&&markdownHardLexerCalls===0&&document.body.childElementCount===markdownHardBodyBefore,"over-32 MiB Markdown rendered or grew the DOM past its source page");
+markdownHardParts.elements.next.click();
+await renderAsSettle();
+check(markdownHardParts.elements.content.textContent===markdownHardPage(collectorPageBytes).text&&markdownHardParts.elements.previous.disabled===false,"over-32 MiB Markdown Source paging did not advance one bounded page");
+markdownHardViewer.close();
+await renderAsSettle();
+markdownHardParts.dialog.remove();
 
 const codeAutoLimit=1024*1024;
 const codeAutoPages=codeAutoLimit/collectorPageBytes;
@@ -670,18 +778,112 @@ const makeNestedViewer=()=>{
   navigation.append(back,breadcrumb);
   representations.append(parsedTab,decodedTab,rawTab);
   parsedPanel.append(parsedTree);
-  header.append(parts.elements.title,parts.elements.close);
+  header.append(parts.elements.title,parts.elements.renderAs,parts.elements.close);
   meta.append(parts.elements.scope,parts.elements.path,parts.elements.node,parts.elements.spanLabel,parts.elements.span,parts.elements.semanticType,parts.elements.detectionSource,parts.elements.plainReason,parts.elements.representation);
   toolbar.append(parts.elements.range,parts.elements.status,parts.elements.previous,parts.elements.next);
   body.append(parts.elements.content);
   textPanel.append(body);
   contentRegion.append(toolbar,parsedPanel,textPanel);
-  shell.append(header,meta,navigation,representations,parts.elements.rendererNote,parts.elements.alert,contentRegion);
+  shell.append(header,meta,navigation,representations,parts.elements.rendererNote,parts.elements.markdownAnyway,parts.elements.alert,contentRegion);
   parts.dialog.replaceChildren(shell);
   parts.elements.nested={navigation,back,breadcrumb,representations,parsedTab,decodedTab,rawTab,parsedPanel,parsedTree,sharedTextPanel:textPanel};
   return parts;
 };
 const node=(id,kind,start,end,label,children,value=null)=>({id,kind,spanStart:start,spanEnd:end,label,labelHasMore:false,valuePreview:value,valueHasMore:false,childCount:children});
+
+for(const [language,source] of codeSamples){
+  const parts=makeNestedViewer();
+  const viewer=new ContentViewer({elements:parts.elements,invoke:async(command,args)=>{
+    if(command==="get_string_detection") return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"};
+    if(command==="read_decoded_text") return {start:args.offset,text:source,hasMore:false,nextOffset:null};
+    throw new Error("unexpected Render As "+language+" command");
+  }});
+  const target={revision:30,nodeId:300,spanStart:0,spanEnd:new TextEncoder().encode(source).byteLength,scopeId:null,scopeLabel:"Document",pathSegments:["$",language],pathTruncated:false};
+  await viewer.open(target,parts.elements.close);
+  await renderAsSettle();
+  check(parts.elements.renderAs.closest("header")===parts.dialog.querySelector(".content-viewer-header"),"Render As "+language+" select is outside the real header topology");
+  parts.elements.renderAs.value=language;
+  parts.elements.renderAs.dispatchEvent(new Event("change"));
+  await renderAsSettle();
+  const pre=parts.elements.content.querySelector("pre");
+  check(pre?.classList.contains("sjv-code-language-"+language)&&parts.elements.renderAs.value===language,"Render As "+language+" did not pass its language to Code Renderer");
+  check(parts.elements.representation.textContent==="Rendered"&&parts.elements.content.querySelector(".sjv-code-source")?.textContent===source,"Render As "+language+" changed the rendered source or representation");
+  viewer.close();
+  await renderAsSettle();
+  parts.dialog.remove();
+}
+
+let resolveManualNestedScope;
+let resolveManualNestedClose;
+const manualNestedScope=new Promise((resolve)=>{resolveManualNestedScope=resolve;});
+const manualNestedClose=new Promise((resolve)=>{resolveManualNestedClose=resolve;});
+const manualNestedParts=makeNestedViewer();
+const manualNestedCalls=[];
+const manualNestedViewer=new ContentViewer({elements:manualNestedParts.elements,invoke:async(command,args)=>{
+  manualNestedCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"};
+  if(command==="read_decoded_text") return {start:0,text:"plain",hasMore:false,nextOffset:null};
+  if(command==="open_nested_json") return manualNestedScope;
+  if(command==="close_nested_scope"){resolveManualNestedClose?.();return undefined;}
+  throw new Error("unexpected manual Nested deferred command");
+}});
+const manualNestedTarget={revision:42,nodeId:420,spanStart:0,spanEnd:5,scopeId:null,scopeLabel:"Document",pathSegments:["$","manual-nested"],pathTruncated:false};
+await manualNestedViewer.open(manualNestedTarget,manualNestedParts.elements.close);
+await renderAsSettle();
+manualNestedParts.elements.renderAs.value="nestedJson";
+manualNestedParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(manualNestedParts.elements.renderAs.disabled===true&&manualNestedCalls.filter((call)=>call.command==="open_nested_json").length===1,"Manual Nested deferred conversion did not disable Render As");
+manualNestedViewer.close();
+resolveManualNestedScope({scopeId:420,parentScopeId:null,sourceNodeId:420,root:node(420,"object",0,5,"$",0),depth:1,maxDepth:5,parsedBytes:5,cumulativeBytes:5,sessionRevision:42});
+await manualNestedClose;
+await renderAsSettle();
+await manualNestedViewer.open(manualNestedTarget,manualNestedParts.elements.close);
+await renderAsSettle();
+check(manualNestedParts.elements.renderAs.value==="auto"&&manualNestedParts.elements.representation.textContent==="Plain Text"&&manualNestedParts.elements.content.textContent==="plain","Late manual Nested scope response committed stale UI or override");
+manualNestedViewer.close();
+await renderAsSettle();
+manualNestedParts.dialog.remove();
+
+for(const manualNestedError of ["file_changed","stale_session"]){
+  const parts=makeNestedViewer();
+  let sessionError;
+  const viewer=new ContentViewer({elements:parts.elements,onSessionError:(error)=>{sessionError=error;},invoke:async(command,args)=>{
+    if(command==="get_string_detection") return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"};
+    if(command==="read_decoded_text") return {start:0,text:"plain",hasMore:false,nextOffset:null};
+    if(command==="open_nested_json") throw {code:manualNestedError,message:"manual nested session ended"};
+    throw new Error("unexpected manual Nested "+manualNestedError+" command");
+  }});
+  const target={revision:manualNestedError==="file_changed"?43:44,nodeId:421,spanStart:0,spanEnd:5,scopeId:null,scopeLabel:"Document",pathSegments:["$",manualNestedError],pathTruncated:false};
+  await viewer.open(target,parts.elements.close);
+  await renderAsSettle();
+  parts.elements.renderAs.value="nestedJson";
+  parts.elements.renderAs.dispatchEvent(new Event("change"));
+  await renderAsSettle();
+  check(sessionError?.code===manualNestedError&&!viewer.isOpen&&parts.elements.content.textContent===""&&parts.elements.nested.navigation.hidden,"Manual Nested "+manualNestedError+" did not invalidate the viewer");
+  parts.dialog.remove();
+}
+
+const invalidNestedMarkdownParts=makeNestedViewer();
+const invalidNestedMarkdownSource="# keep";
+const invalidNestedMarkdownViewer=new ContentViewer({elements:invalidNestedMarkdownParts.elements,invoke:async(command,args)=>{
+  if(command==="get_string_detection") return {semanticType:"markdown",detectionSource:"contentDetected",plainReason:null};
+  if(command==="read_decoded_text") return {start:0,text:invalidNestedMarkdownSource,hasMore:false,nextOffset:null};
+  if(command==="open_nested_json") throw {code:"invalid_request",message:"node is not parseable nested JSON"};
+  throw new Error("unexpected invalid Markdown Nested command");
+}});
+await invalidNestedMarkdownViewer.open({revision:33,nodeId:303,spanStart:0,spanEnd:invalidNestedMarkdownSource.length,scopeId:null,scopeLabel:"Document",pathSegments:["$","markdown"],pathTruncated:false},invalidNestedMarkdownParts.elements.close);
+await renderAsSettle();
+invalidNestedMarkdownParts.elements.renderAs.value="markdown";
+invalidNestedMarkdownParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+invalidNestedMarkdownParts.elements.renderAs.value="nestedJson";
+invalidNestedMarkdownParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(invalidNestedMarkdownParts.elements.renderAs.value==="markdown"&&invalidNestedMarkdownParts.elements.content.querySelector("h1")?.textContent==="keep"&&invalidNestedMarkdownParts.elements.representation.textContent==="Rendered"&&invalidNestedMarkdownParts.elements.detectionSource.textContent==="Content-detected"&&invalidNestedMarkdownParts.elements.rendererNote.textContent.startsWith("User override: Markdown"),"Invalid Nested JSON changed the Markdown presentation or detector/override metadata");
+invalidNestedMarkdownViewer.close();
+invalidNestedMarkdownParts.dialog.remove();
+
 const nestedSource='{"child":"{\\"leaf\\":true}"}';
 const nestedBytes=new TextEncoder().encode(nestedSource).byteLength;
 const leafSource='{"leaf":true}';
@@ -765,6 +967,83 @@ nestedViewer.close();
 await settle();
 check(nestedCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===1).length===2,"Nested root cleanup did not perform one bounded retry");
 nestedParts.dialog.remove();
+
+const scopeOverrideSource='{"child":"**child**"}';
+const scopeOverrideBytes=new TextEncoder().encode(scopeOverrideSource).byteLength;
+const scopeOverrideChildSource="**child**";
+const scopeOverrideRoot=node(70,"object",0,scopeOverrideBytes,"$",1);
+const scopeOverrideChild=node(71,"string",9,9+scopeOverrideChildSource.length,"child",0,scopeOverrideChildSource);
+const scopeOverrideCalls=[];
+let resolveScopeClose;
+const scopeCloseObserved=new Promise((resolve)=>{resolveScopeClose=resolve;});
+const scopeOverrideInvoke=async(command,args)=>{
+  scopeOverrideCalls.push({command,args});
+  if(command==="get_string_detection") return args.nodeId===71 ? {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"} : {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
+  if(command==="open_nested_json") return {scopeId:40,parentScopeId:null,sourceNodeId:7,root:scopeOverrideRoot,depth:1,maxDepth:5,parsedBytes:scopeOverrideBytes,cumulativeBytes:scopeOverrideBytes,sessionRevision:9};
+  if(command==="get_children") return {nodes:[scopeOverrideChild],hasMore:false,nextCursor:null};
+  if(command==="read_decoded_text") return {start:args.offset,text:scopeOverrideChildSource,hasMore:false,nextOffset:null};
+  if(command==="close_nested_scope"){resolveScopeClose?.();return undefined;}
+  throw new Error("unexpected scope override command");
+};
+const scopeOverrideParts=makeNestedViewer();
+const scopeOverrideViewer=new ContentViewer({elements:scopeOverrideParts.elements,invoke:scopeOverrideInvoke});
+const scopeOverrideTarget={revision:9,nodeId:7,spanStart:0,spanEnd:scopeOverrideBytes,scopeId:null,scopeLabel:"Document",pathSegments:["$","scope-override"],pathTruncated:false};
+await scopeOverrideViewer.open(scopeOverrideTarget,scopeOverrideParts.elements.close);
+await renderAsSettle();
+scopeOverrideParts.elements.nested.parsedTree.querySelector(".tree-disclosure")?.click();
+await renderAsSettle();
+scopeOverrideParts.elements.nested.parsedTree.querySelector('[data-node-id="71"]')?.dispatchEvent(new MouseEvent("click",{bubbles:true,detail:2}));
+await renderAsSettle();
+scopeOverrideParts.elements.renderAs.value="markdown";
+scopeOverrideParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(scopeOverrideParts.elements.renderAs.value==="markdown"&&scopeOverrideParts.elements.representation.textContent==="Rendered"&&scopeOverrideParts.elements.rendererNote.textContent.startsWith("User override: Markdown"),"Nested scope Render As override was not observable before close");
+scopeOverrideParts.elements.nested.back.click();
+await renderAsSettle();
+scopeOverrideViewer.close();
+await scopeCloseObserved;
+await renderAsSettle();
+check(scopeOverrideCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===40).length===1,"Nested scope override setup did not close its root scope");
+await scopeOverrideViewer.open(scopeOverrideTarget,scopeOverrideParts.elements.close);
+await renderAsSettle();
+scopeOverrideParts.elements.nested.parsedTree.querySelector(".tree-disclosure")?.click();
+await renderAsSettle();
+scopeOverrideParts.elements.nested.parsedTree.querySelector('[data-node-id="71"]')?.dispatchEvent(new MouseEvent("click",{bubbles:true,detail:2}));
+await renderAsSettle();
+check(scopeOverrideParts.elements.renderAs.value==="auto"&&scopeOverrideParts.elements.representation.textContent==="Plain Text"&&scopeOverrideParts.elements.content.textContent===scopeOverrideChildSource&&scopeOverrideParts.elements.detectionSource.textContent==="Content-detected"&&!scopeOverrideParts.elements.rendererNote.textContent.includes("User override"),"Closing a nested scope did not clear its Render As override");
+scopeOverrideViewer.close();
+await renderAsSettle();
+scopeOverrideParts.dialog.remove();
+
+const scopedUnknownParts=makeNestedViewer();
+const scopedUnknownSource="plain child";
+const scopedUnknownRoot=node(30,"object",0,20,"$",1);
+const scopedUnknownChild=node(31,"string",5,5+scopedUnknownSource.length,"child",0,scopedUnknownSource);
+const scopedUnknownCalls=[];
+const scopedUnknownInvoke=async(command,args)=>{
+  scopedUnknownCalls.push({command,args});
+  if(command==="get_string_detection") return args.nodeId===31 ? {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"} : {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
+  if(command==="open_nested_json") return {scopeId:40,parentScopeId:null,sourceNodeId:7,root:scopedUnknownRoot,depth:1,maxDepth:5,parsedBytes:20,cumulativeBytes:20,sessionRevision:9};
+  if(command==="get_children") return {nodes:[scopedUnknownChild],hasMore:false,nextCursor:null};
+  if(command==="read_decoded_text") return {start:0,text:scopedUnknownSource,hasMore:false,nextOffset:null};
+  if(command==="close_nested_scope") return undefined;
+  throw new Error("unexpected scoped unknown command "+command);
+};
+const scopedUnknownViewer=new ContentViewer({elements:scopedUnknownParts.elements,invoke:scopedUnknownInvoke});
+await scopedUnknownViewer.open({revision:9,nodeId:7,spanStart:100,spanEnd:120,scopeId:null,scopeLabel:"Document",pathSegments:["$","payload"],pathTruncated:false},scopedUnknownParts.elements.close);
+await renderAsSettle();
+scopedUnknownParts.elements.nested.parsedTree.querySelector(".tree-disclosure")?.click();
+await renderAsSettle();
+scopedUnknownParts.elements.nested.parsedTree.querySelector('[data-node-id="31"]')?.dispatchEvent(new MouseEvent("click",{bubbles:true,detail:2}));
+await renderAsSettle();
+check(scopedUnknownParts.elements.content.textContent===scopedUnknownSource&&!scopedUnknownParts.elements.nested.back.hidden&&scopedUnknownParts.elements.nested.representations.hidden,"Scoped non-JSON string did not open in the existing modal");
+scopedUnknownParts.elements.nested.back.click();
+await renderAsSettle();
+check(scopedUnknownParts.elements.nested.parsedTree.querySelector('[data-node-id="30"]')!==null&&scopedUnknownCalls.filter((call)=>call.command==="close_nested_scope").length===0,"Scoped string Back closed the parent scope");
+scopedUnknownViewer.close();
+await renderAsSettle();
+check(scopedUnknownCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===40).length===1,"Scoped string flow did not clean up the root scope");
+scopedUnknownParts.dialog.remove();
 
 const whitespaceParts=makeNestedViewer();
 const whitespaceSource=String.fromCharCode(32,10,123,34,108,101,97,102,34,58,116,114,117,101,125,9);
@@ -953,6 +1232,163 @@ const makeHtmlViewer=()=>{
   parts.elements.html={representations,previewTab,sourceTab,previewPanel,previewFrame};
   return parts;
 };
+const invalidNestedHtmlParts=makeHtmlViewer();
+const invalidNestedHtmlSource="<p>keep html</p>";
+const invalidNestedHtmlViewer=new ContentViewer({elements:invalidNestedHtmlParts.elements,invoke:async(command,args)=>{
+  if(command==="get_string_detection") return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"};
+  if(command==="get_html_preview") return {html:"<p>keep html</p>",reason:null};
+  if(command==="open_nested_json") throw {code:"invalid_request",message:"node is not parseable nested JSON"};
+  throw new Error("unexpected invalid HTML Nested command");
+}});
+await invalidNestedHtmlViewer.open({revision:34,nodeId:304,spanStart:0,spanEnd:invalidNestedHtmlSource.length,scopeId:null,scopeLabel:"Document",pathSegments:["$","html"],pathTruncated:false},invalidNestedHtmlParts.elements.close);
+await renderAsSettle();
+invalidNestedHtmlParts.elements.renderAs.value="html";
+invalidNestedHtmlParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+const htmlBeforeInvalidNested=invalidNestedHtmlParts.elements.html.previewFrame.srcdoc;
+invalidNestedHtmlParts.elements.renderAs.value="nestedJson";
+invalidNestedHtmlParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(invalidNestedHtmlParts.elements.renderAs.value==="html"&&invalidNestedHtmlParts.elements.html.previewFrame.srcdoc===htmlBeforeInvalidNested&&invalidNestedHtmlParts.elements.representation.textContent==="Preview"&&invalidNestedHtmlParts.elements.detectionSource.textContent==="Content-detected"&&invalidNestedHtmlParts.elements.rendererNote.textContent.startsWith("User override: HTML"),"Invalid Nested JSON changed the HTML presentation or detector/override metadata");
+invalidNestedHtmlViewer.close();
+invalidNestedHtmlParts.dialog.remove();
+
+const manualHtmlLimitParts=makeHtmlViewer();
+const manualHtmlLimitSource="<p>manual HTML source</p>";
+const manualHtmlLimitCalls=[];
+const manualHtmlLimitViewer=new ContentViewer({elements:manualHtmlLimitParts.elements,invoke:async(command,args)=>{
+  manualHtmlLimitCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"};
+  if(command==="get_html_preview") return {html:null,reason:"sizeLimit"};
+  if(command==="read_decoded_text") return {start:0,text:manualHtmlLimitSource,hasMore:false,nextOffset:null};
+  throw new Error("unexpected manual HTML size-limit command");
+}});
+const manualHtmlFrame=manualHtmlLimitParts.elements.html.previewFrame;
+const manualHtmlSandbox=manualHtmlFrame.getAttribute("sandbox");
+const manualHtmlReferrerPolicy=manualHtmlFrame.getAttribute("referrerpolicy");
+const manualHtmlHasAllow=manualHtmlFrame.hasAttribute("allow");
+await manualHtmlLimitViewer.open({revision:35,nodeId:305,spanStart:0,spanEnd:new TextEncoder().encode(manualHtmlLimitSource).byteLength,scopeId:null,scopeLabel:"Document",pathSegments:["$","manual-html"],pathTruncated:false},manualHtmlLimitParts.elements.close);
+await renderAsSettle();
+manualHtmlLimitParts.elements.renderAs.value="html";
+manualHtmlLimitParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(manualHtmlLimitParts.elements.semanticType.textContent==="Plain Text"&&manualHtmlLimitParts.elements.detectionSource.textContent==="Content-detected"&&manualHtmlLimitParts.elements.renderAs.value==="html","Manual HTML changed the detector metadata");
+check(manualHtmlLimitParts.elements.representation.textContent==="Source"&&manualHtmlLimitParts.elements.content.textContent===manualHtmlLimitSource&&manualHtmlLimitParts.elements.html.sourceTab.getAttribute("aria-selected")==="true","Manual HTML core sizeLimit did not retain Source");
+check(manualHtmlLimitParts.elements.html.previewTab.disabled===true&&manualHtmlLimitParts.elements.html.previewPanel.hidden&&manualHtmlLimitParts.elements.rendererNote.textContent.startsWith("User override: HTML")&&manualHtmlLimitParts.elements.rendererNote.textContent.includes("exceeds 512 KiB"),"Manual HTML core sizeLimit left Preview enabled or lost the user override note");
+check(manualHtmlFrame.getAttribute("sandbox")===manualHtmlSandbox&&manualHtmlFrame.getAttribute("referrerpolicy")===manualHtmlReferrerPolicy&&!manualHtmlFrame.hasAttribute("allow")&&!manualHtmlFrame.hasAttribute("allow-scripts")&&!manualHtmlFrame.hasAttribute("allow-same-origin")&&manualHtmlFrame.hasAttribute("allow")===manualHtmlHasAllow,"Manual HTML sizeLimit changed the isolated iframe sandbox contract");
+check(manualHtmlLimitCalls.filter((call)=>call.command==="get_html_preview").length===1,"Manual HTML sizeLimit did not use the core Preview result");
+manualHtmlLimitViewer.close();
+await renderAsSettle();
+manualHtmlLimitParts.dialog.remove();
+
+const reuseRootSource='{"child":"value"}';
+const reuseRootBytes=new TextEncoder().encode(reuseRootSource).byteLength;
+const reuseRoot=node(80,"object",0,reuseRootBytes,"$",1);
+const reuseCalls=[];
+let resolveReuseClose;
+const reuseCloseObserved=new Promise((resolve)=>{resolveReuseClose=resolve;});
+const reuseViewerParts=makeHtmlViewer();
+const reuseViewer=new ContentViewer({elements:reuseViewerParts.elements,invoke:async(command,args)=>{
+  reuseCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
+  if(command==="open_nested_json") return {scopeId:80,parentScopeId:null,sourceNodeId:80,root:reuseRoot,depth:1,maxDepth:5,parsedBytes:reuseRootBytes,cumulativeBytes:reuseRootBytes,sessionRevision:36};
+  if(command==="get_html_preview") return {html:"<article>reused HTML</article>",reason:null};
+  if(command==="read_decoded_text") return {start:args.offset,text:reuseRootSource,hasMore:false,nextOffset:null};
+  if(command==="close_nested_scope"){resolveReuseClose?.();return undefined;}
+  throw new Error("unexpected Render As scope-reuse command");
+}});
+const reuseTarget={revision:36,nodeId:80,spanStart:0,spanEnd:reuseRootBytes,scopeId:null,scopeLabel:"Document",pathSegments:["$","reuse"],pathTruncated:false};
+await reuseViewer.open(reuseTarget,reuseViewerParts.elements.close);
+await renderAsSettle();
+check(reuseCalls.filter((call)=>call.command==="open_nested_json").length===1&&reuseViewerParts.elements.representation.textContent==="Parsed","Nested Render As reuse setup did not open one Parsed scope");
+reuseViewerParts.elements.renderAs.value="plainText";
+reuseViewerParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(reuseViewerParts.elements.representation.textContent==="Plain Text"&&reuseViewerParts.elements.content.textContent===reuseRootSource,"Parsed to Plain Text did not preserve the scoped source");
+reuseViewerParts.elements.renderAs.value="html";
+reuseViewerParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(reuseViewerParts.elements.representation.textContent==="Preview"&&reuseViewerParts.elements.html.previewFrame.srcdoc.includes("reused HTML"),"Plain Text to HTML did not render the scoped Preview");
+reuseViewerParts.elements.renderAs.value="auto";
+reuseViewerParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(reuseCalls.filter((call)=>call.command==="open_nested_json").length===1&&reuseViewerParts.elements.representation.textContent==="Parsed","HTML to Auto reopened instead of reusing the parsed scope");
+reuseViewerParts.elements.renderAs.value="nestedJson";
+reuseViewerParts.elements.renderAs.dispatchEvent(new Event("change"));
+await renderAsSettle();
+check(reuseCalls.filter((call)=>call.command==="open_nested_json").length===1&&reuseViewerParts.elements.representation.textContent==="Parsed"&&reuseCalls.filter((call)=>call.command==="close_nested_scope").length===0,"Auto to Nested JSON did not reuse the parsed scope");
+reuseViewer.close();
+await reuseCloseObserved;
+await renderAsSettle();
+check(reuseCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===80).length===1,"Reused nested scope was not closed exactly once");
+reuseViewerParts.dialog.remove();
+
+const nestedHtmlSource="<p>nested html</p>";
+const nestedHtmlRoot=node(90,"object",0,32,"$",1);
+const nestedHtmlChild=node(91,"string",9,9+nestedHtmlSource.length,"html",0,"nested HTML");
+const nestedHtmlCalls=[];
+const nestedHtmlParts=makeHtmlViewer();
+const nestedHtmlViewer=new ContentViewer({elements:nestedHtmlParts.elements,invoke:async(command,args)=>{
+  nestedHtmlCalls.push({command,args});
+  if(command==="get_string_detection") return args.nodeId===91 ? {semanticType:"html",detectionSource:"contentDetected",plainReason:null} : {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
+  if(command==="open_nested_json") return {scopeId:90,parentScopeId:null,sourceNodeId:90,root:nestedHtmlRoot,depth:1,maxDepth:5,parsedBytes:32,cumulativeBytes:32,sessionRevision:37};
+  if(command==="get_children") return {nodes:[nestedHtmlChild],hasMore:false,nextCursor:null};
+  if(command==="get_html_preview") return {html:"<article>nested preview</article>",reason:null};
+  if(command==="close_nested_scope") return undefined;
+  throw new Error("unexpected nested HTML Back command");
+}});
+await nestedHtmlViewer.open({revision:37,nodeId:90,spanStart:0,spanEnd:32,scopeId:null,scopeLabel:"Document",pathSegments:["$","nested-html"],pathTruncated:false},nestedHtmlParts.elements.close);
+await renderAsSettle();
+nestedHtmlParts.elements.nested.parsedTree.querySelector(".tree-disclosure")?.click();
+await renderAsSettle();
+nestedHtmlParts.elements.nested.parsedTree.querySelector('[data-node-id="91"]')?.dispatchEvent(new MouseEvent("click",{bubbles:true,detail:2}));
+await renderAsSettle();
+check(nestedHtmlParts.elements.representation.textContent==="Preview"&&nestedHtmlParts.elements.html.previewFrame.srcdoc.includes("nested preview"),"Nested HTML child did not install its Preview");
+nestedHtmlParts.elements.nested.back.click();
+await renderAsSettle();
+check(nestedHtmlParts.elements.representation.textContent==="Parsed"&&nestedHtmlParts.elements.html.previewFrame.srcdoc===""&&nestedHtmlParts.elements.html.representations.hidden===true,"Nested HTML Back did not clear the iframe before restoring Parsed");
+nestedHtmlViewer.close();
+await renderAsSettle();
+nestedHtmlParts.dialog.remove();
+
+let resolvePendingNestedScope;
+let resolvePendingNestedClose;
+const pendingNestedScope=new Promise((resolve)=>{resolvePendingNestedScope=resolve;});
+const pendingNestedClose=new Promise((resolve)=>{resolvePendingNestedClose=resolve;});
+const pendingNestedParts=makeNestedViewer();
+const pendingNestedCalls=[];
+const pendingNestedViewer=new ContentViewer({elements:pendingNestedParts.elements,invoke:async(command,args)=>{
+  pendingNestedCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
+  if(command==="open_nested_json") return pendingNestedScope;
+  if(command==="close_nested_scope"){resolvePendingNestedClose?.();return undefined;}
+  throw new Error("unexpected pending nested command");
+}});
+const pendingNestedOpen=pendingNestedViewer.open({revision:38,nodeId:100,spanStart:0,spanEnd:10,scopeId:null,scopeLabel:"Document",pathSegments:["$","pending"],pathTruncated:false},pendingNestedParts.elements.close);
+await renderAsSettle();
+check(pendingNestedParts.elements.renderAs.disabled===true&&pendingNestedParts.elements.dialog.getAttribute("aria-busy")==="true"&&!pendingNestedParts.elements.close.disabled,"Pending nested open did not hold the viewer busy with a reachable Close");
+pendingNestedViewer.close();
+resolvePendingNestedScope({scopeId:101,sessionRevision:38});
+await pendingNestedOpen;
+await pendingNestedClose;
+await renderAsSettle();
+check(!pendingNestedViewer.isOpen&&pendingNestedParts.elements.content.textContent===""&&pendingNestedParts.elements.nested.navigation.hidden&&pendingNestedCalls.filter((call)=>call.command==="close_nested_scope"&&call.args.scopeId===101).length===1,"Late nested scope response repopulated the closed viewer or was not closed exactly once");
+pendingNestedParts.dialog.remove();
+
+for(const errorCode of ["file_changed","stale_session"]){
+  const parts=makeNestedViewer();
+  let sessionError;
+  const viewer=new ContentViewer({elements:parts.elements,onSessionError:(error)=>{sessionError=error;},invoke:async(command)=>{
+    if(command==="get_string_detection") return {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
+    if(command==="open_nested_json") throw {code:errorCode,message:"nested session ended"};
+    throw new Error("unexpected nested "+errorCode+" command");
+  }});
+  await viewer.open({revision:errorCode==="file_changed"?39:40,nodeId:110,spanStart:0,spanEnd:10,scopeId:null,scopeLabel:"Document",pathSegments:["$",errorCode],pathTruncated:false},parts.elements.close);
+  await renderAsSettle();
+  check(sessionError?.code===errorCode&&!viewer.isOpen&&parts.elements.content.textContent===""&&parts.elements.nested.navigation.hidden,"Nested "+errorCode+" did not invalidate the viewer without stale UI");
+  parts.dialog.remove();
+}
+
 const htmlSourceA="A".repeat(128*1024);
 const htmlSourceB="B".repeat(128*1024);
 const htmlSource=htmlSourceA+htmlSourceB;

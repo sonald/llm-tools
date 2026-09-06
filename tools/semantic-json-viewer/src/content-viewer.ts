@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { renderCode, type CodeRenderReason } from "./code-renderer";
+import { renderCode, type CodeLanguage, type CodeRenderReason } from "./code-renderer";
 import { renderSafeMarkdown } from "./markdown-renderer";
 import { TreeView, type NodeDto, type TreeViewSnapshot } from "./tree-view";
 
@@ -32,6 +32,8 @@ export type ContentViewerElements = {
   status: HTMLElement;
   alert: HTMLElement;
   content: HTMLElement;
+  renderAs?: HTMLSelectElement;
+  markdownAnyway?: HTMLButtonElement;
   previous: HTMLButtonElement;
   next: HTMLButtonElement;
   nested?: NestedViewerElements;
@@ -73,6 +75,8 @@ type TextChunk = {
 };
 
 type SemanticType = "markdown" | "code";
+
+export type RenderAs = "auto" | "plainText" | "markdown" | "nestedJson" | "html" | "code" | CodeLanguage;
 
 type CollectedText = {
   first: TextChunk;
@@ -118,16 +122,22 @@ type NestedFrame = {
   parentSnapshot: TreeViewSnapshot | null;
   decoded: TextState;
   raw: TextState;
+  kind: "json" | "string";
+  detection: StringDetection;
+  renderOverride: RenderAs;
 };
 
 const TEXT_CHUNK_BYTES = 128 * 1024;
 const DECODED_PAGE_CACHE_BYTES = 32 * 1024 * 1024;
 const MARKDOWN_AUTO_RENDER_LIMIT_BYTES = 2 * 1024 * 1024;
+const MARKDOWN_ANYWAY_LIMIT_BYTES = 32 * 1024 * 1024;
 const CODE_AUTO_RENDER_LIMIT_BYTES = 1 * 1024 * 1024;
 const HTML_INPUT_LIMIT_BYTES = 512 * 1024;
 const HTML_OUTPUT_LIMIT_BYTES = 1024 * 1024;
 const MARKDOWN_OVER_LIMIT_NOTE = "Markdown rendering skipped because content exceeds 2 MiB.";
 const MARKDOWN_OVER_LIMIT_STATUS = "Markdown source exceeds 2 MiB; showing decoded source.";
+const MARKDOWN_HARD_LIMIT_NOTE = "Markdown rendering skipped because content exceeds 32 MiB.";
+const MARKDOWN_HARD_LIMIT_STATUS = "Markdown source exceeds 32 MiB; showing decoded source.";
 const HTML_PREVIEW_NOTE = "Isolated HTML Preview · Opaque origin · scripts, network, forms, navigation, file access and application IPC blocked.";
 const HTML_RENDER_FAILURE_NOTE = "Semantic rendering failed. Showing plain text instead.";
 const HTML_SIZE_LIMIT_NOTE = `HTML Preview disabled because content exceeds ${HTML_INPUT_LIMIT_BYTES / 1024} KiB.`;
@@ -139,6 +149,7 @@ export class ContentViewer {
   private readonly onSessionError: (error: unknown) => void;
   private readonly onClose: ((restoreFocus: boolean) => void) | undefined;
   private generation = 0;
+  private ignoredDialogCloseEvents = 0;
   private target: ContentTarget | null = null;
   private detection: StringDetection | null = null;
   private opener: HTMLElement | null = null;
@@ -154,12 +165,20 @@ export class ContentViewer {
   private readonly nestedElements: NestedViewerElements | null;
   private readonly nestedTree: TreeView | null;
   private readonly htmlElements: HtmlViewerElements | null;
+  private readonly renderAs: HTMLSelectElement | null;
+  private readonly markdownAnyway: HTMLButtonElement | null;
   private nestedFrames: NestedFrame[] = [];
   private nestedRepresentation: "parsed" | "decoded" | "raw" | null = null;
   private htmlRepresentation: "preview" | "source" | null = null;
   private htmlPreview: string | null = null;
   private htmlPreviewUnavailable = false;
   private htmlNote = "";
+  private renderMode: "plainText" | "markdown" | "code" | "html" | "nestedJson" | null = null;
+  private codeLanguageHint: CodeLanguage | null = null;
+  private renderOverride: RenderAs = "auto";
+  private readonly overrides = new Map<string, RenderAs>();
+  private overrideRevision: number | null = null;
+  private semanticLimitBytes: number | null = null;
   private readonly decodedPages = new Map<number, TextChunk>();
   private decodedPageCacheBytes = 0;
   private readonly closedScopeIds = new Set<string>();
@@ -174,6 +193,8 @@ export class ContentViewer {
     this.onClose = options.onClose;
     this.nestedElements = options.elements.nested ?? null;
     this.htmlElements = options.elements.html ?? null;
+    this.renderAs = options.elements.renderAs ?? null;
+    this.markdownAnyway = options.elements.markdownAnyway ?? null;
     this.nestedTree = this.nestedElements
       ? new TreeView({
         panel: this.nestedElements.parsedTree,
@@ -188,6 +209,8 @@ export class ContentViewer {
       })
       : null;
     this.elements.close.addEventListener("click", () => this.close());
+    this.renderAs?.addEventListener("change", () => void this.changeRenderAs());
+    this.markdownAnyway?.addEventListener("click", () => void this.renderMarkdownAnyway());
     this.elements.previous.addEventListener("click", () => void this.readPrevious());
     this.elements.next.addEventListener("click", () => void this.readNext());
     this.nestedElements?.back.addEventListener("click", () => void this.backNested());
@@ -202,7 +225,13 @@ export class ContentViewer {
       // Let the platform close the dialog and let the close event restore focus.
       this.restoreFocusOnClose = true;
     });
-    this.elements.dialog.addEventListener("close", () => this.finishClose());
+    this.elements.dialog.addEventListener("close", () => {
+      if (this.ignoredDialogCloseEvents > 0) {
+        this.ignoredDialogCloseEvents -= 1;
+        return;
+      }
+      this.finishClose();
+    });
     this.resetDom();
   }
 
@@ -210,13 +239,23 @@ export class ContentViewer {
     return this.elements.dialog.open;
   }
 
+  clearOverridesForRevision(revision?: number): void {
+    this.overrides.clear();
+    if (revision !== undefined) this.overrideRevision = revision;
+    this.renderOverride = "auto";
+    this.syncRenderAsSelect();
+  }
+
   async open(target: ContentTarget, opener: HTMLElement | null = null): Promise<void> {
+    if (this.overrideRevision !== null && this.overrideRevision !== target.revision) this.overrides.clear();
+    this.overrideRevision = target.revision;
     this.releaseNestedScopes();
     this.clearHtmlPreviewFrame();
     this.generation += 1;
     const generation = this.generation;
     this.restoreFocusOnClose = null;
     this.target = cloneTarget(target);
+    this.renderOverride = this.overrides.get(renderOverrideKey(target)) ?? "auto";
     this.detection = null;
     this.opener = opener;
     this.busy = true;
@@ -227,6 +266,9 @@ export class ContentViewer {
     this.elements.range.textContent = "—";
     this.representation = null;
     this.semanticLimit = null;
+    this.semanticLimitBytes = null;
+    this.renderMode = null;
+    this.codeLanguageHint = null;
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
     this.nestedRepresentation = null;
@@ -262,39 +304,15 @@ export class ContentViewer {
       this.detection = detection;
       this.renderMetadata();
 
-      if (detection.semanticType === "nestedJson") {
-        await this.openNestedRoot(target, generation);
-        return;
-      }
-
-      if (detection.semanticType === "html") {
-        await this.openHtml(target, generation);
-        return;
-      }
-
-      if (detection.semanticType === "markdown" || detection.semanticType === "code") {
-        await this.openSemantic(target, generation, detection.semanticType);
-        return;
-      }
-
-      const chunkValue = await this.invokeRequest<unknown>("read_decoded_text", {
-        nodeId: target.nodeId,
-        offset: 0,
-        length: TEXT_CHUNK_BYTES,
-        sessionRevision: target.revision,
-        scopeId: target.scopeId
-      });
-      if (!this.isCurrent(generation, target)) return;
-      const chunk = validateChunk(chunkValue, 0, rawSpanLength(target));
-      if (!chunk) throw new Error("The decoded text response was invalid.");
-      this.installChunk(chunk, true);
+      await this.renderSelection(target, generation, this.renderOverride);
     } catch (error) {
       if (!this.isCurrent(generation, target)) return;
       this.handleFailure(error);
     }
   }
 
-  clear(restoreFocus = true): void {
+  clear(restoreFocus = true, clearOverrides = false): void {
+    if (clearOverrides) this.overrides.clear();
     this.releaseNestedScopes();
     this.clearHtmlPreviewFrame();
     this.restoreFocusOnClose = restoreFocus;
@@ -308,6 +326,10 @@ export class ContentViewer {
     this.clearContent();
     this.representation = null;
     this.semanticLimit = null;
+    this.semanticLimitBytes = null;
+    this.renderMode = null;
+    this.codeLanguageHint = null;
+    this.renderOverride = "auto";
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
     this.nestedRepresentation = null;
@@ -325,19 +347,22 @@ export class ContentViewer {
     this.setStatus("");
     this.renderMetadata();
     this.renderPaging();
-    if (this.elements.dialog.open) this.elements.dialog.close();
-    else this.finishClose();
+    this.finishDialogClose();
   }
 
   close(): void {
     this.restoreFocusOnClose = true;
     this.releaseNestedScopes();
     this.clearHtmlPreviewFrame();
+    this.finishDialogClose();
+  }
+
+  private finishDialogClose(): void {
     if (this.elements.dialog.open) {
+      this.ignoredDialogCloseEvents += 1;
       this.elements.dialog.close();
-    } else {
-      this.finishClose();
     }
+    this.finishClose();
   }
 
   private async readNext(): Promise<void> {
@@ -407,17 +432,266 @@ export class ContentViewer {
     }
   }
 
-  private async openSemantic(target: ContentTarget, generation: number, semanticType: SemanticType): Promise<void> {
+  private async renderSelection(target: ContentTarget, generation: number, selection: RenderAs): Promise<void> {
+    this.renderOverride = selection;
+    if (selection === "auto") {
+      const semanticType = this.detection?.semanticType;
+      if (semanticType === "nestedJson" && this.restoreExistingParsedFrame(target, selection)) {
+        return;
+      }
+      if (semanticType === "nestedJson") {
+        const parent = this.nestedFrames.at(-1);
+        if (parent?.kind === "string" && target.scopeId === parent.scope.scopeId && this.detection) {
+          const parentSnapshot = this.nestedTree?.snapshot() ?? parent.parentSnapshot;
+          await this.openNestedJsonFrame(cloneTarget(target), parent, parentSnapshot, generation, this.detection, selection);
+        } else if (!parent && target.scopeId === null) {
+          await this.openNestedRoot(target, generation);
+        } else {
+          throw new Error("Nested JSON can only open from the current string scope.");
+        }
+      } else if (semanticType === "html") {
+        await this.openHtml(target, generation);
+      } else if (semanticType === "markdown" || semanticType === "code") {
+        await this.openSemantic(target, generation, semanticType);
+      } else {
+        await this.openPlain(target, generation);
+      }
+      return;
+    }
+    if (selection === "plainText") {
+      await this.openPlain(target, generation);
+    } else if (selection === "markdown") {
+      await this.openSemantic(target, generation, "markdown");
+    } else if (selection === "nestedJson") {
+      if (this.restoreExistingParsedFrame(target, selection)) {
+        return;
+      }
+      const parent = this.nestedFrames.at(-1);
+      if (parent?.kind === "string" && target.scopeId === parent.scope.scopeId && this.detection) {
+        const parentSnapshot = this.nestedTree?.snapshot() ?? parent.parentSnapshot;
+        const source = cloneTarget(target);
+        await this.openNestedJsonFrame(source, parent, parentSnapshot, generation, this.detection, selection);
+      } else if (!parent) {
+        await this.openNestedRoot(target, generation);
+      } else {
+        throw new Error("Nested JSON can only open from the current string scope.");
+      }
+    } else if (selection === "html") {
+      await this.openHtml(target, generation);
+    } else if (selection === "code") {
+      await this.openSemantic(target, generation, "code");
+    } else {
+      await this.openSemantic(target, generation, "code", selection);
+    }
+  }
+
+  private async openPlain(target: ContentTarget, generation: number): Promise<void> {
+    this.renderMode = "plainText";
+    this.codeLanguageHint = null;
+    this.semanticLimit = null;
+    this.semanticLimitBytes = null;
+    const chunkValue = await this.invokeRequest<unknown>("read_decoded_text", {
+      nodeId: target.nodeId,
+      offset: 0,
+      length: TEXT_CHUNK_BYTES,
+      sessionRevision: target.revision,
+      scopeId: target.scopeId
+    });
+    if (!this.isCurrent(generation, target)) return;
+    const chunk = validateChunk(chunkValue, 0, rawSpanLength(target));
+    if (!chunk) throw new Error("The decoded text response was invalid.");
+    this.installChunk(chunk, true);
+  }
+
+  private async openSemantic(
+    target: ContentTarget,
+    generation: number,
+    semanticType: SemanticType,
+    languageHint: CodeLanguage | null = null,
+    allowMarkdownAnyway = false
+  ): Promise<void> {
+    this.renderMode = semanticType;
+    this.codeLanguageHint = semanticType === "code" ? languageHint : null;
     const limit = semanticType === "markdown"
-      ? MARKDOWN_AUTO_RENDER_LIMIT_BYTES
+      ? allowMarkdownAnyway ? MARKDOWN_ANYWAY_LIMIT_BYTES : MARKDOWN_AUTO_RENDER_LIMIT_BYTES
       : CODE_AUTO_RENDER_LIMIT_BYTES;
     const collected = await this.collectSemanticSource(target, generation, limit);
     if (!collected) return;
     this.semanticLimit = collected.overLimit ? semanticType : null;
+    this.semanticLimitBytes = collected.overLimit ? limit : null;
     const chunk = collected.overLimit
       ? collected.first
       : { start: 0, text: collected.text ?? "", hasMore: false, nextOffset: null };
     this.installChunk(chunk, true, collected.overLimit ? null : collected.first);
+  }
+
+  private async changeRenderAs(): Promise<void> {
+    const target = this.target;
+    const select = this.renderAs;
+    if (!target || !select || this.busy || !this.detection) return;
+    const next = renderAsValue(select.value);
+    if (next === undefined) {
+      this.syncRenderAsSelect();
+      return;
+    }
+    const previous = this.renderOverride;
+    const key = renderOverrideKey(target);
+    const previousMapValue = this.overrides.get(key);
+    if (next === previous) return;
+    const generation = ++this.generation;
+    if (next === "nestedJson") {
+      this.renderOverride = next;
+      try {
+        const opened = await this.openNestedOverride(target, generation);
+        if (!opened || !this.isCurrent(generation, target)) return;
+        this.overrides.set(key, next);
+        this.renderOverride = next;
+        this.updateCurrentFrameOverride(target, next);
+        this.syncRenderAsSelect();
+      } catch (error) {
+        if (!this.isCurrent(generation, target)) return;
+        this.nestedBusy = false;
+        if (errorCode(error) === "file_changed" || errorCode(error) === "stale_session") {
+          this.handleFailure(error);
+          return;
+        }
+        if (previousMapValue === undefined) this.overrides.delete(key);
+        else this.overrides.set(key, previousMapValue);
+        this.renderOverride = previous;
+        this.syncRenderAsSelect();
+        this.elements.alert.hidden = false;
+        this.elements.alert.textContent = `Content could not be opened: ${errorMessage(error)}`;
+        this.setStatus("Nested JSON override failed");
+        this.renderMetadata();
+        this.renderPaging();
+      }
+      return;
+    }
+    if (next === "auto") this.overrides.delete(key);
+    const inNestedScope = this.nestedFrames.length > 0;
+    this.prepareRendererLoad(inNestedScope);
+    try {
+      await this.renderSelection(target, generation, next);
+      if (!this.isCurrent(generation, target)) return;
+      if (next === "auto") this.overrides.delete(key);
+      else this.overrides.set(key, next);
+      this.renderOverride = next;
+      this.updateCurrentFrameOverride(target, next);
+      if (inNestedScope) {
+        this.setNestedVisible(true);
+        this.renderNestedBreadcrumb();
+      }
+      this.syncRenderAsSelect();
+    } catch (error) {
+      if (!this.isCurrent(generation, target)) return;
+      if (previousMapValue === undefined) this.overrides.delete(key);
+      else this.overrides.set(key, previousMapValue);
+      this.renderOverride = previous;
+      this.syncRenderAsSelect();
+      this.renderMetadata();
+      this.handleFailure(error);
+    }
+  }
+
+  private async renderMarkdownAnyway(): Promise<void> {
+    const target = this.target;
+    if (!target || this.busy || this.renderMode !== "markdown" || this.semanticLimitBytes !== MARKDOWN_AUTO_RENDER_LIMIT_BYTES) return;
+    const generation = ++this.generation;
+    this.prepareRendererLoad(this.nestedFrames.length > 0);
+    try {
+      await this.openSemantic(target, generation, "markdown", null, true);
+      if (this.isCurrent(generation, target)) this.renderMarkdownAnywayButton();
+    } catch (error) {
+      if (this.isCurrent(generation, target)) this.handleFailure(error);
+    }
+  }
+
+  private async openNestedOverride(target: ContentTarget, generation: number): Promise<boolean> {
+    if (this.restoreExistingParsedFrame(target, "nestedJson")) return true;
+    const parent = this.nestedFrames.at(-1);
+    if (!parent && target.scopeId === null && this.detection) {
+      return this.openNestedRoot(target, generation, true);
+    }
+    if (!parent || parent.kind !== "string" || target.scopeId !== parent.scope.scopeId || !this.detection) return false;
+    this.nestedBusy = true;
+    this.syncRenderAsSelect();
+    this.setStatus("Loading parsed nested JSON…");
+    this.renderPaging();
+    const parentSnapshot = this.nestedTree?.snapshot() ?? parent.parentSnapshot;
+    await this.openNestedJsonFrame(cloneTarget(target), parent, parentSnapshot, generation, this.detection, "nestedJson");
+    return true;
+  }
+
+  private restoreExistingParsedFrame(target: ContentTarget, selection: RenderAs): boolean {
+    const frame = this.nestedFrames.at(-1);
+    if (!frame || frame.kind !== "json" || renderOverrideKey(frame.source) !== renderOverrideKey(target)) return false;
+    this.target = cloneTarget(frame.source);
+    this.detection = frame.detection;
+    this.renderOverride = selection;
+    frame.renderOverride = selection;
+    this.renderMode = "nestedJson";
+    this.nestedRepresentation = "parsed";
+    this.nestedBusy = false;
+    this.busy = false;
+    this.cleanupParsedPresentation();
+    this.setNestedTreeSession(frame);
+    this.setNestedVisible(true);
+    this.elements.dialog.removeAttribute("aria-busy");
+    this.elements.content.removeAttribute("aria-busy");
+    this.setStatus("Parsed nested JSON ready");
+    this.renderMetadata();
+    this.renderPaging();
+    focusNestedRoot(this.nestedElements?.parsedTree ?? null);
+    return true;
+  }
+
+  private prepareRendererLoad(keepNestedNavigation = false): void {
+    this.busy = true;
+    this.offsets = [0];
+    this.offsetIndex = 0;
+    this.nextOffset = null;
+    this.clearContent();
+    this.clearDecodedPages();
+    this.representation = null;
+    this.semanticLimit = null;
+    this.semanticLimitBytes = null;
+    this.nestedRepresentation = null;
+    this.markdownRenderFailed = false;
+    this.codeRenderReason = null;
+    this.htmlRepresentation = null;
+    this.htmlPreview = null;
+    this.htmlPreviewUnavailable = false;
+    this.htmlNote = "";
+    if (keepNestedNavigation) this.setNestedVisible(true);
+    else this.setNestedVisible(false);
+    this.clearHtmlPreviewFrame();
+    this.setHtmlVisible(false);
+    this.elements.alert.hidden = true;
+    this.elements.dialog.setAttribute("aria-busy", "true");
+    this.elements.content.setAttribute("aria-busy", "true");
+    this.setStatus("Loading renderer…");
+    this.renderMetadata();
+    this.renderPaging();
+  }
+
+  private syncRenderAsSelect(): void {
+    const select = this.renderAs;
+    if (!select) return;
+    select.value = renderAsOption(this.renderOverride);
+    select.disabled = this.target === null || this.detection === null || this.busy || this.nestedBusy;
+    this.renderMarkdownAnywayButton();
+  }
+
+  private renderMarkdownAnywayButton(): void {
+    if (!this.markdownAnyway) return;
+    const visible = this.renderMode === "markdown" && this.semanticLimitBytes === MARKDOWN_AUTO_RENDER_LIMIT_BYTES;
+    this.markdownAnyway.hidden = !visible;
+    this.markdownAnyway.disabled = this.busy;
+  }
+
+  private updateCurrentFrameOverride(target: ContentTarget, override: RenderAs): void {
+    const frame = this.nestedFrames.at(-1);
+    if (frame && renderOverrideKey(frame.source) === renderOverrideKey(target)) frame.renderOverride = override;
   }
 
   private async collectSemanticSource(
@@ -465,10 +739,10 @@ export class ContentViewer {
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
     const canRenderSemantic = initial && !chunk.hasMore && this.semanticLimit === null
-      && (this.detection?.semanticType === "markdown" || this.detection?.semanticType === "code");
+      && (this.renderMode === "markdown" || this.renderMode === "code");
     let sourceChunk = chunk;
     let cacheChunk: TextChunk | null = canRenderSemantic ? null : chunk;
-    if (canRenderSemantic && this.detection?.semanticType === "markdown") {
+    if (canRenderSemantic && this.renderMode === "markdown") {
       const fragment = renderSafeMarkdown(chunk.text);
       if (fragment) {
         this.elements.content.replaceChildren(fragment);
@@ -481,8 +755,8 @@ export class ContentViewer {
         this.representation = "decoded";
         this.markdownRenderFailed = true;
       }
-    } else if (canRenderSemantic && this.detection?.semanticType === "code") {
-      const result = renderCode(chunk.text);
+    } else if (canRenderSemantic && this.renderMode === "code") {
+      const result = renderCode(chunk.text, this.codeLanguageHint);
       this.elements.content.replaceChildren(result.fragment);
       this.representation = "rendered";
       this.codeRenderReason = result.reason;
@@ -492,16 +766,18 @@ export class ContentViewer {
     }
     if (cacheChunk) this.cacheDecodedPage(cacheChunk);
     this.nextOffset = sourceChunk.nextOffset;
-    if (this.detection?.semanticType === "html") {
+    if (this.renderMode === "html") {
       this.htmlRepresentation = "source";
       this.setHtmlVisible(true);
     }
     this.renderMetadata();
     this.elements.alert.hidden = true;
     if (this.semanticLimit === "markdown") {
-      this.setStatus(MARKDOWN_OVER_LIMIT_STATUS);
+      this.setStatus(this.semanticLimitBytes === MARKDOWN_ANYWAY_LIMIT_BYTES
+        ? MARKDOWN_HARD_LIMIT_STATUS
+        : MARKDOWN_OVER_LIMIT_STATUS);
     } else if (this.representation === "rendered") {
-      this.setStatus(this.detection?.semanticType === "code" ? "Rendered Code ready" : "Rendered Markdown ready");
+      this.setStatus(this.renderMode === "code" ? "Rendered Code ready" : "Rendered Markdown ready");
     } else if (sourceChunk.text.length === 0 && !sourceChunk.hasMore) {
       this.setStatus("Empty string");
     } else {
@@ -513,7 +789,7 @@ export class ContentViewer {
     this.renderPaging();
   }
 
-  private async openNestedRoot(target: ContentTarget, generation: number): Promise<void> {
+  private async openNestedRoot(target: ContentTarget, generation: number, propagateFailure = false): Promise<boolean> {
     const nested = this.nestedElements;
     const tree = this.nestedTree;
     if (!nested || !tree) {
@@ -524,13 +800,14 @@ export class ContentViewer {
         sessionRevision: target.revision,
         scopeId: target.scopeId
       });
-      if (!this.isCurrent(generation, target)) return;
+      if (!this.isCurrent(generation, target)) return false;
       const chunk = validateChunk(value, 0, rawSpanLength(target));
       if (!chunk) throw new Error("The decoded text response was invalid.");
       this.installChunk(chunk, true);
-      return;
+      return true;
     }
     this.nestedBusy = true;
+    this.syncRenderAsSelect();
     this.setStatus("Loading parsed nested JSON…");
     this.renderPaging();
     try {
@@ -542,21 +819,26 @@ export class ContentViewer {
       });
       if (!this.isCurrent(generation, target)) {
         this.bestEffortCloseScope(value, target.revision);
-        return;
+        return false;
       }
       const scope = validateNestedScope(value, target, null);
       if (!scope) {
         this.bestEffortCloseScope(value, target.revision);
         throw new Error("The nested JSON scope response was invalid.");
       }
+      this.cleanupParsedPresentation();
       const frame: NestedFrame = {
         scope,
         source: cloneTarget(target),
         parentSnapshot: null,
         decoded: newTextState(),
-        raw: newTextState()
+        raw: newTextState(),
+        kind: "json",
+        detection: this.detection ?? { semanticType: "nestedJson", detectionSource: "contentDetected", plainReason: null },
+        renderOverride: this.renderOverride
       };
       this.nestedFrames = [frame];
+      this.renderMode = "nestedJson";
       this.nestedRepresentation = "parsed";
       this.nestedBusy = false;
       this.busy = false;
@@ -574,14 +856,24 @@ export class ContentViewer {
       this.setStatus("Parsed nested JSON ready");
       this.renderMetadata();
       this.renderPaging();
+      return true;
     } catch (error) {
-      if (!this.isCurrent(generation, target)) return;
+      if (!this.isCurrent(generation, target)) return false;
+      if (propagateFailure) {
+        this.nestedBusy = false;
+        throw error;
+      }
       this.nestedBusy = false;
       this.handleFailure(error);
+      return false;
     }
   }
 
   private async openHtml(target: ContentTarget, generation: number): Promise<void> {
+    this.renderMode = "html";
+    this.codeLanguageHint = null;
+    this.semanticLimit = null;
+    this.semanticLimitBytes = null;
     this.setStatus("Loading isolated HTML Preview…");
     this.renderPaging();
     try {
@@ -670,7 +962,7 @@ export class ContentViewer {
   }
 
   private activateHtmlRepresentation(representation: "preview" | "source"): void {
-    if (this.detection?.semanticType !== "html" || this.busy) return;
+    if (this.renderMode !== "html" || this.busy) return;
     if (representation === "preview") {
       if (this.htmlPreviewUnavailable || this.htmlPreview === null || !this.htmlElements) return;
       this.htmlRepresentation = "preview";
@@ -716,7 +1008,7 @@ export class ContentViewer {
   }
 
   private writeHtmlPreview(html: string, generation: number, target: ContentTarget | null): void {
-    if (!this.htmlElements || !target || this.detection?.semanticType !== "html" || this.htmlRepresentation !== "preview") return;
+    if (!this.htmlElements || !target || this.renderMode !== "html" || this.htmlRepresentation !== "preview") return;
     if (generation !== this.generation || this.target?.nodeId !== target.nodeId || this.target.scopeId !== target.scopeId
       || this.target.revision !== target.revision) return;
     this.htmlElements.previewFrame.srcdoc = htmlPreviewDocument(html);
@@ -726,21 +1018,21 @@ export class ContentViewer {
     const parent = this.nestedFrames.at(-1);
     const tree = this.nestedTree;
     if (!parent || !tree || this.nestedBusy || target.scopeId !== parent.scope.scopeId) return;
-    const generation = this.generation;
+    const generation = ++this.generation;
     const parentSnapshot = tree.snapshot();
     this.nestedBusy = true;
+    this.syncRenderAsSelect();
     this.elements.range.textContent = "—";
-    this.setStatus("Loading parsed nested JSON…");
+    this.setStatus("Detecting nested string…");
     this.renderPaging();
+    let pushedFrame: NestedFrame | null = null;
     try {
-      const value = await this.invokeRequest<unknown>("open_nested_json", {
-        parentScopeId: parent.scope.scopeId,
+      const detectionValue = await this.invokeRequest<unknown>("get_string_detection", {
         nodeId: target.nodeId,
-        maxDepth: null,
+        scopeId: parent.scope.scopeId,
         sessionRevision: parent.scope.sessionRevision
       });
-      if (generation !== this.generation || this.nestedFrames.at(-1)?.scope.scopeId !== parent.scope.scopeId) {
-        this.bestEffortCloseScope(value, parent.scope.sessionRevision);
+      if (generation !== this.generation || this.nestedFrames.at(-1) !== parent) {
         return;
       }
       const source = cloneTarget({
@@ -748,36 +1040,49 @@ export class ContentViewer {
         scopeLabel: parent.source.scopeLabel,
         pathSegments: [...parent.source.pathSegments, ...target.pathSegments.slice(1)]
       });
-      const scope = validateNestedScope(value, source, parent.scope);
-      if (!scope) {
-        this.bestEffortCloseScope(value, parent.scope.sessionRevision);
-        throw new Error("The nested JSON scope response was invalid.");
+      const detection = validateDetection(detectionValue);
+      if (!detection) throw new Error("The string detection response was invalid.");
+      const selection = this.overrides.get(renderOverrideKey(source)) ?? "auto";
+      if (selection === "nestedJson" || selection === "auto" && detection.semanticType === "nestedJson") {
+        pushedFrame = await this.openNestedJsonFrame(source, parent, parentSnapshot, generation, detection, selection);
+      } else {
+        pushedFrame = {
+          scope: parent.scope,
+          source,
+          parentSnapshot,
+          decoded: newTextState(),
+          raw: newTextState(),
+          kind: "string",
+          detection,
+          renderOverride: selection
+        };
+        this.nestedFrames.push(pushedFrame);
+        this.target = source;
+        this.detection = detection;
+        this.renderOverride = selection;
+        this.nestedRepresentation = null;
+        this.setNestedVisible(true);
+        this.prepareRendererLoad(true);
+        await this.renderSelection(source, generation, selection);
+        if (!this.isCurrent(generation, source)) return;
+        this.nestedBusy = false;
+        this.setNestedVisible(true);
+        this.renderNestedBreadcrumb();
+        this.renderMetadata();
+        this.renderPaging();
       }
-      this.nestedFrames.push({ scope, source, parentSnapshot, decoded: newTextState(), raw: newTextState() });
-      this.target = source;
-      this.detection = { semanticType: "nestedJson", detectionSource: "contentDetected", plainReason: null };
-      this.nestedRepresentation = "parsed";
-      this.nestedBusy = false;
-      tree.setSession({
-        mode: "nested",
-        sessionRevision: scope.sessionRevision,
-        scopeId: scope.scopeId,
-        sourceSize: scope.parsedBytes,
-        ariaLabel: "Parsed nested JSON structure",
-        scopeLabel: source.scopeLabel
-      }, scope.root);
-      this.renderNestedBreadcrumb();
-      this.setNestedVisible(true);
-      this.setStatus("Parsed nested JSON ready");
-      this.renderMetadata();
-      this.renderPaging();
-      focusNestedRoot(this.nestedElements?.parsedTree ?? null);
     } catch (error) {
       if (generation !== this.generation) return;
-      this.nestedBusy = false;
       if (errorCode(error) === "file_changed" || errorCode(error) === "stale_session") {
+        this.nestedBusy = false;
         this.handleFailure(error);
         return;
+      }
+      if (pushedFrame && this.nestedFrames.at(-1) === pushedFrame) {
+        this.nestedFrames.pop();
+        await this.restoreNestedParent(parent, parentSnapshot, generation);
+      } else {
+        this.nestedBusy = false;
       }
       this.renderMetadata();
       this.elements.alert.hidden = false;
@@ -789,14 +1094,91 @@ export class ContentViewer {
     }
   }
 
+  private async openNestedJsonFrame(
+    source: ContentTarget,
+    parent: NestedFrame,
+    parentSnapshot: TreeViewSnapshot | null,
+    generation: number,
+    detection: StringDetection,
+    selection: RenderAs
+  ): Promise<NestedFrame> {
+    this.setStatus("Loading parsed nested JSON…");
+    const value = await this.invokeRequest<unknown>("open_nested_json", {
+      parentScopeId: parent.scope.scopeId,
+      nodeId: source.nodeId,
+      maxDepth: null,
+      sessionRevision: parent.scope.sessionRevision
+    });
+    if (generation !== this.generation || this.nestedFrames.at(-1) !== parent) {
+      this.bestEffortCloseScope(value, parent.scope.sessionRevision);
+      throw new Error("The nested JSON request became stale.");
+    }
+    const scope = validateNestedScope(value, source, parent.scope);
+    if (!scope) {
+      this.bestEffortCloseScope(value, parent.scope.sessionRevision);
+      throw new Error("The nested JSON scope response was invalid.");
+    }
+    this.cleanupParsedPresentation();
+    const frame: NestedFrame = {
+      scope,
+      source,
+      parentSnapshot,
+      decoded: newTextState(),
+      raw: newTextState(),
+      kind: "json",
+      detection,
+      renderOverride: selection
+    };
+    this.nestedFrames.push(frame);
+    this.target = source;
+    this.detection = detection;
+    this.renderOverride = selection;
+    this.renderMode = "nestedJson";
+    this.nestedRepresentation = "parsed";
+    this.nestedBusy = false;
+    this.busy = false;
+    this.nestedTree?.setSession({
+      mode: "nested",
+      sessionRevision: scope.sessionRevision,
+      scopeId: scope.scopeId,
+      sourceSize: scope.parsedBytes,
+      ariaLabel: "Parsed nested JSON structure",
+      scopeLabel: source.scopeLabel
+    }, scope.root);
+    this.renderNestedBreadcrumb();
+    this.setNestedVisible(true);
+    this.setStatus("Parsed nested JSON ready");
+    this.renderMetadata();
+    this.renderPaging();
+    focusNestedRoot(this.nestedElements?.parsedTree ?? null);
+    return frame;
+  }
+
   private async backNested(): Promise<void> {
     const frame = this.nestedFrames.at(-1);
     if (!frame || this.nestedBusy) return;
     const generation = ++this.generation;
     this.nestedBusy = true;
+    this.syncRenderAsSelect();
     this.elements.range.textContent = "—";
-    this.setStatus("Closing nested JSON…");
+    this.setStatus(frame.kind === "json" ? "Closing nested JSON…" : "Returning to parent…");
     this.renderPaging();
+    if (frame.kind === "string") {
+      this.nestedFrames.pop();
+      const parent = this.nestedFrames.at(-1);
+      if (!parent) {
+        this.nestedBusy = false;
+        this.close();
+        return;
+      }
+      await this.restoreNestedParent(parent, frame.parentSnapshot, generation);
+      this.nestedBusy = false;
+      this.elements.alert.hidden = true;
+      this.renderMetadata();
+      this.renderPaging();
+      focusNestedBackOrParsed(this.nestedElements, this.nestedFrames.length);
+      return;
+    }
     try {
       await this.closeScope(frame.scope.scopeId, frame.scope.sessionRevision);
       if (generation !== this.generation) return;
@@ -812,13 +1194,9 @@ export class ContentViewer {
       }
       const parent = this.nestedFrames.at(-1);
       if (!parent) return;
-      this.target = parent.source;
-      this.detection = { semanticType: "nestedJson", detectionSource: "contentDetected", plainReason: null };
-      this.nestedRepresentation = "parsed";
-      this.nestedTree?.restore(frame.parentSnapshot);
-      if (!frame.parentSnapshot) this.setNestedTreeSession(parent);
-      this.setNestedVisible(true);
-      this.setStatus("Parsed nested JSON ready");
+      await this.restoreNestedParent(parent, frame.parentSnapshot, generation);
+      this.nestedBusy = false;
+      this.elements.alert.hidden = true;
       this.renderMetadata();
       this.renderPaging();
       focusNestedBackOrParsed(this.nestedElements, this.nestedFrames.length);
@@ -829,7 +1207,7 @@ export class ContentViewer {
         this.nestedBusy = false;
         if (this.nestedFrames.length === 0) this.close();
         else {
-          this.backToParentAfterCleanup(frame.parentSnapshot);
+          await this.restoreNestedParent(this.nestedFrames.at(-1)!, frame.parentSnapshot, generation);
         }
         return;
       }
@@ -838,22 +1216,31 @@ export class ContentViewer {
     }
   }
 
-  private backToParentAfterCleanup(snapshot: TreeViewSnapshot | null): void {
-    const parent = this.nestedFrames.at(-1);
-    if (!parent) return;
-    this.elements.alert.hidden = true;
-    this.target = parent.source;
-    this.nestedRepresentation = "parsed";
-    this.nestedTree?.restore(snapshot);
-    if (!snapshot) this.setNestedTreeSession(parent);
+  private async restoreNestedParent(parent: NestedFrame, snapshot: TreeViewSnapshot | null, generation: number): Promise<void> {
+    this.target = cloneTarget(parent.source);
+    this.detection = parent.detection;
+    this.renderOverride = parent.renderOverride;
+    this.nestedRepresentation = parent.kind === "json" ? "parsed" : null;
+    if (parent.kind === "json") {
+      this.renderMode = "nestedJson";
+      this.busy = false;
+      this.cleanupParsedPresentation();
+      this.nestedTree?.restore(snapshot);
+      if (!snapshot) this.setNestedTreeSession(parent);
+      this.setNestedVisible(true);
+      this.setStatus("Parsed nested JSON ready");
+      return;
+    }
+    this.prepareRendererLoad(true);
+    await this.renderSelection(parent.source, generation, parent.renderOverride);
+    if (!this.isCurrent(generation, parent.source)) return;
+    this.nestedBusy = false;
     this.setNestedVisible(true);
-    this.renderMetadata();
-    this.renderPaging();
-    focusNestedBackOrParsed(this.nestedElements, this.nestedFrames.length);
+    this.renderNestedBreadcrumb();
   }
 
   private activateNestedRepresentation(representation: "parsed" | "decoded" | "raw"): void {
-    if (!this.nestedFrames.length || this.nestedBusy) return;
+    if (!this.nestedFrames.length || this.nestedFrames.at(-1)?.kind !== "json" || this.nestedBusy) return;
     this.nestedRepresentation = representation;
     this.setNestedVisible(true);
     this.renderMetadata();
@@ -972,11 +1359,13 @@ export class ContentViewer {
   private setNestedVisible(active: boolean): void {
     const nested = this.nestedElements;
     if (!nested) return;
+    const frame = this.nestedFrames.at(-1);
+    const parsedFrame = frame?.kind === "json";
     nested.navigation.hidden = !active;
-    nested.representations.hidden = !active;
+    nested.representations.hidden = !active || !parsedFrame || this.nestedRepresentation === null;
     nested.back.hidden = !active || this.nestedFrames.length <= 1;
     nested.back.setAttribute("aria-controls", "content-viewer-parsed-panel");
-    nested.parsedPanel.hidden = !active || this.nestedRepresentation !== "parsed";
+    nested.parsedPanel.hidden = !active || !parsedFrame || this.nestedRepresentation !== "parsed";
     nested.sharedTextPanel.hidden = (active && this.nestedRepresentation === "parsed")
       || this.htmlRepresentation === "preview";
     if (active) {
@@ -1022,7 +1411,7 @@ export class ContentViewer {
     const nested = this.nestedElements;
     const html = this.htmlElements;
     if (!nested && !html) return;
-    if (html && this.detection?.semanticType === "html" && this.htmlRepresentation === "source") {
+    if (html && this.renderMode === "html" && this.htmlRepresentation === "source") {
       this.elements.content.setAttribute("aria-label", "HTML Source");
       if (nested) {
         nested.sharedTextPanel.setAttribute("role", "tabpanel");
@@ -1050,7 +1439,7 @@ export class ContentViewer {
   private setHtmlVisible(active: boolean): void {
     const html = this.htmlElements;
     if (!html) return;
-    const visible = active && this.detection?.semanticType === "html" && this.htmlRepresentation !== null;
+    const visible = active && this.renderMode === "html" && this.htmlRepresentation !== null;
     html.representations.hidden = !visible;
     html.previewPanel.hidden = !visible || this.htmlRepresentation !== "preview";
     html.previewTab.disabled = !visible || this.htmlPreviewUnavailable || this.htmlPreview === null;
@@ -1072,6 +1461,15 @@ export class ContentViewer {
 
   private clearHtmlPreviewFrame(): void {
     if (this.htmlElements) this.htmlElements.previewFrame.srcdoc = "";
+  }
+
+  private cleanupParsedPresentation(): void {
+    this.htmlRepresentation = null;
+    this.htmlPreview = null;
+    this.htmlPreviewUnavailable = false;
+    this.htmlNote = "";
+    this.clearHtmlPreviewFrame();
+    this.setHtmlVisible(false);
   }
 
   private cacheDecodedPage(chunk: TextChunk): void {
@@ -1129,16 +1527,25 @@ export class ContentViewer {
     const request = this.invokeRequest<unknown>("close_nested_scope", { scopeId, sessionRevision }).then(
       () => {
         this.closedScopeIds.add(key);
+        this.deleteOverridesForScope(sessionRevision, scopeId);
       },
       (error: unknown) => {
         if (errorCode(error) === "not_found" || errorCode(error) === "stale_session") {
           this.closedScopeIds.add(key);
+          this.deleteOverridesForScope(sessionRevision, scopeId);
         }
         throw error;
       }
     ).finally(() => this.closingScopes.delete(key));
     this.closingScopes.set(key, request);
     return request;
+  }
+
+  private deleteOverridesForScope(sessionRevision: number, scopeId: number): void {
+    const prefix = `${sessionRevision}:${scopeId}:`;
+    for (const key of this.overrides.keys()) {
+      if (key.startsWith(prefix)) this.overrides.delete(key);
+    }
   }
 
   private bestEffortCloseScope(value: unknown, sessionRevision: number): void {
@@ -1183,7 +1590,7 @@ export class ContentViewer {
     this.elements.content.removeAttribute("aria-busy");
     const code = errorCode(error);
     if (code === "file_changed" || code === "stale_session") {
-      this.clear(false);
+      this.clear(false, true);
       this.onSessionError(error);
       return;
     }
@@ -1211,6 +1618,10 @@ export class ContentViewer {
     this.clearContent();
     this.representation = null;
     this.semanticLimit = null;
+    this.semanticLimitBytes = null;
+    this.renderMode = null;
+    this.codeLanguageHint = null;
+    this.renderOverride = "auto";
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
     this.nestedRepresentation = null;
@@ -1250,6 +1661,7 @@ export class ContentViewer {
       this.elements.representation.textContent = "—";
       this.elements.rendererNote.textContent = "";
       this.elements.range.textContent = "—";
+      this.syncRenderAsSelect();
       return;
     }
     this.elements.title.textContent = "Content Viewer";
@@ -1266,6 +1678,7 @@ export class ContentViewer {
       this.elements.plainReason.textContent = "—";
       this.elements.representation.textContent = "Loading…";
       this.elements.rendererNote.textContent = "";
+      this.syncRenderAsSelect();
       return;
     }
     this.elements.semanticType.textContent = semanticTypeLabel(detection.semanticType);
@@ -1273,43 +1686,53 @@ export class ContentViewer {
     this.elements.plainReason.textContent = detection.plainReason === null ? "—" : plainReasonLabel(detection.plainReason);
     this.elements.representation.textContent = this.nestedRepresentation !== null
       ? nestedRepresentationLabel(this.nestedRepresentation)
-      : detection.semanticType === "html"
+      : this.renderMode === "html"
       ? this.htmlRepresentation === "preview" ? "Preview" : this.htmlRepresentation === "source" ? "Source" : "Loading…"
-      : detection.semanticType === "plainText"
+      : this.renderMode === "plainText"
       ? "Plain Text"
       : this.representation === "rendered" ? "Rendered" : "Decoded Source";
     if (this.nestedRepresentation !== null) {
-      this.elements.rendererNote.textContent = this.nestedRepresentation === "parsed"
+      const note = this.nestedRepresentation === "parsed"
         ? "Parsed nested JSON tree."
         : this.nestedRepresentation === "decoded" ? "Decoded nested JSON string."
           : "Raw nested JSON lexeme.";
+      const override = this.renderOverride === "auto" ? "" : `User override: ${renderAsLabel(this.renderOverride)}`;
+      this.elements.rendererNote.textContent = override && note ? `${override}\n${note}` : override || note;
       this.renderNestedRange();
+      this.syncRenderAsSelect();
       return;
     }
-    if (detection.semanticType === "html") {
-      this.elements.rendererNote.textContent = this.htmlNote;
-    } else if (detection.semanticType === "plainText") {
-      this.elements.rendererNote.textContent = "";
-    } else if (detection.semanticType === "markdown" && this.semanticLimit === "markdown") {
-      this.elements.rendererNote.textContent = MARKDOWN_OVER_LIMIT_NOTE;
-    } else if (detection.semanticType === "code" && this.semanticLimit === "code") {
-      this.elements.rendererNote.textContent = "Syntax highlighting disabled for large content.";
-    } else if (detection.semanticType === "code" && this.representation === "rendered") {
-      this.elements.rendererNote.textContent = codeRendererNote(this.codeRenderReason);
-    } else if (this.representation === "rendered") {
-      this.elements.rendererNote.textContent = "Safe Markdown";
+    let note = "";
+    if (this.renderMode === "html") {
+      note = this.htmlNote;
+    } else if (this.renderMode === "plainText") {
+      note = "";
+    } else if (this.renderMode === "markdown" && this.semanticLimit === "markdown") {
+      note = this.semanticLimitBytes === MARKDOWN_ANYWAY_LIMIT_BYTES
+        ? MARKDOWN_HARD_LIMIT_NOTE
+        : MARKDOWN_OVER_LIMIT_NOTE;
+    } else if (this.renderMode === "code" && this.semanticLimit === "code") {
+      note = "Syntax highlighting disabled for large content.";
+    } else if (this.renderMode === "code" && this.representation === "rendered") {
+      note = codeRendererNote(this.codeRenderReason);
+    } else if (this.renderMode === "markdown" && this.representation === "rendered") {
+      note = "Safe Markdown";
     } else if (this.markdownRenderFailed) {
-      this.elements.rendererNote.textContent = "Semantic rendering failed.\nShowing plain text instead.";
-    } else if (detection.semanticType === "markdown") {
-      this.elements.rendererNote.textContent = "Markdown rendering requires a complete source page; showing decoded source.";
-    } else if (detection.semanticType === "code") {
-      this.elements.rendererNote.textContent = "Code rendering requires a complete source page; showing decoded source.";
-    } else {
-      this.elements.rendererNote.textContent = "Renderer is not available yet; showing decoded source.";
+      note = "Semantic rendering failed.\nShowing plain text instead.";
+    } else if (this.renderMode === "markdown") {
+      note = "Markdown rendering requires a complete source page; showing decoded source.";
+    } else if (this.renderMode === "code") {
+      note = "Code rendering requires a complete source page; showing decoded source.";
+    } else if (this.renderMode !== "nestedJson") {
+      note = "Renderer is not available yet; showing decoded source.";
     }
+    const override = this.renderOverride === "auto" ? "" : `User override: ${renderAsLabel(this.renderOverride)}`;
+    this.elements.rendererNote.textContent = override && note ? `${override}\n${note}` : override || note;
+    this.syncRenderAsSelect();
   }
 
   private renderPaging(): void {
+    this.syncRenderAsSelect();
     if (this.nestedRepresentation === "parsed") {
       this.elements.previous.disabled = true;
       this.elements.next.disabled = true;
@@ -1550,6 +1973,33 @@ function utf8ByteLength(value: string): number {
 
 function rawSpanLength(target: ContentTarget): number {
   return target.spanEnd - target.spanStart;
+}
+
+const CODE_LANGUAGES = new Set<CodeLanguage>([
+  "python", "javascript", "typescript", "rust", "c", "cpp", "java", "go", "shell", "sql", "json", "yaml"
+]);
+
+function renderOverrideKey(target: ContentTarget): string {
+  return `${target.revision}:${target.scopeId === null ? "root" : target.scopeId}:${target.nodeId}`;
+}
+
+function renderAsValue(value: string): RenderAs | undefined {
+  if (value === "auto" || value === "plainText" || value === "markdown" || value === "nestedJson"
+    || value === "html" || value === "code") return value;
+  return CODE_LANGUAGES.has(value as CodeLanguage) ? value as CodeLanguage : undefined;
+}
+
+function renderAsOption(value: RenderAs): string {
+  return value;
+}
+
+function renderAsLabel(value: RenderAs): string {
+  if (value === "auto") return "Auto";
+  if (value === "plainText") return "Plain Text";
+  if (value === "nestedJson") return "Nested JSON";
+  if (value === "html") return "HTML";
+  if (value === "code") return "Code Auto";
+  return value === "cpp" ? "C++" : value[0].toUpperCase() + value.slice(1);
 }
 
 function semanticTypeLabel(value: StringDetection["semanticType"]): string {

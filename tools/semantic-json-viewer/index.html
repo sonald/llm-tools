@@ -158,6 +158,29 @@
             <h2 id="content-viewer-title">Content Viewer</h2>
             <p id="content-viewer-description">Read-only decoded source for the selected string node.</p>
           </div>
+          <label class="content-viewer-render-as" for="content-viewer-render-as">
+            <span>Render As</span>
+            <select id="content-viewer-render-as" aria-label="Render As">
+              <option value="auto">Auto</option>
+              <option value="plainText">Plain Text</option>
+              <option value="markdown">Markdown</option>
+              <option value="nestedJson">Nested JSON</option>
+              <option value="html">HTML</option>
+              <option value="code">Code Auto</option>
+              <option value="python">Python</option>
+              <option value="javascript">JavaScript</option>
+              <option value="typescript">TypeScript</option>
+              <option value="rust">Rust</option>
+              <option value="c">C</option>
+              <option value="cpp">C++</option>
+              <option value="java">Java</option>
+              <option value="go">Go</option>
+              <option value="shell">Shell</option>
+              <option value="sql">SQL</option>
+              <option value="json">JSON</option>
+              <option value="yaml">YAML</option>
+            </select>
+          </label>
           <button class="secondary-button" id="content-viewer-close" type="button">Close</button>
         </header>
 
@@ -191,6 +214,7 @@
         </div>
 
         <p class="content-viewer-renderer-note" id="content-viewer-renderer-note" role="note"></p>
+        <button class="secondary-button content-viewer-markdown-anyway" id="content-viewer-markdown-anyway" type="button" hidden>Render Markdown Anyway</button>
         <div class="content-viewer-alert" id="content-viewer-alert" role="alert" aria-live="assertive" hidden></div>
 
         <section class="content-viewer-stage" aria-label="Content viewer output">

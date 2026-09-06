@@ -150,6 +150,8 @@ const contentViewerRange = required<HTMLElement>("content-viewer-range");
 const contentViewerStatus = required<HTMLElement>("content-viewer-status");
 const contentViewerAlert = required<HTMLElement>("content-viewer-alert");
 const contentViewerContent = required<HTMLElement>("content-viewer-content");
+const contentViewerRenderAs = required<HTMLSelectElement>("content-viewer-render-as");
+const contentViewerMarkdownAnyway = required<HTMLButtonElement>("content-viewer-markdown-anyway");
 const contentViewerPrevious = required<HTMLButtonElement>("content-viewer-previous");
 const contentViewerNext = required<HTMLButtonElement>("content-viewer-next");
 const nestedNavigation = required<HTMLElement>("content-viewer-nested-navigation");
@@ -193,6 +195,8 @@ const contentViewer = new ContentViewer({
     status: contentViewerStatus,
     alert: contentViewerAlert,
     content: contentViewerContent,
+    renderAs: contentViewerRenderAs,
+    markdownAnyway: contentViewerMarkdownAnyway,
     previous: contentViewerPrevious,
     next: contentViewerNext,
     nested: {
@@ -402,6 +406,7 @@ function handleCurrentSessionAsyncError(parsed: IpcErrorPayload, stopEntryIndex 
   }
   if (parsed.code === "file_changed" || parsed.code === "stale_session") {
     if (summary) state.invalidatedRevision = summary.sessionRevision;
+    contentViewer.clearOverridesForRevision(summary?.sessionRevision);
     if (contentViewer.isOpen) contentViewer.clear(false);
     rawView.clear();
     treeView.clear();
@@ -420,6 +425,7 @@ function handleCurrentSessionAsyncError(parsed: IpcErrorPayload, stopEntryIndex 
 function handleEntrySelection(selection: EntrySelectionDto): void {
   const summary = state.summary;
   if (!summary || summary.mode !== "entry") return;
+  contentViewer.clearOverridesForRevision(selection.sessionRevision);
   contentViewer.clear(false);
   if (selection.sessionRevision !== summary.sessionRevision + 1) {
     state.error = { code: "internal", message: "Entry selection returned an unexpected session revision." };
@@ -500,6 +506,7 @@ function handleEntryRevisionUnknown(value: unknown): void {
     return;
   }
   const generation = ++state.generation;
+  contentViewer.clearOverridesForRevision(next.sessionRevision);
   contentViewer.clear(false);
   state.summary = next;
   state.selectedEntry = null;
