@@ -10,6 +10,7 @@ use crate::file_route::{
     route_read_limit, route_with_override, FileMode, OpenDecision, OverrideError,
 };
 use crate::file_source::{FileIdentity, FileSource};
+use crate::html_sanitizer::{self, HtmlPreviewReason};
 use crate::json::JsonKind;
 use crate::jsonl_entry::EntryStatus;
 use crate::jsonl_session::{
@@ -206,6 +207,20 @@ pub struct StringDetectionDto {
     pub plain_reason: Option<PlainReasonDto>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HtmlPreviewReasonDto {
+    SizeLimit,
+    RenderLimit,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HtmlPreviewDto {
+    pub html: Option<String>,
+    pub reason: Option<HtmlPreviewReasonDto>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ByteChunkDto {
@@ -375,6 +390,16 @@ pub fn get_string_detection(
     state: State<'_, AppState>,
 ) -> Result<StringDetectionDto, IpcError> {
     get_string_detection_scoped_inner(&state, node_id, scope_id, session_revision)
+}
+
+#[tauri::command]
+pub fn get_html_preview(
+    node_id: usize,
+    scope_id: Option<u64>,
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<HtmlPreviewDto, IpcError> {
+    get_html_preview_inner(&state, node_id, scope_id, session_revision)
 }
 
 #[tauri::command]
@@ -1050,6 +1075,82 @@ fn get_string_detection_scoped_inner(
     })
 }
 
+fn get_html_preview_inner(
+    state: &AppState,
+    node_id: usize,
+    scope_id: Option<u64>,
+    session_revision: u64,
+) -> Result<HtmlPreviewDto, IpcError> {
+    get_html_preview_scoped_inner(state, node_id, scope_id, session_revision)
+}
+
+fn get_html_preview_scoped_inner(
+    state: &AppState,
+    node_id: usize,
+    scope_id: Option<u64>,
+    session_revision: u64,
+) -> Result<HtmlPreviewDto, IpcError> {
+    with_session_scope(state, scope_id, session_revision, |session, scope| {
+        let decoded = if let Some(scope) = scope {
+            let node = scope
+                .tree
+                .node(node_id)
+                .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+            if node.kind != JsonKind::String {
+                return Err(invalid_request("node does not contain decoded HTML"));
+            }
+            scope
+                .tree
+                .decoded_text(node_id)
+                .ok_or_else(|| invalid_request("node does not contain decoded HTML"))?
+        } else {
+            match session {
+                OpenSession::Document(session) => {
+                    let node = session
+                        .node(node_id)
+                        .map_err(session_error)?
+                        .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+                    if node.kind != JsonKind::String {
+                        return Err(invalid_request("node does not contain decoded HTML"));
+                    }
+                    session
+                        .decoded_text(node_id)
+                        .map_err(session_error)?
+                        .ok_or_else(|| invalid_request("node does not contain decoded HTML"))?
+                }
+                OpenSession::Entry(session) => {
+                    require_selected(session)?;
+                    let node = session
+                        .selected_node(node_id)
+                        .map_err(session_error)?
+                        .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+                    if node.kind != JsonKind::String {
+                        return Err(invalid_request("node does not contain decoded HTML"));
+                    }
+                    session
+                        .selected_decoded_text(node_id)
+                        .map_err(session_error)?
+                        .ok_or_else(|| invalid_request("node does not contain decoded HTML"))?
+                }
+                OpenSession::RawDocument { .. } => {
+                    return Err(invalid_request(
+                        "command is unavailable for a raw-only document session",
+                    ));
+                }
+            }
+        };
+
+        let preview = html_sanitizer::sanitize_html(decoded);
+        if !session.is_current() {
+            return Err(file_changed());
+        }
+        Ok(HtmlPreviewDto {
+            html: preview.html,
+            reason: preview.reason.map(html_preview_reason_dto),
+        })
+    })
+}
+
 fn open_nested_json_inner(
     state: &AppState,
     parent_scope_id: Option<u64>,
@@ -1544,6 +1645,13 @@ fn string_detection_dto(detection: Detection) -> StringDetectionDto {
         semantic_type,
         detection_source: DetectionSourceDto::ContentDetected,
         plain_reason,
+    }
+}
+
+fn html_preview_reason_dto(reason: HtmlPreviewReason) -> HtmlPreviewReasonDto {
+    match reason {
+        HtmlPreviewReason::SizeLimit => HtmlPreviewReasonDto::SizeLimit,
+        HtmlPreviewReason::RenderLimit => HtmlPreviewReasonDto::RenderLimit,
     }
 }
 
@@ -4180,5 +4288,277 @@ mod tests {
         assert_eq!(before_error.kind, "object");
 
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn html_preview_document_collection_and_wire_contract() {
+        let document_path = temp_path("ipc-html-preview-document");
+        fs::write(
+            &document_path,
+            br#"{"html":"<div onclick='bad'><strong>ok</strong></div>","number":1}"#,
+        )
+        .unwrap();
+        let state = AppState::default();
+        let document = open_file_inner(&state, document_path.to_str().unwrap()).unwrap();
+        let root = document.root.as_ref().unwrap().id;
+        let html_node = child_id(&state, None, root, "html", document.session_revision);
+        let preview =
+            get_html_preview_inner(&state, html_node, None, document.session_revision).unwrap();
+        assert_eq!(
+            preview.html.as_deref(),
+            Some("<div><strong>ok</strong></div>")
+        );
+        assert_eq!(preview.reason, None);
+        let encoded = serde_json::to_value(&preview).unwrap();
+        assert_eq!(encoded.as_object().unwrap().len(), 2);
+        assert_eq!(encoded["html"], "<div><strong>ok</strong></div>");
+        assert_eq!(encoded["reason"], serde_json::Value::Null);
+
+        let number_node = child_id(&state, None, root, "number", document.session_revision);
+        let error = get_html_preview_inner(&state, number_node, None, document.session_revision)
+            .unwrap_err();
+        assert_eq!(error.code, "invalid_request");
+        assert_eq!(
+            get_html_preview_inner(&state, html_node, None, document.session_revision + 1)
+                .unwrap_err()
+                .code,
+            "stale_session"
+        );
+
+        let collection_path = temp_path("ipc-html-preview-collection");
+        fs::write(&collection_path, br#"[{"html":"<p>item</p>"}]"#).unwrap();
+        let collection = open_file_inner(&state, collection_path.to_str().unwrap()).unwrap();
+        let item = child_id(
+            &state,
+            None,
+            collection.root.as_ref().unwrap().id,
+            "[0]",
+            collection.session_revision,
+        );
+        let item_html = child_id(&state, None, item, "html", collection.session_revision);
+        let item_preview =
+            get_html_preview_inner(&state, item_html, None, collection.session_revision).unwrap();
+        assert_eq!(item_preview.html.as_deref(), Some("<p>item</p>"));
+
+        for path in [document_path, collection_path] {
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn html_preview_entry_nested_raw_and_file_change_contract() {
+        let entry_path = temp_jsonl_path("ipc-html-preview-entry");
+        fs::write(&entry_path, br#"{"html":"<p>entry</p>"}"#).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, entry_path.to_str().unwrap()).unwrap();
+        let error = get_html_preview_inner(&state, 1, None, opened.session_revision).unwrap_err();
+        assert_eq!(error.code, "invalid_request");
+        assert_eq!(error.message, "no valid entry is selected");
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        let selected_root = selected.root.as_ref().unwrap().id;
+        let html_node = child_id(
+            &state,
+            None,
+            selected_root,
+            "html",
+            selected.session_revision,
+        );
+        let preview =
+            get_html_preview_inner(&state, html_node, None, selected.session_revision).unwrap();
+        assert_eq!(preview.html.as_deref(), Some("<p>entry</p>"));
+
+        let nested_path = temp_path("ipc-html-preview-nested");
+        fs::write(
+            &nested_path,
+            br#"{"nested":"{\"html\":\"<p>nested</p>\",\"count\":1}"}"#,
+        )
+        .unwrap();
+        let nested_state = AppState::default();
+        let nested_document =
+            open_file_inner(&nested_state, nested_path.to_str().unwrap()).unwrap();
+        let nested_root = nested_document.root.as_ref().unwrap().id;
+        let nested_source = child_id(
+            &nested_state,
+            None,
+            nested_root,
+            "nested",
+            nested_document.session_revision,
+        );
+        let scope = open_nested_json_inner(
+            &nested_state,
+            None,
+            nested_source,
+            None,
+            nested_document.session_revision,
+        )
+        .unwrap();
+        let nested_html = child_id(
+            &nested_state,
+            Some(scope.scope_id),
+            scope.root.id,
+            "html",
+            nested_document.session_revision,
+        );
+        let nested_preview = get_html_preview_inner(
+            &nested_state,
+            nested_html,
+            Some(scope.scope_id),
+            nested_document.session_revision,
+        )
+        .unwrap();
+        assert_eq!(nested_preview.html.as_deref(), Some("<p>nested</p>"));
+        assert_eq!(
+            get_html_preview_inner(
+                &nested_state,
+                nested_html,
+                Some(scope.scope_id),
+                nested_document.session_revision + 1,
+            )
+            .unwrap_err()
+            .code,
+            "stale_session"
+        );
+
+        let raw_path = temp_path("ipc-html-preview-raw");
+        fs::write(&raw_path, b"{\"html\":").unwrap();
+        let raw_state = AppState::default();
+        let raw = open_file_inner(&raw_state, raw_path.to_str().unwrap()).unwrap();
+        assert!(raw.document_error.is_some());
+        let error = get_html_preview_inner(&raw_state, 0, None, raw.session_revision).unwrap_err();
+        assert_eq!(error.code, "invalid_request");
+
+        let changed_path = temp_path("ipc-html-preview-file-change");
+        fs::write(&changed_path, br#"{"html":"<p>before</p>"}"#).unwrap();
+        let changed_state = AppState::default();
+        let changed = open_file_inner(&changed_state, changed_path.to_str().unwrap()).unwrap();
+        let changed_node = child_id(
+            &changed_state,
+            None,
+            changed.root.as_ref().unwrap().id,
+            "html",
+            changed.session_revision,
+        );
+        fs::write(
+            &changed_path,
+            br#"{"html":"<p>after-with-a-different-size</p>"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            get_html_preview_inner(&changed_state, changed_node, None, changed.session_revision)
+                .unwrap_err()
+                .code,
+            "file_changed"
+        );
+
+        for path in [entry_path, nested_path, raw_path, changed_path] {
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn html_preview_limit_reasons_and_missing_node_use_wire_contract() {
+        let exact_path = temp_path("ipc-html-preview-exact");
+        let exact_html = format!(
+            "<p>{}</p>",
+            "x".repeat(crate::html_sanitizer::MAX_INPUT_BYTES - 7)
+        );
+        assert_eq!(exact_html.len(), crate::html_sanitizer::MAX_INPUT_BYTES);
+        fs::write(
+            &exact_path,
+            format!(
+                r#"{{"html":{}}}"#,
+                serde_json::to_string(&exact_html).unwrap()
+            ),
+        )
+        .unwrap();
+        let state = AppState::default();
+        let exact = open_file_inner(&state, exact_path.to_str().unwrap()).unwrap();
+        let exact_node = child_id(
+            &state,
+            None,
+            exact.root.as_ref().unwrap().id,
+            "html",
+            exact.session_revision,
+        );
+        let exact_preview =
+            get_html_preview_inner(&state, exact_node, None, exact.session_revision).unwrap();
+        assert!(exact_preview.html.is_some());
+        assert_eq!(exact_preview.reason, None);
+        assert!(serde_json::to_vec(&exact_preview).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
+        assert_eq!(
+            get_html_preview_inner(&state, usize::MAX, None, exact.session_revision)
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
+        assert_eq!(
+            get_file_summary_inner(&state).unwrap().session_revision,
+            exact.session_revision
+        );
+
+        let over_path = temp_path("ipc-html-preview-size-limit");
+        let over_html = format!(
+            "<p>{}</p>",
+            "x".repeat(crate::html_sanitizer::MAX_INPUT_BYTES - 6)
+        );
+        assert_eq!(over_html.len(), crate::html_sanitizer::MAX_INPUT_BYTES + 1);
+        fs::write(
+            &over_path,
+            format!(
+                r#"{{"html":{}}}"#,
+                serde_json::to_string(&over_html).unwrap()
+            ),
+        )
+        .unwrap();
+        let over = open_file_inner(&state, over_path.to_str().unwrap()).unwrap();
+        let over_node = child_id(
+            &state,
+            None,
+            over.root.as_ref().unwrap().id,
+            "html",
+            over.session_revision,
+        );
+        let over_preview =
+            get_html_preview_inner(&state, over_node, None, over.session_revision).unwrap();
+        assert_eq!(over_preview.html, None);
+        assert_eq!(over_preview.reason, Some(HtmlPreviewReasonDto::SizeLimit));
+        let over_wire = serde_json::to_value(&over_preview).unwrap();
+        assert_eq!(over_wire.as_object().unwrap().len(), 2);
+        assert_eq!(over_wire["html"], serde_json::Value::Null);
+        assert_eq!(over_wire["reason"], "sizeLimit");
+
+        let render_path = temp_path("ipc-html-preview-render-limit");
+        let render_html = format!("<p>{}</p>", ">".repeat(270_000));
+        fs::write(
+            &render_path,
+            format!(
+                r#"{{"html":{}}}"#,
+                serde_json::to_string(&render_html).unwrap()
+            ),
+        )
+        .unwrap();
+        let render = open_file_inner(&state, render_path.to_str().unwrap()).unwrap();
+        let render_node = child_id(
+            &state,
+            None,
+            render.root.as_ref().unwrap().id,
+            "html",
+            render.session_revision,
+        );
+        let render_preview =
+            get_html_preview_inner(&state, render_node, None, render.session_revision).unwrap();
+        assert_eq!(render_preview.html, None);
+        assert_eq!(
+            render_preview.reason,
+            Some(HtmlPreviewReasonDto::RenderLimit)
+        );
+        let render_wire = serde_json::to_value(&render_preview).unwrap();
+        assert_eq!(render_wire.as_object().unwrap().len(), 2);
+        assert_eq!(render_wire["html"], serde_json::Value::Null);
+        assert_eq!(render_wire["reason"], "renderLimit");
+
+        for path in [exact_path, over_path, render_path] {
+            fs::remove_file(path).unwrap();
+        }
     }
 }
