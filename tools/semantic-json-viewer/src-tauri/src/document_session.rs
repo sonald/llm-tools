@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::file_source::FileSource;
 use crate::json::ParseError;
+use crate::search::{SearchError, SearchPage, SearchRequest};
 use crate::semantic_detection::{Detection, NestedBudget};
 use crate::tree::{NodePage, NodeProjection, TextChunk, TreeDocument};
 
@@ -155,6 +156,11 @@ impl DocumentSession {
     ) -> io::Result<Option<Detection>> {
         self.ensure_current()?;
         Ok(self.tree.detect_string_with_budget(node_id, budget))
+    }
+
+    pub fn search(&self, request: SearchRequest) -> io::Result<Result<SearchPage, SearchError>> {
+        self.ensure_current()?;
+        Ok(self.tree.search(request))
     }
 }
 

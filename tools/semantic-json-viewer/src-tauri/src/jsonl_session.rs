@@ -5,6 +5,7 @@ use std::str::from_utf8;
 use crate::file_source::{FileIdentity, FileSource, ReadChunk};
 use crate::jsonl_entry::{inspect_entry, EntryStatus, MAX_ENTRY_BYTES, PREVIEW_BYTES};
 use crate::jsonl_index::{Checkpoint, EntryLocation, JsonlIndex, JsonlIndexer};
+use crate::search::{SearchError, SearchPage, SearchRequest};
 use crate::semantic_detection::{Detection, NestedBudget};
 use crate::tree::{NodePage, NodeProjection, TextChunk, TreeDocument};
 
@@ -396,6 +397,106 @@ impl JsonlSession {
             .selected
             .as_ref()
             .and_then(|(_, tree)| tree.detect_string_with_budget(node_id, budget)))
+    }
+
+    pub fn selected_search(
+        &self,
+        request: SearchRequest,
+    ) -> io::Result<Option<Result<SearchPage, SearchError>>> {
+        self.ensure_current()?;
+        Ok(self.selected.as_ref().map(|(_, tree)| tree.search(request)))
+    }
+
+    pub fn selected_raw_range(&self) -> io::Result<Option<(u64, u64)>> {
+        self.ensure_current()?;
+        self.selected_location
+            .as_ref()
+            .map(|location| (location.byte_start, location.byte_end))
+            .map_or(Ok(None), |(start, end)| {
+                if end < start {
+                    Err(ErrorKind::InvalidData.into())
+                } else {
+                    Ok(Some((start, end)))
+                }
+            })
+    }
+
+    pub fn read_selected_raw_window(
+        &self,
+        offset: u64,
+        length: usize,
+    ) -> io::Result<Option<ReadChunk>> {
+        self.ensure_current()?;
+        let Some(location) = self.selected_location.as_ref() else {
+            return Ok(None);
+        };
+        if self.selected.is_some() {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "selected Entry is valid; use tree search",
+            ));
+        }
+        if length == 0 {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "length must be greater than zero",
+            ));
+        }
+        let entry_length = location
+            .byte_end
+            .checked_sub(location.byte_start)
+            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+        if offset > entry_length {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "offset exceeds selected Entry length",
+            ));
+        }
+        if offset == entry_length {
+            self.ensure_current()?;
+            return Ok(Some(ReadChunk {
+                start: offset,
+                bytes: Vec::new(),
+                has_more: false,
+                next_offset: None,
+            }));
+        }
+
+        let requested = u64::try_from(length)
+            .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "length exceeds u64"))?
+            .min(256 * 1024)
+            .min(entry_length - offset);
+        let absolute_offset = location
+            .byte_start
+            .checked_add(offset)
+            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+        let requested_usize =
+            usize::try_from(requested).map_err(|_| io::Error::from(ErrorKind::InvalidData))?;
+        let chunk = self.source.read_chunk(absolute_offset, requested_usize)?;
+        if chunk.start != absolute_offset || chunk.bytes.is_empty() {
+            return Err(io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "file ended before the selected JSONL entry range",
+            ));
+        }
+        let read = u64::try_from(chunk.bytes.len()).expect("chunk length exceeds u64");
+        if read > requested {
+            return Err(ErrorKind::InvalidData.into());
+        }
+        let next = offset
+            .checked_add(read)
+            .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
+        if next > entry_length {
+            return Err(ErrorKind::InvalidData.into());
+        }
+        self.ensure_current()?;
+        let has_more = next < entry_length;
+        Ok(Some(ReadChunk {
+            start: offset,
+            bytes: chunk.bytes,
+            has_more,
+            next_offset: has_more.then_some(next),
+        }))
     }
 
     pub fn read_selected_entry_bytes(

@@ -7,6 +7,7 @@ pub mod json;
 pub mod jsonl_entry;
 pub mod jsonl_index;
 pub mod jsonl_session;
+pub mod search;
 pub mod semantic_detection;
 pub mod tree;
 
@@ -26,6 +27,7 @@ pub fn run() {
             ipc::read_selected_entry_bytes,
             ipc::read_raw_document_bytes,
             ipc::read_decoded_text,
+            ipc::search_current,
             ipc::get_string_detection,
             ipc::get_html_preview,
             ipc::scan_entries,

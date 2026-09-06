@@ -2,19 +2,23 @@ use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::document_session::DocumentSession;
 use crate::file_route::{
     route_read_limit, route_with_override, FileMode, OpenDecision, OverrideError,
 };
-use crate::file_source::{FileIdentity, FileSource};
+use crate::file_source::{FileIdentity, FileSource, ReadChunk};
 use crate::html_sanitizer::{self, HtmlPreviewReason};
 use crate::json::JsonKind;
 use crate::jsonl_entry::EntryStatus;
 use crate::jsonl_session::{
     EntrySelection, EntrySummary, JsonlProgress, JsonlSession, OversizedPreview,
+};
+use crate::search::{
+    SearchError, SearchField, SearchMode, SearchPage, SearchPhase, SearchRequest, MAX_PAGE_SIZE,
+    MAX_QUERY_BYTES, MAX_SCAN_BYTES,
 };
 use crate::semantic_detection::{
     Detection, NestedBudget, PlainReason, HARD_MAX_DEPTH, MAX_CUMULATIVE_BYTES, MAX_INPUT_BYTES,
@@ -230,6 +234,72 @@ pub struct ByteChunkDto {
     pub next_offset: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchRepresentationDto {
+    Decoded,
+    RawSource,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchFieldDto {
+    Key,
+    Value,
+    RawSource,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SearchCursorDto {
+    Decoded {
+        #[serde(rename = "nodeId")]
+        node_id: usize,
+        field: SearchFieldDto,
+        #[serde(rename = "byteOffset")]
+        byte_offset: usize,
+        query: String,
+        #[serde(rename = "sessionRevision")]
+        session_revision: u64,
+        #[serde(rename = "scopeId")]
+        scope_id: Option<u64>,
+        #[serde(rename = "targetNodeId")]
+        target_node_id: Option<usize>,
+    },
+    RawSource {
+        #[serde(rename = "byteOffset")]
+        byte_offset: usize,
+        query: String,
+        #[serde(rename = "sessionRevision")]
+        session_revision: u64,
+        #[serde(rename = "scopeId")]
+        scope_id: Option<u64>,
+        #[serde(rename = "targetNodeId")]
+        target_node_id: Option<usize>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchMatchDto {
+    pub node_id: Option<usize>,
+    pub field: SearchFieldDto,
+    pub path_segments: Vec<String>,
+    pub path_truncated: bool,
+    pub source_span_start: usize,
+    pub source_span_end: usize,
+    pub match_start: usize,
+    pub match_end: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchPageDto {
+    pub matches: Vec<SearchMatchDto>,
+    pub has_more: bool,
+    pub next_cursor: Option<SearchCursorDto>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JsonlProgressDto {
@@ -380,6 +450,30 @@ pub fn read_decoded_text(
     state: State<'_, AppState>,
 ) -> Result<TextChunkDto, IpcError> {
     read_decoded_text_scoped_inner(&state, node_id, offset, length, scope_id, session_revision)
+}
+
+#[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
+pub fn search_current(
+    query: String,
+    representation: SearchRepresentationDto,
+    scope_id: Option<u64>,
+    node_id: Option<usize>,
+    cursor: Option<SearchCursorDto>,
+    limit: usize,
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<SearchPageDto, IpcError> {
+    search_current_inner(
+        &state,
+        query,
+        representation,
+        scope_id,
+        node_id,
+        cursor,
+        limit,
+        session_revision,
+    )
 }
 
 #[tauri::command]
@@ -1014,6 +1108,455 @@ fn read_decoded_text_scoped_inner(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn search_current_inner(
+    state: &AppState,
+    query: String,
+    representation: SearchRepresentationDto,
+    scope_id: Option<u64>,
+    node_id: Option<usize>,
+    cursor: Option<SearchCursorDto>,
+    limit: usize,
+    session_revision: u64,
+) -> Result<SearchPageDto, IpcError> {
+    let request = search_request_from_dto(
+        query,
+        representation,
+        scope_id,
+        node_id,
+        cursor,
+        limit,
+        session_revision,
+    )?;
+    with_session_scope(state, scope_id, session_revision, |session, scope| {
+        if let Some(scope) = scope {
+            if let Some(node_id) = request.node_id {
+                ensure_search_target(session, Some(scope), node_id)?;
+            }
+            let page = scope.tree.search(request.clone()).map_err(search_error)?;
+            if !session.is_current() {
+                return Err(file_changed());
+            }
+            return search_page_dto(page, &request, session_revision, scope_id);
+        }
+
+        match session {
+            OpenSession::Document(session) => {
+                if let Some(node_id) = request.node_id {
+                    ensure_search_target_node(
+                        session.node(node_id).map_err(session_error)?,
+                        node_id,
+                    )?;
+                }
+                let page = session
+                    .search(request.clone())
+                    .map_err(session_error)?
+                    .map_err(search_error)?;
+                if !session.is_current() {
+                    return Err(file_changed());
+                }
+                search_page_dto(page, &request, session_revision, scope_id)
+            }
+            OpenSession::Entry(session) => {
+                if request.mode == SearchMode::Decoded {
+                    require_selected(session)?;
+                }
+                if let Some(page) = session
+                    .selected_search(request.clone())
+                    .map_err(session_error)?
+                {
+                    if let Some(node_id) = request.node_id {
+                        ensure_search_target_node(
+                            session.selected_node(node_id).map_err(session_error)?,
+                            node_id,
+                        )?;
+                    }
+                    let page = page.map_err(search_error)?;
+                    if !session.is_current() {
+                        return Err(file_changed());
+                    }
+                    return search_page_dto(page, &request, session_revision, scope_id);
+                }
+                if request.mode != SearchMode::Raw {
+                    return Err(invalid_request(
+                        "decoded search is unavailable for an invalid or oversized Entry",
+                    ));
+                }
+                if request.node_id.is_some() {
+                    return Err(invalid_request(
+                        "raw-only search does not accept a node target",
+                    ));
+                }
+                let Some((start, end)) = session.selected_raw_range().map_err(session_error)?
+                else {
+                    return Err(invalid_request("no valid entry is selected"));
+                };
+                let range_len = usize::try_from(
+                    end.checked_sub(start)
+                        .ok_or_else(|| internal("selected Entry range overflow"))?,
+                )
+                .map_err(|_| invalid_request("Entry range exceeds addressable range"))?;
+                let page = search_raw_windows(
+                    range_len,
+                    &request.query,
+                    request.cursor.as_ref().map(|cursor| cursor.offset),
+                    request.limit,
+                    &request,
+                    session_revision,
+                    scope_id,
+                    |offset, length| {
+                        session
+                            .read_selected_raw_window(offset, length)
+                            .map_err(session_error)?
+                            .ok_or_else(|| invalid_request("no valid entry is selected"))
+                    },
+                )?;
+                if !session.is_current() {
+                    return Err(file_changed());
+                }
+                Ok(page)
+            }
+            OpenSession::RawDocument { source, .. } => {
+                if request.mode != SearchMode::Raw {
+                    return Err(invalid_request(
+                        "decoded search is unavailable for a raw-only document session",
+                    ));
+                }
+                if request.node_id.is_some() {
+                    return Err(invalid_request(
+                        "raw-only search does not accept a node target",
+                    ));
+                }
+                let range_len = usize::try_from(source.identity().size)
+                    .map_err(|_| invalid_request("file size exceeds addressable range"))?;
+                let page = search_raw_windows(
+                    range_len,
+                    &request.query,
+                    request.cursor.as_ref().map(|cursor| cursor.offset),
+                    request.limit,
+                    &request,
+                    session_revision,
+                    scope_id,
+                    |offset, length| {
+                        let chunk = source.read_chunk(offset, length).map_err(session_error)?;
+                        if !source.is_current() {
+                            return Err(file_changed());
+                        }
+                        Ok(chunk)
+                    },
+                )?;
+                if !source.is_current() {
+                    return Err(file_changed());
+                }
+                Ok(page)
+            }
+        }
+    })
+}
+
+fn search_request_from_dto(
+    query: String,
+    representation: SearchRepresentationDto,
+    scope_id: Option<u64>,
+    node_id: Option<usize>,
+    cursor: Option<SearchCursorDto>,
+    limit: usize,
+    session_revision: u64,
+) -> Result<SearchRequest, IpcError> {
+    if query.is_empty() {
+        return Err(invalid_request("query must not be empty"));
+    }
+    if query.len() > MAX_QUERY_BYTES {
+        return Err(invalid_request("query exceeds the 4096-byte limit"));
+    }
+    if limit == 0 {
+        return Err(invalid_request("limit must be greater than zero"));
+    }
+    let mode = match representation {
+        SearchRepresentationDto::Decoded => SearchMode::Decoded,
+        SearchRepresentationDto::RawSource => SearchMode::Raw,
+    };
+    let cursor = cursor
+        .map(|cursor| match cursor {
+            SearchCursorDto::Decoded {
+                node_id: cursor_node_id,
+                field,
+                byte_offset,
+                query: cursor_query,
+                session_revision: cursor_revision,
+                scope_id: cursor_scope_id,
+                target_node_id: cursor_target_node_id,
+            } => {
+                if mode != SearchMode::Decoded
+                    || node_id.is_some_and(|target| target != cursor_node_id)
+                    || cursor_query != query
+                    || cursor_revision != session_revision
+                    || cursor_scope_id != scope_id
+                    || cursor_target_node_id != node_id
+                {
+                    return Err(invalid_request("search cursor does not match the request"));
+                }
+                let phase = match field {
+                    SearchFieldDto::Key => SearchPhase::Key,
+                    SearchFieldDto::Value => SearchPhase::Value,
+                    SearchFieldDto::RawSource => {
+                        return Err(invalid_request(
+                            "decoded search cursor field must be key or value",
+                        ));
+                    }
+                };
+                Ok(crate::search::SearchCursor {
+                    mode,
+                    query: query.clone(),
+                    node_id,
+                    unit: cursor_node_id,
+                    phase,
+                    offset: byte_offset,
+                })
+            }
+            SearchCursorDto::RawSource {
+                byte_offset,
+                query: cursor_query,
+                session_revision: cursor_revision,
+                scope_id: cursor_scope_id,
+                target_node_id: cursor_target_node_id,
+            } => {
+                if mode != SearchMode::Raw
+                    || cursor_query != query
+                    || cursor_revision != session_revision
+                    || cursor_scope_id != scope_id
+                    || cursor_target_node_id != node_id
+                {
+                    return Err(invalid_request("search cursor does not match the request"));
+                }
+                Ok(crate::search::SearchCursor {
+                    mode,
+                    query: query.clone(),
+                    node_id,
+                    unit: 0,
+                    phase: SearchPhase::Value,
+                    offset: byte_offset,
+                })
+            }
+        })
+        .transpose()?;
+    Ok(SearchRequest {
+        mode,
+        query,
+        cursor,
+        limit,
+        node_id,
+    })
+}
+
+fn ensure_search_target(
+    session: &OpenSession,
+    scope: Option<&NestedScope>,
+    node_id: usize,
+) -> Result<(), IpcError> {
+    let node = if let Some(scope) = scope {
+        scope.tree.node(node_id)
+    } else {
+        match session {
+            OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
+            OpenSession::Entry(session) => {
+                require_selected(session)?;
+                session.selected_node(node_id).map_err(session_error)?
+            }
+            OpenSession::RawDocument { .. } => {
+                return Err(invalid_request(
+                    "command is unavailable for a raw-only document session",
+                ));
+            }
+        }
+    };
+    ensure_search_target_node(node, node_id)
+}
+
+fn ensure_search_target_node(node: Option<NodeProjection>, node_id: usize) -> Result<(), IpcError> {
+    let node = node.ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+    if node.kind != JsonKind::String {
+        return Err(invalid_request("search target must be a string node"));
+    }
+    Ok(())
+}
+
+fn search_error(error: SearchError) -> IpcError {
+    invalid_request(error.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_raw_windows(
+    range_len: usize,
+    query: &str,
+    cursor_offset: Option<usize>,
+    limit: usize,
+    request: &SearchRequest,
+    session_revision: u64,
+    scope_id: Option<u64>,
+    mut read: impl FnMut(u64, usize) -> Result<ReadChunk, IpcError>,
+) -> Result<SearchPageDto, IpcError> {
+    if query.is_empty() {
+        return Err(invalid_request("query must not be empty"));
+    }
+    if query.len() > MAX_QUERY_BYTES {
+        return Err(invalid_request("query exceeds the 4096-byte limit"));
+    }
+    if limit == 0 {
+        return Err(invalid_request("limit must be greater than zero"));
+    }
+    let mut source_offset = cursor_offset.unwrap_or(0);
+    if source_offset > range_len {
+        return Err(invalid_request(
+            "search cursor offset is outside the source range",
+        ));
+    }
+    if range_len == source_offset {
+        return Ok(SearchPageDto {
+            matches: Vec::new(),
+            has_more: false,
+            next_cursor: None,
+        });
+    }
+
+    const WINDOW_BYTES: usize = 256 * 1024;
+    let query_bytes = query.as_bytes();
+    let page_size = limit.min(MAX_PAGE_SIZE);
+    let mut matches = Vec::new();
+    let mut scanned = 0usize;
+    let mut deferred_start = source_offset;
+    let mut overlap = Vec::new();
+
+    while source_offset < range_len && matches.len() < page_size && scanned < MAX_SCAN_BYTES {
+        let requested = WINDOW_BYTES
+            .min(MAX_SCAN_BYTES.saturating_sub(scanned))
+            .min(range_len - source_offset);
+        if requested == 0 {
+            break;
+        }
+        let chunk = read(source_offset as u64, requested)?;
+        if chunk.start != source_offset as u64 || chunk.bytes.is_empty() {
+            return Err(internal("file ended before the requested search range"));
+        }
+        if chunk.bytes.len() > requested || chunk.bytes.len() > range_len - source_offset {
+            return Err(internal("search window exceeded its requested bounds"));
+        }
+
+        let chunk_end = source_offset
+            .checked_add(chunk.bytes.len())
+            .ok_or_else(|| internal("search range overflow"))?;
+        let base = source_offset
+            .checked_sub(overlap.len())
+            .ok_or_else(|| internal("search overlap underflow"))?;
+        let mut haystack = Vec::with_capacity(overlap.len() + chunk.bytes.len());
+        haystack.extend_from_slice(&overlap);
+        haystack.extend_from_slice(&chunk.bytes);
+
+        if query_bytes.len() <= haystack.len() {
+            let mut cursor = 0usize;
+            while cursor + query_bytes.len() <= haystack.len() {
+                let Some(local_start) = find_bytes(&haystack, query_bytes, cursor) else {
+                    break;
+                };
+                let match_start = base
+                    .checked_add(local_start)
+                    .ok_or_else(|| internal("search match offset overflow"))?;
+                let match_end = match_start
+                    .checked_add(query_bytes.len())
+                    .ok_or_else(|| internal("search match range overflow"))?;
+                if match_start >= deferred_start
+                    && match_start < range_len
+                    && match_end <= range_len
+                {
+                    matches.push(SearchMatchDto {
+                        node_id: None,
+                        field: SearchFieldDto::RawSource,
+                        path_segments: vec!["$".to_owned()],
+                        path_truncated: false,
+                        source_span_start: match_start,
+                        source_span_end: match_end,
+                        match_start,
+                        match_end,
+                    });
+                    if matches.len() >= page_size {
+                        break;
+                    }
+                }
+                cursor = local_start.saturating_add(query_bytes.len());
+            }
+        }
+
+        scanned = scanned.saturating_add(chunk.bytes.len());
+        source_offset = chunk_end;
+        if query_bytes.len() > 1 {
+            let overlap_len = (query_bytes.len() - 1).min(haystack.len());
+            overlap = haystack[haystack.len() - overlap_len..].to_vec();
+            deferred_start = source_offset.saturating_sub(overlap_len);
+        } else {
+            overlap.clear();
+            deferred_start = source_offset;
+        }
+        if !matches.is_empty() && matches.len() >= page_size {
+            break;
+        }
+    }
+
+    let next_offset = if matches.len() >= page_size {
+        matches
+            .last()
+            .map(|item| item.match_end)
+            .filter(|&offset| offset < range_len)
+    } else if source_offset < range_len {
+        Some(deferred_start)
+    } else {
+        None
+    };
+    let has_more = next_offset.is_some();
+    let next_cursor = next_offset.map(|byte_offset| SearchCursorDto::RawSource {
+        byte_offset,
+        query: request.query.clone(),
+        session_revision,
+        scope_id,
+        target_node_id: request.node_id,
+    });
+    Ok(SearchPageDto {
+        matches,
+        has_more,
+        next_cursor,
+    })
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
+    if needle.is_empty() || start > haystack.len() || needle.len() > haystack.len() - start {
+        return None;
+    }
+    let mut prefix = vec![0usize; needle.len()];
+    let mut length = 0usize;
+    for index in 1..needle.len() {
+        while length > 0 && needle[index] != needle[length] {
+            length = prefix[length - 1];
+        }
+        if needle[index] == needle[length] {
+            length += 1;
+        }
+        prefix[index] = length;
+    }
+
+    let mut matched = 0usize;
+    for (relative, &byte) in haystack[start..].iter().enumerate() {
+        while matched > 0 && byte != needle[matched] {
+            matched = prefix[matched - 1];
+        }
+        if byte == needle[matched] {
+            matched += 1;
+            if matched == needle.len() {
+                return Some(start + relative + 1 - needle.len());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 fn get_string_detection_inner(
     state: &AppState,
@@ -1621,6 +2164,80 @@ fn text_chunk_dto(chunk: TextChunk) -> TextChunkDto {
         text: chunk.text,
         has_more: chunk.has_more,
         next_offset: chunk.next_offset,
+    }
+}
+
+fn search_page_dto(
+    page: SearchPage,
+    request: &SearchRequest,
+    session_revision: u64,
+    scope_id: Option<u64>,
+) -> Result<SearchPageDto, IpcError> {
+    let has_more = page.has_more;
+    let matches = page.matches.into_iter().map(search_match_dto).collect();
+    let next_cursor = page
+        .next_cursor
+        .map(|cursor| search_cursor_dto(cursor, request, session_revision, scope_id))
+        .transpose()?;
+    if has_more != next_cursor.is_some() {
+        return Err(internal("search page cursor state is inconsistent"));
+    }
+    Ok(SearchPageDto {
+        matches,
+        has_more,
+        next_cursor,
+    })
+}
+
+fn search_match_dto(item: crate::search::SearchMatch) -> SearchMatchDto {
+    SearchMatchDto {
+        node_id: item.node_id,
+        field: match item.field {
+            SearchField::Key => SearchFieldDto::Key,
+            SearchField::Value => SearchFieldDto::Value,
+            SearchField::RawSource => SearchFieldDto::RawSource,
+        },
+        path_segments: item.path,
+        path_truncated: item.path_truncated,
+        source_span_start: item.span.start,
+        source_span_end: item.span.end,
+        match_start: item.match_start,
+        match_end: item.match_end,
+    }
+}
+
+fn search_cursor_dto(
+    cursor: crate::search::SearchCursor,
+    request: &SearchRequest,
+    session_revision: u64,
+    scope_id: Option<u64>,
+) -> Result<SearchCursorDto, IpcError> {
+    if cursor.mode != request.mode
+        || cursor.query != request.query
+        || cursor.node_id != request.node_id
+    {
+        return Err(internal("search cursor does not match the request"));
+    }
+    match cursor.mode {
+        SearchMode::Decoded => Ok(SearchCursorDto::Decoded {
+            node_id: cursor.unit,
+            field: match cursor.phase {
+                SearchPhase::Key => SearchFieldDto::Key,
+                SearchPhase::Value => SearchFieldDto::Value,
+            },
+            byte_offset: cursor.offset,
+            query: request.query.clone(),
+            session_revision,
+            scope_id,
+            target_node_id: request.node_id,
+        }),
+        SearchMode::Raw => Ok(SearchCursorDto::RawSource {
+            byte_offset: cursor.offset,
+            query: request.query.clone(),
+            session_revision,
+            scope_id,
+            target_node_id: request.node_id,
+        }),
     }
 }
 
@@ -4560,5 +5177,1011 @@ mod tests {
         for path in [exact_path, over_path, render_path] {
             fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn search_current_routes_document_and_collection_with_tagged_wire_cursor() {
+        let document_path = temp_path("ipc-search-document");
+        fs::write(&document_path, br#"{"first":"hello","second":"hello"}"#).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, document_path.to_str().unwrap()).unwrap();
+
+        let first = search_current_inner(
+            &state,
+            "hello".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            None,
+            None,
+            1,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(first.matches.len(), 1);
+        assert_eq!(first.matches[0].field, SearchFieldDto::Value);
+        assert_eq!(first.matches[0].node_id, Some(1));
+        assert_eq!(first.matches[0].path_segments, ["$", "first"]);
+        assert!(first.has_more);
+        let cursor = first.next_cursor.clone().unwrap();
+        assert_eq!(
+            serde_json::to_value(&cursor).unwrap(),
+            serde_json::json!({
+                "kind": "decoded",
+                "nodeId": 2,
+                "field": "key",
+                "byteOffset": 0,
+                "query": "hello",
+                "sessionRevision": 1,
+                "scopeId": null,
+                "targetNodeId": null
+            })
+        );
+        let second = search_current_inner(
+            &state,
+            "hello".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            None,
+            Some(cursor),
+            50,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(second.matches.len(), 1);
+        assert_eq!(second.matches[0].node_id, Some(2));
+        assert!(!second.has_more);
+        assert_eq!(second.next_cursor, None);
+        assert_eq!(get_file_summary_inner(&state).unwrap().session_revision, 1);
+
+        let mut wrong_query = first.next_cursor.clone().unwrap();
+        let SearchCursorDto::Decoded { query, .. } = &mut wrong_query else {
+            panic!("expected decoded cursor");
+        };
+        *query = "other".to_owned();
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "hello".to_owned(),
+                SearchRepresentationDto::Decoded,
+                None,
+                None,
+                Some(wrong_query),
+                50,
+                opened.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+
+        let mut wrong_revision = first.next_cursor.clone().unwrap();
+        let SearchCursorDto::Decoded {
+            session_revision, ..
+        } = &mut wrong_revision
+        else {
+            panic!("expected decoded cursor");
+        };
+        *session_revision += 1;
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "hello".to_owned(),
+                SearchRepresentationDto::Decoded,
+                None,
+                None,
+                Some(wrong_revision),
+                50,
+                opened.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "hello".to_owned(),
+                SearchRepresentationDto::Decoded,
+                None,
+                Some(1),
+                Some(first.next_cursor.clone().unwrap()),
+                50,
+                opened.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+
+        let raw = search_current_inner(
+            &state,
+            r#"\u0068"#.to_owned(),
+            SearchRepresentationDto::RawSource,
+            None,
+            None,
+            None,
+            50,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert!(raw.matches.is_empty());
+
+        let collection_path = temp_path("ipc-search-collection");
+        fs::write(
+            &collection_path,
+            br#"[{"value":"hello"},{"value":"hello"}]"#,
+        )
+        .unwrap();
+        let collection = open_file_inner(&state, collection_path.to_str().unwrap()).unwrap();
+        assert_eq!(collection.mode, "collection");
+        let collection_page = search_current_inner(
+            &state,
+            "hello".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            None,
+            None,
+            50,
+            collection.session_revision,
+        )
+        .unwrap();
+        assert_eq!(collection_page.matches.len(), 2);
+        assert!(collection_page
+            .matches
+            .iter()
+            .all(|item| item.path_segments.len() == 3));
+        let collection_raw = search_current_inner(
+            &state,
+            r#""hello""#.to_owned(),
+            SearchRepresentationDto::RawSource,
+            None,
+            None,
+            None,
+            50,
+            collection.session_revision,
+        )
+        .unwrap();
+        assert_eq!(collection_raw.matches.len(), 2);
+        assert!(collection_raw
+            .matches
+            .iter()
+            .all(|item| item.field == SearchFieldDto::RawSource));
+        let raw_first = search_current_inner(
+            &state,
+            r#""hello""#.to_owned(),
+            SearchRepresentationDto::RawSource,
+            None,
+            None,
+            None,
+            1,
+            collection.session_revision,
+        )
+        .unwrap();
+        let raw_cursor = raw_first.next_cursor.clone().unwrap();
+        let mut wrong_raw_query = raw_cursor.clone();
+        let SearchCursorDto::RawSource { query, .. } = &mut wrong_raw_query else {
+            panic!("expected raw cursor");
+        };
+        *query = "other".to_owned();
+        let mut wrong_raw_revision = raw_cursor.clone();
+        let SearchCursorDto::RawSource {
+            session_revision, ..
+        } = &mut wrong_raw_revision
+        else {
+            panic!("expected raw cursor");
+        };
+        *session_revision += 1;
+        let mut wrong_raw_scope = raw_cursor.clone();
+        let SearchCursorDto::RawSource { scope_id, .. } = &mut wrong_raw_scope else {
+            panic!("expected raw cursor");
+        };
+        *scope_id = Some(77);
+        let mut wrong_raw_target = raw_cursor.clone();
+        let SearchCursorDto::RawSource { target_node_id, .. } = &mut wrong_raw_target else {
+            panic!("expected raw cursor");
+        };
+        *target_node_id = Some(1);
+        for cursor in [
+            wrong_raw_query,
+            wrong_raw_revision,
+            wrong_raw_scope,
+            wrong_raw_target,
+        ] {
+            assert_eq!(
+                search_current_inner(
+                    &state,
+                    r#""hello""#.to_owned(),
+                    SearchRepresentationDto::RawSource,
+                    None,
+                    None,
+                    Some(cursor),
+                    50,
+                    collection.session_revision,
+                )
+                .unwrap_err()
+                .code,
+                "invalid_request"
+            );
+        }
+
+        let wire = serde_json::to_value(&collection_page).unwrap();
+        assert_eq!(
+            wire.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["hasMore", "matches", "nextCursor"]
+        );
+        assert!(
+            serde_json::from_value::<SearchCursorDto>(serde_json::json!({
+                "kind": "decoded",
+                "nodeId": 1,
+                "field": "value",
+                "byteOffset": 0,
+                "query": "hello",
+                "sessionRevision": 1,
+                "scopeId": null,
+                "targetNodeId": null,
+                "extra": true
+            }))
+            .is_err()
+        );
+
+        fs::remove_file(document_path).unwrap();
+        fs::remove_file(collection_path).unwrap();
+    }
+
+    #[test]
+    fn search_current_routes_selected_valid_entry_and_rejects_old_revision() {
+        let path = temp_jsonl_path("ipc-search-entry");
+        fs::write(&path, b"{\"value\":\"hello\"}\n{\"value\":\"bye\"}\n").unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+
+        let decoded = search_current_inner(
+            &state,
+            "hello".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            None,
+            None,
+            50,
+            selected.session_revision,
+        )
+        .unwrap();
+        assert_eq!(decoded.matches.len(), 1);
+        assert_eq!(decoded.matches[0].source_span_start, 9);
+        assert_eq!(decoded.matches[0].source_span_end, 16);
+
+        let raw = search_current_inner(
+            &state,
+            r#""hello""#.to_owned(),
+            SearchRepresentationDto::RawSource,
+            None,
+            None,
+            None,
+            50,
+            selected.session_revision,
+        )
+        .unwrap();
+        assert_eq!(raw.matches.len(), 1);
+        assert_eq!(raw.matches[0].field, SearchFieldDto::RawSource);
+        assert_eq!(raw.matches[0].source_span_start, 9);
+        assert_eq!(raw.matches[0].source_span_end, 16);
+
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "hello".to_owned(),
+                SearchRepresentationDto::Decoded,
+                None,
+                None,
+                None,
+                50,
+                opened.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "stale_session"
+        );
+
+        let second = select_entry_inner(&state, 1, selected.session_revision).unwrap();
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "hello".to_owned(),
+                SearchRepresentationDto::Decoded,
+                None,
+                None,
+                None,
+                50,
+                second.session_revision,
+            )
+            .unwrap()
+            .matches
+            .len(),
+            0
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn search_current_routes_nested_scope_without_fallback_or_revision_bump() {
+        let path = temp_path("ipc-search-nested");
+        fs::write(&path, br#"{"payload":"{\"inner\":\"hello\"}"}"#).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let payload = child_id(
+            &state,
+            None,
+            opened.root.as_ref().unwrap().id,
+            "payload",
+            opened.session_revision,
+        );
+        let scope =
+            open_nested_json_inner(&state, None, payload, None, opened.session_revision).unwrap();
+
+        let decoded = search_current_inner(
+            &state,
+            "hello".to_owned(),
+            SearchRepresentationDto::Decoded,
+            Some(scope.scope_id),
+            None,
+            None,
+            50,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(decoded.matches.len(), 1);
+        assert_eq!(decoded.matches[0].path_segments, ["$", "inner"]);
+        assert_eq!(decoded.matches[0].source_span_start, 9);
+        assert_eq!(decoded.matches[0].source_span_end, 16);
+
+        let raw = search_current_inner(
+            &state,
+            r#""hello""#.to_owned(),
+            SearchRepresentationDto::RawSource,
+            Some(scope.scope_id),
+            None,
+            None,
+            50,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(raw.matches.len(), 1);
+        assert_eq!(raw.matches[0].source_span_start, 9);
+        assert_eq!(raw.matches[0].source_span_end, 16);
+
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "hello".to_owned(),
+                SearchRepresentationDto::Decoded,
+                Some(scope.scope_id),
+                None,
+                Some(SearchCursorDto::Decoded {
+                    node_id: 1,
+                    field: SearchFieldDto::Value,
+                    byte_offset: 0,
+                    query: "hello".to_owned(),
+                    session_revision: opened.session_revision,
+                    scope_id: None,
+                    target_node_id: None,
+                }),
+                50,
+                opened.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "hello".to_owned(),
+                SearchRepresentationDto::Decoded,
+                Some(scope.scope_id + 100),
+                None,
+                None,
+                50,
+                opened.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "not_found"
+        );
+        assert_eq!(get_file_summary_inner(&state).unwrap().session_revision, 1);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn search_current_scans_raw_document_windows_and_rejects_decoded() {
+        let path = temp_path("ipc-search-raw-document");
+        let boundary = 256 * 1024;
+        let mut bytes = vec![b'x'; boundary - 2];
+        bytes.extend_from_slice(b"needle");
+        bytes.extend_from_slice(b"x trailing");
+        fs::write(&path, &bytes).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        assert!(opened.document_error.is_some());
+
+        let page = search_current_inner(
+            &state,
+            "needle".to_owned(),
+            SearchRepresentationDto::RawSource,
+            None,
+            None,
+            None,
+            50,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(page.matches.len(), 1);
+        assert_eq!(page.matches[0].node_id, None);
+        assert_eq!(page.matches[0].field, SearchFieldDto::RawSource);
+        assert_eq!(page.matches[0].path_segments, ["$"]);
+        assert_eq!(page.matches[0].source_span_start, boundary - 2);
+        assert_eq!(page.matches[0].source_span_end, boundary + 4);
+        assert!(!page.has_more);
+
+        let error = search_current_inner(
+            &state,
+            "needle".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            None,
+            None,
+            50,
+            opened.session_revision,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "invalid_request");
+        assert!(error.message.contains("raw-only"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn search_current_scans_invalid_utf8_entry_only_inside_entry_range() {
+        let path = temp_jsonl_path("ipc-search-invalid-utf8-entry");
+        fs::write(&path, b"\xffneedle\n{\"other\":\"needle\"}\n").unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(selected.entry.status, "invalidUtf8");
+
+        let page = search_current_inner(
+            &state,
+            "needle".to_owned(),
+            SearchRepresentationDto::RawSource,
+            None,
+            None,
+            None,
+            50,
+            selected.session_revision,
+        )
+        .unwrap();
+        assert_eq!(page.matches.len(), 1);
+        assert_eq!(page.matches[0].match_start, 1);
+        assert_eq!(page.matches[0].match_end, 7);
+        assert_eq!(page.matches[0].source_span_start, 1);
+        assert_eq!(page.matches[0].source_span_end, 7);
+        assert!(!page.has_more);
+
+        let error = search_current_inner(
+            &state,
+            "needle".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            None,
+            None,
+            50,
+            selected.session_revision,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "invalid_request");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn search_current_scans_oversized_entry_with_bounded_windows() {
+        let path = temp_jsonl_path("ipc-search-oversized-entry");
+        let boundary = 256 * 1024;
+        let mut entry = vec![b'x'; crate::jsonl_entry::MAX_ENTRY_BYTES + 1];
+        entry[boundary - 2..boundary + 4].copy_from_slice(b"needle");
+        let mut file = entry;
+        file.push(b'\n');
+        file.extend_from_slice(b"{\"other\":\"needle\"}\n");
+        fs::write(&path, file).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        while !get_file_summary_inner(&state)
+            .unwrap()
+            .progress
+            .as_ref()
+            .unwrap()
+            .complete
+        {
+            scan_entries_inner(&state, opened.session_revision).unwrap();
+        }
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(selected.entry.status, "oversized");
+
+        let page = search_current_inner(
+            &state,
+            "needle".to_owned(),
+            SearchRepresentationDto::RawSource,
+            None,
+            None,
+            None,
+            50,
+            selected.session_revision,
+        )
+        .unwrap();
+        assert_eq!(page.matches.len(), 1);
+        assert_eq!(page.matches[0].match_start, boundary - 2);
+        assert_eq!(page.matches[0].source_span_start, boundary - 2);
+        assert_eq!(page.matches[0].source_span_end, boundary + 4);
+        assert!(page.has_more);
+        let tail = search_current_inner(
+            &state,
+            "needle".to_owned(),
+            SearchRepresentationDto::RawSource,
+            None,
+            None,
+            page.next_cursor,
+            50,
+            selected.session_revision,
+        )
+        .unwrap();
+        assert!(tail.matches.is_empty());
+        assert!(tail.has_more);
+        let end = search_current_inner(
+            &state,
+            "needle".to_owned(),
+            SearchRepresentationDto::RawSource,
+            None,
+            None,
+            tail.next_cursor,
+            50,
+            selected.session_revision,
+        )
+        .unwrap();
+        assert!(end.matches.is_empty());
+        assert!(!end.has_more);
+
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "needle".to_owned(),
+                SearchRepresentationDto::RawSource,
+                None,
+                None,
+                None,
+                0,
+                selected.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn search_raw_windows_stops_at_eight_mib_and_resumes_without_losing_matches() {
+        let query = "needle";
+        let mut source = vec![b'x'; MAX_SCAN_BYTES];
+        source.extend_from_slice(query.as_bytes());
+        let mut position = 0u64;
+        let request = SearchRequest::raw(query, None, 50);
+        let first = search_raw_windows(
+            source.len(),
+            query,
+            None,
+            50,
+            &request,
+            7,
+            None,
+            |offset, length| {
+                assert_eq!(offset, position);
+                let end = (offset as usize + length).min(source.len());
+                let bytes = source[offset as usize..end].to_vec();
+                position = end as u64;
+                Ok(ReadChunk {
+                    start: offset,
+                    has_more: end < source.len(),
+                    next_offset: (end < source.len()).then_some(end as u64),
+                    bytes,
+                })
+            },
+        )
+        .unwrap();
+        assert!(first.matches.is_empty());
+        assert!(first.has_more);
+        let cursor = first.next_cursor.unwrap();
+        let SearchCursorDto::RawSource {
+            byte_offset,
+            query: cursor_query,
+            session_revision,
+            scope_id,
+            target_node_id,
+        } = cursor
+        else {
+            panic!("expected raw cursor");
+        };
+        assert!(byte_offset > 0);
+        assert_eq!(cursor_query, query);
+        assert_eq!(session_revision, 7);
+        assert_eq!(scope_id, None);
+        assert_eq!(target_node_id, None);
+
+        let next_request = SearchRequest::raw(
+            query,
+            Some(crate::search::SearchCursor {
+                mode: SearchMode::Raw,
+                query: query.to_owned(),
+                node_id: None,
+                unit: 0,
+                phase: SearchPhase::Value,
+                offset: byte_offset,
+            }),
+            50,
+        );
+        let second = search_raw_windows(
+            source.len(),
+            query,
+            Some(byte_offset),
+            50,
+            &next_request,
+            7,
+            None,
+            |offset, length| {
+                let end = (offset + length as u64).min(source.len() as u64) as usize;
+                Ok(ReadChunk {
+                    start: offset,
+                    bytes: source[offset as usize..end].to_vec(),
+                    has_more: end < source.len(),
+                    next_offset: (end < source.len()).then_some(end as u64),
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(second.matches.len(), 1);
+        assert_eq!(second.matches[0].match_start, MAX_SCAN_BYTES);
+        assert!(!second.has_more);
+    }
+
+    #[test]
+    fn search_current_rejects_unselected_targets_and_malformed_cursor_routes() {
+        let path = temp_jsonl_path("ipc-search-unselected");
+        fs::write(&path, b"{\"value\":\"needle\"}\n").unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+
+        for representation in [
+            SearchRepresentationDto::Decoded,
+            SearchRepresentationDto::RawSource,
+        ] {
+            assert_eq!(
+                search_current_inner(
+                    &state,
+                    "needle".to_owned(),
+                    representation,
+                    None,
+                    None,
+                    None,
+                    50,
+                    opened.session_revision,
+                )
+                .unwrap_err()
+                .code,
+                "invalid_request"
+            );
+        }
+
+        let document_path = temp_path("ipc-search-target-errors");
+        fs::write(&document_path, br#"{"number":1,"text":"needle"}"#).unwrap();
+        let document = open_file_inner(&state, document_path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "1".to_owned(),
+                SearchRepresentationDto::Decoded,
+                None,
+                Some(1),
+                None,
+                50,
+                document.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "needle".to_owned(),
+                SearchRepresentationDto::Decoded,
+                None,
+                Some(99),
+                None,
+                50,
+                document.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "not_found"
+        );
+
+        let first = search_current_inner(
+            &state,
+            "e".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            None,
+            None,
+            1,
+            document.session_revision,
+        )
+        .unwrap();
+        let cursor = first.next_cursor.unwrap();
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "e".to_owned(),
+                SearchRepresentationDto::RawSource,
+                None,
+                None,
+                Some(cursor.clone()),
+                50,
+                document.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "e".to_owned(),
+                SearchRepresentationDto::Decoded,
+                None,
+                Some(1),
+                Some(cursor),
+                50,
+                document.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "needle".to_owned(),
+                SearchRepresentationDto::Decoded,
+                None,
+                None,
+                Some(SearchCursorDto::Decoded {
+                    node_id: 0,
+                    field: SearchFieldDto::Value,
+                    byte_offset: 0,
+                    query: "needle".to_owned(),
+                    session_revision: document.session_revision,
+                    scope_id: None,
+                    target_node_id: None,
+                }),
+                50,
+                document.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+
+        fs::remove_file(path).unwrap();
+        fs::remove_file(document_path).unwrap();
+    }
+
+    #[test]
+    fn search_current_honors_query_and_limit_boundaries_and_string_lexemes() {
+        let path = temp_path("ipc-search-boundaries");
+        let exact = "a".repeat(MAX_QUERY_BYTES);
+        fs::write(
+            &path,
+            format!(
+                "{{\"text\":{},\"other\":\"needle\"}}",
+                serde_json::to_string(&exact).unwrap()
+            ),
+        )
+        .unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let exact_page = search_current_inner(
+            &state,
+            exact.clone(),
+            SearchRepresentationDto::Decoded,
+            None,
+            None,
+            None,
+            usize::MAX,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(exact_page.matches.len(), 1);
+        assert_eq!(
+            search_current_inner(
+                &state,
+                format!("{exact}x"),
+                SearchRepresentationDto::Decoded,
+                None,
+                None,
+                None,
+                50,
+                opened.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+
+        let escaped_path = temp_path("ipc-search-string-lexeme");
+        fs::write(&escaped_path, br#"{"text":"\u4f60"}"#).unwrap();
+        let escaped = open_file_inner(&state, escaped_path.to_str().unwrap()).unwrap();
+        let node_id = child_id(
+            &state,
+            None,
+            escaped.root.as_ref().unwrap().id,
+            "text",
+            escaped.session_revision,
+        );
+        let decoded = search_current_inner(
+            &state,
+            "你".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            Some(node_id),
+            None,
+            50,
+            escaped.session_revision,
+        )
+        .unwrap();
+        assert_eq!(decoded.matches.len(), 1);
+        assert_eq!(
+            (decoded.matches[0].match_start, decoded.matches[0].match_end),
+            (0, 3)
+        );
+
+        let raw = search_current_inner(
+            &state,
+            r#"\u4f60"#.to_owned(),
+            SearchRepresentationDto::RawSource,
+            None,
+            Some(node_id),
+            None,
+            50,
+            escaped.session_revision,
+        )
+        .unwrap();
+        assert_eq!(raw.matches.len(), 1);
+        assert_eq!(
+            (raw.matches[0].match_start, raw.matches[0].match_end),
+            (9, 15)
+        );
+        assert_eq!(
+            (
+                raw.matches[0].source_span_start,
+                raw.matches[0].source_span_end
+            ),
+            (8, 16)
+        );
+
+        let raw_quotes = search_current_inner(
+            &state,
+            "\"".to_owned(),
+            SearchRepresentationDto::RawSource,
+            None,
+            Some(node_id),
+            None,
+            50,
+            escaped.session_revision,
+        )
+        .unwrap();
+        assert_eq!(raw_quotes.matches.len(), 2);
+
+        fs::remove_file(path).unwrap();
+        fs::remove_file(escaped_path).unwrap();
+    }
+
+    #[test]
+    fn search_current_keeps_malicious_path_payload_bounded() {
+        let path = temp_path("ipc-search-path-payload");
+        let key = "\0\n\t\\\"".repeat(60);
+        let mut input = String::from("{");
+        for index in 0..50 {
+            if index > 0 {
+                input.push(',');
+            }
+            input.push_str(&serde_json::to_string(&format!("{key}{index}")).unwrap());
+            input.push_str(":\"needle\"");
+        }
+        input.push('}');
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let page = search_current_inner(
+            &state,
+            "needle".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            None,
+            None,
+            usize::MAX,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(page.matches.len(), 50);
+        assert!(page.matches.iter().all(|item| item
+            .path_segments
+            .iter()
+            .map(String::len)
+            .sum::<usize>()
+            <= 2048));
+        let payload = serde_json::to_vec(&page).unwrap();
+        assert!(payload.len() < MAX_IPC_PAYLOAD_BYTES);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn search_current_rejects_stale_files_and_closed_scopes_without_mutation() {
+        let path = temp_path("ipc-search-stale");
+        fs::write(&path, br#"{"payload":"{\"needle\":\"yes\"}"}"#).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let payload = child_id(
+            &state,
+            None,
+            opened.root.as_ref().unwrap().id,
+            "payload",
+            opened.session_revision,
+        );
+        let scope =
+            open_nested_json_inner(&state, None, payload, None, opened.session_revision).unwrap();
+        close_nested_scope_inner(&state, scope.scope_id, opened.session_revision).unwrap();
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "yes".to_owned(),
+                SearchRepresentationDto::Decoded,
+                Some(scope.scope_id),
+                None,
+                None,
+                50,
+                opened.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "not_found"
+        );
+
+        fs::write(&path, br#"{"payload":"{\"needle\":\"yes\"}"}"#).unwrap();
+        assert_eq!(
+            search_current_inner(
+                &state,
+                "yes".to_owned(),
+                SearchRepresentationDto::Decoded,
+                None,
+                None,
+                None,
+                50,
+                opened.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "file_changed"
+        );
+        assert_eq!(state.session.lock().unwrap().revision, 1);
+        fs::remove_file(path).unwrap();
     }
 }
