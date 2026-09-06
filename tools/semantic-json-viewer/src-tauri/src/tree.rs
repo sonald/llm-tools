@@ -77,6 +77,22 @@ impl TreeDocument {
     }
 
     pub fn detect_string(&self, node_id: usize) -> Option<Detection> {
+        self.detect_string_with_budget(node_id, NestedBudget::default())
+    }
+
+    pub fn decoded_text(&self, node_id: usize) -> Option<&str> {
+        let node = self.parsed.node_at(node_id)?;
+        if node.kind != JsonKind::String {
+            return None;
+        }
+        node.decoded.as_deref()
+    }
+
+    pub fn detect_string_with_budget(
+        &self,
+        node_id: usize,
+        budget: NestedBudget,
+    ) -> Option<Detection> {
         let node = self.parsed.node_at(node_id)?;
         if node.kind != JsonKind::String {
             return None;
@@ -86,7 +102,7 @@ impl TreeDocument {
             ChildLocator::ObjectKey { key, .. } => Some(key.as_str()),
             ChildLocator::Root | ChildLocator::ArrayIndex(_) => None,
         };
-        Some(detect(decoded, key, NestedBudget::default()))
+        Some(detect(decoded, key, budget))
     }
 
     fn projection(&self, id: usize, node: &JsonNode) -> NodeProjection {

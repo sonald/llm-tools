@@ -5,7 +5,7 @@ use std::str::from_utf8;
 use crate::file_source::{FileIdentity, FileSource, ReadChunk};
 use crate::jsonl_entry::{inspect_entry, EntryStatus, MAX_ENTRY_BYTES, PREVIEW_BYTES};
 use crate::jsonl_index::{Checkpoint, EntryLocation, JsonlIndex, JsonlIndexer};
-use crate::semantic_detection::Detection;
+use crate::semantic_detection::{Detection, NestedBudget};
 use crate::tree::{NodePage, NodeProjection, TextChunk, TreeDocument};
 
 const MAX_ENTRY_PAGE: usize = 200;
@@ -375,11 +375,27 @@ impl JsonlSession {
     }
 
     pub fn detect_string(&self, node_id: usize) -> io::Result<Option<Detection>> {
+        self.detect_string_with_budget(node_id, NestedBudget::default())
+    }
+
+    pub fn selected_decoded_text(&self, node_id: usize) -> io::Result<Option<&str>> {
         self.ensure_current()?;
         Ok(self
             .selected
             .as_ref()
-            .and_then(|(_, tree)| tree.detect_string(node_id)))
+            .and_then(|(_, tree)| tree.decoded_text(node_id)))
+    }
+
+    pub fn detect_string_with_budget(
+        &self,
+        node_id: usize,
+        budget: NestedBudget,
+    ) -> io::Result<Option<Detection>> {
+        self.ensure_current()?;
+        Ok(self
+            .selected
+            .as_ref()
+            .and_then(|(_, tree)| tree.detect_string_with_budget(node_id, budget)))
     }
 
     pub fn read_selected_entry_bytes(

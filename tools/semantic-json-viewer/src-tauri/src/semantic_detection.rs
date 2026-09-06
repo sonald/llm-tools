@@ -2,10 +2,10 @@ use dom_query::Document;
 
 use crate::json::{parse_json, JsonKind};
 
-const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_HEURISTIC_BYTES: usize = 64 * 1024;
-const MAX_CUMULATIVE_BYTES: usize = 8 * 1024 * 1024;
-const HARD_MAX_DEPTH: u8 = 10;
+pub(crate) const MAX_CUMULATIVE_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const HARD_MAX_DEPTH: u8 = 10;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlainReason {
@@ -62,8 +62,7 @@ impl NestedBudget {
         self.bytes
     }
 
-    #[cfg(test)]
-    fn from_parts(depth: u8, max_depth: u8, bytes: usize) -> Self {
+    pub(crate) fn from_parts(depth: u8, max_depth: u8, bytes: usize) -> Self {
         Self {
             depth,
             max_depth,

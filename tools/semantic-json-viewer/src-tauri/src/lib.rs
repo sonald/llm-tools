@@ -19,6 +19,8 @@ pub fn run() {
             ipc::get_root_node,
             ipc::get_node_summary,
             ipc::get_children,
+            ipc::open_nested_json,
+            ipc::close_nested_scope,
             ipc::read_raw_slice,
             ipc::read_selected_entry_bytes,
             ipc::read_raw_document_bytes,

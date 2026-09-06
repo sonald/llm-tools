@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::file_source::FileSource;
 use crate::json::ParseError;
-use crate::semantic_detection::Detection;
+use crate::semantic_detection::{Detection, NestedBudget};
 use crate::tree::{NodePage, NodeProjection, TextChunk, TreeDocument};
 
 #[derive(Debug)]
@@ -140,8 +140,21 @@ impl DocumentSession {
     }
 
     pub fn detect_string(&self, node_id: usize) -> io::Result<Option<Detection>> {
+        self.detect_string_with_budget(node_id, NestedBudget::default())
+    }
+
+    pub fn decoded_text(&self, node_id: usize) -> io::Result<Option<&str>> {
         self.ensure_current()?;
-        Ok(self.tree.detect_string(node_id))
+        Ok(self.tree.decoded_text(node_id))
+    }
+
+    pub fn detect_string_with_budget(
+        &self,
+        node_id: usize,
+        budget: NestedBudget,
+    ) -> io::Result<Option<Detection>> {
+        self.ensure_current()?;
+        Ok(self.tree.detect_string_with_budget(node_id, budget))
     }
 }
 

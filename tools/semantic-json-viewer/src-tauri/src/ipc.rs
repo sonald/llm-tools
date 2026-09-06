@@ -15,8 +15,10 @@ use crate::jsonl_entry::EntryStatus;
 use crate::jsonl_session::{
     EntrySelection, EntrySummary, JsonlProgress, JsonlSession, OversizedPreview,
 };
-use crate::semantic_detection::{Detection, PlainReason};
-use crate::tree::{NodePage, NodeProjection, TextChunk};
+use crate::semantic_detection::{
+    Detection, NestedBudget, PlainReason, HARD_MAX_DEPTH, MAX_CUMULATIVE_BYTES, MAX_INPUT_BYTES,
+};
+use crate::tree::{NodePage, NodeProjection, TextChunk, TreeDocument};
 
 // AppState is a singleton with one session; boxing this variant adds indirection without value.
 #[allow(clippy::large_enum_variant)]
@@ -29,9 +31,87 @@ enum OpenSession {
     },
 }
 
+struct NestedScope {
+    scope_id: u64,
+    tree: TreeDocument,
+    depth: u8,
+    max_depth: u8,
+    cumulative_bytes: usize,
+    budget: NestedBudget,
+}
+
+#[derive(Default)]
+struct NestedScopes {
+    next_scope_id: u64,
+    scopes: Vec<NestedScope>,
+}
+
+impl NestedScopes {
+    fn new() -> Self {
+        Self {
+            next_scope_id: 1,
+            scopes: Vec::new(),
+        }
+    }
+
+    fn find(&self, scope_id: u64) -> Option<&NestedScope> {
+        self.scopes.iter().find(|scope| scope.scope_id == scope_id)
+    }
+
+    fn clear(&mut self) {
+        self.scopes.clear();
+    }
+
+    fn truncate_after(&mut self, scope_id: u64) -> Result<(), IpcError> {
+        let position = self
+            .scopes
+            .iter()
+            .position(|scope| scope.scope_id == scope_id)
+            .ok_or_else(|| nested_scope_not_found(scope_id))?;
+        self.scopes.truncate(position + 1);
+        Ok(())
+    }
+
+    fn close_from(&mut self, scope_id: u64) -> Result<(), IpcError> {
+        let position = self
+            .scopes
+            .iter()
+            .position(|scope| scope.scope_id == scope_id)
+            .ok_or_else(|| nested_scope_not_found(scope_id))?;
+        self.scopes.truncate(position);
+        Ok(())
+    }
+}
+
+struct SessionState {
+    revision: u64,
+    session: Option<OpenSession>,
+    nested: NestedScopes,
+}
+
+impl Default for SessionState {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            session: None,
+            nested: NestedScopes::new(),
+        }
+    }
+}
+
+impl OpenSession {
+    fn is_current(&self) -> bool {
+        match self {
+            OpenSession::Document(session) => session.is_current(),
+            OpenSession::Entry(session) => session.is_current(),
+            OpenSession::RawDocument { source, .. } => source.is_current(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct AppState {
-    session: Mutex<(u64, Option<OpenSession>)>,
+    session: Mutex<SessionState>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -67,6 +147,20 @@ pub struct NodePageDto {
     pub nodes: Vec<NodeDto>,
     pub has_more: bool,
     pub next_cursor: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NestedScopeDto {
+    pub scope_id: u64,
+    pub parent_scope_id: Option<u64>,
+    pub source_node_id: usize,
+    pub root: NodeDto,
+    pub depth: u8,
+    pub max_depth: u8,
+    pub parsed_bytes: usize,
+    pub cumulative_bytes: usize,
+    pub session_revision: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -202,18 +296,20 @@ pub fn get_file_summary(state: State<'_, AppState>) -> Result<FileSummary, IpcEr
 #[tauri::command]
 pub fn get_root_node(
     session_revision: u64,
+    scope_id: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<NodeDto, IpcError> {
-    get_root_node_inner(&state, session_revision)
+    get_root_node_scoped_inner(&state, scope_id, session_revision)
 }
 
 #[tauri::command]
 pub fn get_node_summary(
     node_id: usize,
     session_revision: u64,
+    scope_id: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<NodeDto, IpcError> {
-    get_node_summary_inner(&state, node_id, session_revision)
+    get_node_summary_scoped_inner(&state, node_id, scope_id, session_revision)
 }
 
 #[tauri::command]
@@ -222,9 +318,10 @@ pub fn get_children(
     cursor: usize,
     limit: usize,
     session_revision: u64,
+    scope_id: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<NodePageDto, IpcError> {
-    get_children_inner(&state, node_id, cursor, limit, session_revision)
+    get_children_scoped_inner(&state, node_id, cursor, limit, scope_id, session_revision)
 }
 
 #[tauri::command]
@@ -232,9 +329,10 @@ pub fn read_raw_slice(
     source_start: usize,
     length: usize,
     session_revision: u64,
+    scope_id: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<TextChunkDto, IpcError> {
-    read_raw_slice_inner(&state, source_start, length, session_revision)
+    read_raw_slice_scoped_inner(&state, source_start, length, scope_id, session_revision)
 }
 
 #[tauri::command(async)]
@@ -263,18 +361,46 @@ pub fn read_decoded_text(
     offset: usize,
     length: usize,
     session_revision: u64,
+    scope_id: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<TextChunkDto, IpcError> {
-    read_decoded_text_inner(&state, node_id, offset, length, session_revision)
+    read_decoded_text_scoped_inner(&state, node_id, offset, length, scope_id, session_revision)
 }
 
 #[tauri::command]
 pub fn get_string_detection(
     node_id: usize,
     session_revision: u64,
+    scope_id: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<StringDetectionDto, IpcError> {
-    get_string_detection_inner(&state, node_id, session_revision)
+    get_string_detection_scoped_inner(&state, node_id, scope_id, session_revision)
+}
+
+#[tauri::command]
+pub fn open_nested_json(
+    parent_scope_id: Option<u64>,
+    node_id: usize,
+    max_depth: Option<u8>,
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<NestedScopeDto, IpcError> {
+    open_nested_json_inner(
+        &state,
+        parent_scope_id,
+        node_id,
+        max_depth,
+        session_revision,
+    )
+}
+
+#[tauri::command]
+pub fn close_nested_scope(
+    scope_id: u64,
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<(), IpcError> {
+    close_nested_scope_inner(&state, scope_id, session_revision)
 }
 
 #[tauri::command(async)]
@@ -368,11 +494,15 @@ fn open_file_with_override(
     }
     let mut guard = lock_session(state)?;
     let next_revision = guard
-        .0
+        .revision
         .checked_add(1)
         .ok_or_else(|| internal("session revision overflow"))?;
     let summary = file_summary(&session, next_revision)?;
-    *guard = (next_revision, Some(session));
+    *guard = SessionState {
+        revision: next_revision,
+        session: Some(session),
+        nested: NestedScopes::new(),
+    };
     Ok(summary)
 }
 
@@ -537,40 +667,68 @@ fn file_summary(session: &OpenSession, session_revision: u64) -> Result<FileSumm
 
 fn get_file_summary_inner(state: &AppState) -> Result<FileSummary, IpcError> {
     let guard = lock_session(state)?;
-    let session = guard.1.as_ref().ok_or_else(no_session)?;
-    file_summary(session, guard.0)
+    let session = guard.session.as_ref().ok_or_else(no_session)?;
+    file_summary(session, guard.revision)
 }
 
+#[cfg(test)]
 fn get_root_node_inner(state: &AppState, session_revision: u64) -> Result<NodeDto, IpcError> {
-    with_session(state, session_revision, |session| match session {
-        OpenSession::Document(session) => session.root().map(node_dto).map_err(session_error),
-        OpenSession::Entry(session) => session
-            .selected_root()
-            .map_err(session_error)?
-            .map(node_dto)
-            .ok_or_else(|| invalid_request("no valid entry is selected")),
-        OpenSession::RawDocument { .. } => Err(invalid_request(
-            "command is unavailable for a raw-only document session",
-        )),
+    get_root_node_scoped_inner(state, None, session_revision)
+}
+
+fn get_root_node_scoped_inner(
+    state: &AppState,
+    scope_id: Option<u64>,
+    session_revision: u64,
+) -> Result<NodeDto, IpcError> {
+    with_session_scope(state, scope_id, session_revision, |session, scope| {
+        if let Some(scope) = scope {
+            return Ok(node_dto(scope.tree.root()));
+        }
+        match session {
+            OpenSession::Document(session) => session.root().map(node_dto).map_err(session_error),
+            OpenSession::Entry(session) => session
+                .selected_root()
+                .map_err(session_error)?
+                .map(node_dto)
+                .ok_or_else(|| invalid_request("no valid entry is selected")),
+            OpenSession::RawDocument { .. } => Err(invalid_request(
+                "command is unavailable for a raw-only document session",
+            )),
+        }
     })
 }
 
+#[cfg(test)]
 fn get_node_summary_inner(
     state: &AppState,
     node_id: usize,
     session_revision: u64,
 ) -> Result<NodeDto, IpcError> {
-    with_session(state, session_revision, |session| {
-        let node = match session {
-            OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
-            OpenSession::Entry(session) => {
-                require_selected(session)?;
-                session.selected_node(node_id).map_err(session_error)?
-            }
-            OpenSession::RawDocument { .. } => {
-                return Err(invalid_request(
-                    "command is unavailable for a raw-only document session",
-                ));
+    get_node_summary_scoped_inner(state, node_id, None, session_revision)
+}
+
+fn get_node_summary_scoped_inner(
+    state: &AppState,
+    node_id: usize,
+    scope_id: Option<u64>,
+    session_revision: u64,
+) -> Result<NodeDto, IpcError> {
+    with_session_scope(state, scope_id, session_revision, |session, scope| {
+        let node = if let Some(scope) = scope {
+            scope.tree.node(node_id)
+        } else {
+            match session {
+                OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
+                OpenSession::Entry(session) => {
+                    require_selected(session)?;
+                    session.selected_node(node_id).map_err(session_error)?
+                }
+                OpenSession::RawDocument { .. } => {
+                    return Err(invalid_request(
+                        "command is unavailable for a raw-only document session",
+                    ));
+                }
             }
         };
         node.map(node_dto)
@@ -578,6 +736,7 @@ fn get_node_summary_inner(
     })
 }
 
+#[cfg(test)]
 fn get_children_inner(
     state: &AppState,
     node_id: usize,
@@ -585,57 +744,92 @@ fn get_children_inner(
     limit: usize,
     session_revision: u64,
 ) -> Result<NodePageDto, IpcError> {
-    with_session(state, session_revision, |session| {
-        let parent = match session {
-            OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
-            OpenSession::Entry(session) => {
-                require_selected(session)?;
-                session.selected_node(node_id).map_err(session_error)?
-            }
-            OpenSession::RawDocument { .. } => {
-                return Err(invalid_request(
-                    "command is unavailable for a raw-only document session",
-                ));
+    get_children_scoped_inner(state, node_id, cursor, limit, None, session_revision)
+}
+
+fn get_children_scoped_inner(
+    state: &AppState,
+    node_id: usize,
+    cursor: usize,
+    limit: usize,
+    scope_id: Option<u64>,
+    session_revision: u64,
+) -> Result<NodePageDto, IpcError> {
+    with_session_scope(state, scope_id, session_revision, |session, scope| {
+        let parent = if let Some(scope) = scope {
+            scope.tree.node(node_id)
+        } else {
+            match session {
+                OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
+                OpenSession::Entry(session) => {
+                    require_selected(session)?;
+                    session.selected_node(node_id).map_err(session_error)?
+                }
+                OpenSession::RawDocument { .. } => {
+                    return Err(invalid_request(
+                        "command is unavailable for a raw-only document session",
+                    ));
+                }
             }
         }
         .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
         if limit == 0 || cursor > parent.child_count {
             return Err(invalid_request("invalid cursor or limit"));
         }
-        match session {
-            OpenSession::Document(session) => session.children(node_id, cursor, limit),
-            OpenSession::Entry(session) => session.selected_children(node_id, cursor, limit),
-            OpenSession::RawDocument { .. } => {
-                return Err(invalid_request(
-                    "command is unavailable for a raw-only document session",
-                ));
+        let page = if let Some(scope) = scope {
+            scope.tree.children(node_id, cursor, limit)
+        } else {
+            match session {
+                OpenSession::Document(session) => session.children(node_id, cursor, limit),
+                OpenSession::Entry(session) => session.selected_children(node_id, cursor, limit),
+                OpenSession::RawDocument { .. } => {
+                    return Err(invalid_request(
+                        "command is unavailable for a raw-only document session",
+                    ));
+                }
             }
-        }
-        .map_err(session_error)?
-        .map(node_page_dto)
-        .ok_or_else(|| invalid_request("invalid cursor or limit"))
+            .map_err(session_error)?
+        };
+        page.map(node_page_dto)
+            .ok_or_else(|| invalid_request("invalid cursor or limit"))
     })
 }
 
+#[cfg(test)]
 fn read_raw_slice_inner(
     state: &AppState,
     source_start: usize,
     length: usize,
     session_revision: u64,
 ) -> Result<TextChunkDto, IpcError> {
-    with_session(state, session_revision, |session| {
-        match session {
-            OpenSession::Document(session) => session.read_raw_text(source_start, length),
-            OpenSession::Entry(session) => session.read_raw_text(source_start, length),
-            OpenSession::RawDocument { .. } => {
-                return Err(invalid_request(
-                    "command is unavailable for a raw-only document session",
-                ));
+    read_raw_slice_scoped_inner(state, source_start, length, None, session_revision)
+}
+
+fn read_raw_slice_scoped_inner(
+    state: &AppState,
+    source_start: usize,
+    length: usize,
+    scope_id: Option<u64>,
+    session_revision: u64,
+) -> Result<TextChunkDto, IpcError> {
+    with_session_scope(state, scope_id, session_revision, |session, scope| {
+        let chunk = if let Some(scope) = scope {
+            scope.tree.read_raw_text(source_start, length)
+        } else {
+            match session {
+                OpenSession::Document(session) => session.read_raw_text(source_start, length),
+                OpenSession::Entry(session) => session.read_raw_text(source_start, length),
+                OpenSession::RawDocument { .. } => {
+                    return Err(invalid_request(
+                        "command is unavailable for a raw-only document session",
+                    ));
+                }
             }
-        }
-        .map_err(session_error)?
-        .map(text_chunk_dto)
-        .ok_or_else(|| invalid_request("raw slice is unavailable"))
+            .map_err(session_error)?
+        };
+        chunk
+            .map(text_chunk_dto)
+            .ok_or_else(|| invalid_request("raw slice is unavailable"))
     })
 }
 
@@ -733,6 +927,7 @@ fn read_raw_document_bytes_inner(
     })
 }
 
+#[cfg(test)]
 fn read_decoded_text_inner(
     state: &AppState,
     node_id: usize,
@@ -740,45 +935,167 @@ fn read_decoded_text_inner(
     length: usize,
     session_revision: u64,
 ) -> Result<TextChunkDto, IpcError> {
-    with_session(state, session_revision, |session| {
-        let node = match session {
-            OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
-            OpenSession::Entry(session) => {
-                require_selected(session)?;
-                session.selected_node(node_id).map_err(session_error)?
-            }
-            OpenSession::RawDocument { .. } => {
-                return Err(invalid_request(
-                    "command is unavailable for a raw-only document session",
-                ));
+    read_decoded_text_scoped_inner(state, node_id, offset, length, None, session_revision)
+}
+
+fn read_decoded_text_scoped_inner(
+    state: &AppState,
+    node_id: usize,
+    offset: usize,
+    length: usize,
+    scope_id: Option<u64>,
+    session_revision: u64,
+) -> Result<TextChunkDto, IpcError> {
+    with_session_scope(state, scope_id, session_revision, |session, scope| {
+        let node = if let Some(scope) = scope {
+            scope.tree.node(node_id)
+        } else {
+            match session {
+                OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
+                OpenSession::Entry(session) => {
+                    require_selected(session)?;
+                    session.selected_node(node_id).map_err(session_error)?
+                }
+                OpenSession::RawDocument { .. } => {
+                    return Err(invalid_request(
+                        "command is unavailable for a raw-only document session",
+                    ));
+                }
             }
         }
         .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
         if node.kind != JsonKind::String {
             return Err(invalid_request("node does not contain decoded text"));
         }
-        match session {
-            OpenSession::Document(session) => session.read_decoded_text(node_id, offset, length),
-            OpenSession::Entry(session) => session.read_decoded_text(node_id, offset, length),
-            OpenSession::RawDocument { .. } => {
-                return Err(invalid_request(
-                    "command is unavailable for a raw-only document session",
-                ));
+        let chunk = if let Some(scope) = scope {
+            scope.tree.read_decoded_text(node_id, offset, length)
+        } else {
+            match session {
+                OpenSession::Document(session) => {
+                    session.read_decoded_text(node_id, offset, length)
+                }
+                OpenSession::Entry(session) => session.read_decoded_text(node_id, offset, length),
+                OpenSession::RawDocument { .. } => {
+                    return Err(invalid_request(
+                        "command is unavailable for a raw-only document session",
+                    ));
+                }
             }
-        }
-        .map_err(session_error)?
-        .map(text_chunk_dto)
-        .ok_or_else(|| invalid_request("decoded text is unavailable"))
+            .map_err(session_error)?
+        };
+        chunk
+            .map(text_chunk_dto)
+            .ok_or_else(|| invalid_request("decoded text is unavailable"))
     })
 }
 
+#[cfg(test)]
 fn get_string_detection_inner(
     state: &AppState,
     node_id: usize,
     session_revision: u64,
 ) -> Result<StringDetectionDto, IpcError> {
-    with_session(state, session_revision, |session| {
-        let detection = match session {
+    get_string_detection_scoped_inner(state, node_id, None, session_revision)
+}
+
+fn get_string_detection_scoped_inner(
+    state: &AppState,
+    node_id: usize,
+    scope_id: Option<u64>,
+    session_revision: u64,
+) -> Result<StringDetectionDto, IpcError> {
+    with_session_scope(state, scope_id, session_revision, |session, scope| {
+        let detection = if let Some(scope) = scope {
+            let node = scope
+                .tree
+                .node(node_id)
+                .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+            if node.kind != JsonKind::String {
+                return Err(invalid_request("node does not contain decoded text"));
+            }
+            scope.tree.detect_string_with_budget(node_id, scope.budget)
+        } else {
+            match session {
+                OpenSession::Document(session) => {
+                    let node = session
+                        .node(node_id)
+                        .map_err(session_error)?
+                        .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+                    if node.kind != JsonKind::String {
+                        return Err(invalid_request("node does not contain decoded text"));
+                    }
+                    session.detect_string(node_id).map_err(session_error)?
+                }
+                OpenSession::Entry(session) => {
+                    require_selected(session)?;
+                    let node = session
+                        .selected_node(node_id)
+                        .map_err(session_error)?
+                        .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+                    if node.kind != JsonKind::String {
+                        return Err(invalid_request("node does not contain decoded text"));
+                    }
+                    session.detect_string(node_id).map_err(session_error)?
+                }
+                OpenSession::RawDocument { .. } => {
+                    return Err(invalid_request(
+                        "command is unavailable for a raw-only document session",
+                    ));
+                }
+            }
+        };
+        detection
+            .map(string_detection_dto)
+            .ok_or_else(|| invalid_request("node does not contain decoded text"))
+    })
+}
+
+fn open_nested_json_inner(
+    state: &AppState,
+    parent_scope_id: Option<u64>,
+    node_id: usize,
+    max_depth: Option<u8>,
+    session_revision: u64,
+) -> Result<NestedScopeDto, IpcError> {
+    let mut guard = lock_session(state)?;
+    if guard.revision != session_revision {
+        return Err(stale_session());
+    }
+    let session = guard.session.as_ref().ok_or_else(no_session)?;
+    if !session.is_current() {
+        return Err(file_changed());
+    }
+    if parent_scope_id.is_some() && max_depth.is_some() {
+        return Err(invalid_request(
+            "maxDepth is only valid for a root nested scope",
+        ));
+    }
+    let mut max_depth = max_depth.unwrap_or(5);
+    if !(1..=HARD_MAX_DEPTH).contains(&max_depth) {
+        return Err(invalid_request("maxDepth must be between 1 and 10"));
+    }
+
+    let (parent_depth, parent_cumulative_bytes, decoded) = match parent_scope_id {
+        Some(scope_id) => {
+            let scope = guard
+                .nested
+                .find(scope_id)
+                .ok_or_else(|| nested_scope_not_found(scope_id))?;
+            max_depth = scope.max_depth;
+            let node = scope
+                .tree
+                .node(node_id)
+                .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+            if node.kind != JsonKind::String {
+                return Err(invalid_request("node does not contain decoded text"));
+            }
+            let decoded = scope
+                .tree
+                .decoded_text(node_id)
+                .ok_or_else(|| invalid_request("node does not contain decoded text"))?;
+            (scope.depth, scope.cumulative_bytes, decoded)
+        }
+        None => match session {
             OpenSession::Document(session) => {
                 let node = session
                     .node(node_id)
@@ -787,7 +1104,11 @@ fn get_string_detection_inner(
                 if node.kind != JsonKind::String {
                     return Err(invalid_request("node does not contain decoded text"));
                 }
-                session.detect_string(node_id).map_err(session_error)?
+                let decoded = session
+                    .decoded_text(node_id)
+                    .map_err(session_error)?
+                    .ok_or_else(|| invalid_request("node does not contain decoded text"))?;
+                (0, 0, decoded)
             }
             OpenSession::Entry(session) => {
                 require_selected(session)?;
@@ -798,18 +1119,94 @@ fn get_string_detection_inner(
                 if node.kind != JsonKind::String {
                     return Err(invalid_request("node does not contain decoded text"));
                 }
-                session.detect_string(node_id).map_err(session_error)?
+                let decoded = session
+                    .selected_decoded_text(node_id)
+                    .map_err(session_error)?
+                    .ok_or_else(|| invalid_request("node does not contain decoded text"))?;
+                (0, 0, decoded)
             }
             OpenSession::RawDocument { .. } => {
                 return Err(invalid_request(
                     "command is unavailable for a raw-only document session",
                 ));
             }
-        };
-        detection
-            .map(string_detection_dto)
-            .ok_or_else(|| invalid_request("node does not contain decoded text"))
-    })
+        },
+    };
+
+    let depth = parent_depth
+        .checked_add(1)
+        .ok_or_else(|| internal("nested JSON depth overflow"))?;
+    if depth > max_depth {
+        return Err(invalid_request("nested JSON depth limit reached"));
+    }
+    let parsed_bytes = decoded.len();
+    if parsed_bytes > MAX_INPUT_BYTES {
+        return Err(invalid_request("nested JSON exceeds the 2 MiB layer limit"));
+    }
+    let cumulative_bytes = parent_cumulative_bytes
+        .checked_add(parsed_bytes)
+        .ok_or_else(|| invalid_request("nested JSON exceeds the 8 MiB cumulative limit"))?;
+    if cumulative_bytes > MAX_CUMULATIVE_BYTES {
+        return Err(invalid_request(
+            "nested JSON exceeds the 8 MiB cumulative limit",
+        ));
+    }
+    let tree = TreeDocument::from_bytes(decoded.as_bytes().to_vec())
+        .map_err(|_| invalid_request("node is not parseable nested JSON"))?;
+    if !matches!(tree.root().kind, JsonKind::Object | JsonKind::Array) {
+        return Err(invalid_request("node is not parseable nested JSON"));
+    }
+    if !session.is_current() {
+        return Err(file_changed());
+    }
+
+    let scope_id = guard.nested.next_scope_id;
+    let next_scope_id = scope_id
+        .checked_add(1)
+        .ok_or_else(|| internal("nested scope id overflow"))?;
+    let budget = NestedBudget::from_parts(depth, max_depth, cumulative_bytes);
+    let dto = NestedScopeDto {
+        scope_id,
+        parent_scope_id,
+        source_node_id: node_id,
+        root: node_dto(tree.root()),
+        depth,
+        max_depth,
+        parsed_bytes,
+        cumulative_bytes,
+        session_revision,
+    };
+    if let Some(parent_scope_id) = parent_scope_id {
+        guard.nested.truncate_after(parent_scope_id)?;
+    } else {
+        guard.nested.clear();
+    }
+    guard.nested.next_scope_id = next_scope_id;
+    guard.nested.scopes.push(NestedScope {
+        scope_id,
+        tree,
+        depth,
+        max_depth,
+        cumulative_bytes,
+        budget,
+    });
+    Ok(dto)
+}
+
+fn close_nested_scope_inner(
+    state: &AppState,
+    scope_id: u64,
+    session_revision: u64,
+) -> Result<(), IpcError> {
+    let mut guard = lock_session(state)?;
+    if guard.revision != session_revision {
+        return Err(stale_session());
+    }
+    let session = guard.session.as_ref().ok_or_else(no_session)?;
+    if !session.is_current() {
+        return Err(file_changed());
+    }
+    guard.nested.close_from(scope_id)
 }
 
 fn scan_entries_inner(
@@ -848,14 +1245,14 @@ fn select_entry_inner(
     session_revision: u64,
 ) -> Result<EntrySelectionDto, IpcError> {
     let mut guard = lock_session(state)?;
-    if guard.0 != session_revision {
+    if guard.revision != session_revision {
         return Err(stale_session());
     }
     let next_revision = guard
-        .0
+        .revision
         .checked_add(1)
         .ok_or_else(|| internal("session revision overflow"))?;
-    let session = guard.1.as_mut().ok_or_else(no_session)?;
+    let session = guard.session.as_mut().ok_or_else(no_session)?;
     let selection = match session {
         OpenSession::Document(_) | OpenSession::RawDocument { .. } => {
             return Err(invalid_request("command requires a JSONL session"));
@@ -863,11 +1260,13 @@ fn select_entry_inner(
         OpenSession::Entry(session) => session.select_entry(ordinal).map_err(session_error)?,
     };
     let Some(selection) = selection else {
-        guard.0 = next_revision;
+        guard.revision = next_revision;
+        guard.nested = NestedScopes::new();
         return Err(invalid_request("entry is not indexed"));
     };
     let dto = selection_dto(selection, next_revision);
-    guard.0 = next_revision;
+    guard.revision = next_revision;
+    guard.nested = NestedScopes::new();
     Ok(dto)
 }
 
@@ -891,11 +1290,38 @@ fn with_session<T>(
     operation: impl FnOnce(&OpenSession) -> Result<T, IpcError>,
 ) -> Result<T, IpcError> {
     let guard = lock_session(state)?;
-    let session = guard.1.as_ref().ok_or_else(no_session)?;
-    if guard.0 != session_revision {
+    let session = guard.session.as_ref().ok_or_else(no_session)?;
+    if guard.revision != session_revision {
         return Err(stale_session());
     }
     operation(session)
+}
+
+fn with_session_scope<T>(
+    state: &AppState,
+    scope_id: Option<u64>,
+    session_revision: u64,
+    operation: impl FnOnce(&OpenSession, Option<&NestedScope>) -> Result<T, IpcError>,
+) -> Result<T, IpcError> {
+    let guard = lock_session(state)?;
+    let session = guard.session.as_ref().ok_or_else(no_session)?;
+    if guard.revision != session_revision {
+        return Err(stale_session());
+    }
+    if !session.is_current() {
+        return Err(file_changed());
+    }
+    let scope = scope_id.map(|scope_id| {
+        guard
+            .nested
+            .find(scope_id)
+            .ok_or_else(|| nested_scope_not_found(scope_id))
+    });
+    let scope = match scope {
+        Some(scope) => Some(scope?),
+        None => None,
+    };
+    operation(session, scope)
 }
 
 fn with_entry_session<T>(
@@ -925,10 +1351,10 @@ fn with_entry_session_mut<T>(
     operation: impl FnOnce(&mut JsonlSession) -> Result<T, IpcError>,
 ) -> Result<T, IpcError> {
     let mut guard = lock_session(state)?;
-    if guard.0 != session_revision {
+    if guard.revision != session_revision {
         return Err(stale_session());
     }
-    let session = guard.1.as_mut().ok_or_else(no_session)?;
+    let session = guard.session.as_mut().ok_or_else(no_session)?;
     match session {
         OpenSession::Document(_) | OpenSession::RawDocument { .. } => {
             Err(invalid_request("command requires a JSONL session"))
@@ -937,7 +1363,7 @@ fn with_entry_session_mut<T>(
     }
 }
 
-fn lock_session(state: &AppState) -> Result<MutexGuard<'_, (u64, Option<OpenSession>)>, IpcError> {
+fn lock_session(state: &AppState) -> Result<MutexGuard<'_, SessionState>, IpcError> {
     state
         .session
         .lock()
@@ -991,6 +1417,10 @@ fn not_found(message: impl Into<String>) -> IpcError {
         message: message.into(),
         parse_error: None,
     }
+}
+
+fn nested_scope_not_found(scope_id: u64) -> IpcError {
+    not_found(format!("nested scope {scope_id} was not found"))
 }
 
 fn open_error(error: impl std::fmt::Display) -> IpcError {
@@ -1227,6 +1657,57 @@ mod tests {
         }
         file.write_all(suffix).unwrap();
         file.flush().unwrap();
+    }
+
+    fn child_id(
+        state: &AppState,
+        scope_id: Option<u64>,
+        parent_id: usize,
+        label: &str,
+        revision: u64,
+    ) -> usize {
+        get_children_scoped_inner(state, parent_id, 0, 200, scope_id, revision)
+            .unwrap()
+            .nodes
+            .into_iter()
+            .find(|node| node.label == label)
+            .unwrap_or_else(|| panic!("missing child {label}"))
+            .id
+    }
+
+    fn sized_nested_object(size: usize, fill: u8) -> String {
+        let prefix = b"{\"payload\":\"";
+        let suffix = b"\"}";
+        assert!(size >= prefix.len() + suffix.len());
+        format!(
+            "{}{}{}",
+            std::str::from_utf8(prefix).unwrap(),
+            char::from(fill)
+                .to_string()
+                .repeat(size - prefix.len() - suffix.len()),
+            std::str::from_utf8(suffix).unwrap()
+        )
+    }
+
+    fn nested_chain(depth: usize) -> String {
+        assert!(depth >= 1);
+        let mut current = r#"{"leaf":true}"#.to_owned();
+        for level in (1..depth).rev() {
+            current = format!(
+                r#"{{"level":{level},"next":{}}}"#,
+                serde_json::to_string(&current).unwrap()
+            );
+        }
+        current
+    }
+
+    fn wrap_nested_chain(mut current: String, layers: usize) -> (String, Vec<usize>) {
+        let mut sizes = vec![current.len()];
+        for _ in 1..layers {
+            current = format!(r#"{{"next":{}}}"#, serde_json::to_string(&current).unwrap());
+            sizes.push(current.len());
+        }
+        (current, sizes)
     }
 
     #[test]
@@ -2969,6 +3450,735 @@ mod tests {
         assert!(!payload
             .windows(sentinel.len())
             .any(|window| window == sentinel.as_bytes()));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn nested_json_scope_opens_from_decoded_string() {
+        let path = temp_path("ipc-nested-json-scope");
+        fs::write(&path, br#"{"payload":"{\"answer\":42}"}"#).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let source_node = get_children_inner(
+            &state,
+            summary.root.as_ref().unwrap().id,
+            0,
+            1,
+            summary.session_revision,
+        )
+        .unwrap()
+        .nodes[0]
+            .id;
+
+        let scope =
+            open_nested_json_inner(&state, None, source_node, None, summary.session_revision)
+                .unwrap();
+        assert_eq!(scope.parent_scope_id, None);
+        assert_eq!(scope.source_node_id, source_node);
+        assert_eq!(scope.depth, 1);
+        assert_eq!(scope.max_depth, 5);
+        assert_eq!(scope.parsed_bytes, br#"{"answer":42}"#.len());
+        assert_eq!(scope.cumulative_bytes, scope.parsed_bytes);
+        assert_eq!(scope.root.kind, "object");
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn nested_scope_dto_uses_contract_field_names() {
+        let dto = NestedScopeDto {
+            scope_id: 7,
+            parent_scope_id: Some(3),
+            source_node_id: 11,
+            root: NodeDto {
+                id: 0,
+                kind: "object".to_owned(),
+                span_start: 2,
+                span_end: 14,
+                label: "$".to_owned(),
+                label_has_more: false,
+                value_preview: None,
+                value_has_more: false,
+                child_count: 1,
+            },
+            depth: 2,
+            max_depth: 5,
+            parsed_bytes: 12,
+            cumulative_bytes: 24,
+            session_revision: 9,
+        };
+        let value = serde_json::to_value(dto).unwrap();
+        assert_eq!(value["scopeId"], 7);
+        assert_eq!(value["parentScopeId"], 3);
+        assert_eq!(value["sourceNodeId"], 11);
+        assert_eq!(value["parsedBytes"], 12);
+        assert_eq!(value["cumulativeBytes"], 24);
+        assert_eq!(value["sessionRevision"], 9);
+        assert!(value.get("scope_id").is_none());
+    }
+
+    #[test]
+    fn nested_scopes_preserve_whitespace_spans_raw_lexemes_and_nested_routes() {
+        let path = temp_path("ipc-nested-json-routes");
+        let object = " \n{\"answer\":42,\"text\":\"line\\n\",\"inner\":\"[1,2]\"}\t";
+        let array = "[true,{\"value\":null}]";
+        let input = format!(
+            "{{\"object\":{},\"array\":{}}}",
+            serde_json::to_string(object).unwrap(),
+            serde_json::to_string(array).unwrap()
+        );
+        fs::write(&path, &input).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let root = summary.root.as_ref().unwrap().id;
+        let object_id = child_id(&state, None, root, "object", summary.session_revision);
+        let array_id = child_id(&state, None, root, "array", summary.session_revision);
+
+        let object_scope =
+            open_nested_json_inner(&state, None, object_id, None, summary.session_revision)
+                .unwrap();
+        assert_eq!(object_scope.depth, 1);
+        assert_eq!(object_scope.max_depth, 5);
+        assert_eq!(object_scope.parsed_bytes, object.len());
+        assert_eq!(object_scope.cumulative_bytes, object.len());
+        assert_eq!(object_scope.root.span_start, 2);
+        assert_eq!(object_scope.root.span_end, object.len() - 1);
+
+        let raw = read_raw_slice_scoped_inner(
+            &state,
+            object_scope.root.span_start,
+            object_scope.root.span_end - object_scope.root.span_start,
+            Some(object_scope.scope_id),
+            summary.session_revision,
+        )
+        .unwrap();
+        assert_eq!(
+            raw.text,
+            object[object_scope.root.span_start..object_scope.root.span_end]
+        );
+
+        let text_id = child_id(
+            &state,
+            Some(object_scope.scope_id),
+            object_scope.root.id,
+            "text",
+            summary.session_revision,
+        );
+        let text_node = get_node_summary_scoped_inner(
+            &state,
+            text_id,
+            Some(object_scope.scope_id),
+            summary.session_revision,
+        )
+        .unwrap();
+        let nested_raw = read_raw_slice_scoped_inner(
+            &state,
+            text_node.span_start,
+            text_node.span_end - text_node.span_start,
+            Some(object_scope.scope_id),
+            summary.session_revision,
+        )
+        .unwrap();
+        assert_eq!(nested_raw.text, "\"line\\n\"");
+        let decoded = read_decoded_text_scoped_inner(
+            &state,
+            text_id,
+            0,
+            usize::MAX,
+            Some(object_scope.scope_id),
+            summary.session_revision,
+        )
+        .unwrap();
+        assert_eq!(decoded.text, "line\n");
+
+        let base_raw = read_raw_slice_inner(
+            &state,
+            summary.root.as_ref().unwrap().span_start,
+            summary.root.as_ref().unwrap().span_end,
+            summary.session_revision,
+        )
+        .unwrap();
+        assert_ne!(base_raw.text, object);
+        assert!(base_raw.text.contains("\\\"answer\\\""));
+        let base_decoded =
+            read_decoded_text_inner(&state, object_id, 0, usize::MAX, summary.session_revision)
+                .unwrap();
+        assert_eq!(base_decoded.text, object);
+
+        let inner_id = child_id(
+            &state,
+            Some(object_scope.scope_id),
+            object_scope.root.id,
+            "inner",
+            summary.session_revision,
+        );
+        let inner_scope = open_nested_json_inner(
+            &state,
+            Some(object_scope.scope_id),
+            inner_id,
+            None,
+            summary.session_revision,
+        )
+        .unwrap();
+        assert_eq!(inner_scope.parent_scope_id, Some(object_scope.scope_id));
+        assert_eq!(inner_scope.depth, 2);
+        assert_eq!(inner_scope.root.kind, "array");
+        assert_eq!(inner_scope.root.span_start, 0);
+        assert_eq!(inner_scope.root.span_end, 5);
+
+        let array_scope =
+            open_nested_json_inner(&state, None, array_id, Some(10), summary.session_revision)
+                .unwrap();
+        assert_eq!(array_scope.parent_scope_id, None);
+        assert_eq!(array_scope.max_depth, 10);
+        assert_eq!(array_scope.root.kind, "array");
+        assert!(get_root_node_scoped_inner(
+            &state,
+            Some(object_scope.scope_id),
+            summary.session_revision
+        )
+        .is_err());
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn nested_scope_rejects_non_json_inputs_and_keeps_previous_chain_atomically() {
+        let path = temp_path("ipc-nested-json-errors");
+        let valid = r#"{"ok":true}"#;
+        let invalid = " \n{\"a\":1,}\t";
+        let primitive = " true ";
+        let input = format!(
+            "{{\"valid\":{},\"invalid\":{},\"primitive\":{}}}",
+            serde_json::to_string(valid).unwrap(),
+            serde_json::to_string(invalid).unwrap(),
+            serde_json::to_string(primitive).unwrap()
+        );
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let root = summary.root.as_ref().unwrap().id;
+        let valid_id = child_id(&state, None, root, "valid", summary.session_revision);
+        let invalid_id = child_id(&state, None, root, "invalid", summary.session_revision);
+        let primitive_id = child_id(&state, None, root, "primitive", summary.session_revision);
+        let scope =
+            open_nested_json_inner(&state, None, valid_id, None, summary.session_revision).unwrap();
+        let next_id_before = state.session.lock().unwrap().nested.next_scope_id;
+
+        for (node_id, message) in [
+            (invalid_id, "node is not parseable nested JSON"),
+            (primitive_id, "node is not parseable nested JSON"),
+        ] {
+            let error =
+                open_nested_json_inner(&state, None, node_id, None, summary.session_revision)
+                    .unwrap_err();
+            assert_eq!(error.message, message);
+            assert!(get_root_node_scoped_inner(
+                &state,
+                Some(scope.scope_id),
+                summary.session_revision
+            )
+            .is_ok());
+        }
+        assert_eq!(
+            state.session.lock().unwrap().nested.next_scope_id,
+            next_id_before
+        );
+
+        for (max_depth, message) in [
+            (Some(0), "maxDepth must be between 1 and 10"),
+            (Some(11), "maxDepth must be between 1 and 10"),
+        ] {
+            let error =
+                open_nested_json_inner(&state, None, valid_id, max_depth, summary.session_revision)
+                    .unwrap_err();
+            assert_eq!(error.message, message);
+        }
+        let error = open_nested_json_inner(
+            &state,
+            Some(scope.scope_id),
+            valid_id,
+            Some(5),
+            summary.session_revision,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.message,
+            "maxDepth is only valid for a root nested scope"
+        );
+        let error =
+            open_nested_json_inner(&state, Some(999), valid_id, None, summary.session_revision)
+                .unwrap_err();
+        assert_eq!(error.message, "nested scope 999 was not found");
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn nested_scope_pages_two_hundred_children_with_bounded_payload() {
+        let path = temp_path("ipc-nested-json-page-200");
+        let mut nested = String::from("{");
+        for index in 0..200 {
+            if index > 0 {
+                nested.push(',');
+            }
+            nested.push_str(&format!(r#""k{index}":{index}"#));
+        }
+        nested.push('}');
+        let input = format!(r#"{{"value":{}}}"#, serde_json::to_string(&nested).unwrap());
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let value_id = child_id(
+            &state,
+            None,
+            summary.root.as_ref().unwrap().id,
+            "value",
+            summary.session_revision,
+        );
+        let scope =
+            open_nested_json_inner(&state, None, value_id, None, summary.session_revision).unwrap();
+        let page = get_children_scoped_inner(
+            &state,
+            scope.root.id,
+            0,
+            usize::MAX,
+            Some(scope.scope_id),
+            summary.session_revision,
+        )
+        .unwrap();
+        assert_eq!(page.nodes.len(), 200);
+        assert!(!page.has_more);
+        assert!(page
+            .nodes
+            .iter()
+            .all(|node| node.span_end <= scope.parsed_bytes));
+        assert!(serde_json::to_vec(&page).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn nested_scope_enforces_exact_layer_and_cumulative_limits() {
+        let exact_path = temp_path("ipc-nested-json-exact-layer");
+        let exact = sized_nested_object(MAX_INPUT_BYTES, b'x');
+        fs::write(
+            &exact_path,
+            format!(r#"{{"value":{}}}"#, serde_json::to_string(&exact).unwrap()),
+        )
+        .unwrap();
+        let exact_state = AppState::default();
+        let exact_summary = open_file_inner(&exact_state, exact_path.to_str().unwrap()).unwrap();
+        let exact_id = child_id(
+            &exact_state,
+            None,
+            exact_summary.root.as_ref().unwrap().id,
+            "value",
+            exact_summary.session_revision,
+        );
+        let exact_scope = open_nested_json_inner(
+            &exact_state,
+            None,
+            exact_id,
+            None,
+            exact_summary.session_revision,
+        )
+        .unwrap();
+        assert_eq!(exact_scope.parsed_bytes, MAX_INPUT_BYTES);
+
+        let over_path = temp_path("ipc-nested-json-over-layer");
+        let over = sized_nested_object(MAX_INPUT_BYTES + 1, b'x');
+        fs::write(
+            &over_path,
+            format!(r#"{{"value":{}}}"#, serde_json::to_string(&over).unwrap()),
+        )
+        .unwrap();
+        let over_state = AppState::default();
+        let over_summary = open_file_inner(&over_state, over_path.to_str().unwrap()).unwrap();
+        let over_id = child_id(
+            &over_state,
+            None,
+            over_summary.root.as_ref().unwrap().id,
+            "value",
+            over_summary.session_revision,
+        );
+        let error = open_nested_json_inner(
+            &over_state,
+            None,
+            over_id,
+            None,
+            over_summary.session_revision,
+        )
+        .unwrap_err();
+        assert_eq!(error.message, "nested JSON exceeds the 2 MiB layer limit");
+
+        let (cumulative_exact, exact_layer_sizes) =
+            wrap_nested_chain(format!(r#"{{"payload":"{}"}}"#, "y".repeat(1_677_652)), 5);
+        assert!(exact_layer_sizes
+            .iter()
+            .all(|size| *size <= MAX_INPUT_BYTES));
+        assert_eq!(
+            exact_layer_sizes.iter().sum::<usize>(),
+            MAX_CUMULATIVE_BYTES
+        );
+        let cumulative_exact_path = temp_path("ipc-nested-json-cumulative-exact");
+        fs::write(
+            &cumulative_exact_path,
+            format!(
+                r#"{{"value":{}}}"#,
+                serde_json::to_string(&cumulative_exact).unwrap()
+            ),
+        )
+        .unwrap();
+        let cumulative_exact_state = AppState::default();
+        let cumulative_exact_summary = open_file_inner(
+            &cumulative_exact_state,
+            cumulative_exact_path.to_str().unwrap(),
+        )
+        .unwrap();
+        let mut source_id = child_id(
+            &cumulative_exact_state,
+            None,
+            cumulative_exact_summary.root.as_ref().unwrap().id,
+            "value",
+            cumulative_exact_summary.session_revision,
+        );
+        let mut scope = open_nested_json_inner(
+            &cumulative_exact_state,
+            None,
+            source_id,
+            Some(10),
+            cumulative_exact_summary.session_revision,
+        )
+        .unwrap();
+        for _ in 1..exact_layer_sizes.len() {
+            source_id = child_id(
+                &cumulative_exact_state,
+                Some(scope.scope_id),
+                scope.root.id,
+                "next",
+                cumulative_exact_summary.session_revision,
+            );
+            scope = open_nested_json_inner(
+                &cumulative_exact_state,
+                Some(scope.scope_id),
+                source_id,
+                None,
+                cumulative_exact_summary.session_revision,
+            )
+            .unwrap();
+        }
+        assert_eq!(scope.cumulative_bytes, MAX_CUMULATIVE_BYTES);
+
+        let (cumulative_over, over_layer_sizes) =
+            wrap_nested_chain(format!(r#"{{"payload":"{}"}}"#, "y".repeat(1_677_653)), 5);
+        assert!(over_layer_sizes.iter().all(|size| *size <= MAX_INPUT_BYTES));
+        assert!(over_layer_sizes.iter().sum::<usize>() > MAX_CUMULATIVE_BYTES);
+        let cumulative_over_path = temp_path("ipc-nested-json-cumulative-over");
+        fs::write(
+            &cumulative_over_path,
+            format!(
+                r#"{{"value":{}}}"#,
+                serde_json::to_string(&cumulative_over).unwrap()
+            ),
+        )
+        .unwrap();
+        let cumulative_over_state = AppState::default();
+        let cumulative_over_summary = open_file_inner(
+            &cumulative_over_state,
+            cumulative_over_path.to_str().unwrap(),
+        )
+        .unwrap();
+        let mut source_id = child_id(
+            &cumulative_over_state,
+            None,
+            cumulative_over_summary.root.as_ref().unwrap().id,
+            "value",
+            cumulative_over_summary.session_revision,
+        );
+        let mut scope = open_nested_json_inner(
+            &cumulative_over_state,
+            None,
+            source_id,
+            Some(10),
+            cumulative_over_summary.session_revision,
+        )
+        .unwrap();
+        let mut cumulative_error = None;
+        for _ in 1..over_layer_sizes.len() {
+            source_id = child_id(
+                &cumulative_over_state,
+                Some(scope.scope_id),
+                scope.root.id,
+                "next",
+                cumulative_over_summary.session_revision,
+            );
+            match open_nested_json_inner(
+                &cumulative_over_state,
+                Some(scope.scope_id),
+                source_id,
+                None,
+                cumulative_over_summary.session_revision,
+            ) {
+                Ok(next) => scope = next,
+                Err(error) => {
+                    cumulative_error = Some(error);
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            cumulative_error.unwrap().message,
+            "nested JSON exceeds the 8 MiB cumulative limit"
+        );
+
+        for path in [
+            exact_path,
+            over_path,
+            cumulative_exact_path,
+            cumulative_over_path,
+        ] {
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn nested_scope_depth_budget_detection_and_lifecycle_are_revision_safe() {
+        let path = temp_path("ipc-nested-json-depth");
+        let chain = nested_chain(6);
+        let input = format!(r#"{{"value":{}}}"#, serde_json::to_string(&chain).unwrap());
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let value_id = child_id(
+            &state,
+            None,
+            summary.root.as_ref().unwrap().id,
+            "value",
+            summary.session_revision,
+        );
+        let mut scope =
+            open_nested_json_inner(&state, None, value_id, None, summary.session_revision).unwrap();
+        for expected_depth in 2..=5 {
+            let next_id = child_id(
+                &state,
+                Some(scope.scope_id),
+                scope.root.id,
+                "next",
+                summary.session_revision,
+            );
+            scope = open_nested_json_inner(
+                &state,
+                Some(scope.scope_id),
+                next_id,
+                None,
+                summary.session_revision,
+            )
+            .unwrap();
+            assert_eq!(scope.depth, expected_depth);
+        }
+        let next_id = child_id(
+            &state,
+            Some(scope.scope_id),
+            scope.root.id,
+            "next",
+            summary.session_revision,
+        );
+        let error = open_nested_json_inner(
+            &state,
+            Some(scope.scope_id),
+            next_id,
+            None,
+            summary.session_revision,
+        )
+        .unwrap_err();
+        assert_eq!(error.message, "nested JSON depth limit reached");
+        assert_eq!(
+            get_string_detection_scoped_inner(
+                &state,
+                next_id,
+                Some(scope.scope_id),
+                summary.session_revision
+            )
+            .unwrap()
+            .plain_reason,
+            Some(PlainReasonDto::DepthLimit)
+        );
+
+        let root_scope_id = scope.scope_id;
+        assert_eq!(
+            close_nested_scope_inner(&state, root_scope_id, summary.session_revision),
+            Ok(())
+        );
+        assert_eq!(
+            get_root_node_scoped_inner(&state, Some(root_scope_id), summary.session_revision)
+                .unwrap_err()
+                .message,
+            format!("nested scope {root_scope_id} was not found")
+        );
+        assert_eq!(
+            close_nested_scope_inner(&state, root_scope_id, summary.session_revision)
+                .unwrap_err()
+                .message,
+            format!("nested scope {root_scope_id} was not found")
+        );
+        let reopened =
+            open_nested_json_inner(&state, None, value_id, Some(10), summary.session_revision)
+                .unwrap();
+        assert!(reopened.scope_id > root_scope_id);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn nested_scope_clears_on_entry_switch_and_rejects_raw_only_sessions() {
+        let entry_path = temp_jsonl_path("ipc-nested-json-entry");
+        fs::write(
+            &entry_path,
+            b"{\"value\":\"{\\\"entry\\\":1}\"}\n{\"value\":\"{\\\"entry\\\":2}\"}\n",
+        )
+        .unwrap();
+        let state = AppState::default();
+        let entry = open_file_inner(&state, entry_path.to_str().unwrap()).unwrap();
+        let selected = select_entry_inner(&state, 0, entry.session_revision).unwrap();
+        let value_id = child_id(
+            &state,
+            None,
+            selected.root.as_ref().unwrap().id,
+            "value",
+            selected.session_revision,
+        );
+        let scope = open_nested_json_inner(&state, None, value_id, None, selected.session_revision)
+            .unwrap();
+        let next_selection = select_entry_inner(&state, 1, selected.session_revision).unwrap();
+        assert!(next_selection.session_revision > selected.session_revision);
+        assert_eq!(
+            get_root_node_scoped_inner(
+                &state,
+                Some(scope.scope_id),
+                next_selection.session_revision,
+            )
+            .unwrap_err()
+            .code,
+            "not_found"
+        );
+
+        let raw_path = temp_path("ipc-nested-json-raw-only");
+        fs::write(&raw_path, b"{").unwrap();
+        let raw = open_file_inner(&state, raw_path.to_str().unwrap()).unwrap();
+        let error =
+            open_nested_json_inner(&state, None, 0, None, raw.session_revision).unwrap_err();
+        assert_eq!(
+            error.message,
+            "command is unavailable for a raw-only document session"
+        );
+
+        let collection_path = temp_path("ipc-nested-json-collection");
+        fs::write(
+            &collection_path,
+            format!(r#"[{}]"#, serde_json::to_string(r#"{"x":1}"#).unwrap()),
+        )
+        .unwrap();
+        let collection = open_file_inner(&state, collection_path.to_str().unwrap()).unwrap();
+        assert_eq!(collection.mode, "collection");
+        let collection_value = child_id(
+            &state,
+            None,
+            collection.root.as_ref().unwrap().id,
+            "[0]",
+            collection.session_revision,
+        );
+        let collection_scope = open_nested_json_inner(
+            &state,
+            None,
+            collection_value,
+            None,
+            collection.session_revision,
+        )
+        .unwrap();
+        assert_eq!(collection_scope.root.kind, "object");
+
+        for path in [entry_path, raw_path, collection_path] {
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn nested_scope_branch_replacement_and_file_identity_are_atomic() {
+        let path = temp_path("ipc-nested-json-branch");
+        let first = r#"{"a":"{\"left\":1}","b":"{\"right\":2}"}"#;
+        fs::write(&path, first).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let root = summary.root.as_ref().unwrap().id;
+        let a_id = child_id(&state, None, root, "a", summary.session_revision);
+        let b_id = child_id(&state, None, root, "b", summary.session_revision);
+        let a_scope =
+            open_nested_json_inner(&state, None, a_id, None, summary.session_revision).unwrap();
+        let a_scope_id = a_scope.scope_id;
+        let a_leaf = child_id(
+            &state,
+            Some(a_scope_id),
+            a_scope.root.id,
+            "left",
+            summary.session_revision,
+        );
+        assert_eq!(
+            get_node_summary_scoped_inner(
+                &state,
+                a_leaf,
+                Some(a_scope_id),
+                summary.session_revision,
+            )
+            .unwrap()
+            .kind,
+            "number"
+        );
+
+        let b_scope = open_nested_json_inner(
+            &state,
+            Some(a_scope_id),
+            b_id,
+            None,
+            summary.session_revision,
+        )
+        .unwrap_err();
+        assert_eq!(b_scope.message, "node 2 was not found");
+
+        let b_scope =
+            open_nested_json_inner(&state, None, b_id, None, summary.session_revision).unwrap();
+        assert!(b_scope.scope_id > a_scope_id);
+        assert_eq!(
+            get_root_node_scoped_inner(&state, Some(a_scope_id), summary.session_revision)
+                .unwrap_err()
+                .message,
+            format!("nested scope {a_scope_id} was not found")
+        );
+
+        let before_error =
+            get_root_node_scoped_inner(&state, Some(b_scope.scope_id), summary.session_revision)
+                .unwrap();
+        let before_revision = summary.session_revision;
+        let before_id = b_scope.scope_id;
+        let rewritten = r#"{"a":"{\"left\":1}","b":"{\"right\":3}"}"#;
+        let before_modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let mut changed = false;
+        for _ in 0..100 {
+            fs::write(&path, rewritten).unwrap();
+            if fs::metadata(&path).unwrap().modified().unwrap() != before_modified {
+                changed = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(
+            changed,
+            "filesystem did not expose modified timestamp change"
+        );
+        let error =
+            get_root_node_scoped_inner(&state, Some(before_id), before_revision).unwrap_err();
+        assert_eq!(error.code, "file_changed");
+        assert_eq!(error.message, "the file changed on disk");
+        assert_eq!(before_error.kind, "object");
+
         fs::remove_file(path).unwrap();
     }
 }
