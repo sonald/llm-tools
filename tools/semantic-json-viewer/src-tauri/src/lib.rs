@@ -1,6 +1,7 @@
 pub mod document_session;
 pub mod file_route;
 pub mod file_source;
+pub mod html_sanitizer;
 pub mod ipc;
 pub mod json;
 pub mod jsonl_entry;
@@ -26,6 +27,7 @@ pub fn run() {
             ipc::read_raw_document_bytes,
             ipc::read_decoded_text,
             ipc::get_string_detection,
+            ipc::get_html_preview,
             ipc::scan_entries,
             ipc::list_entries,
             ipc::select_entry,
