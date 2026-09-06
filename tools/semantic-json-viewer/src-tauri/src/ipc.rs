@@ -431,6 +431,16 @@ pub fn read_selected_entry_bytes(
 }
 
 #[tauri::command(async)]
+pub fn read_selected_entry_window(
+    offset: u64,
+    length: usize,
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<ByteChunkDto, IpcError> {
+    read_selected_entry_window_inner(&state, offset, length, session_revision)
+}
+
+#[tauri::command(async)]
 pub fn read_raw_document_bytes(
     offset: u64,
     length: usize,
@@ -964,6 +974,34 @@ fn read_selected_entry_bytes_inner(
         }
         let Some(chunk) = session
             .read_selected_entry_bytes(offset, length)
+            .map_err(|error| {
+                if error.kind() == ErrorKind::InvalidInput {
+                    invalid_request(error.to_string())
+                } else {
+                    session_error(error)
+                }
+            })?
+        else {
+            return Err(invalid_request("no entry is selected"));
+        };
+        Ok(ByteChunkDto {
+            start: chunk.start,
+            bytes: chunk.bytes,
+            has_more: chunk.has_more,
+            next_offset: chunk.next_offset,
+        })
+    })
+}
+
+fn read_selected_entry_window_inner(
+    state: &AppState,
+    offset: u64,
+    length: usize,
+    session_revision: u64,
+) -> Result<ByteChunkDto, IpcError> {
+    with_entry_session(state, session_revision, |session| {
+        let Some(chunk) = session
+            .read_selected_raw_window(offset, length.min(128 * 1024))
             .map_err(|error| {
                 if error.kind() == ErrorKind::InvalidInput {
                     invalid_request(error.to_string())
@@ -3288,6 +3326,197 @@ mod tests {
             );
         }
         fs::remove_file(oversized_path).unwrap();
+    }
+
+    #[test]
+    fn selected_entry_window_reads_middle_oversized_bytes_without_crossing_entry_bounds() {
+        let path = temp_jsonl_path("ipc-selected-entry-window-oversized");
+        let body = vec![b'm'; crate::jsonl_entry::MAX_ENTRY_BYTES + 1];
+        let mut input = b"before\n".to_vec();
+        let body_start = input.len();
+        input.extend_from_slice(&body);
+        let body_end = input.len();
+        input.extend_from_slice(b"\r\nafter\n");
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let mut progress = opened.progress.clone().unwrap();
+        while !progress.complete {
+            progress = scan_entries_inner(&state, opened.session_revision).unwrap();
+        }
+
+        let selected = select_entry_inner(&state, 1, opened.session_revision).unwrap();
+        assert_eq!(selected.entry.status, "oversized");
+        assert_eq!(selected.entry.location.byte_start, body_start as u64);
+        assert_eq!(selected.entry.location.byte_end, body_end as u64);
+
+        let middle_offset = (body.len() / 2) as u64;
+        let middle =
+            read_selected_entry_window_inner(&state, middle_offset, 64, selected.session_revision)
+                .unwrap();
+        assert_eq!(middle.start, middle_offset);
+        assert_eq!(middle.bytes, vec![b'm'; 64]);
+        assert!(middle.has_more);
+        assert_eq!(middle.next_offset, Some(middle_offset + 64));
+
+        let tail_offset = (body.len() - 4) as u64;
+        let tail = read_selected_entry_window_inner(
+            &state,
+            tail_offset,
+            usize::MAX,
+            selected.session_revision,
+        )
+        .unwrap();
+        assert_eq!(tail.start, tail_offset);
+        assert_eq!(tail.bytes, vec![b'm'; 4]);
+        assert!(!tail.has_more);
+        assert_eq!(tail.next_offset, None);
+
+        let eof = read_selected_entry_window_inner(
+            &state,
+            body.len() as u64,
+            1,
+            selected.session_revision,
+        )
+        .unwrap();
+        assert_eq!(eof.start, body.len() as u64);
+        assert!(eof.bytes.is_empty());
+        assert!(!eof.has_more);
+        assert_eq!(eof.next_offset, None);
+        assert_eq!(
+            read_selected_entry_window_inner(&state, 0, 0, selected.session_revision)
+                .unwrap_err()
+                .message,
+            "length must be greater than zero"
+        );
+        assert_eq!(
+            read_selected_entry_window_inner(
+                &state,
+                body.len() as u64 + 1,
+                1,
+                selected.session_revision,
+            )
+            .unwrap_err()
+            .message,
+            "offset exceeds selected Entry length"
+        );
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selected_entry_window_reads_valid_invalid_json_and_invalid_utf8_rows() {
+        let path = temp_jsonl_path("ipc-selected-entry-window-statuses");
+        fs::write(&path, b"{\"ok\":true}\n{\"bad\":\xff}\n{\"broken\":\n").unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+
+        let valid = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        let valid_chunk =
+            read_selected_entry_window_inner(&state, 0, usize::MAX, valid.session_revision)
+                .unwrap();
+        assert_eq!(valid_chunk.bytes, b"{\"ok\":true}".to_vec());
+        assert!(!valid_chunk.has_more);
+        assert_eq!(
+            read_selected_entry_bytes_inner(&state, 0, 1, valid.session_revision)
+                .unwrap_err()
+                .message,
+            "selected Entry is valid; use read_raw_slice"
+        );
+
+        let invalid_utf8 = select_entry_inner(&state, 1, valid.session_revision).unwrap();
+        let utf8_chunk =
+            read_selected_entry_window_inner(&state, 0, usize::MAX, invalid_utf8.session_revision)
+                .unwrap();
+        assert_eq!(
+            utf8_chunk.bytes,
+            vec![b'{', b'\"', b'b', b'a', b'd', b'\"', b':', 0xff, b'}']
+        );
+        assert!(!utf8_chunk.has_more);
+
+        let invalid_json = select_entry_inner(&state, 2, invalid_utf8.session_revision).unwrap();
+        let json_chunk =
+            read_selected_entry_window_inner(&state, 0, usize::MAX, invalid_json.session_revision)
+                .unwrap();
+        assert_eq!(json_chunk.bytes, b"{\"broken\":".to_vec());
+        assert!(!json_chunk.has_more);
+
+        let encoded = String::from_utf8(serde_json::to_vec(&json_chunk).unwrap()).unwrap();
+        assert!(encoded.contains("\"hasMore\""));
+        assert!(encoded.contains("\"nextOffset\""));
+        assert!(!encoded.contains("has_more"));
+        assert!(!encoded.contains("next_offset"));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selected_entry_window_rejects_unselected_wrong_revision_wrong_mode_and_file_changes() {
+        let entry_path = temp_jsonl_path("ipc-selected-entry-window-errors");
+        fs::write(&entry_path, b"{}\n").unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, entry_path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            read_selected_entry_window_inner(&state, 0, 1, opened.session_revision)
+                .unwrap_err()
+                .message,
+            "no entry is selected"
+        );
+
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(
+            read_selected_entry_window_inner(&state, 0, 1, selected.session_revision + 1)
+                .unwrap_err()
+                .code,
+            "stale_session"
+        );
+        fs::write(&entry_path, b"{\"changed\":true}\n").unwrap();
+        assert_eq!(
+            read_selected_entry_window_inner(&state, 0, 0, selected.session_revision)
+                .unwrap_err()
+                .code,
+            "file_changed"
+        );
+        assert_eq!(
+            read_selected_entry_window_inner(&state, 0, 1, selected.session_revision)
+                .unwrap_err()
+                .code,
+            "file_changed"
+        );
+        fs::remove_file(entry_path).unwrap();
+
+        let document_path = temp_path("ipc-selected-entry-window-document");
+        fs::write(&document_path, b"{}").unwrap();
+        let document = open_file_inner(&state, document_path.to_str().unwrap()).unwrap();
+        let wrong_mode =
+            read_selected_entry_window_inner(&state, 0, 1, document.session_revision).unwrap_err();
+        assert_eq!(wrong_mode.code, "invalid_request");
+        assert_eq!(wrong_mode.message, "command requires a JSONL session");
+        fs::remove_file(document_path).unwrap();
+
+        let capped_path = temp_jsonl_path("ipc-selected-entry-window-payload-cap");
+        let mut capped_input = vec![0xff; 300 * 1024];
+        capped_input.push(b'\n');
+        fs::write(&capped_path, capped_input).unwrap();
+        let capped = open_file_inner(&state, capped_path.to_str().unwrap()).unwrap();
+        let mut progress = capped.progress.clone().unwrap();
+        while !progress.complete {
+            progress = scan_entries_inner(&state, capped.session_revision).unwrap();
+        }
+        let capped_selection = select_entry_inner(&state, 0, capped.session_revision).unwrap();
+        let capped_chunk = read_selected_entry_window_inner(
+            &state,
+            0,
+            usize::MAX,
+            capped_selection.session_revision,
+        )
+        .unwrap();
+        assert_eq!(capped_chunk.bytes.len(), 128 * 1024);
+        assert!(capped_chunk.bytes.iter().all(|&byte| byte == 0xff));
+        assert!(capped_chunk.has_more);
+        assert_eq!(capped_chunk.next_offset, Some(128 * 1024));
+        assert!(serde_json::to_vec(&capped_chunk).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
+        fs::remove_file(capped_path).unwrap();
     }
 
     #[test]

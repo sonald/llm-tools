@@ -430,12 +430,6 @@ impl JsonlSession {
         let Some(location) = self.selected_location.as_ref() else {
             return Ok(None);
         };
-        if self.selected.is_some() {
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                "selected Entry is valid; use tree search",
-            ));
-        }
         if length == 0 {
             return Err(io::Error::new(
                 ErrorKind::InvalidInput,

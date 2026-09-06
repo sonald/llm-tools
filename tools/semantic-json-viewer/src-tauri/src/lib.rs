@@ -25,6 +25,7 @@ pub fn run() {
             ipc::close_nested_scope,
             ipc::read_raw_slice,
             ipc::read_selected_entry_bytes,
+            ipc::read_selected_entry_window,
             ipc::read_raw_document_bytes,
             ipc::read_decoded_text,
             ipc::search_current,
