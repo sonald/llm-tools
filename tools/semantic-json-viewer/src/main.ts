@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { ContentViewer, type ContentTarget } from "./content-viewer";
 import { EntryList, type EntrySelectionDto } from "./entry-list";
 import { MAX_ENTRY_BYTES, RawView } from "./raw-view";
 import { TreeView, type NodeDto } from "./tree-view";
@@ -132,8 +133,60 @@ const entryInspectorParseMessage = required<HTMLElement>("entry-inspector-parse-
 const entryInspectorParseByteOffset = required<HTMLElement>("entry-inspector-parse-byte-offset");
 const entryInspectorParseLine = required<HTMLElement>("entry-inspector-parse-line");
 const entryInspectorParseColumn = required<HTMLElement>("entry-inspector-parse-column");
+const contentViewerDialog = required<HTMLDialogElement>("content-viewer-dialog");
+const contentViewerClose = required<HTMLButtonElement>("content-viewer-close");
+const contentViewerTitle = required<HTMLElement>("content-viewer-title");
+const contentViewerScope = required<HTMLElement>("content-viewer-scope");
+const contentViewerPath = required<HTMLElement>("content-viewer-path");
+const contentViewerNode = required<HTMLElement>("content-viewer-node");
+const contentViewerSpanLabel = required<HTMLElement>("content-viewer-span-label");
+const contentViewerSpan = required<HTMLElement>("content-viewer-span");
+const contentViewerSemanticType = required<HTMLElement>("content-viewer-semantic-type");
+const contentViewerDetectionSource = required<HTMLElement>("content-viewer-detection-source");
+const contentViewerPlainReason = required<HTMLElement>("content-viewer-plain-reason");
+const contentViewerRepresentation = required<HTMLElement>("content-viewer-representation");
+const contentViewerRendererNote = required<HTMLElement>("content-viewer-renderer-note");
+const contentViewerRange = required<HTMLElement>("content-viewer-range");
+const contentViewerStatus = required<HTMLElement>("content-viewer-status");
+const contentViewerAlert = required<HTMLElement>("content-viewer-alert");
+const contentViewerContent = required<HTMLPreElement>("content-viewer-content");
+const contentViewerPrevious = required<HTMLButtonElement>("content-viewer-previous");
+const contentViewerNext = required<HTMLButtonElement>("content-viewer-next");
+
+const PREVIEW_ARIA_LABEL = "Preview selected string in Content Viewer";
+const previewButton = required<HTMLButtonElement>("content-viewer-preview");
+let selectedStringTarget: ContentTarget | null = null;
 
 let activeView: "semantic" | "tree" | "raw" = "semantic";
+
+const contentViewer = new ContentViewer({
+  elements: {
+    dialog: contentViewerDialog,
+    close: contentViewerClose,
+    title: contentViewerTitle,
+    scope: contentViewerScope,
+    path: contentViewerPath,
+    node: contentViewerNode,
+    spanLabel: contentViewerSpanLabel,
+    span: contentViewerSpan,
+    semanticType: contentViewerSemanticType,
+    detectionSource: contentViewerDetectionSource,
+    plainReason: contentViewerPlainReason,
+    representation: contentViewerRepresentation,
+    rendererNote: contentViewerRendererNote,
+    range: contentViewerRange,
+    status: contentViewerStatus,
+    alert: contentViewerAlert,
+    content: contentViewerContent,
+    previous: contentViewerPrevious,
+    next: contentViewerNext
+  },
+  invoke,
+  onSessionError: (error) => handleCurrentSessionAsyncError(ipcError(error)),
+  onClose: (restoreFocus) => {
+    if (restoreFocus) focusContentViewerFallback();
+  }
+});
 
 const treeView = new TreeView({
   panel: treePanel,
@@ -141,6 +194,8 @@ const treeView = new TreeView({
   inspector: nodeInspector,
   fields: { id: nodeId, label: nodeLabel, kind: nodeKind, span: nodeSpan, children: nodeChildren, value: nodeValue },
   onSelection: handleTreeSelection,
+  onStringSelection: handleStringSelection,
+  onStringOpen: handleStringOpen,
   onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
 });
 
@@ -183,6 +238,31 @@ function required<T extends Element>(id: string): T {
     throw new Error(`Missing UI element: ${id}`);
   }
   return node as unknown as T;
+}
+
+function renderPreviewButton(): void {
+  previewButton.disabled = selectedStringTarget === null || state.opening || state.selectionBusy;
+  previewButton.setAttribute("aria-label", PREVIEW_ARIA_LABEL);
+}
+
+function handleStringSelection(target: ContentTarget | null): void {
+  selectedStringTarget = target;
+  renderPreviewButton();
+}
+
+function handleStringOpen(target: ContentTarget, opener: HTMLElement): void {
+  selectedStringTarget = target;
+  renderPreviewButton();
+  void contentViewer.open(target, opener);
+}
+
+function focusContentViewerFallback(): void {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active !== document.body && document.contains(active)) return;
+  const fallback = activeView === "tree" && !treeTab.disabled
+    ? treeTab
+    : state.summary ? semanticTab : openButton;
+  if (!fallback.disabled) fallback.focus();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -288,6 +368,7 @@ function handleCurrentSessionAsyncError(parsed: IpcErrorPayload, stopEntryIndex 
   }
   if (parsed.code === "file_changed" || parsed.code === "stale_session") {
     if (summary) state.invalidatedRevision = summary.sessionRevision;
+    if (contentViewer.isOpen) contentViewer.clear(false);
     rawView.clear();
     treeView.clear();
     if (summary?.mode === "entry") {
@@ -305,6 +386,7 @@ function handleCurrentSessionAsyncError(parsed: IpcErrorPayload, stopEntryIndex 
 function handleEntrySelection(selection: EntrySelectionDto): void {
   const summary = state.summary;
   if (!summary || summary.mode !== "entry") return;
+  contentViewer.clear(false);
   if (selection.sessionRevision !== summary.sessionRevision + 1) {
     state.error = { code: "internal", message: "Entry selection returned an unexpected session revision." };
     render();
@@ -328,12 +410,12 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
   const rootMatchesStatus = valid ? selection.root !== null : selection.root === null;
   if (!rootMatchesStatus) {
     state.error = { code: "internal", message: "Entry selection returned an inconsistent Tree root." };
-    treeView.setSession({ mode: "entry", sessionRevision: selection.sessionRevision }, null);
+    treeView.setSession({ mode: "entry", sessionRevision: selection.sessionRevision, scopeLabel: entryScopeLabel(selection.entry.location.entryOrdinal) }, null);
     rawView.clear("Tree is unavailable because the Entry selection was inconsistent.");
     setActiveView("semantic");
   } else {
     treeView.setSession(
-      { mode: "entry", sessionRevision: selection.sessionRevision },
+      { mode: "entry", sessionRevision: selection.sessionRevision, scopeLabel: entryScopeLabel(selection.entry.location.entryOrdinal) },
       valid ? selection.root : null
     );
     let rawAvailable = false;
@@ -370,6 +452,7 @@ function handleEntryRevisionUnknown(value: unknown): void {
     return;
   }
   const generation = ++state.generation;
+  contentViewer.clear(false);
   state.summary = next;
   state.selectedEntry = null;
   state.error = null;
@@ -378,7 +461,7 @@ function handleEntryRevisionUnknown(value: unknown): void {
   state.scanStoppedRevision = null;
   rawView.clear("Select a valid Entry to open Raw bytes.");
   entryList.resync(next.sessionRevision, next.progress);
-  treeView.setSession({ mode: "entry", sessionRevision: next.sessionRevision }, null);
+  treeView.setSession({ mode: "entry", sessionRevision: next.sessionRevision, scopeLabel: "Entry" }, null);
   setActiveView("semantic");
   render();
   if (!next.progress.complete) void scanEntries(generation, next.sessionRevision);
@@ -445,6 +528,10 @@ function modeLabel(mode: FileMode): string {
   if (mode === "document") return "Document";
   if (mode === "collection") return "Collection";
   return "Entry";
+}
+
+function entryScopeLabel(ordinal: number): string {
+  return `Entry ${ordinal + 1}`;
 }
 
 function fileLabel(path: string): string {
@@ -676,12 +763,14 @@ function render(): void {
   appShell.dataset.inspectorOpen = tablet ? String(state.tabletInspectorOpen) : "false";
   entryList.setOpening(state.opening);
   rawView.setBusy(state.opening || state.selectionBusy);
+  renderPreviewButton();
   renderSummary();
   renderError();
 }
 
 async function chooseFile(): Promise<void> {
   if (state.opening || state.selectionBusy) return;
+  contentViewer.clear(false);
   const pickerGeneration = state.generation;
   state.opening = true;
   render();
@@ -709,6 +798,7 @@ async function chooseFile(): Promise<void> {
 
 function failClosedSummary(generation: number): void {
   if (generation !== state.generation) return;
+  contentViewer.clear(false);
   state.generation += 1;
   state.summary = null;
   state.selectedEntry = null;
@@ -729,6 +819,7 @@ function failClosedSummary(generation: number): void {
 }
 
 async function openPath(path: string, openAs: "json" | "jsonl" | null, generation: number): Promise<void> {
+  contentViewer.clear(false);
   try {
     const value = await invoke<unknown>("open_file", { path, openAs });
     if (generation !== state.generation) return;
@@ -760,7 +851,7 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
       return;
     }
     state.error = null;
-    treeView.setSession({ mode: summary.mode, sessionRevision: summary.sessionRevision });
+    treeView.setSession({ mode: summary.mode, sessionRevision: summary.sessionRevision, scopeLabel: modeLabel(summary.mode) });
     if (summary.root) rawView.setSession(summary.sessionRevision, summary.root);
     else rawView.clear("Select a valid Entry to open Raw bytes.");
     entryList.setSession(summary.mode === "entry" && summary.progress ? {
@@ -862,6 +953,10 @@ function toggleInspector(): void {
 
 openButton.addEventListener("click", () => void chooseFile());
 readerOpenButton.addEventListener("click", () => void chooseFile());
+previewButton.addEventListener("click", () => {
+  const target = selectedStringTarget;
+  if (target) void contentViewer.open(target, previewButton);
+});
 navigationToggle.addEventListener("click", toggleNavigation);
 inspectorToggle.addEventListener("click", toggleInspector);
 semanticTab.addEventListener("click", () => setActiveView("semantic"));
@@ -918,13 +1013,13 @@ modeDialog.addEventListener("cancel", () => {
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") {
     event.preventDefault();
-    if (modeDialog.open) return;
+    if (modeDialog.open || contentViewer.isOpen) return;
     void chooseFile();
     return;
   }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "g") {
-    if (modeDialog.open || state.opening || state.summary?.mode !== "entry") return;
     event.preventDefault();
+    if (modeDialog.open || contentViewer.isOpen || state.opening || state.summary?.mode !== "entry") return;
     if (window.innerWidth <= 767) {
       state.mobileDrawer = "navigation";
       render();

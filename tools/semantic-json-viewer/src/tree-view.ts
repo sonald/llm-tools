@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ContentTarget } from "./content-viewer";
 
 export type TreeMode = "document" | "collection" | "entry";
 
@@ -23,6 +24,7 @@ type NodePageDto = {
 type TreeSession = {
   mode: TreeMode;
   sessionRevision: number;
+  scopeLabel: string;
 };
 
 type NodeRecord = {
@@ -50,6 +52,8 @@ type TreeViewOptions = {
     value: HTMLElement;
   };
   onSelection: (node: NodeDto) => void;
+  onStringSelection: (target: ContentTarget | null) => void;
+  onStringOpen: (target: ContentTarget, opener: HTMLElement) => void;
   onError: (error: unknown) => void;
 };
 
@@ -63,6 +67,8 @@ export class TreeView {
   private readonly inspector: HTMLElement;
   private readonly fields: TreeViewOptions["fields"];
   private readonly onSelection: (node: NodeDto) => void;
+  private readonly onStringSelection: (target: ContentTarget | null) => void;
+  private readonly onStringOpen: (target: ContentTarget, opener: HTMLElement) => void;
   private readonly onError: (error: unknown) => void;
   private session: TreeSession | null = null;
   private generation = 0;
@@ -79,6 +85,8 @@ export class TreeView {
     this.inspector = options.inspector;
     this.fields = options.fields;
     this.onSelection = options.onSelection;
+    this.onStringSelection = options.onStringSelection;
+    this.onStringOpen = options.onStringOpen;
     this.onError = options.onError;
     this.panel.addEventListener("click", (event) => this.handleClick(event));
     this.panel.addEventListener("keydown", (event) => this.handleKeydown(event));
@@ -95,6 +103,7 @@ export class TreeView {
     this.focusKey = seededRoot?.id ?? null;
     this.records.clear();
     if (seededRoot) this.records.set(seededRoot.id, this.newRecord(seededRoot, null));
+    this.onStringSelection(null);
     const enabled = session.mode !== "entry" || seededRoot !== undefined && seededRoot !== null;
     this.tab.disabled = !enabled;
     this.tab.setAttribute("aria-disabled", String(!enabled));
@@ -112,6 +121,7 @@ export class TreeView {
     this.selectedId = null;
     this.focusKey = null;
     this.records.clear();
+    this.onStringSelection(null);
     this.tab.disabled = true;
     this.tab.setAttribute("aria-disabled", "true");
     this.clearInspector();
@@ -224,6 +234,7 @@ export class TreeView {
     this.selectedId = record.node.id;
     this.focusKey = record.node.id;
     this.onSelection(record.node);
+    this.onStringSelection(record.node.kind === "string" ? this.contentTarget(record) : null);
     this.renderInspector(record.node);
     this.renderTree();
   }
@@ -259,11 +270,16 @@ export class TreeView {
     if (!item) return;
     const record = this.records.get(Number(item.dataset.nodeId));
     if (!record) return;
-    if (target.closest(".tree-disclosure") && record.node.childCount > 0) {
+    const doubleClick = event instanceof MouseEvent && event.detail === 2;
+    if (!doubleClick && target.closest(".tree-disclosure") && record.node.childCount > 0) {
       this.focusKey = record.node.id;
       this.toggle(record);
     } else {
       this.select(record);
+      if (doubleClick && record.node.kind === "string") {
+        const currentItem = this.panel.querySelector<HTMLElement>(`[data-node-id="${record.node.id}"]`);
+        this.onStringOpen(this.contentTarget(record), currentItem ?? item);
+      }
     }
   }
 
@@ -564,6 +580,28 @@ export class TreeView {
       hasMore: false,
       nextCursor: null,
       error: null
+    };
+  }
+
+  private contentTarget(record: NodeRecord): ContentTarget {
+    const session = this.session;
+    if (!session) throw new Error("Cannot build a Content Viewer target without a Tree session.");
+    const pathSegments: string[] = [];
+    let current: NodeRecord | undefined = record;
+    let pathTruncated = false;
+    while (current) {
+      pathSegments.unshift(current.node.label);
+      pathTruncated ||= current.node.labelHasMore;
+      current = current.parentId === null ? undefined : this.records.get(current.parentId);
+    }
+    return {
+      revision: session.sessionRevision,
+      nodeId: record.node.id,
+      spanStart: record.node.spanStart,
+      spanEnd: record.node.spanEnd,
+      scopeLabel: session.scopeLabel,
+      pathSegments,
+      pathTruncated
     };
   }
 
