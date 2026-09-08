@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ContentViewer, type ContentTarget } from "./content-viewer";
+import { CollectionList } from "./collection-list";
 import { EntryList, type EntrySelectionDto } from "./entry-list";
 import { MAX_ENTRY_BYTES, RawView } from "./raw-view";
 import { SearchView, type SearchMatch, type SearchScope } from "./search-view";
@@ -43,6 +44,7 @@ type IpcErrorPayload = {
 type AppState = {
   summary: FileSummary | null;
   selectedEntry: EntrySelectionDto["entry"] | null;
+  selectedItem: { node: NodeDto; ordinal: number } | null;
   selectionBusy: boolean;
   error: IpcErrorPayload | null;
   opening: boolean;
@@ -60,6 +62,7 @@ type AppState = {
 const state: AppState = {
   summary: null,
   selectedEntry: null,
+  selectedItem: null,
   selectionBusy: false,
   error: null,
   opening: false,
@@ -91,6 +94,13 @@ const entryPrevious = required<HTMLButtonElement>("entry-prev");
 const entryNext = required<HTMLButtonElement>("entry-next");
 const entryListStatus = required<HTMLElement>("entry-list-status");
 const entryListRetry = required<HTMLButtonElement>("entry-list-retry");
+const collectionNavigation = required<HTMLElement>("collection-navigation");
+const collectionGoInput = required<HTMLInputElement>("collection-go-input");
+const collectionGoButton = required<HTMLButtonElement>("collection-go-button");
+const collectionGoError = required<HTMLElement>("collection-go-error");
+const collectionListPanel = required<HTMLElement>("collection-list");
+const collectionListStatus = required<HTMLElement>("collection-list-status");
+const collectionListRetry = required<HTMLButtonElement>("collection-list-retry");
 const readerState = required<HTMLElement>("reader-state");
 const inspectorPath = required<HTMLElement>("inspector-path");
 const inspectorSize = required<HTMLElement>("inspector-size");
@@ -301,6 +311,19 @@ const entryList = new EntryList({
   onRevisionUnknown: handleEntryRevisionUnknown
 });
 
+const collectionList = new CollectionList({
+  section: collectionNavigation,
+  goInput: collectionGoInput,
+  goButton: collectionGoButton,
+  goError: collectionGoError,
+  list: collectionListPanel,
+  status: collectionListStatus,
+  retry: collectionListRetry,
+  invoke,
+  onSelection: handleCollectionSelection,
+  onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
+});
+
 function required<T extends Element>(id: string): T {
   const node = document.getElementById(id);
   if (!node) {
@@ -423,9 +446,11 @@ function handleTreeSelection(node: NodeDto): void {
 
 function handleSearchReveal(match: SearchMatch): void {
   if (rawTab.disabled) return;
+  const revealStart = match.field === "rawSource" ? match.matchStart : match.sourceSpanStart;
+  const revealEnd = match.field === "rawSource" ? match.matchEnd : match.sourceSpanEnd;
   rawView.revealRange(
-    match.sourceSpanStart,
-    match.sourceSpanEnd,
+    revealStart,
+    revealEnd,
     `${match.field === "rawSource" ? "Raw Source" : match.field === "key" ? "Key" : "Value"} search match`
   );
   setActiveView("raw");
@@ -433,6 +458,32 @@ function handleSearchReveal(match: SearchMatch): void {
 
 function handleEntryError(error: unknown): void {
   handleCurrentSessionAsyncError(ipcError(error));
+}
+
+function handleCollectionSelection(node: NodeDto, ordinal: number): void {
+  const summary = state.summary;
+  if (!summary || summary.mode !== "collection" || summary.documentError !== null) return;
+  const previousView = activeView;
+  state.generation += 1;
+  state.selectedItem = { node, ordinal };
+  state.selectedEntry = null;
+  state.error = null;
+  state.invalidatedRevision = null;
+  searchView.clear();
+  if (contentViewer.isOpen) contentViewer.clear(false);
+  treeView.setSession({
+    mode: "collection",
+    sessionRevision: summary.sessionRevision,
+    scopeId: null,
+    sourceSize: summary.size,
+    ariaLabel: `JSON Item ${ordinal} structure`,
+    scopeLabel: `Item ${ordinal}`
+  }, node);
+  rawView.setItemSession(summary.sessionRevision, node, summary.size, "collection");
+  if (previousView === "tree") setActiveView("tree");
+  else if (previousView === "raw") setActiveView("raw");
+  else setActiveView("semantic");
+  render();
 }
 
 function summaryIsInvalidated(summary: FileSummary): boolean {
@@ -457,6 +508,10 @@ function handleCurrentSessionAsyncError(parsed: IpcErrorPayload, stopEntryIndex 
       state.selectedEntry = null;
       entryList.clear();
       setActiveView("semantic");
+    } else if (summary?.mode === "collection") {
+      state.selectedItem = null;
+      collectionList.clear();
+      setActiveView("semantic");
     } else {
       setActiveView("semantic");
     }
@@ -480,6 +535,7 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
   state.generation += 1;
   state.summary = { ...summary, sessionRevision: selection.sessionRevision };
   state.selectedEntry = selection.entry;
+  state.selectedItem = null;
   state.error = null;
   state.invalidatedRevision = null;
   state.scanQueued = null;
@@ -800,7 +856,12 @@ function readerCopy(summary: FileSummary): string {
     }
     return "Select a valid Entry to enable Tree.";
   }
-  return summary.mode === "collection" ? "The selected array item will be projected here." : "The semantic projection for this document will appear here.";
+  if (summary.mode === "collection") {
+    return state.selectedItem
+      ? `Item ${state.selectedItem.ordinal} is selected. Tree and Raw are available.`
+      : "Select an Item to enable Tree, Raw, and current-scope search.";
+  }
+  return "The semantic projection for this document will appear here.";
 }
 
 function statusProgressLabel(summary: FileSummary): string {
@@ -859,8 +920,10 @@ function currentSearchScope(): SearchScope | null {
         : "Current scope: Raw-only Document. Search is temporarily unavailable.",
       enabled,
       decodedEnabled: false,
+      scopeStart: 0,
       scopeEnd: summary.size,
-      sessionRevision: summary.sessionRevision
+      sessionRevision: summary.sessionRevision,
+      targetNodeId: null
     };
   }
   if (summary.mode === "document") {
@@ -869,18 +932,35 @@ function currentSearchScope(): SearchScope | null {
       description: enabled ? "Current scope: Document root." : "Current scope: Document root. Search is temporarily unavailable.",
       enabled,
       decodedEnabled: true,
+      scopeStart: 0,
       scopeEnd: summary.size,
-      sessionRevision: summary.sessionRevision
+      sessionRevision: summary.sessionRevision,
+      targetNodeId: null
     };
   }
   if (summary.mode === "collection") {
+    const item = state.selectedItem;
+    if (!item) {
+      return {
+        label: "Selected Item",
+        description: "Current scope: selected Item. Select an Item to enable search.",
+        enabled: false,
+        decodedEnabled: true,
+        scopeStart: 0,
+        scopeEnd: 0,
+        sessionRevision: summary.sessionRevision,
+        targetNodeId: null
+      };
+    }
     return {
-      label: "Collection root",
-      description: enabled ? "Current scope: Collection root." : "Current scope: Collection root. Search is temporarily unavailable.",
+      label: `Item ${item.ordinal}`,
+      description: enabled ? `Current scope: selected Item ${item.ordinal}.` : `Current scope: selected Item ${item.ordinal}. Search is temporarily unavailable.`,
       enabled,
       decodedEnabled: true,
-      scopeEnd: summary.size,
-      sessionRevision: summary.sessionRevision
+      scopeStart: item.node.spanStart,
+      scopeEnd: item.node.spanEnd,
+      sessionRevision: summary.sessionRevision,
+      targetNodeId: item.node.id
     };
   }
   const entry = state.selectedEntry;
@@ -890,8 +970,10 @@ function currentSearchScope(): SearchScope | null {
       description: "Current scope: selected Entry. Select an Entry to enable search.",
       enabled: false,
       decodedEnabled: true,
+      scopeStart: 0,
       scopeEnd: 0,
-      sessionRevision: summary.sessionRevision
+      sessionRevision: summary.sessionRevision,
+      targetNodeId: null
     };
   }
   const scopeEnd = entrySourceSize(entry);
@@ -906,8 +988,10 @@ function currentSearchScope(): SearchScope | null {
       : `Current scope: selected Entry ${entry.location.entryOrdinal + 1}. Search is temporarily unavailable.`,
     enabled,
     decodedEnabled,
+    scopeStart: 0,
     scopeEnd,
-    sessionRevision: summary.sessionRevision
+    sessionRevision: summary.sessionRevision,
+    targetNodeId: null
   };
 }
 
@@ -937,6 +1021,19 @@ function render(): void {
   appShell.dataset.mobileDrawer = state.mobileDrawer ?? "";
   appShell.dataset.inspectorOpen = tablet ? String(state.tabletInspectorOpen) : "false";
   entryList.setOpening(state.opening);
+  collectionList.setOpening(state.opening);
+  const collectionSummary = state.summary;
+  const collectionActive = collectionSummary !== null
+    && collectionSummary.mode === "collection"
+    && collectionSummary.documentError === null
+    && !summaryIsInvalidated(collectionSummary);
+  collectionNavigation.hidden = !collectionActive;
+  if (collectionActive) {
+    navigationState.hidden = true;
+    entryNavigation.hidden = true;
+  } else {
+    collectionNavigation.hidden = true;
+  }
   rawView.setBusy(state.opening || state.selectionBusy);
   searchView.setScope(currentSearchScope());
   renderPreviewButton();
@@ -978,6 +1075,7 @@ function failClosedSummary(generation: number): void {
   state.generation += 1;
   state.summary = null;
   state.selectedEntry = null;
+  state.selectedItem = null;
   state.error = { code: "internal", message: "The file summary returned by the backend was invalid." };
   state.invalidatedRevision = null;
   state.opening = false;
@@ -987,6 +1085,7 @@ function failClosedSummary(generation: number): void {
   state.scanQueued = null;
   state.scanStoppedRevision = null;
   entryList.clear();
+  collectionList.clear();
   treeView.clear();
   rawView.clear();
   setActiveView("semantic");
@@ -1015,9 +1114,11 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
     state.opening = false;
     entryList.setOpening(false);
     state.selectedEntry = null;
+    state.selectedItem = null;
     if (summary.documentError) {
       state.selectedEntry = null;
       entryList.setSession(null);
+      collectionList.setSession(null);
       treeView.clear();
       if (!rawView.setRawDocument(summary.sessionRevision, summary.size, summary.documentError)) {
         failClosedSummary(generation);
@@ -1028,16 +1129,24 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
       return;
     }
     state.error = null;
-    treeView.setSession({
-      mode: summary.mode,
-      sessionRevision: summary.sessionRevision,
-      scopeId: null,
-      sourceSize: summary.size,
-      ariaLabel: "JSON structure",
-      scopeLabel: modeLabel(summary.mode)
-    });
-    if (summary.root) rawView.setSession(summary.sessionRevision, summary.root, summary.size, summary.mode);
-    else rawView.clear("Select a valid Entry to open Raw bytes.");
+    collectionList.setSession(summary.mode === "collection" && summary.root
+      ? { revision: summary.sessionRevision, root: summary.root, sourceSize: summary.size }
+      : null);
+    if (summary.mode === "collection") {
+      treeView.clear("Select an Item to enable Tree.");
+      rawView.clear("Select an Item to open Raw bytes.");
+    } else {
+      treeView.setSession({
+        mode: summary.mode,
+        sessionRevision: summary.sessionRevision,
+        scopeId: null,
+        sourceSize: summary.size,
+        ariaLabel: "JSON structure",
+        scopeLabel: modeLabel(summary.mode)
+      });
+      if (summary.root) rawView.setSession(summary.sessionRevision, summary.root, summary.size, summary.mode);
+      else rawView.clear("Select a valid Entry to open Raw bytes.");
+    }
     entryList.setSession(summary.mode === "entry" && summary.progress ? {
       revision: summary.sessionRevision,
       progress: summary.progress

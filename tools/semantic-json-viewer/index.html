@@ -64,6 +64,23 @@
             <div class="entry-list-status" id="entry-list-status" role="status" aria-live="polite"></div>
             <button class="secondary-button entry-list-retry" id="entry-list-retry" type="button" hidden>Retry loading entries</button>
           </section>
+          <section class="collection-navigation" id="collection-navigation" aria-labelledby="collection-navigation-title" hidden>
+            <div class="entry-navigation-heading">
+              <h3 id="collection-navigation-title">Items</h3>
+              <span class="pane-kicker">virtual list</span>
+            </div>
+            <div class="entry-go">
+              <label for="collection-go-input">Go to Item</label>
+              <div class="entry-go-controls">
+                <input id="collection-go-input" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="collection-go-error" />
+                <button class="secondary-button" id="collection-go-button" type="button">Go</button>
+              </div>
+              <span class="entry-go-error" id="collection-go-error" role="alert"></span>
+            </div>
+            <div class="collection-list" id="collection-list" role="listbox" aria-label="JSON array items" aria-busy="false"></div>
+            <div class="entry-list-status" id="collection-list-status" role="status" aria-live="polite"></div>
+            <button class="secondary-button entry-list-retry" id="collection-list-retry" type="button" hidden>Retry loading items</button>
+          </section>
         </aside>
 
         <main class="reader" id="reader" aria-labelledby="reader-title">

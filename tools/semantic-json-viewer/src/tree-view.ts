@@ -199,7 +199,7 @@ export class TreeView {
     this.restoreFocus();
   }
 
-  clear(): void {
+  clear(message = "Open a Document or Collection to load its Tree."): void {
     this.generation += 1;
     this.session = null;
     this.rootId = null;
@@ -212,7 +212,7 @@ export class TreeView {
     this.tab.disabled = true;
     this.tab.setAttribute("aria-disabled", "true");
     this.clearInspector();
-    this.renderPlaceholder("Open a Document or Collection to load its Tree.");
+    this.renderPlaceholder(message);
   }
 
   activate(): void {
@@ -732,7 +732,7 @@ function errorMessage(error: unknown): string {
 
 const TREE_KINDS = new Set(["object", "array", "string", "number", "true", "false", "null"]);
 
-function validateNodeDto(value: unknown, sourceSize: number): NodeDto | undefined {
+export function validateNodeDto(value: unknown, sourceSize: number): NodeDto | undefined {
   if (!isRecord(value) || !safeNonNegative(sourceSize)) return undefined;
   const id = safeNonNegative(value.id);
   const spanStart = safeNonNegative(value.spanStart);
@@ -753,7 +753,7 @@ function validateNodeDto(value: unknown, sourceSize: number): NodeDto | undefine
   return { id, kind, spanStart, spanEnd, label, labelHasMore, valuePreview, valueHasMore, childCount };
 }
 
-function validateNodePage(
+export function validateNodePage(
   value: unknown,
   cursor: number,
   childCount: number,

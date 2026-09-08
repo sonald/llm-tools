@@ -149,6 +149,7 @@ h3 { font-size: 16px; font-weight: 700; }
 .state-icon { display: grid; width: 24px; height: 24px; place-items: center; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--blue); background: var(--blue-soft); font-size: 16px; }
 
 .entry-navigation { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 11px; padding: 14px 12px; }
+.collection-navigation { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 11px; padding: 14px 12px; }
 
 .entry-navigation-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 
@@ -169,6 +170,17 @@ h3 { font-size: 16px; font-weight: 700; }
 .entry-go-error { min-height: 14px; color: var(--danger); font-size: 9px; line-height: 1.45; }
 
 .entry-list { min-height: 90px; flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.collection-list { --collection-row-height: 24px; position: relative; min-height: 90px; flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.collection-list-spacer { position: relative; width: 100%; }
+.collection-list-window { position: absolute; right: 0; left: 0; }
+.collection-option { display: grid; width: 100%; height: var(--collection-row-height); min-height: var(--collection-row-height); grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 7px; padding: 0 9px; border: 0; border-bottom: 1px solid #edf0f4; color: var(--text); background: transparent; text-align: left; }
+.collection-option:hover { background: var(--surface-muted); }
+.collection-option:focus-visible { position: relative; z-index: 1; outline: 2px solid #4987ff; outline-offset: -2px; }
+.collection-option[aria-selected="true"] { background: var(--blue-soft); box-shadow: inset 3px 0 var(--blue); }
+.collection-option-title { min-width: max-content; overflow: visible; white-space: nowrap; font-size: 10px; font-weight: 700; }
+.collection-option-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.collection-option-meta { color: var(--muted); font: 9px "SFMono-Regular", Consolas, monospace; }
+.collection-list-empty { display: flex; min-height: 120px; align-items: center; justify-content: center; padding: 18px; color: var(--faint); font-size: 10px; text-align: center; }
 
 .entry-option { display: grid; width: 100%; min-height: 53px; grid-template-columns: 6px minmax(0, 1fr); gap: 8px; padding: 8px 9px; border: 0; border-bottom: 1px solid #edf0f4; color: var(--text); background: transparent; text-align: left; }
 

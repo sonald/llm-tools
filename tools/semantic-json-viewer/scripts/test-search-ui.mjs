@@ -74,11 +74,12 @@ function parseBrowserValue(output) {
 function browserTest() {
   return `(async () => {
 const {SearchView}=await import("/src/search-view.ts");
+const {CollectionList}=await import("/src/collection-list.ts");
 const {RawView,MAX_ENTRY_BYTES}=await import("/src/raw-view.ts");
 let assertions=0;
 const check=(condition,message)=>{assertions+=1;if(!condition)throw new Error(message);};
 const settle=async()=>{await Promise.resolve();await Promise.resolve();await new Promise((resolve)=>setTimeout(resolve,0));};
-const scope=(overrides={})=>({label:"Document root",description:"Current scope: Document root.",enabled:true,decodedEnabled:true,scopeEnd:1000,sessionRevision:7,...overrides});
+const scope=(overrides={})=>({label:"Document root",description:"Current scope: Document root.",enabled:true,decodedEnabled:true,scopeStart:0,scopeEnd:1000,sessionRevision:7,targetNodeId:null,...overrides});
 const page=(overrides={})=>({matches:[],hasMore:false,nextCursor:null,...overrides});
 const decodedMatch=(overrides={})=>({nodeId:4,field:"value",pathSegments:["$","message"],pathTruncated:false,sourceSpanStart:20,sourceSpanEnd:42,matchStart:0,matchEnd:6,...overrides});
 const decodedCursor=(overrides={})=>({kind:"decoded",nodeId:4,field:"value",byteOffset:6,query:"needle",sessionRevision:7,scopeId:null,targetNodeId:null,...overrides});
@@ -92,6 +93,108 @@ const makeSearch=(invoke,onReveal=()=>{},onError=()=>{})=>{
   return {host,el,view};
 };
 
+const collectionHost=document.createElement("div");
+collectionHost.innerHTML='<section class="collection-navigation"><label>Go to Item <input id="item-go"></label><button id="item-go-button">Go</button><span id="item-go-error"></span><div class="collection-list" id="item-list" role="listbox"></div><div id="item-status"></div><button id="item-retry">Retry</button></section>';
+document.body.append(collectionHost);
+const collectionCalls=[];
+const collectionSelections=[];
+const collectionRoot={id:1,kind:"array",spanStart:0,spanEnd:20_000_000,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:1_000_000};
+const collection= new CollectionList({
+  section:collectionHost.querySelector("section"),
+  goInput:collectionHost.querySelector("#item-go"),
+  goButton:collectionHost.querySelector("#item-go-button"),
+  goError:collectionHost.querySelector("#item-go-error"),
+  list:collectionHost.querySelector("#item-list"),
+  status:collectionHost.querySelector("#item-status"),
+  retry:collectionHost.querySelector("#item-retry"),
+  invoke:async(command,args)=>{
+    collectionCalls.push({command,args});
+    const start=args.cursor;
+    const end=Math.min(1_000_000,start+200);
+    return {nodes:Array.from({length:end-start},(_,index)=>({id:2+start+index,kind:"object",spanStart:start+index+1,spanEnd:start+index+2,label:"["+String(start+index)+"]",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:0})),hasMore:end<1_000_000,nextCursor:end<1_000_000?end:null};
+  },
+  onSelection:(node,ordinal)=>collectionSelections.push({node,ordinal}),
+  onError:(error)=>{throw error;}
+});
+collection.setSession({revision:7,root:collectionRoot,sourceSize:20_000_000});
+await settle();
+const collectionList=collectionHost.querySelector("#item-list");
+collectionList.style.height="240px";
+collectionList.style.width="320px";
+await settle();
+check(collectionCalls[0]?.command==="get_children"&&collectionCalls[0].args.limit===200&&collectionCalls[0].args.cursor===0,"Collection Item list did not use bounded get_children pages");
+check(collectionList.querySelectorAll("[role=option]").length<=400,"Collection Item list exceeded two bounded IPC pages");
+check(Number.parseFloat(collectionList.querySelector(".collection-list-spacer")?.style.height||"0")===24_000_000,"Collection Item spacer does not map one million rows within the browser limit");
+collectionHost.querySelector("#item-go").value="999999";
+collectionHost.querySelector("#item-go-button").click();
+await settle();
+check(collectionCalls.some((call)=>call.args.cursor===999800),"Go to Item did not fetch the final bounded page");
+const endItem=collectionList.querySelector('[data-item-ordinal="999999"]');
+check(endItem!==null,"Collection Item list did not reach the final Item; calls="+JSON.stringify(collectionCalls.map((call)=>call.args.cursor))+" scroll="+collectionList.scrollTop+" client="+collectionList.clientHeight+" height="+collectionList.scrollHeight+" window="+collectionList.querySelector(".collection-list-window")?.style.top+" first="+collectionList.querySelector("[role=option]")?.dataset.itemOrdinal+" status="+collectionHost.querySelector("#item-status").textContent);
+const endRect=endItem.getBoundingClientRect();
+const listRect=collectionList.getBoundingClientRect();
+check(endRect.top>=listRect.top&&endRect.bottom<=listRect.bottom&&endRect.height>0,"final Item was not physically inside the scroll viewport");
+const endHit=document.elementFromPoint((endRect.left+endRect.right)/2,(endRect.top+endRect.bottom)/2);
+check(endHit===endItem||endItem.contains(endHit),"final Item center was not hit-testable in the viewport");
+endItem.click();
+check(collectionSelections.at(-1)?.ordinal===999999,"Collection Item selection did not expose the zero-based ordinal");
+collectionHost.querySelector('#item-go').value="199";
+collectionHost.querySelector('#item-go-button').click();
+await settle();
+const row199=collectionList.querySelector('[data-item-ordinal="199"]');
+const row200=collectionList.querySelector('[data-item-ordinal="200"]');
+const row199Rect=row199.getBoundingClientRect();
+const row200Rect=row200.getBoundingClientRect();
+check(row199Rect.bottom>listRect.top&&row200Rect.top<listRect.bottom,"199→200 viewport boundary left a blank visible row");
+const row200Hit=document.elementFromPoint((row200Rect.left+row200Rect.right)/2,(row200Rect.top+row200Rect.bottom)/2);
+check(row200Hit===row200||row200.contains(row200Hit),"Item 200 was not hit-testable across the viewport boundary");
+row200.click();
+check(collectionSelections.at(-1)?.ordinal===200,"viewport boundary Item selection did not expose its ordinal");
+collectionHost.remove();
+
+const deferredHost=document.createElement("div");
+deferredHost.innerHTML='<section class="collection-navigation"><div class="collection-list" id="deferred-list" role="listbox"></div><input id="deferred-go"><button id="deferred-go-button">Go</button><span id="deferred-error"></span><div id="deferred-status"></div><button id="deferred-retry">Retry</button></section>';
+document.body.append(deferredHost);
+deferredHost.querySelector("section").style.height="300px";
+const deferredCalls=[];
+const deferredPage=(start)=>{const end=Math.min(600,start+200);return {nodes:Array.from({length:end-start},(_,index)=>({id:1000+start+index,kind:"number",spanStart:start+index+1,spanEnd:start+index+2,label:"["+String(start+index)+"]",labelHasMore:false,valuePreview:String(start+index),valueHasMore:false,childCount:0})),hasMore:end<600,nextCursor:end<600?end:null};};
+const deferredCollection=new CollectionList({
+  section:deferredHost.querySelector("section"),
+  goInput:deferredHost.querySelector("#deferred-go"),
+  goButton:deferredHost.querySelector("#deferred-go-button"),
+  goError:deferredHost.querySelector("#deferred-error"),
+  list:deferredHost.querySelector("#deferred-list"),
+  status:deferredHost.querySelector("#deferred-status"),
+  retry:deferredHost.querySelector("#deferred-retry"),
+  invoke:async(command,args)=>new Promise((resolve)=>deferredCalls.push({command,args,resolve})),
+  onSelection:()=>{},
+  onError:(error)=>{throw error;}
+});
+const deferredList=deferredHost.querySelector("#deferred-list");
+deferredList.style.height="240px";
+deferredList.style.width="320px";
+deferredCollection.setSession({revision:8,root:{id:2,kind:"array",spanStart:0,spanEnd:10_000,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:600},sourceSize:10_000});
+await settle();
+deferredCalls.shift().resolve(deferredPage(0));
+await settle();
+await settle();
+check(deferredList.clientHeight>0&&deferredList.scrollHeight>deferredList.clientHeight,"deferred Collection list did not have a real scroll viewport");
+deferredList.scrollTop=200*24;
+deferredList.dispatchEvent(new Event("scroll"));
+await settle();
+await settle();
+deferredList.scrollTop=400*24;
+deferredList.dispatchEvent(new Event("scroll"));
+deferredList.scrollTop=200*24;
+deferredList.dispatchEvent(new Event("scroll"));
+await settle();
+const pendingPage200=deferredCalls.filter((call)=>call.args.cursor===200).at(-1);
+check(pendingPage200!==undefined,"deferred scroll regression did not create the Item 200 request");
+pendingPage200.resolve(deferredPage(200));
+await settle();
+check(deferredList.querySelector('[data-item-ordinal="200"]')!==null&&deferredList.querySelector(".collection-list-window")?.style.top==="4800px","latest scroll intent did not return to the inflight Item 200 page; calls="+JSON.stringify(deferredCalls.map((call)=>call.args.cursor))+" top="+deferredList.querySelector(".collection-list-window")?.style.top+" first="+deferredList.querySelector("[role=option]")?.dataset.itemOrdinal+" wantedScroll="+deferredList.scrollTop);
+deferredHost.remove();
+
 const appForm=document.querySelector('form[role="search"]');
 check(appForm instanceof HTMLFormElement,"the app search form is not native");
 check(appForm.querySelector('input[name="query"]') instanceof HTMLInputElement,"native query input is missing");
@@ -100,10 +203,18 @@ check(appForm.querySelector('button[type="submit"]') instanceof HTMLButtonElemen
 
 const previousTauri=window.__TAURI_INTERNALS__;
 const mainTauriCalls=[];
+let mainCollectionMode=false;
 window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
   mainTauriCalls.push({command,args});
   if(command==="plugin:dialog|open") return "/tmp/search-ui-document.json";
-  if(command==="open_file") return {path:"/tmp/search-ui-document.json",size:262300,mode:"document",root:{id:1,kind:"object",spanStart:200,spanEnd:262200,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:0},progress:null,manyInvalidUtf8Warning:false,documentError:null,sessionRevision:21};
+  if(command==="open_file") return mainCollectionMode
+    ? {path:"/tmp/search-ui-collection.json",size:100,mode:"collection",root:{id:1,kind:"array",spanStart:0,spanEnd:100,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:2},progress:null,manyInvalidUtf8Warning:false,documentError:null,sessionRevision:22}
+    : {path:"/tmp/search-ui-document.json",size:262300,mode:"document",root:{id:1,kind:"object",spanStart:200,spanEnd:262200,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:0},progress:null,manyInvalidUtf8Warning:false,documentError:null,sessionRevision:21};
+  if(command==="get_children" && mainCollectionMode) return {nodes:[{id:10,kind:"object",spanStart:10,spanEnd:40,label:"[0]",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:0},{id:11,kind:"object",spanStart:50,spanEnd:80,label:"[1]",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:0}],hasMore:false,nextCursor:null};
+  if(command==="read_raw_slice" && mainCollectionMode) return {start:args.sourceStart,text:"A".repeat(args.length),hasMore:false,nextOffset:null};
+  if(command==="search_current" && mainCollectionMode) return args.representation==="rawSource"
+    ? {matches:[{nodeId:args.nodeId,field:"rawSource",pathSegments:["$","[0]"],pathTruncated:false,sourceSpanStart:10,sourceSpanEnd:40,matchStart:20,matchEnd:26}],hasMore:false,nextCursor:null}
+    : {matches:[{nodeId:args.nodeId,field:"value",pathSegments:["$","[0]"],pathTruncated:false,sourceSpanStart:10,sourceSpanEnd:40,matchStart:0,matchEnd:6}],hasMore:false,nextCursor:null};
   if(command==="search_current") return {matches:[],hasMore:false,nextCursor:null};
   throw new Error("unexpected main mock command "+command);
 }};
@@ -129,6 +240,34 @@ mainQuery.value="needle";
 document.getElementById("scope-search").requestSubmit();
 await settle();
 check(document.getElementById("error-region").hidden&&document.getElementById("scope-search-status").textContent.includes("No matches"),"valid search did not clear the local query error");
+mainCollectionMode=true;
+document.getElementById("open-file").click();
+await settle();
+const mainCollectionList=document.getElementById("collection-list");
+check(!document.getElementById("collection-navigation").hidden&&mainCollectionList.querySelectorAll("[role=option]").length===2,"main Collection Item list was not visible after opening");
+check(document.getElementById("tree-tab").disabled&&document.getElementById("raw-tab").disabled&&document.getElementById("scope-search-submit").disabled,"Tree/Raw/search were enabled before selecting an Item");
+mainCollectionList.querySelector('[data-item-ordinal="0"]').click();
+await settle();
+check(!document.getElementById("tree-tab").disabled&&!document.getElementById("raw-tab").disabled&&!document.getElementById("scope-search-submit").disabled,"selecting an Item did not enable Tree/Raw/search");
+check(document.getElementById("scope-search-description").textContent.includes("Item 0"),"selected Item was not named as the current search scope");
+mainQuery.value="needle";
+document.getElementById("scope-search").requestSubmit();
+await settle();
+const itemDecodedCall=mainTauriCalls.filter((call)=>call.command==="search_current").at(-1);
+check(itemDecodedCall?.args.nodeId===10&&itemDecodedCall.args.representation==="decoded","main selected Item decoded search did not bind nodeId");
+document.getElementById("scope-search-representation-raw").click();
+mainQuery.value="needle";
+document.getElementById("scope-search").requestSubmit();
+await settle();
+const itemRawCall=mainTauriCalls.filter((call)=>call.command==="search_current").at(-1);
+check(itemRawCall?.args.nodeId===10&&itemRawCall.args.representation==="rawSource","main selected Item Raw search did not bind nodeId");
+document.querySelector("#scope-search-results button")?.click();
+await settle();
+check(mainTauriCalls.some((call)=>call.command==="read_raw_slice"&&call.args.sourceStart===20),"main Item Raw result did not reveal the exact match offset");
+check(document.querySelector("#raw-panel mark")?.textContent?.length===6,"main Item Raw result highlighted the whole Item");
+mainCollectionList.querySelector('[data-item-ordinal="1"]').click();
+await settle();
+check(document.getElementById("scope-search-results").children.length===0&&document.getElementById("scope-search-description").textContent.includes("Item 1"),"switching Items did not clear stale search results and scope");
 if(previousTauri===undefined) delete window.__TAURI_INTERNALS__; else window.__TAURI_INTERNALS__=previousTauri;
 
 const noSelection=makeSearch(async()=>page());
@@ -152,6 +291,23 @@ check(basic.el.results.querySelectorAll("button").length===1,"decoded search res
 basic.el.results.querySelector("button").click();
 check(basicReveal?.sourceSpanStart===20&&basicReveal?.matchStart===0,"decoded result button did not preserve source span separately from decoded offset");
 check(basic.el.next.disabled,"next page was enabled without hasMore");
+
+const itemCalls=[];
+const itemSearch=makeSearch(async(command,args)=>{itemCalls.push({command,args});return page({matches:[args.representation==="rawSource"?{nodeId:77,field:"rawSource",pathSegments:["$","[3]"],pathTruncated:false,sourceSpanStart:100,sourceSpanEnd:160,matchStart:120,matchEnd:126}:decodedMatch({sourceSpanStart:110,sourceSpanEnd:120,matchEnd:6})],hasMore:false,nextCursor:null});});
+itemSearch.view.setScope(scope({label:"Item 3",description:"Current scope: selected Item 3.",scopeStart:100,scopeEnd:160,targetNodeId:77}));
+itemSearch.el.query.value="needle";
+itemSearch.el.form.requestSubmit();
+await settle();
+check(itemCalls[0].args.nodeId===77,"selected Item decoded search did not bind its node target");
+check(itemSearch.el.results.querySelector("button")!==null,"selected Item decoded result was not rendered");
+itemSearch.el.rawSource.checked=true;
+itemSearch.el.rawSource.dispatchEvent(new Event("change",{bubbles:true}));
+itemSearch.el.query.value="needle";
+itemSearch.el.form.requestSubmit();
+await settle();
+check(itemCalls.at(-1).args.nodeId===77&&itemCalls.at(-1).args.representation==="rawSource","selected Item raw search did not bind its node target");
+check(itemSearch.el.results.querySelector("button")?.textContent?.includes("match [120, 126)")&&itemSearch.el.results.querySelector("button")?.title.includes("match [120, 126)"),"raw target result did not expose the exact match range");
+itemSearch.host.remove();
 
 basic.el.query.value="changed";
 basic.el.query.dispatchEvent(new Event("input",{bubbles:true}));
@@ -329,6 +485,13 @@ await settle();
 check(rawCallsForReveal.length>beforeNonzero&&rawCallsForReveal.at(-1).args.sourceStart===10,"Tree setScope replaced the Raw base scope");
 raw.revealRange(262300,262302,"outside");
 check(rawCallsForReveal.at(-1).args.sourceStart===10,"out-of-bounds Raw reveal issued an IPC read");
+raw.deactivate();
+raw.setItemSession(10,{id:77,kind:"object",spanStart:100,spanEnd:160,label:"[0]",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:0},262300,"collection");
+raw.revealRange(120,126,"raw Item match");
+raw.activate();
+await settle();
+check(rawCallsForReveal.at(-1)?.args.sourceStart===120,"Item Raw reveal did not seek the exact raw match");
+check(rawPanel.querySelector("mark")?.textContent?.length===6,"Item Raw reveal highlighted the whole Item instead of the match");
 rawHost.remove();
 
 const validEntryHost=document.createElement("div");

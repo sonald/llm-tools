@@ -223,6 +223,22 @@ export class RawView {
     if (root && this.active) this.requestPage(root.spanStart, 0);
   }
 
+  setItemSession(revision: number, item: NodeDto, sourceSize: number, sourceKind: RawSourceKind = "collection"): void {
+    if (!safeNonNegativeInteger(sourceSize) || item.spanEnd > sourceSize) {
+      this.clear("The selected Item span is invalid.");
+      return;
+    }
+    this.epoch += 1;
+    this.session = { revision };
+    this.baseScope = { kind: "node", node: item, source: sourceKind };
+    this.scope = this.baseScope;
+    this.reveal = null;
+    this.representation = "lossy";
+    this.resetPages("Select Raw to load the original Item bytes.");
+    this.render();
+    if (this.active) this.requestPage(item.spanStart, 0);
+  }
+
   setNonValidEntry(revision: number, entry: EntryDto): boolean {
     const scope = entryBytesScope(entry);
     if (!scope) {

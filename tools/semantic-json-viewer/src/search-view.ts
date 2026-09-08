@@ -6,8 +6,10 @@ export type SearchScope = {
   description: string;
   enabled: boolean;
   decodedEnabled: boolean;
+  scopeStart: number;
   scopeEnd: number;
   sessionRevision: number;
+  targetNodeId: number | null;
 };
 
 export type SearchMatch = {
@@ -29,7 +31,7 @@ export type SearchCursor = {
   query: string;
   sessionRevision: number;
   scopeId: null;
-  targetNodeId: null;
+  targetNodeId: number | null;
 };
 
 export type SearchPage = {
@@ -180,7 +182,7 @@ export class SearchView {
         query,
         representation,
         scopeId: null,
-        nodeId: null,
+        nodeId: scope.targetNodeId,
         cursor: requestCursor,
         limit: PAGE_SIZE,
         sessionRevision: scope.sessionRevision
@@ -233,7 +235,7 @@ export class SearchView {
         query,
         representation,
         scopeId: null,
-        nodeId: null,
+        nodeId: scope.targetNodeId,
         cursor,
         limit: PAGE_SIZE,
         sessionRevision: scope.sessionRevision
@@ -279,6 +281,7 @@ export class SearchView {
       button.className = "search-result-button";
       button.dataset.resultIndex = String(index);
       button.textContent = resultLabel(match);
+      button.title = resultLabel(match);
       button.addEventListener("click", () => this.onReveal(match));
       fragment.append(button);
     });
@@ -343,7 +346,7 @@ function searchPageValue(
   const matches = value.matches.map((match) => searchMatchValue(match, representation, query, scope));
   const nextCursor = value.nextCursor === null
     ? null
-    : searchCursorValue(value.nextCursor, representation, query, scope.sessionRevision, requestCursor, scope.scopeEnd);
+    : searchCursorValue(value.nextCursor, representation, query, scope.sessionRevision, requestCursor, scope.scopeEnd, scope.targetNodeId);
   if (value.hasMore !== (nextCursor !== null)) throw new Error("The search response cursor state is invalid.");
   return { matches, hasMore: value.hasMore, nextCursor };
 }
@@ -363,11 +366,13 @@ function searchMatchValue(value: unknown, representation: SearchRepresentation, 
   if (nodeId === undefined) throw new Error("The search result node ID is invalid.");
   if (!isSearchField(field) || !Array.isArray(pathSegments)
     || typeof value.pathTruncated !== "boolean" || sourceSpanStart === undefined || sourceSpanEnd === undefined
-    || matchStart === undefined || matchEnd === undefined || sourceSpanStart >= sourceSpanEnd || sourceSpanEnd > scope.scopeEnd
+    || matchStart === undefined || matchEnd === undefined || sourceSpanStart < scope.scopeStart || sourceSpanStart >= sourceSpanEnd || sourceSpanEnd > scope.scopeEnd
     || matchStart >= matchEnd || matchEnd - matchStart !== queryBytes || pathSegments.length === 0
     || pathSegments.length > MAX_PATH_BYTES || pathSegments[0] !== "$"
     || (representation === "decoded" && matchEnd > sourceSpanEnd - sourceSpanStart) || (representation === "rawSource"
-      ? nodeId !== null || field !== "rawSource" || sourceSpanStart !== matchStart || sourceSpanEnd !== matchEnd || matchEnd > scope.scopeEnd
+      ? nodeId !== scope.targetNodeId || field !== "rawSource" || matchStart < scope.scopeStart || matchEnd > scope.scopeEnd
+        || scope.targetNodeId === null && (sourceSpanStart !== matchStart || sourceSpanEnd !== matchEnd)
+        || scope.targetNodeId !== null && (sourceSpanStart !== scope.scopeStart || sourceSpanEnd !== scope.scopeEnd)
       : nodeId === null || (field !== "key" && field !== "value"))) {
     throw new Error("The search result fields are invalid.");
   }
@@ -389,18 +394,19 @@ function searchCursorValue(
   query: string,
   sessionRevision: number,
   previous: SearchCursor | null,
-  scopeEnd: number
+  scopeEnd: number,
+  scopeTargetNodeId: number | null
 ): SearchCursor {
   if (!isRecord(value) || typeof value.kind !== "string" || typeof value.query !== "string"
-    || typeof value.sessionRevision !== "number" || value.scopeId !== null || value.targetNodeId !== null
+    || typeof value.sessionRevision !== "number" || value.scopeId !== null || value.targetNodeId !== scopeTargetNodeId
     || value.query !== query || value.sessionRevision !== sessionRevision) {
     throw new Error("The search cursor is invalid.");
   }
   if (value.kind === "rawSource") {
     if (!recordWithKeys(value, ["kind", "byteOffset", "query", "sessionRevision", "scopeId", "targetNodeId"])) throw new Error("The search cursor is invalid.");
     const byteOffset = safeInteger(value.byteOffset);
-    if (byteOffset === undefined || byteOffset > scopeEnd || representation !== "rawSource") throw new Error("The raw search cursor is invalid.");
-    const cursor: SearchCursor = { kind: "rawSource", byteOffset, query, sessionRevision, scopeId: null, targetNodeId: null };
+    if (byteOffset === undefined || byteOffset < 0 || byteOffset > scopeEnd || representation !== "rawSource") throw new Error("The raw search cursor is invalid.");
+    const cursor: SearchCursor = { kind: "rawSource", byteOffset, query, sessionRevision, scopeId: null, targetNodeId: scopeTargetNodeId };
     if (previous && (previous.kind !== cursor.kind || cursor.byteOffset <= previous.byteOffset)) throw new Error("The search cursor did not advance.");
     return cursor;
   }
@@ -412,7 +418,7 @@ function searchCursorValue(
   if (nodeId === undefined || byteOffset === undefined || (value.field !== "key" && value.field !== "value") || representation !== "decoded") {
     throw new Error("The decoded search cursor is invalid.");
   }
-  const cursor: SearchCursor = { kind: "decoded", nodeId, field: value.field, byteOffset, query, sessionRevision, scopeId: null, targetNodeId: null };
+  const cursor: SearchCursor = { kind: "decoded", nodeId, field: value.field, byteOffset, query, sessionRevision, scopeId: null, targetNodeId: scopeTargetNodeId };
   if (previous && (previous.kind !== cursor.kind || !decodedCursorAdvanced(previous, cursor))) throw new Error("The search cursor did not advance.");
   return cursor;
 }
@@ -444,13 +450,15 @@ function isSearchField(value: unknown): value is SearchField {
 
 function scopeKey(scope: SearchScope | null): string {
   if (!scope) return "none";
-  return [scope.label, scope.enabled, scope.decodedEnabled, scope.scopeEnd, scope.sessionRevision].join("\u0000");
+  return [scope.label, scope.enabled, scope.decodedEnabled, scope.scopeStart, scope.scopeEnd, scope.sessionRevision, scope.targetNodeId].join("\u0000");
 }
 
 function resultLabel(match: SearchMatch): string {
   const path = match.pathSegments.join(".") || "$";
   const field = match.field === "rawSource" ? "Raw Source" : match.field === "key" ? "Key" : "Value";
-  return `${field} · ${path} · source [${match.sourceSpanStart}, ${match.sourceSpanEnd})`;
+  return match.field === "rawSource"
+    ? `${field} · ${path} · match [${match.matchStart}, ${match.matchEnd}) · source [${match.sourceSpanStart}, ${match.sourceSpanEnd})`
+    : `${field} · ${path} · source [${match.sourceSpanStart}, ${match.sourceSpanEnd})`;
 }
 
 function pageStatus(page: SearchPage, representation: SearchRepresentation): string {
