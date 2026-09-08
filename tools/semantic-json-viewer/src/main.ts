@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { ContentViewer, type ContentTarget } from "./content-viewer";
 import { EntryList, type EntrySelectionDto } from "./entry-list";
 import { MAX_ENTRY_BYTES, RawView } from "./raw-view";
+import { SearchView, type SearchMatch, type SearchScope } from "./search-view";
 import { TreeView, type NodeDto } from "./tree-view";
 
 type FileMode = "document" | "collection" | "entry";
@@ -116,6 +117,18 @@ const rawTab = required<HTMLButtonElement>("raw-tab");
 const semanticPanel = required<HTMLElement>("semantic-panel");
 const treePanel = required<HTMLElement>("tree-panel");
 const rawPanel = required<HTMLElement>("raw-panel");
+const searchPanel = required<HTMLElement>("scope-search-panel");
+const searchForm = required<HTMLFormElement>("scope-search");
+const searchQuery = required<HTMLInputElement>("scope-search-query");
+const searchDecoded = required<HTMLInputElement>("scope-search-representation-decoded");
+const searchRawSource = required<HTMLInputElement>("scope-search-representation-raw");
+const searchSubmit = required<HTMLButtonElement>("scope-search-submit");
+const searchDescription = required<HTMLElement>("scope-search-description");
+const searchResultsPanel = required<HTMLElement>("scope-search-results-panel");
+const searchStatus = required<HTMLElement>("scope-search-status");
+const searchResults = required<HTMLElement>("scope-search-results");
+const searchPrevious = required<HTMLButtonElement>("scope-search-prev");
+const searchNext = required<HTMLButtonElement>("scope-search-next");
 const nodeInspector = required<HTMLElement>("node-inspector");
 const treeReaderTitle = required<HTMLElement>("reader-title");
 const nodeId = required<HTMLElement>("node-id");
@@ -240,6 +253,24 @@ const treeView = new TreeView({
 const rawView = new RawView({
   panel: rawPanel,
   tab: rawTab,
+  onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
+});
+
+const searchView = new SearchView({
+  form: searchForm,
+  query: searchQuery,
+  decoded: searchDecoded,
+  rawSource: searchRawSource,
+  submit: searchSubmit,
+  description: searchDescription,
+  panel: searchPanel,
+  resultsPanel: searchResultsPanel,
+  status: searchStatus,
+  results: searchResults,
+  previous: searchPrevious,
+  next: searchNext,
+  invoke,
+  onReveal: handleSearchReveal,
   onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
 });
 
@@ -390,6 +421,16 @@ function handleTreeSelection(node: NodeDto): void {
   rawView.setScope(node);
 }
 
+function handleSearchReveal(match: SearchMatch): void {
+  if (rawTab.disabled) return;
+  rawView.revealRange(
+    match.sourceSpanStart,
+    match.sourceSpanEnd,
+    `${match.field === "rawSource" ? "Raw Source" : match.field === "key" ? "Key" : "Value"} search match`
+  );
+  setActiveView("raw");
+}
+
 function handleEntryError(error: unknown): void {
   handleCurrentSessionAsyncError(ipcError(error));
 }
@@ -408,6 +449,7 @@ function handleCurrentSessionAsyncError(parsed: IpcErrorPayload, stopEntryIndex 
     if (summary) state.invalidatedRevision = summary.sessionRevision;
     contentViewer.clearOverridesForRevision(summary?.sessionRevision);
     if (contentViewer.isOpen) contentViewer.clear(false);
+    searchView.invalidate();
     rawView.clear();
     treeView.clear();
     if (summary?.mode === "entry") {
@@ -425,6 +467,7 @@ function handleCurrentSessionAsyncError(parsed: IpcErrorPayload, stopEntryIndex 
 function handleEntrySelection(selection: EntrySelectionDto): void {
   const summary = state.summary;
   if (!summary || summary.mode !== "entry") return;
+  searchView.clear();
   contentViewer.clearOverridesForRevision(selection.sessionRevision);
   contentViewer.clear(false);
   if (selection.sessionRevision !== summary.sessionRevision + 1) {
@@ -474,7 +517,7 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
     );
     let rawAvailable = false;
     if (valid && selection.root) {
-      rawView.setSession(selection.sessionRevision, selection.root);
+      rawView.setSession(selection.sessionRevision, selection.root, entrySourceSize(selection.entry), "entry");
       rawAvailable = true;
     } else if (invalidJson || invalidUtf8 || oversized) {
       rawAvailable = rawView.setNonValidEntry(selection.sessionRevision, selection.entry);
@@ -506,6 +549,7 @@ function handleEntryRevisionUnknown(value: unknown): void {
     return;
   }
   const generation = ++state.generation;
+  searchView.clear();
   contentViewer.clearOverridesForRevision(next.sessionRevision);
   contentViewer.clear(false);
   state.summary = next;
@@ -745,7 +789,7 @@ function readerCopy(summary: FileSummary): string {
       const { byteStart, byteEnd } = state.selectedEntry.location;
       const length = byteEnd - byteStart;
       if (Number.isSafeInteger(byteStart) && Number.isSafeInteger(byteEnd) && byteStart >= 0 && byteEnd > byteStart && Number.isSafeInteger(length) && length > MAX_ENTRY_BYTES) {
-        return `Oversized Entry selected. Raw shows only the first and last 64 KiB; ${length - 128 * 1024} bytes are omitted.`;
+        return `Oversized Entry selected. Raw shows bounded 128 KiB windows; use Previous and Next to page through the Entry.`;
       }
     }
     if (state.selectedEntry) {
@@ -803,6 +847,70 @@ function setActiveView(view: "semantic" | "tree" | "raw"): void {
   else rawView.deactivate();
 }
 
+function currentSearchScope(): SearchScope | null {
+  const summary = state.summary;
+  if (!summary || summaryIsInvalidated(summary)) return null;
+  const enabled = !state.opening && !state.selectionBusy;
+  if (summary.documentError) {
+    return {
+      label: "Raw-only Document",
+      description: enabled
+        ? "Current scope: Document bytes. Decoded search is unavailable; Raw Source searches the original bytes."
+        : "Current scope: Raw-only Document. Search is temporarily unavailable.",
+      enabled,
+      decodedEnabled: false,
+      scopeEnd: summary.size,
+      sessionRevision: summary.sessionRevision
+    };
+  }
+  if (summary.mode === "document") {
+    return {
+      label: "Document root",
+      description: enabled ? "Current scope: Document root." : "Current scope: Document root. Search is temporarily unavailable.",
+      enabled,
+      decodedEnabled: true,
+      scopeEnd: summary.size,
+      sessionRevision: summary.sessionRevision
+    };
+  }
+  if (summary.mode === "collection") {
+    return {
+      label: "Collection root",
+      description: enabled ? "Current scope: Collection root." : "Current scope: Collection root. Search is temporarily unavailable.",
+      enabled,
+      decodedEnabled: true,
+      scopeEnd: summary.size,
+      sessionRevision: summary.sessionRevision
+    };
+  }
+  const entry = state.selectedEntry;
+  if (!entry) {
+    return {
+      label: "Selected Entry",
+      description: "Current scope: selected Entry. Select an Entry to enable search.",
+      enabled: false,
+      decodedEnabled: true,
+      scopeEnd: 0,
+      sessionRevision: summary.sessionRevision
+    };
+  }
+  const scopeEnd = entrySourceSize(entry);
+  const decodedEnabled = entry.status === "valid";
+  const status = entryStatusLabel(entry.status);
+  return {
+    label: `Entry ${entry.location.entryOrdinal + 1}`,
+    description: enabled
+      ? decodedEnabled
+        ? `Current scope: selected Entry ${entry.location.entryOrdinal + 1}.`
+        : `Current scope: selected Entry ${entry.location.entryOrdinal + 1} (${status}). Raw Source only.`
+      : `Current scope: selected Entry ${entry.location.entryOrdinal + 1}. Search is temporarily unavailable.`,
+    enabled,
+    decodedEnabled,
+    scopeEnd,
+    sessionRevision: summary.sessionRevision
+  };
+}
+
 function moveViewFocus(direction: 1 | -1): void {
   const tabs = [semanticTab, treeTab, rawTab].filter((tab) => !tab.disabled);
   const current = tabs.indexOf(document.activeElement as HTMLButtonElement);
@@ -830,6 +938,7 @@ function render(): void {
   appShell.dataset.inspectorOpen = tablet ? String(state.tabletInspectorOpen) : "false";
   entryList.setOpening(state.opening);
   rawView.setBusy(state.opening || state.selectionBusy);
+  searchView.setScope(currentSearchScope());
   renderPreviewButton();
   renderSummary();
   renderError();
@@ -886,6 +995,7 @@ function failClosedSummary(generation: number): void {
 }
 
 async function openPath(path: string, openAs: "json" | "jsonl" | null, generation: number): Promise<void> {
+  searchView.clear();
   contentViewer.clear(false);
   try {
     const value = await invoke<unknown>("open_file", { path, openAs });
@@ -926,7 +1036,7 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
       ariaLabel: "JSON structure",
       scopeLabel: modeLabel(summary.mode)
     });
-    if (summary.root) rawView.setSession(summary.sessionRevision, summary.root);
+    if (summary.root) rawView.setSession(summary.sessionRevision, summary.root, summary.size, summary.mode);
     else rawView.clear("Select a valid Entry to open Raw bytes.");
     entryList.setSession(summary.mode === "entry" && summary.progress ? {
       revision: summary.sessionRevision,
@@ -1091,6 +1201,12 @@ document.addEventListener("keydown", (event) => {
     void chooseFile();
     return;
   }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+    if (modeDialog.open || contentViewer.isOpen) return;
+    event.preventDefault();
+    searchView.focusQuery();
+    return;
+  }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "g") {
     event.preventDefault();
     if (modeDialog.open || contentViewer.isOpen || state.opening || state.summary?.mode !== "entry") return;
@@ -1104,6 +1220,7 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (event.key === "Escape" && !modeDialog.open) {
+    if (searchView.handleEscape(event)) return;
     if (state.mobileDrawer !== null || state.tabletInspectorOpen) {
       state.mobileDrawer = null;
       state.tabletInspectorOpen = false;

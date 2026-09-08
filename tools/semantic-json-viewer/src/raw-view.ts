@@ -13,15 +13,27 @@ type RawViewOptions = {
   panel: HTMLElement;
   tab: HTMLButtonElement;
   onError: (error: unknown) => void;
+  invoke?: Invoke;
 };
+
+type Invoke = <T = unknown>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
 type RawSession = {
   revision: number;
 };
 
+type RawSourceKind = "document" | "collection" | "entry";
+
 type NodeScope = {
   kind: "node";
   node: NodeDto;
+  source: RawSourceKind;
+};
+
+type RawSourceScope = {
+  kind: "source";
+  source: RawSourceKind;
+  size: number;
 };
 
 type EntryBytesScope = {
@@ -39,7 +51,7 @@ type RawDocumentScope = {
   encoding: "utf8" | "invalidUtf8";
 };
 
-type RawScope = NodeScope | EntryBytesScope | RawDocumentScope;
+type RawScope = NodeScope | RawSourceScope | EntryBytesScope | RawDocumentScope;
 
 type PageRequest = {
   epoch: number;
@@ -65,6 +77,12 @@ type RawPageResult = {
   displayBytes?: Uint8Array;
 };
 
+type RevealRange = {
+  start: number;
+  end: number;
+  label: string;
+};
+
 type Representation = "lossy" | "hex";
 
 export const MAX_ENTRY_BYTES = 16 * 1024 * 1024;
@@ -74,6 +92,7 @@ export class RawView {
   private readonly panel: HTMLElement;
   private readonly tab: HTMLButtonElement;
   private readonly onError: (error: unknown) => void;
+  private readonly invoke: Invoke;
   private readonly scopeLabel: HTMLElement;
   private readonly pageLabel: HTMLElement;
   private readonly status: HTMLElement;
@@ -86,7 +105,9 @@ export class RawView {
   private readonly representationNote: HTMLElement;
   private readonly pre: HTMLPreElement;
   private session: RawSession | null = null;
+  private baseScope: RawScope | null = null;
   private scope: RawScope | null = null;
+  private reveal: RevealRange | null = null;
   private text: string | null = null;
   private pageStart: number | null = null;
   private pageEnd: number | null = null;
@@ -105,6 +126,7 @@ export class RawView {
     this.panel = options.panel;
     this.tab = options.tab;
     this.onError = options.onError;
+    this.invoke = options.invoke ?? invoke;
 
     const header = document.createElement("div");
     header.className = "raw-header";
@@ -188,10 +210,13 @@ export class RawView {
     this.clear();
   }
 
-  setSession(revision: number, root: NodeDto | null): void {
+  setSession(revision: number, root: NodeDto | null, sourceSize?: number, sourceKind: RawSourceKind = "document"): void {
     this.epoch += 1;
     this.session = root ? { revision } : null;
-    this.scope = root ? { kind: "node", node: root } : null;
+    const size = sourceSize !== undefined && safeNonNegativeInteger(sourceSize) ? sourceSize : root?.spanEnd ?? 0;
+    this.baseScope = root ? { kind: "source", source: sourceKind, size } : null;
+    this.scope = root ? { kind: "node", node: root, source: sourceKind } : null;
+    this.reveal = null;
     this.representation = "lossy";
     this.resetPages(root ? "Select Raw to load the original bytes." : "Select a valid node to open its original bytes.");
     this.render();
@@ -206,7 +231,9 @@ export class RawView {
     }
     this.epoch += 1;
     this.session = { revision };
-    this.scope = scope;
+    this.baseScope = scope;
+    this.scope = this.baseScope;
+    this.reveal = null;
     this.representation = "lossy";
     this.resetPages("Select Raw to load the original Entry bytes.");
     this.render();
@@ -222,7 +249,9 @@ export class RawView {
     }
     this.epoch += 1;
     this.session = { revision };
-    this.scope = scope;
+    this.baseScope = scope;
+    this.scope = this.baseScope;
+    this.reveal = null;
     this.representation = "lossy";
     this.resetPages("Select Raw to load the original file bytes.");
     if (scope.size === 0) {
@@ -241,7 +270,9 @@ export class RawView {
   clear(reason?: string): void {
     this.epoch += 1;
     this.session = null;
+    this.baseScope = null;
     this.scope = null;
+    this.reveal = null;
     this.resetPages(reason ?? "Select a node to open its original bytes.");
     this.render();
   }
@@ -249,11 +280,28 @@ export class RawView {
   setScope(node: NodeDto): void {
     if (!this.session) return;
     this.epoch += 1;
-    this.scope = { kind: "node", node };
+    this.scope = { kind: "node", node, source: rawSourceKind(this.baseScope) ?? "document" };
+    this.reveal = null;
     this.representation = "lossy";
     this.resetPages("Select Raw to load the original bytes.");
     this.render();
     if (this.active) this.requestPage(node.spanStart, 0);
+  }
+
+  revealRange(start: number, end: number, label: string): void {
+    const base = this.baseScope;
+    if (!base || !safeNonNegativeInteger(start) || !safeNonNegativeInteger(end)
+      || start >= end || start < scopeStart(base) || end > scopeEnd(base)) {
+      this.statusMessage = "The requested Raw match is outside the current scope.";
+      this.render();
+      return;
+    }
+    this.epoch += 1;
+    this.scope = base;
+    this.reveal = { start, end, label };
+    this.resetPages(`Seeking to ${label}…`);
+    this.render();
+    if (this.active) this.requestPage(start, 0);
   }
 
   setBusy(busy: boolean): void {
@@ -261,7 +309,7 @@ export class RawView {
     this.busy = busy;
     this.render();
     if (!busy && this.active && this.session && this.scope && this.text === null && this.displayBytes === null && !this.pageRequest && !this.failedPage) {
-      this.requestPage(scopeStart(this.scope), 0);
+      this.requestPage(this.reveal?.start ?? scopeStart(this.scope), 0);
     }
   }
 
@@ -271,7 +319,7 @@ export class RawView {
       this.render();
       return;
     }
-    this.requestPage(scopeStart(this.scope), 0);
+    this.requestPage(this.reveal?.start ?? scopeStart(this.scope), 0);
   }
 
   deactivate(): void {
@@ -351,38 +399,30 @@ export class RawView {
     try {
       const remaining = request.scopeEnd - request.offset;
       const requestedLength = Math.min(PAGE_BYTES, remaining);
-      if ((request.scopeKind === "entryBytes" && scope.kind === "entryBytes")
-        || (request.scopeKind === "rawDocument" && scope.kind === "rawDocument")) {
-        let value: unknown;
-        let byteStatus: "invalidJson" | "invalidUtf8" | "oversized";
-        if (scope.kind === "entryBytes") {
-          byteStatus = scope.status;
-          value = scope.status === "oversized"
-            ? await invoke<unknown>("get_oversized_preview", {
-              ordinal: scope.entryOrdinal,
-              sessionRevision: request.revision
-            })
-            : await invoke<unknown>("read_selected_entry_bytes", {
-              offset: request.offset,
-              length: requestedLength,
-              sessionRevision: request.revision
-            });
-        } else {
-          byteStatus = scope.encoding === "invalidUtf8" ? "invalidUtf8" : "invalidJson";
-          value = await invoke<unknown>("read_raw_document_bytes", {
+      const selectedEntryBytes = scope.kind === "entryBytes"
+        || scope.kind === "source" && scope.source === "entry";
+      const rawDocumentBytes = scope.kind === "rawDocument";
+      if (selectedEntryBytes || rawDocumentBytes) {
+        const value = selectedEntryBytes
+          ? await this.invoke<unknown>("read_selected_entry_window", {
+            offset: request.offset,
+            length: requestedLength,
+            sessionRevision: request.revision
+          })
+          : await this.invoke<unknown>("read_raw_document_bytes", {
             offset: request.offset,
             length: requestedLength,
             sessionRevision: request.revision
           });
-        }
+        const byteStatus = scope.kind === "entryBytes"
+          ? scope.status
+          : scope.kind === "rawDocument" && scope.encoding === "invalidUtf8" ? "invalidUtf8" : "invalidJson";
         if (!this.isCurrent(request)) return;
-        const result = byteStatus === "oversized" && scope.kind === "entryBytes"
-          ? decodeOversizedPreview(value, request, scope)
-          : decodeRawBytePage(
-            value,
-            request,
-            byteStatus === "invalidUtf8" ? "invalidUtf8" : "invalidJson"
-          );
+        const result = decodeRawBytePage(
+          value,
+          request,
+          byteStatus === "invalidUtf8" || byteStatus === "oversized" ? "invalidUtf8" : "invalidJson"
+        );
         if ("error" in result) {
           this.failPage(result.error);
           return;
@@ -391,7 +431,7 @@ export class RawView {
         return;
       }
 
-      const chunk = await invoke<TextChunkDto>("read_raw_slice", {
+      const chunk = await this.invoke<TextChunkDto>("read_raw_slice", {
         sourceStart: request.offset,
         length: requestedLength,
         sessionRevision: request.revision
@@ -472,9 +512,16 @@ export class RawView {
         ? this.scope.encoding === "invalidUtf8"
           ? "Original bytes · representation only"
           : "Original file bytes · not reformatted"
+      : request.scopeKind === "source" && this.scope?.kind === "source" && this.scope.source === "entry"
+        ? "Original UTF-8 Entry bytes · not reformatted"
         : result.pageEnd < request.scopeEnd ? "Raw bytes loaded." : "End of raw scope.";
     this.render();
     this.restoreControl(request, true);
+    if (this.reveal && request.offset < this.reveal.end && result.pageEnd > this.reveal.start) {
+      queueMicrotask(() => {
+        if (this.active && this.pageStart === request.offset && this.pageEnd === result.pageEnd) this.pre.focus();
+      });
+    }
   }
 
   private previousPage(): void {
@@ -562,10 +609,13 @@ export class RawView {
         ? "This is a lossy preview. The source bytes have not been modified."
         : "Original bytes · 16 bytes per row"
       : oversized
-        ? "Preview only. Showing the first and last 64 KiB. Source bytes have not been modified."
+        ? "Oversized Entry · showing one bounded 128 KiB raw window. Source bytes have not been modified."
         : "";
     this.pre.hidden = this.text === null && this.displayBytes === null;
-    this.pre.textContent = this.text ?? "";
+    this.pre.replaceChildren();
+    if (this.text !== null) {
+      renderRawText(this.pre, this.text, this.pageStart, this.pageEnd, this.displayBytes, this.reveal, this.representation);
+    }
     this.pre.setAttribute("aria-label", preLabel(scope, this.representation));
     if (invalidUtf8) {
       this.pre.setAttribute("role", "tabpanel");
@@ -574,10 +624,10 @@ export class RawView {
       this.pre.removeAttribute("role");
       this.pre.removeAttribute("aria-labelledby");
     }
-    this.previous.hidden = Boolean(oversized);
-    this.next.hidden = Boolean(oversized);
-    this.previous.disabled = Boolean(oversized) || busy || this.currentIndex <= 0;
-    this.next.disabled = Boolean(oversized) || busy || scope === null || this.pageEnd === null || this.pageEnd >= scopeEnd(scope);
+    this.previous.hidden = false;
+    this.next.hidden = false;
+    this.previous.disabled = busy || this.currentIndex <= 0;
+    this.next.disabled = busy || scope === null || this.pageEnd === null || this.pageEnd >= scopeEnd(scope);
     this.retry.hidden = this.failedPage === null;
     this.retry.disabled = busy || this.failedPage === null;
   }
@@ -620,51 +670,6 @@ function entryBytesScope(entry: unknown): EntryBytesScope | null {
   const length = byteEnd - byteStart;
   if (entry.status === "oversized" ? length <= MAX_ENTRY_BYTES : length > MAX_ENTRY_BYTES) return null;
   return { kind: "entryBytes", status: entry.status, entryOrdinal, sourceLine, byteStart, byteEnd };
-}
-
-function decodeOversizedPreview(value: unknown, request: PageRequest, scope: EntryBytesScope): RawPageResult | { error: string } {
-  if (!isRecord(value) || !isRecord(value.entry) || value.entry.status !== "oversized" || value.entry.parseError !== null || !isRecord(value.entry.location)) {
-    return { error: "Oversized preview response had an invalid entry." };
-  }
-  const location = value.entry.location;
-  const entryOrdinal = location.entryOrdinal;
-  const sourceLine = location.sourceLine;
-  const byteStart = location.byteStart;
-  const byteEnd = location.byteEnd;
-  if (!safeNonNegativeInteger(entryOrdinal) || !safeNonNegativeInteger(sourceLine) || sourceLine < 1 || !safeNonNegativeInteger(byteStart) || !safeNonNegativeInteger(byteEnd) || byteEnd <= byteStart) {
-    return { error: "Oversized preview location was invalid." };
-  }
-  if (entryOrdinal !== scope.entryOrdinal || sourceLine !== scope.sourceLine || byteStart !== scope.byteStart || byteEnd !== scope.byteEnd) {
-    return { error: "Oversized preview location did not match the selected Entry." };
-  }
-  const length = scopeEnd(scope);
-  const head = value.head;
-  const tail = value.tail;
-  if (!Array.isArray(head) || !Array.isArray(tail) || head.length !== 64 * 1024 || tail.length !== 64 * 1024) {
-    return { error: "Oversized preview must contain two 64 KiB byte ranges." };
-  }
-  const headBytes = new Uint8Array(head.length);
-  for (let index = 0; index < head.length; index += 1) {
-    const byte = head[index];
-    if (typeof byte !== "number" || !Number.isInteger(byte) || byte < 0 || byte > 255) {
-      return { error: "Oversized preview head contained an invalid byte." };
-    }
-    headBytes[index] = byte;
-  }
-  const tailBytes = new Uint8Array(tail.length);
-  for (let index = 0; index < tail.length; index += 1) {
-    const byte = tail[index];
-    if (typeof byte !== "number" || !Number.isInteger(byte) || byte < 0 || byte > 255) {
-      return { error: "Oversized preview tail contained an invalid byte." };
-    }
-    tailBytes[index] = byte;
-  }
-  const tailStart = length - 64 * 1024;
-  const omitted = length - 128 * 1024;
-  return {
-    text: `Head · Entry bytes [0, 65536)\n${formatHex(0, headBytes)}\n\n… ${omitted} bytes omitted · Entry bytes [65536, ${tailStart}) …\n\nTail · Entry bytes [${tailStart}, ${length})\n${formatHex(tailStart, tailBytes)}`,
-    pageEnd: request.scopeEnd
-  };
 }
 
 function decodeRawBytePage(
@@ -777,14 +782,25 @@ function scopeStart(scope: RawScope): number {
   return scope.kind === "node" ? scope.node.spanStart : 0;
 }
 
+function rawSourceKind(scope: RawScope | null): RawSourceKind | null {
+  if (scope?.kind === "node" || scope?.kind === "source") return scope.source;
+  if (scope?.kind === "entryBytes") return "entry";
+  return null;
+}
+
 function scopeEnd(scope: RawScope): number {
   if (scope.kind === "node") return scope.node.spanEnd;
+  if (scope.kind === "source") return scope.size;
   return scope.kind === "rawDocument" ? scope.size : scope.byteEnd - scope.byteStart;
 }
 
 function scopeLabel(scope: RawScope | null): string {
   if (!scope) return "Raw bytes";
   if (scope.kind === "node") return `Node #${scope.node.id} · [${scope.node.spanStart}, ${scope.node.spanEnd})`;
+  if (scope.kind === "source") {
+    const label = scope.source === "entry" ? "Entry" : scope.source === "collection" ? "Collection" : "Document";
+    return `${label} source · File bytes [0, ${scope.size})`;
+  }
   if (scope.kind === "rawDocument") {
     return `Raw-only Document · ${scope.encoding === "invalidUtf8" ? "Invalid UTF-8" : "Invalid JSON"} · File bytes [0, ${scope.size})`;
   }
@@ -793,24 +809,25 @@ function scopeLabel(scope: RawScope | null): string {
 
 function pageLabel(scope: RawScope, start: number, end: number): string {
   if (scope.kind === "node") return `Bytes [${start}, ${end}) of [${scope.node.spanStart}, ${scope.node.spanEnd})`;
+  if (scope.kind === "source" && scope.source !== "entry") return `Bytes [${start}, ${end}) of File [0, ${scope.size})`;
+  if (scope.kind === "source") return `Bytes [${start}, ${end}) of Entry [0, ${scope.size})`;
   if (scope.kind === "rawDocument") return `Bytes [${start}, ${end}) of File [0, ${scope.size})`;
-  if (scope.status === "oversized") {
-    const tailStart = scopeEnd(scope) - 64 * 1024;
-    return `Head [0, 65536) · Tail [${tailStart}, ${scopeEnd(scope)})`;
-  }
   return `Bytes [${start}, ${end}) of Entry [0, ${scopeEnd(scope)})`;
 }
 
 function preLabel(scope: RawScope | null, representation: Representation): string {
   if (!scope) return "Raw UTF-8 bytes";
   if (scope.kind === "node") return `Raw UTF-8 bytes for Node #${scope.node.id}`;
+  if (scope.kind === "source") return scope.source === "entry"
+    ? "Raw UTF-8 bytes for selected Entry"
+    : `Raw UTF-8 bytes for ${scope.source === "collection" ? "Collection" : "Document"}`;
   if (scope.kind === "rawDocument") {
     return scope.encoding === "invalidUtf8"
       ? scopeStatusRepresentation(scope, representation)
       : "Raw UTF-8 bytes for invalid JSON document";
   }
   if (scope.status === "invalidUtf8") return scopeStatusRepresentation(scope, representation);
-  if (scope.status === "oversized") return `Oversized Entry ${scope.entryOrdinal + 1} hexadecimal head and tail preview`;
+  if (scope.status === "oversized") return `Raw bytes for oversized Entry ${scope.entryOrdinal + 1}`;
   return `Raw UTF-8 bytes for Entry ${scope.entryOrdinal + 1}`;
 }
 
@@ -830,6 +847,73 @@ function formatHex(start: number, bytes: Uint8Array): string {
     lines.push(`${(start + offset).toString(16).padStart(8, "0")}  ${hex.join(" ").padEnd(16 * 3 - 1, " ")}  |${ascii.padEnd(16, " ")}|`);
   }
   return lines.join("\n");
+}
+
+function renderRawText(
+  pre: HTMLPreElement,
+  text: string,
+  pageStart: number | null,
+  pageEnd: number | null,
+  displayBytes: Uint8Array | null,
+  reveal: RevealRange | null,
+  representation: Representation
+): void {
+  if (pageStart === null || pageEnd === null || reveal === null) {
+    pre.textContent = text;
+    return;
+  }
+  const start = Math.max(pageStart, reveal.start);
+  const end = Math.min(pageEnd, reveal.end);
+  if (start >= end) {
+    pre.textContent = text;
+    return;
+  }
+  if (displayBytes && representation === "hex") {
+    const lines = text.split("\n");
+    lines.forEach((line, index) => {
+      const lineStart = pageStart + index * 16;
+      const lineEnd = Math.min(pageEnd, lineStart + 16);
+      appendMarkedPart(pre, line, lineStart < end && lineEnd > start, reveal.label);
+      if (index + 1 < lines.length) pre.append(document.createTextNode("\n"));
+    });
+    return;
+  }
+  const encoded = new TextEncoder();
+  const localStart = Math.max(0, start - pageStart);
+  const localEnd = Math.max(localStart, Math.min(encoded.encode(text).byteLength, end - pageStart));
+  let byteOffset = 0;
+  let codeUnitOffset = 0;
+  let markerStart: number | null = null;
+  let markerEnd = 0;
+  for (const character of text) {
+    const byteLength = encoded.encode(character).byteLength;
+    const nextByteOffset = byteOffset + byteLength;
+    if (markerStart === null && nextByteOffset > localStart) markerStart = codeUnitOffset;
+    if (markerStart !== null && byteOffset < localEnd) markerEnd = codeUnitOffset + character.length;
+    byteOffset = nextByteOffset;
+    codeUnitOffset += character.length;
+  }
+  if (markerStart === null || markerEnd <= markerStart) {
+    appendMarkedPart(pre, text, true, reveal.label);
+    return;
+  }
+  pre.append(document.createTextNode(text.slice(0, markerStart)));
+  const marker = document.createElement("mark");
+  marker.title = reveal.label;
+  marker.textContent = text.slice(markerStart, markerEnd);
+  pre.append(marker);
+  pre.append(document.createTextNode(text.slice(markerEnd)));
+}
+
+function appendMarkedPart(parent: HTMLElement, text: string, marked: boolean, label: string): void {
+  if (!marked) {
+    parent.append(document.createTextNode(text));
+    return;
+  }
+  const marker = document.createElement("mark");
+  marker.title = label;
+  marker.textContent = text;
+  parent.append(marker);
 }
 
 function safeNonNegativeInteger(value: unknown): value is number {

@@ -76,6 +76,31 @@
               <button class="view-tab" id="raw-tab" type="button" role="tab" aria-selected="false" aria-controls="raw-panel" disabled aria-disabled="true">Raw</button>
             </div>
           </div>
+          <section class="scope-search-panel" id="scope-search-panel" aria-label="Search current scope" hidden>
+            <form class="scope-search-form" id="scope-search" role="search" aria-describedby="scope-search-description">
+              <div class="scope-search-controls">
+                <label class="scope-search-query" for="scope-search-query">
+                  <span>Search current scope</span>
+                  <input id="scope-search-query" name="query" type="search" autocomplete="off" spellcheck="false" />
+                </label>
+                <fieldset class="scope-search-representation">
+                  <legend>Search in</legend>
+                  <label><input id="scope-search-representation-decoded" type="radio" name="representation" value="decoded" checked /> Decoded</label>
+                  <label><input id="scope-search-representation-raw" type="radio" name="representation" value="rawSource" /> Raw Source</label>
+                </fieldset>
+                <button class="primary-button scope-search-submit" id="scope-search-submit" type="submit">Search</button>
+              </div>
+              <p class="scope-search-description" id="scope-search-description">Open a file to search its current scope.</p>
+            </form>
+            <div class="scope-search-results-panel" id="scope-search-results-panel" hidden>
+              <div class="scope-search-status" id="scope-search-status" role="status" aria-live="polite"></div>
+              <div class="scope-search-results" id="scope-search-results" role="list" aria-label="Search results"></div>
+              <div class="scope-search-footer">
+                <button class="secondary-button" id="scope-search-prev" type="button">Previous page</button>
+                <button class="secondary-button" id="scope-search-next" type="button">Next page</button>
+              </div>
+            </div>
+          </section>
           <section class="reader-panel" id="semantic-panel" role="tabpanel" aria-labelledby="semantic-tab">
             <div class="reader-state" id="reader-state" role="status" aria-live="polite">
               <div class="reader-glyph" aria-hidden="true">⌁</div>

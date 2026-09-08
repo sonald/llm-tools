@@ -210,6 +210,44 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .reader-toolbar { display: flex; height: 43px; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 0 15px; border-bottom: 1px solid var(--line); }
 
+.scope-search-panel { flex: 0 0 auto; max-height: 300px; overflow: auto; padding: 10px 15px; border-bottom: 1px solid var(--line); background: var(--surface-muted); }
+
+.scope-search-form { display: grid; gap: 6px; }
+
+.scope-search-controls { display: flex; min-width: 0; align-items: end; gap: 8px; }
+
+.scope-search-query { display: grid; min-width: 120px; flex: 1 1 220px; gap: 4px; color: var(--muted); font-size: 9px; font-weight: 650; }
+
+.scope-search-query input { width: 100%; min-width: 0; height: 30px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--text); background: var(--surface); font: 11px "SFMono-Regular", Consolas, monospace; }
+
+.scope-search-query input:focus-visible, .scope-search-representation input:focus-visible { outline: 2px solid #4987ff; outline-offset: 2px; }
+
+.scope-search-representation { display: flex; min-width: 0; align-items: center; gap: 8px; margin: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--surface); }
+
+.scope-search-representation legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+.scope-search-representation label { display: inline-flex; align-items: center; gap: 4px; min-height: 29px; color: var(--muted); font-size: 9px; white-space: nowrap; }
+
+.scope-search-representation input { margin: 0; accent-color: var(--blue); }
+
+.scope-search-submit { min-height: 30px; padding: 0 10px; font-size: 10px; }
+
+.scope-search-description { color: var(--faint); font-size: 9px; line-height: 1.4; overflow-wrap: anywhere; }
+
+.scope-search-status { min-height: 15px; padding-top: 6px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+
+.scope-search-results { display: grid; max-height: 145px; gap: 4px; overflow: auto; }
+
+.search-result-button { display: block; width: 100%; min-height: 29px; padding: 6px 8px; border: 1px solid #c9d9f5; border-radius: 5px; color: #35557f; background: #eff5ff; text-align: left; font: 9px/1.35 "SFMono-Regular", Consolas, monospace; overflow-wrap: anywhere; }
+
+.search-result-button:hover { background: #e4eeff; }
+
+.search-result-button:focus-visible { outline: 2px solid #4987ff; outline-offset: 1px; }
+
+.scope-search-footer { display: flex; gap: 7px; padding-top: 7px; }
+
+.scope-search-footer .secondary-button { min-height: 27px; padding: 0 8px; font-size: 9px; }
+
 .view-tabs { display: flex; height: 100%; align-items: stretch; gap: 1px; }
 
 .view-tab { min-width: 62px; padding: 0 10px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font-size: 10px; font-weight: 650; }
@@ -586,6 +624,10 @@ h3 { font-size: 16px; font-weight: 700; }
   .raw-scope { width: 100%; white-space: normal; overflow-wrap: anywhere; }
   .tree-root { min-width: 560px; padding-right: 10px; padding-left: 10px; }
   .reader-toolbar { padding: 0 10px; }
+  .scope-search-panel { padding-right: 10px; padding-left: 10px; }
+  .scope-search-controls { flex-wrap: wrap; }
+  .scope-search-query { flex-basis: 100%; }
+  .scope-search-representation { flex: 1 1 auto; }
   .view-tab { min-width: 57px; padding: 0 7px; }
   .statusbar { gap: 8px; padding: 0 9px; font-size: 8px; }
   #status-size, #status-warning { display: none; }

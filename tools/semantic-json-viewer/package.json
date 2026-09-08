@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test:safe-markdown": "node scripts/test-safe-markdown.mjs",
+    "test:search-ui": "node scripts/test-search-ui.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {
