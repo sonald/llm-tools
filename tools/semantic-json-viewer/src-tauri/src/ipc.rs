@@ -1326,7 +1326,6 @@ fn search_request_from_dto(
                 target_node_id: cursor_target_node_id,
             } => {
                 if mode != SearchMode::Decoded
-                    || node_id.is_some_and(|target| target != cursor_node_id)
                     || cursor_query != query
                     || cursor_revision != session_revision
                     || cursor_scope_id != scope_id
@@ -1412,10 +1411,7 @@ fn ensure_search_target(
 }
 
 fn ensure_search_target_node(node: Option<NodeProjection>, node_id: usize) -> Result<(), IpcError> {
-    let node = node.ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
-    if node.kind != JsonKind::String {
-        return Err(invalid_request("search target must be a string node"));
-    }
+    node.ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
     Ok(())
 }
 
@@ -6112,21 +6108,20 @@ mod tests {
         let document_path = temp_path("ipc-search-target-errors");
         fs::write(&document_path, br#"{"number":1,"text":"needle"}"#).unwrap();
         let document = open_file_inner(&state, document_path.to_str().unwrap()).unwrap();
-        assert_eq!(
-            search_current_inner(
-                &state,
-                "1".to_owned(),
-                SearchRepresentationDto::Decoded,
-                None,
-                Some(1),
-                None,
-                50,
-                document.session_revision,
-            )
-            .unwrap_err()
-            .code,
-            "invalid_request"
-        );
+        let scalar_target = search_current_inner(
+            &state,
+            "1".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            Some(1),
+            None,
+            50,
+            document.session_revision,
+        )
+        .unwrap();
+        assert_eq!(scalar_target.matches.len(), 1);
+        assert_eq!(scalar_target.matches[0].node_id, Some(1));
+        assert_eq!(scalar_target.matches[0].field, SearchFieldDto::Value);
         assert_eq!(
             search_current_inner(
                 &state,
@@ -6194,7 +6189,7 @@ mod tests {
                 None,
                 Some(SearchCursorDto::Decoded {
                     node_id: 0,
-                    field: SearchFieldDto::Value,
+                    field: SearchFieldDto::Key,
                     byte_offset: 0,
                     query: "needle".to_owned(),
                     session_revision: document.session_revision,
@@ -6211,6 +6206,126 @@ mod tests {
 
         fs::remove_file(path).unwrap();
         fs::remove_file(document_path).unwrap();
+    }
+
+    #[test]
+    fn search_current_round_trips_container_target_cursor_without_sibling_leaks() {
+        let path = temp_path("ipc-search-container-target");
+        fs::write(
+            &path,
+            br#"[{"first":"needle","second":"needle"},{"sibling":"needle"}]"#,
+        )
+        .unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+
+        let first = search_current_inner(
+            &state,
+            "needle".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            Some(1),
+            None,
+            1,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(first.matches.len(), 1);
+        assert_eq!(first.matches[0].node_id, Some(2));
+        assert_eq!(first.matches[0].path_segments, ["$", "[0]", "first"]);
+        let cursor = first.next_cursor.clone().unwrap();
+        let wire = serde_json::to_value(&cursor).unwrap();
+        assert_eq!(wire["targetNodeId"], 1);
+        assert_eq!(wire["nodeId"], 3);
+
+        let second = search_current_inner(
+            &state,
+            "needle".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            Some(1),
+            Some(cursor),
+            50,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(
+            second
+                .matches
+                .iter()
+                .map(|item| item.node_id)
+                .collect::<Vec<_>>(),
+            vec![Some(3)]
+        );
+        assert_eq!(second.matches[0].path_segments, ["$", "[0]", "second"]);
+        assert!(!second.has_more);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn search_current_accepts_a_container_value_cursor_on_the_next_page() {
+        let path = temp_path("ipc-search-container-value-cursor");
+        fs::write(
+            &path,
+            br#"[{"needle":{"child":"needle"}},{"needle":"outside"}]"#,
+        )
+        .unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+
+        let first = search_current_inner(
+            &state,
+            "needle".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            Some(1),
+            None,
+            1,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(first.matches.len(), 1);
+        assert_eq!(first.matches[0].node_id, Some(2));
+        assert_eq!(first.matches[0].field, SearchFieldDto::Key);
+        assert_eq!(first.matches[0].path_segments, ["$", "[0]", "needle"]);
+        let cursor = first.next_cursor.clone().unwrap();
+        let SearchCursorDto::Decoded {
+            node_id,
+            field,
+            byte_offset,
+            target_node_id,
+            ..
+        } = cursor.clone()
+        else {
+            panic!("expected decoded cursor");
+        };
+        assert_eq!(node_id, 2);
+        assert_eq!(field, SearchFieldDto::Value);
+        assert_eq!(byte_offset, 0);
+        assert_eq!(target_node_id, Some(1));
+
+        let second = search_current_inner(
+            &state,
+            "needle".to_owned(),
+            SearchRepresentationDto::Decoded,
+            None,
+            Some(1),
+            Some(cursor),
+            50,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(second.matches.len(), 1);
+        assert_eq!(second.matches[0].node_id, Some(3));
+        assert_eq!(second.matches[0].field, SearchFieldDto::Value);
+        assert_eq!(
+            second.matches[0].path_segments,
+            ["$", "[0]", "needle", "child"]
+        );
+        assert!(!second.has_more);
+
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

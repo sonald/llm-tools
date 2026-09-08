@@ -83,7 +83,7 @@ impl fmt::Display for SearchError {
             SearchError::InvalidLimit => "limit must be greater than zero",
             SearchError::CursorMismatch => "cursor does not match the search request",
             SearchError::InvalidCursor => "cursor is invalid",
-            SearchError::InvalidTarget => "search target must be a string node",
+            SearchError::InvalidTarget => "search target node is invalid",
         };
         f.write_str(message)
     }
@@ -151,19 +151,29 @@ fn search_decoded(
     parsed: &ParsedJson<'_>,
     request: &SearchRequest,
 ) -> Result<SearchPage, SearchError> {
+    let end_unit = request
+        .node_id
+        .map(|target| {
+            parsed
+                .node_at(target)
+                .ok_or(SearchError::InvalidTarget)
+                .map(|_| subtree_end(parsed, target))
+        })
+        .transpose()?
+        .unwrap_or(parsed.node_count());
     let (mut unit, mut phase, mut offset) = request.cursor.as_ref().map_or_else(
         || (request.node_id.unwrap_or(0), SearchPhase::Value, 0),
         |cursor| (cursor.unit, cursor.phase, cursor.offset),
     );
     if request.cursor.is_some() || request.node_id.is_some() {
-        validate_decoded_cursor(parsed, request.node_id, unit, phase, offset)?;
+        validate_decoded_cursor(parsed, request.node_id, end_unit, unit, phase, offset)?;
     }
 
     let mut matches = Vec::new();
     let mut scanned: usize = 0;
     let mut visited_nodes: usize = 0;
     let page_size = request.limit.min(MAX_PAGE_SIZE);
-    while unit < parsed.node_count() {
+    while unit < end_unit {
         if matches.len() >= page_size {
             break;
         }
@@ -174,9 +184,9 @@ fn search_decoded(
 
         let Some(candidate) = decoded_candidate(parsed, unit, phase)? else {
             let Some((next_unit, next_phase)) =
-                next_decoded_position(parsed, request.node_id, unit, phase)
+                next_decoded_position(parsed, end_unit, unit, phase)
             else {
-                unit = parsed.node_count();
+                unit = end_unit;
                 break;
             };
             unit = next_unit;
@@ -193,9 +203,9 @@ fn search_decoded(
         }
         if candidate.text.is_empty() {
             let Some((next_unit, next_phase)) =
-                next_decoded_position(parsed, request.node_id, unit, phase)
+                next_decoded_position(parsed, end_unit, unit, phase)
             else {
-                unit = parsed.node_count();
+                unit = end_unit;
                 break;
             };
             unit = next_unit;
@@ -208,9 +218,9 @@ fn search_decoded(
         }
         if offset == candidate.text.len() {
             let Some((next_unit, next_phase)) =
-                next_decoded_position(parsed, request.node_id, unit, phase)
+                next_decoded_position(parsed, end_unit, unit, phase)
             else {
-                unit = parsed.node_count();
+                unit = end_unit;
                 break;
             };
             unit = next_unit;
@@ -270,9 +280,9 @@ fn search_decoded(
         offset = consumed_end;
         if offset >= candidate.text.len() {
             let Some((next_unit, next_phase)) =
-                next_decoded_position(parsed, request.node_id, unit, phase)
+                next_decoded_position(parsed, end_unit, unit, phase)
             else {
-                unit = parsed.node_count();
+                unit = end_unit;
                 break;
             };
             unit = next_unit;
@@ -285,7 +295,7 @@ fn search_decoded(
         }
     }
 
-    let has_more = unit < parsed.node_count();
+    let has_more = unit < end_unit;
     let next_cursor = has_more.then(|| SearchCursor {
         mode: request.mode,
         query: request.query.clone(),
@@ -343,17 +353,17 @@ fn decoded_candidate<'a>(
 
 fn next_decoded_position(
     parsed: &ParsedJson<'_>,
-    target: Option<usize>,
+    end_unit: usize,
     unit: usize,
     phase: SearchPhase,
 ) -> Option<(usize, SearchPhase)> {
-    if target.is_some() {
-        return None;
-    }
     match phase {
         SearchPhase::Key => Some((unit, SearchPhase::Value)),
         SearchPhase::Value => {
             let next = unit.checked_add(1)?;
+            if next >= end_unit {
+                return None;
+            }
             let node = parsed.node_at(next)?;
             let phase = if matches!(node.locator, ChildLocator::ObjectKey { .. }) {
                 SearchPhase::Key
@@ -368,54 +378,73 @@ fn next_decoded_position(
 fn validate_decoded_cursor(
     parsed: &ParsedJson<'_>,
     target: Option<usize>,
+    end_unit: usize,
     unit: usize,
     phase: SearchPhase,
     offset: usize,
 ) -> Result<(), SearchError> {
     if let Some(target) = target {
-        let node = parsed.node_at(target).ok_or(SearchError::InvalidTarget)?;
-        if node.kind != JsonKind::String {
-            return Err(SearchError::InvalidTarget);
-        }
-        if unit != target || phase != SearchPhase::Value {
+        parsed.node_at(target).ok_or(SearchError::InvalidTarget)?;
+        if unit < target || unit > end_unit {
             return Err(SearchError::InvalidCursor);
         }
-        let text = node.decoded.as_deref().ok_or(SearchError::InvalidTarget)?;
-        return if offset <= text.len() && text.is_char_boundary(offset) {
-            Ok(())
-        } else {
-            Err(SearchError::InvalidCursor)
-        };
+        if unit == target && phase == SearchPhase::Key {
+            return Err(SearchError::InvalidCursor);
+        }
+        if unit == end_unit {
+            return Err(SearchError::InvalidCursor);
+        }
     }
-    if unit > parsed.node_count() {
+    if unit > end_unit {
         return Err(SearchError::InvalidCursor);
     }
-    if unit == parsed.node_count() {
-        return (phase == SearchPhase::Value && offset == 0)
-            .then_some(())
-            .ok_or(SearchError::InvalidCursor);
+    if unit == end_unit {
+        return Err(SearchError::InvalidCursor);
     }
     let node = parsed.node_at(unit).ok_or(SearchError::InvalidCursor)?;
     if phase == SearchPhase::Key && !matches!(node.locator, ChildLocator::ObjectKey { .. }) {
         return Err(SearchError::InvalidCursor);
     }
     let Some(candidate) = decoded_candidate(parsed, unit, phase)? else {
-        return Err(SearchError::InvalidCursor);
+        return (phase == SearchPhase::Value && offset == 0)
+            .then_some(())
+            .ok_or(SearchError::InvalidCursor);
     };
-    let text = candidate.text;
-    if offset <= text.len() && text.is_char_boundary(offset) {
+    if offset <= candidate.text.len() && candidate.text.is_char_boundary(offset) {
         Ok(())
     } else {
         Err(SearchError::InvalidCursor)
     }
 }
 
+fn subtree_end(parsed: &ParsedJson<'_>, target: usize) -> usize {
+    let end = parsed
+        .node_at(target)
+        .expect("validated target node id")
+        .span
+        .end;
+    let mut low = target.saturating_add(1);
+    let mut high = parsed.node_count();
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if parsed
+            .node_at(middle)
+            .expect("arena node id is in range")
+            .span
+            .start
+            < end
+        {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    low
+}
+
 fn search_raw(parsed: &ParsedJson<'_>, request: &SearchRequest) -> Result<SearchPage, SearchError> {
     let (range_start, range_end) = if let Some(target) = request.node_id {
         let node = parsed.node_at(target).ok_or(SearchError::InvalidTarget)?;
-        if node.kind != JsonKind::String {
-            return Err(SearchError::InvalidTarget);
-        }
         (node.span.start, node.span.end)
     } else {
         (0, parsed.source().len())
@@ -844,9 +873,200 @@ mod tests {
         assert_eq!(raw.matches[0].field, SearchField::RawSource);
         assert_eq!(raw.matches[0].path, vec!["$", "a"]);
 
+        let object = search(&parsed, SearchRequest::decoded("needle", Some(0), None, 50)).unwrap();
+        assert_eq!(object.matches.len(), 2);
+        assert!(object.matches.iter().all(|item| item.node_id != Some(0)));
+    }
+
+    #[test]
+    fn decoded_target_search_stays_inside_an_object_subtree_across_pages() {
+        let parsed = parsed(
+            r#"{"before":"needle","target":{"first":"needle","items":["needle",{"deep":"needle"}]},"after":"needle"}"#,
+        );
+        let first = search(&parsed, SearchRequest::decoded("needle", Some(2), None, 1)).unwrap();
+        assert_eq!(first.matches.len(), 1);
+        assert_eq!(first.matches[0].node_id, Some(3));
+        assert_eq!(first.matches[0].path, vec!["$", "target", "first"]);
+        assert!(first.has_more);
+
+        let second = search(
+            &parsed,
+            SearchRequest::decoded("needle", Some(2), first.next_cursor, 50),
+        )
+        .unwrap();
         assert_eq!(
-            search(&parsed, SearchRequest::decoded("needle", Some(0), None, 50)).unwrap_err(),
-            SearchError::InvalidTarget
+            second
+                .matches
+                .iter()
+                .map(|item| item.node_id)
+                .collect::<Vec<_>>(),
+            vec![Some(5), Some(7)]
+        );
+        assert!(second.matches.iter().all(|item| item.path[1] == "target"));
+        assert!(!second.has_more);
+    }
+
+    #[test]
+    fn decoded_target_search_supports_scalar_kinds_without_matching_the_target_key() {
+        let parsed = parsed(
+            r#"{"before":"needle","target":{"number":12.30e+2,"truth":true,"nothing":null,"empty":"","emptyArray":[]},"after":"needle"}"#,
+        );
+        assert!(
+            search(&parsed, SearchRequest::decoded("target", Some(2), None, 50))
+                .unwrap()
+                .matches
+                .is_empty()
+        );
+        for (query, node_id) in [("12.30e+2", 3), ("true", 4), ("null", 5)] {
+            let page = search(&parsed, SearchRequest::decoded(query, Some(2), None, 50)).unwrap();
+            assert_eq!(page.matches.len(), 1);
+            assert_eq!(page.matches[0].node_id, Some(node_id));
+            assert_eq!(page.matches[0].field, SearchField::Value);
+        }
+
+        let empty = search(&parsed, SearchRequest::decoded("needle", Some(7), None, 50)).unwrap();
+        assert!(empty.matches.is_empty());
+        assert!(!empty.has_more);
+    }
+
+    #[test]
+    fn direct_scalar_targets_keep_their_original_value_lexemes() {
+        let parsed = parsed(r#"[12.30e+2,true,null,"text"]"#);
+        for (node_id, query) in [(1, "12.30e+2"), (2, "true"), (3, "null")] {
+            let page = search(
+                &parsed,
+                SearchRequest::decoded(query, Some(node_id), None, 50),
+            )
+            .unwrap();
+            assert_eq!(page.matches.len(), 1);
+            assert_eq!(page.matches[0].node_id, Some(node_id));
+            assert_eq!(page.matches[0].match_start, 0);
+            assert_eq!(page.matches[0].match_end, query.len());
+        }
+        let array = search(&parsed, SearchRequest::decoded("nope", Some(0), None, 50)).unwrap();
+        assert!(array.matches.is_empty());
+        assert!(!array.has_more);
+    }
+
+    #[test]
+    fn raw_target_search_stays_inside_the_exact_container_span() {
+        let parsed =
+            parsed(r#"{"before":"needle", "target":{"inside":"needle"} , "after":"needle"}"#);
+        let target_span = parsed.node_at(2).unwrap().span;
+        let page = search(
+            &parsed,
+            SearchRequest {
+                mode: SearchMode::Raw,
+                query: "needle".to_owned(),
+                cursor: None,
+                limit: 50,
+                node_id: Some(2),
+            },
+        )
+        .unwrap();
+        assert_eq!(page.matches.len(), 1);
+        assert_eq!(page.matches[0].node_id, Some(2));
+        assert_eq!(page.matches[0].span, target_span);
+        assert_eq!(page.matches[0].match_start, target_span.start + 11);
+        assert_eq!(page.matches[0].match_end, target_span.start + 17);
+
+        let parent_key = SearchRequest {
+            mode: SearchMode::Raw,
+            query: "target".to_owned(),
+            cursor: None,
+            limit: 50,
+            node_id: Some(2),
+        };
+        assert!(search(&parsed, parent_key).unwrap().matches.is_empty());
+        let crosses_target_end = SearchRequest {
+            mode: SearchMode::Raw,
+            query: "} ,".to_owned(),
+            cursor: None,
+            limit: 50,
+            node_id: Some(2),
+        };
+        assert!(search(&parsed, crosses_target_end)
+            .unwrap()
+            .matches
+            .is_empty());
+    }
+
+    #[test]
+    fn target_arrays_and_escaped_duplicate_keys_keep_distinct_paths() {
+        let empty_array = parsed(r#"{"target":[],"after":"needle"}"#);
+        let empty = search(
+            &empty_array,
+            SearchRequest::decoded("needle", Some(1), None, 50),
+        )
+        .unwrap();
+        assert!(empty.matches.is_empty());
+        assert!(!empty.has_more);
+
+        let parsed = parsed(
+            r#"{"before":"needle","target":{"\u006eeedle":"needle","needle":"needle","needle":"needle"},"after":"needle"}"#,
+        );
+        let page = search(&parsed, SearchRequest::decoded("needle", Some(2), None, 50)).unwrap();
+        assert_eq!(
+            page.matches
+                .iter()
+                .map(|item| (item.field, item.path.join(".")))
+                .collect::<Vec<_>>(),
+            vec![
+                (SearchField::Key, "$.target.needle".to_owned()),
+                (SearchField::Value, "$.target.needle".to_owned()),
+                (SearchField::Key, "$.target.[\"needle\"]#2".to_owned()),
+                (SearchField::Value, "$.target.[\"needle\"]#2".to_owned()),
+                (SearchField::Key, "$.target.[\"needle\"]#3".to_owned()),
+                (SearchField::Value, "$.target.[\"needle\"]#3".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn target_cursor_rejects_parent_key_and_nodes_outside_the_subtree() {
+        let parsed = parsed(
+            r#"{"before":"needle","target":{"inside":"needle","second":"other"},"after":"needle"}"#,
+        );
+        let first = search(&parsed, SearchRequest::decoded("needle", Some(2), None, 1)).unwrap();
+        let cursor = first.next_cursor.unwrap();
+
+        let mut parent_key = cursor.clone();
+        parent_key.unit = 2;
+        parent_key.phase = SearchPhase::Key;
+        parent_key.offset = 0;
+        assert_eq!(
+            search(
+                &parsed,
+                SearchRequest::decoded("needle", Some(2), Some(parent_key), 1),
+            )
+            .unwrap_err(),
+            SearchError::InvalidCursor
+        );
+
+        let mut ancestor = cursor.clone();
+        ancestor.unit = 0;
+        ancestor.phase = SearchPhase::Value;
+        ancestor.offset = 0;
+        assert_eq!(
+            search(
+                &parsed,
+                SearchRequest::decoded("needle", Some(2), Some(ancestor), 1),
+            )
+            .unwrap_err(),
+            SearchError::InvalidCursor
+        );
+
+        let mut sibling = cursor;
+        sibling.unit = subtree_end(&parsed, 2);
+        sibling.phase = SearchPhase::Value;
+        sibling.offset = 0;
+        assert_eq!(
+            search(
+                &parsed,
+                SearchRequest::decoded("needle", Some(2), Some(sibling), 1),
+            )
+            .unwrap_err(),
+            SearchError::InvalidCursor
         );
     }
 
@@ -943,6 +1163,23 @@ mod tests {
         };
         assert_eq!(
             search(&parsed, SearchRequest::raw("x", Some(raw_cursor), 1)).unwrap_err(),
+            SearchError::InvalidCursor
+        );
+
+        let eof_cursor = SearchCursor {
+            mode: SearchMode::Decoded,
+            query: "x".to_owned(),
+            node_id: None,
+            unit: parsed.node_count(),
+            phase: SearchPhase::Value,
+            offset: 0,
+        };
+        assert_eq!(
+            search(
+                &parsed,
+                SearchRequest::decoded("x", None, Some(eof_cursor), 1),
+            )
+            .unwrap_err(),
             SearchError::InvalidCursor
         );
     }
