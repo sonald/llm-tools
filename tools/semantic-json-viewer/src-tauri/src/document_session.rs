@@ -149,6 +149,16 @@ impl DocumentSession {
         Ok(self.tree.decoded_text(node_id))
     }
 
+    pub fn raw_text(&self, node_id: usize) -> io::Result<Option<&str>> {
+        self.ensure_current()?;
+        Ok(self.tree.raw_text(node_id))
+    }
+
+    pub fn path(&self, node_id: usize) -> io::Result<Option<String>> {
+        self.ensure_current()?;
+        Ok(self.tree.path(node_id))
+    }
+
     pub fn detect_string_with_budget(
         &self,
         node_id: usize,

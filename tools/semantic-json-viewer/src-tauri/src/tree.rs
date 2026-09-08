@@ -89,6 +89,52 @@ impl TreeDocument {
         node.decoded.as_deref()
     }
 
+    pub fn raw_text(&self, node_id: usize) -> Option<&str> {
+        let node = self.parsed.node_at(node_id)?;
+        str::from_utf8(&self.parsed.source()[node.span.start..node.span.end]).ok()
+    }
+
+    pub fn path(&self, node_id: usize) -> Option<String> {
+        let mut ids = Vec::new();
+        let mut current = Some(node_id);
+        while let Some(id) = current {
+            let node = self.parsed.node_at(id)?;
+            ids.push(id);
+            current = node.parent.map(|parent| parent.index());
+        }
+        ids.reverse();
+
+        let mut path = String::from("$");
+        for id in ids.into_iter().skip(1) {
+            let node = self.parsed.node_at(id)?;
+            match &node.locator {
+                ChildLocator::Root => return None,
+                ChildLocator::ArrayIndex(index) => {
+                    path.push('[');
+                    path.push_str(&index.to_string());
+                    path.push(']');
+                }
+                ChildLocator::ObjectKey {
+                    key, occurrence, ..
+                } => {
+                    if is_simple_path_key(key) {
+                        path.push('.');
+                        path.push_str(key);
+                    } else {
+                        path.push_str("[\"");
+                        append_json_string(&mut path, key);
+                        path.push_str("\"]");
+                    }
+                    if *occurrence > 1 {
+                        path.push('#');
+                        path.push_str(&occurrence.to_string());
+                    }
+                }
+            }
+        }
+        Some(path)
+    }
+
     pub fn detect_string_with_budget(
         &self,
         node_id: usize,
@@ -138,6 +184,34 @@ impl TreeDocument {
             value_preview,
             value_has_more,
             child_count: node.children.len(),
+        }
+    }
+}
+
+fn is_simple_path_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.chars().all(|character| {
+            character == '_' || character == '$' || character.is_ascii_alphanumeric()
+        })
+        && !key.starts_with(|character: char| character.is_ascii_digit())
+}
+
+fn append_json_string(output: &mut String, value: &str) {
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            '\u{08}' => output.push_str("\\b"),
+            '\u{0c}' => output.push_str("\\f"),
+            character if character.is_control() => {
+                use std::fmt::Write;
+                write!(output, "\\u{:04x}", character as u32)
+                    .expect("writing to String cannot fail");
+            }
+            character => output.push(character),
         }
     }
 }
@@ -342,6 +416,30 @@ mod tests {
         assert_eq!(decoded.text, "a\né");
         assert!(!decoded.has_more);
         assert_eq!(decoded.next_offset, None);
+    }
+
+    #[test]
+    fn exposes_full_copy_raw_and_unambiguous_paths() {
+        let tree = document(r#"{"normal":"\u4f60\u597d","a.b":1,"a.b":2,"":3,"quote\"key":4}"#);
+        let children = tree.children(tree.root().id, 0, 10).unwrap();
+        assert_eq!(
+            tree.raw_text(children.nodes[0].id),
+            Some(r#""\u4f60\u597d""#)
+        );
+        assert_eq!(tree.path(children.nodes[0].id), Some("$.normal".to_owned()));
+        assert_eq!(
+            tree.path(children.nodes[1].id),
+            Some(r#"$["a.b"]"#.to_owned())
+        );
+        assert_eq!(
+            tree.path(children.nodes[2].id),
+            Some(r#"$["a.b"]#2"#.to_owned())
+        );
+        assert_eq!(tree.path(children.nodes[3].id), Some(r#"$[""]"#.to_owned()));
+        assert_eq!(
+            tree.path(children.nodes[4].id),
+            Some(r#"$["quote\"key"]"#.to_owned())
+        );
     }
 
     #[test]

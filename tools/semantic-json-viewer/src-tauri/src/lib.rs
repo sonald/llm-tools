@@ -14,6 +14,7 @@ pub mod tree;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(ipc::AppState::default())
         .invoke_handler(tauri::generate_handler![
             ipc::open_file,
@@ -28,6 +29,7 @@ pub fn run() {
             ipc::read_selected_entry_window,
             ipc::read_raw_document_bytes,
             ipc::read_decoded_text,
+            ipc::copy_node,
             ipc::search_current,
             ipc::get_string_detection,
             ipc::get_html_preview,

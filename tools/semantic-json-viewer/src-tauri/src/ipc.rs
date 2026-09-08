@@ -4,6 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::document_session::DocumentSession;
 use crate::file_route::{
@@ -249,6 +250,15 @@ pub enum SearchFieldDto {
     RawSource,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CopyFormatDto {
+    Raw,
+    Decoded,
+    Path,
+    Parsed,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SearchCursorDto {
@@ -460,6 +470,29 @@ pub fn read_decoded_text(
     state: State<'_, AppState>,
 ) -> Result<TextChunkDto, IpcError> {
     read_decoded_text_scoped_inner(&state, node_id, offset, length, scope_id, session_revision)
+}
+
+#[tauri::command(async)]
+pub fn copy_node(
+    node_id: usize,
+    scope_id: Option<u64>,
+    session_revision: u64,
+    format: CopyFormatDto,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), IpcError> {
+    copy_node_to_sink(
+        &state,
+        node_id,
+        scope_id,
+        session_revision,
+        format,
+        |text| {
+            app.clipboard()
+                .write_text(text)
+                .map_err(|error| error.to_string())
+        },
+    )
 }
 
 #[tauri::command(async)]
@@ -1144,6 +1177,183 @@ fn read_decoded_text_scoped_inner(
             .map(text_chunk_dto)
             .ok_or_else(|| invalid_request("decoded text is unavailable"))
     })
+}
+
+fn copy_node_to_sink(
+    state: &AppState,
+    node_id: usize,
+    scope_id: Option<u64>,
+    session_revision: u64,
+    format: CopyFormatDto,
+    sink: impl FnOnce(String) -> Result<(), String>,
+) -> Result<(), IpcError> {
+    with_session_scope(state, scope_id, session_revision, |session, scope| {
+        let text = copy_node_text_for_session(session, scope, node_id, format)?;
+        if !session.is_current() {
+            return Err(file_changed());
+        }
+        sink(text).map_err(clipboard_error)
+    })
+}
+
+fn copy_node_text_for_session(
+    session: &OpenSession,
+    scope: Option<&NestedScope>,
+    node_id: usize,
+    format: CopyFormatDto,
+) -> Result<String, IpcError> {
+    if let Some(scope) = scope {
+        return copy_tree_node(&scope.tree, node_id, format);
+    }
+
+    match session {
+        OpenSession::Document(session) => copy_document_node(session, node_id, format),
+        OpenSession::Entry(session) => copy_entry_node(session, node_id, format),
+        OpenSession::RawDocument { .. } => Err(invalid_request(
+            "copy is unavailable for a raw-only document session",
+        )),
+    }
+}
+
+fn copy_document_node(
+    session: &DocumentSession,
+    node_id: usize,
+    format: CopyFormatDto,
+) -> Result<String, IpcError> {
+    let node = session
+        .node(node_id)
+        .map_err(session_error)?
+        .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+    if format == CopyFormatDto::Parsed {
+        return Err(invalid_request(
+            "parsed copy requires an open nested JSON scope",
+        ));
+    }
+    match format {
+        CopyFormatDto::Raw => session
+            .raw_text(node_id)
+            .map_err(session_error)?
+            .map(str::to_owned)
+            .ok_or_else(|| internal("node source span is unavailable")),
+        CopyFormatDto::Decoded => copy_decoded_scalar(
+            node.kind,
+            || {
+                session
+                    .raw_text(node_id)
+                    .map(|text| text.map(str::to_owned))
+                    .map_err(session_error)
+            },
+            || {
+                session
+                    .decoded_text(node_id)
+                    .map(|text| text.map(str::to_owned))
+                    .map_err(session_error)
+            },
+        ),
+        CopyFormatDto::Path => session
+            .path(node_id)
+            .map_err(session_error)?
+            .ok_or_else(|| internal("node path is unavailable")),
+        CopyFormatDto::Parsed => unreachable!("parsed was rejected above"),
+    }
+}
+
+fn copy_entry_node(
+    session: &JsonlSession,
+    node_id: usize,
+    format: CopyFormatDto,
+) -> Result<String, IpcError> {
+    require_selected(session)?;
+    let node = session
+        .selected_node(node_id)
+        .map_err(session_error)?
+        .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+    if format == CopyFormatDto::Parsed {
+        return Err(invalid_request(
+            "parsed copy requires an open nested JSON scope",
+        ));
+    }
+    match format {
+        CopyFormatDto::Raw => session
+            .selected_raw_text(node_id)
+            .map_err(session_error)?
+            .map(str::to_owned)
+            .ok_or_else(|| internal("node source span is unavailable")),
+        CopyFormatDto::Decoded => copy_decoded_scalar(
+            node.kind,
+            || {
+                session
+                    .selected_raw_text(node_id)
+                    .map(|text| text.map(str::to_owned))
+                    .map_err(session_error)
+            },
+            || {
+                session
+                    .selected_decoded_text(node_id)
+                    .map(|text| text.map(str::to_owned))
+                    .map_err(session_error)
+            },
+        ),
+        CopyFormatDto::Path => session
+            .selected_path(node_id)
+            .map_err(session_error)?
+            .ok_or_else(|| internal("node path is unavailable")),
+        CopyFormatDto::Parsed => unreachable!("parsed was rejected above"),
+    }
+}
+
+fn copy_tree_node(
+    tree: &TreeDocument,
+    node_id: usize,
+    format: CopyFormatDto,
+) -> Result<String, IpcError> {
+    let node = tree
+        .node(node_id)
+        .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+    if format == CopyFormatDto::Parsed {
+        if node_id != tree.root().id {
+            return Err(invalid_request(
+                "parsed copy requires the nested JSON scope root",
+            ));
+        }
+        return tree
+            .raw_text(node_id)
+            .map(str::to_owned)
+            .ok_or_else(|| internal("nested JSON source is unavailable"));
+    }
+    match format {
+        CopyFormatDto::Raw => tree
+            .raw_text(node_id)
+            .map(str::to_owned)
+            .ok_or_else(|| internal("node source span is unavailable")),
+        CopyFormatDto::Decoded => copy_decoded_scalar(
+            node.kind,
+            || Ok(tree.raw_text(node_id).map(str::to_owned)),
+            || Ok(tree.decoded_text(node_id).map(str::to_owned)),
+        ),
+        CopyFormatDto::Path => tree
+            .path(node_id)
+            .ok_or_else(|| internal("node path is unavailable")),
+        CopyFormatDto::Parsed => unreachable!("parsed was handled above"),
+    }
+}
+
+fn copy_decoded_scalar(
+    kind: JsonKind,
+    raw: impl FnOnce() -> Result<Option<String>, IpcError>,
+    decoded: impl FnOnce() -> Result<Option<String>, IpcError>,
+) -> Result<String, IpcError> {
+    match kind {
+        JsonKind::String => {
+            decoded()?.ok_or_else(|| invalid_request("string decoded value is unavailable"))
+        }
+        JsonKind::Number | JsonKind::True | JsonKind::False | JsonKind::Null => {
+            raw()?.ok_or_else(|| invalid_request("scalar source is unavailable"))
+        }
+        JsonKind::Object | JsonKind::Array => Err(invalid_request(
+            "decoded copy is available only for scalar nodes",
+        )),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2162,6 +2372,14 @@ fn internal(message: impl Into<String>) -> IpcError {
     }
 }
 
+fn clipboard_error(error: impl std::fmt::Display) -> IpcError {
+    IpcError {
+        code: "clipboard_failed".to_owned(),
+        message: format!("failed to write the system clipboard: {error}"),
+        parse_error: None,
+    }
+}
+
 fn session_error(error: std::io::Error) -> IpcError {
     if error.kind() == std::io::ErrorKind::InvalidData {
         file_changed()
@@ -2385,6 +2603,7 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
+    use std::sync::TryLockError;
     use std::time::SystemTime;
 
     use super::*;
@@ -6526,6 +6745,410 @@ mod tests {
             "file_changed"
         );
         assert_eq!(state.session.lock().unwrap().revision, 1);
+        fs::remove_file(path).unwrap();
+    }
+
+    fn capture_copy(
+        state: &AppState,
+        node_id: usize,
+        scope_id: Option<u64>,
+        revision: u64,
+        format: CopyFormatDto,
+    ) -> (Result<(), IpcError>, Vec<String>) {
+        let mut writes = Vec::new();
+        let result = copy_node_to_sink(state, node_id, scope_id, revision, format, |text| {
+            writes.push(text);
+            Ok(())
+        });
+        (result, writes)
+    }
+
+    #[test]
+    fn copy_node_preserves_raw_decoded_scalar_and_path_contracts() {
+        let path = temp_path("ipc-copy-node-contract");
+        fs::write(
+            &path,
+            br#"{
+  "escaped":"\u4f60\u597d\r\n",
+  "empty":"",
+  "big":922337203685477580712345,
+  "flag":true,
+  "none":null,
+  "object":{"inside":1},
+  "duplicate":1,
+  "duplicate":2
+}"#,
+        )
+        .unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let root = opened.root.as_ref().unwrap().id;
+        let children =
+            get_children_scoped_inner(&state, root, 0, 200, None, opened.session_revision).unwrap();
+        let node = |label: &str| {
+            children
+                .nodes
+                .iter()
+                .find(|candidate| candidate.label == label)
+                .unwrap()
+                .id
+        };
+
+        let escaped = node("escaped");
+        let (result, writes) = capture_copy(
+            &state,
+            escaped,
+            None,
+            opened.session_revision,
+            CopyFormatDto::Raw,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, [r#""\u4f60\u597d\r\n""#]);
+
+        let (result, writes) = capture_copy(
+            &state,
+            escaped,
+            None,
+            opened.session_revision,
+            CopyFormatDto::Decoded,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, ["你好\r\n"]);
+
+        let empty = node("empty");
+        let (result, writes) = capture_copy(
+            &state,
+            empty,
+            None,
+            opened.session_revision,
+            CopyFormatDto::Decoded,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, [String::new()]);
+
+        for (label, expected) in [
+            ("big", "922337203685477580712345"),
+            ("flag", "true"),
+            ("none", "null"),
+        ] {
+            let (result, writes) = capture_copy(
+                &state,
+                node(label),
+                None,
+                opened.session_revision,
+                CopyFormatDto::Decoded,
+            );
+            assert!(result.is_ok());
+            assert_eq!(writes, [expected.to_owned()]);
+        }
+
+        let (result, writes) = capture_copy(
+            &state,
+            node("object"),
+            None,
+            opened.session_revision,
+            CopyFormatDto::Decoded,
+        );
+        assert_eq!(result.unwrap_err().code, "invalid_request");
+        assert!(writes.is_empty());
+
+        let duplicate = children
+            .nodes
+            .iter()
+            .find(|candidate| candidate.label == "duplicate#2")
+            .unwrap()
+            .id;
+        let (result, writes) = capture_copy(
+            &state,
+            duplicate,
+            None,
+            opened.session_revision,
+            CopyFormatDto::Path,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, ["$.duplicate#2"]);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn copy_node_path_keeps_long_and_special_keys_complete() {
+        let path = temp_path("ipc-copy-node-path");
+        let long_key = "k".repeat(400);
+        let input = format!(
+            "{{{long}:{value},\"a.b\":2,\"a.b\":3}}",
+            long = serde_json::to_string(&long_key).unwrap(),
+            value = 1,
+        );
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let root = opened.root.as_ref().unwrap().id;
+        let children =
+            get_children_scoped_inner(&state, root, 0, 200, None, opened.session_revision).unwrap();
+        assert!(children.nodes[0].label_has_more);
+        let (result, writes) = capture_copy(
+            &state,
+            children.nodes[0].id,
+            None,
+            opened.session_revision,
+            CopyFormatDto::Path,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, [format!("$.{long_key}")]);
+        let (result, writes) = capture_copy(
+            &state,
+            children.nodes[2].id,
+            None,
+            opened.session_revision,
+            CopyFormatDto::Path,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, [r#"$["a.b"]#2"#.to_owned()]);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn copy_node_parsed_requires_nested_scope_root_and_copies_full_internal_source() {
+        let path = temp_path("ipc-copy-node-parsed");
+        fs::write(&path, br#"{"payload":"{\"x\":\"hello\",\"n\":1}"}"#).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let payload = child_id(
+            &state,
+            None,
+            opened.root.as_ref().unwrap().id,
+            "payload",
+            opened.session_revision,
+        );
+        let (result, writes) = capture_copy(
+            &state,
+            payload,
+            None,
+            opened.session_revision,
+            CopyFormatDto::Parsed,
+        );
+        assert_eq!(result.unwrap_err().code, "invalid_request");
+        assert!(writes.is_empty());
+
+        let scope =
+            open_nested_json_inner(&state, None, payload, None, opened.session_revision).unwrap();
+        let (result, writes) = capture_copy(
+            &state,
+            scope.root.id,
+            Some(scope.scope_id),
+            opened.session_revision,
+            CopyFormatDto::Parsed,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, [r#"{"x":"hello","n":1}"#.to_owned()]);
+
+        let inner = child_id(
+            &state,
+            Some(scope.scope_id),
+            scope.root.id,
+            "x",
+            opened.session_revision,
+        );
+        let (result, writes) = capture_copy(
+            &state,
+            inner,
+            Some(scope.scope_id),
+            opened.session_revision,
+            CopyFormatDto::Parsed,
+        );
+        assert_eq!(result.unwrap_err().code, "invalid_request");
+        assert!(writes.is_empty());
+
+        close_nested_scope_inner(&state, scope.scope_id, opened.session_revision).unwrap();
+        let (result, writes) = capture_copy(
+            &state,
+            scope.root.id,
+            Some(scope.scope_id),
+            opened.session_revision,
+            CopyFormatDto::Parsed,
+        );
+        assert_eq!(result.unwrap_err().code, "not_found");
+        assert!(writes.is_empty());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn copy_node_rejects_stale_or_changed_sessions_before_sink() {
+        let path = temp_path("ipc-copy-node-stale");
+        fs::write(&path, br#"{"value":"before"}"#).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let value = child_id(
+            &state,
+            None,
+            opened.root.as_ref().unwrap().id,
+            "value",
+            opened.session_revision,
+        );
+        let (result, writes) = capture_copy(
+            &state,
+            value,
+            None,
+            opened.session_revision + 1,
+            CopyFormatDto::Raw,
+        );
+        assert_eq!(result.unwrap_err().code, "stale_session");
+        assert!(writes.is_empty());
+
+        fs::write(&path, br#"{"value":"after"}"#).unwrap();
+        let (result, writes) = capture_copy(
+            &state,
+            value,
+            None,
+            opened.session_revision,
+            CopyFormatDto::Raw,
+        );
+        assert_eq!(result.unwrap_err().code, "file_changed");
+        assert!(writes.is_empty());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn copy_node_reports_sink_failures_without_hiding_the_os_error() {
+        let path = temp_path("ipc-copy-node-sink-error");
+        fs::write(&path, br#"{"value":"text"}"#).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let value = child_id(
+            &state,
+            None,
+            opened.root.as_ref().unwrap().id,
+            "value",
+            opened.session_revision,
+        );
+        let result = copy_node_to_sink(
+            &state,
+            value,
+            None,
+            opened.session_revision,
+            CopyFormatDto::Decoded,
+            |_| Err("clipboard denied by host".to_owned()),
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.code, "clipboard_failed");
+        assert!(error.message.contains("clipboard denied by host"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn copy_node_holds_session_lock_until_sink_returns() {
+        let path = temp_path("ipc-copy-node-lock");
+        fs::write(&path, br#"{"value":"text"}"#).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let value = child_id(
+            &state,
+            None,
+            opened.root.as_ref().unwrap().id,
+            "value",
+            opened.session_revision,
+        );
+        let result = copy_node_to_sink(
+            &state,
+            value,
+            None,
+            opened.session_revision,
+            CopyFormatDto::Decoded,
+            |_| {
+                assert!(matches!(
+                    state.session.try_lock(),
+                    Err(TryLockError::WouldBlock)
+                ));
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert!(state.session.try_lock().is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn copy_node_does_not_cap_large_raw_or_decoded_values() {
+        let path = temp_path("ipc-copy-node-large");
+        let value = "x".repeat(1024 * 1024 + 17);
+        fs::write(&path, format!(r#"{{"value":"{value}"}}"#)).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let value_node = child_id(
+            &state,
+            None,
+            opened.root.as_ref().unwrap().id,
+            "value",
+            opened.session_revision,
+        );
+        let (result, writes) = capture_copy(
+            &state,
+            value_node,
+            None,
+            opened.session_revision,
+            CopyFormatDto::Raw,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].len(), value.len() + 2);
+        assert_eq!(&writes[0][1..writes[0].len() - 1], value);
+
+        let (result, writes) = capture_copy(
+            &state,
+            value_node,
+            None,
+            opened.session_revision,
+            CopyFormatDto::Decoded,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, [value]);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn copy_node_uses_selected_jsonl_tree_and_revision() {
+        let path = temp_jsonl_path("ipc-copy-node-entry");
+        fs::write(&path, br#"{"value":"\u4f60\u597d","number":1.20e+3}"#).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        assert_eq!(selected.session_revision, opened.session_revision + 1);
+        let value = child_id(
+            &state,
+            None,
+            selected.root.as_ref().unwrap().id,
+            "value",
+            selected.session_revision,
+        );
+        let (result, writes) = capture_copy(
+            &state,
+            value,
+            None,
+            selected.session_revision,
+            CopyFormatDto::Raw,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, [r#""\u4f60\u597d""#]);
+        let (result, writes) = capture_copy(
+            &state,
+            value,
+            None,
+            selected.session_revision,
+            CopyFormatDto::Decoded,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, ["你好"]);
+
+        let (result, writes) = capture_copy(
+            &state,
+            value,
+            None,
+            opened.session_revision,
+            CopyFormatDto::Raw,
+        );
+        assert_eq!(result.unwrap_err().code, "stale_session");
+        assert!(writes.is_empty());
         fs::remove_file(path).unwrap();
     }
 }
