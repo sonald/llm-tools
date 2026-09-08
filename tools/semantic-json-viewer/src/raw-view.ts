@@ -99,6 +99,10 @@ export class RawView {
   private readonly previous: HTMLButtonElement;
   private readonly next: HTMLButtonElement;
   private readonly retry: HTMLButtonElement;
+  private readonly copyRaw: HTMLButtonElement;
+  private readonly copyHex: HTMLButtonElement;
+  private readonly copyLossy: HTMLButtonElement;
+  private readonly copyStatus: HTMLElement;
   private readonly representationTabs: HTMLElement;
   private readonly lossyTab: HTMLButtonElement;
   private readonly hexTab: HTMLButtonElement;
@@ -121,6 +125,8 @@ export class RawView {
   private active = false;
   private representation: Representation = "lossy";
   private epoch = 0;
+  private copyEpoch = 0;
+  private copyBusy = false;
 
   constructor(options: RawViewOptions) {
     this.panel = options.panel;
@@ -149,7 +155,24 @@ export class RawView {
     this.retry.type = "button";
     this.retry.textContent = "Retry";
     controls.append(this.previous, this.next, this.retry);
+    this.copyRaw = document.createElement("button");
+    this.copyRaw.className = "secondary-button";
+    this.copyRaw.type = "button";
+    this.copyRaw.textContent = "Copy Raw";
+    this.copyHex = document.createElement("button");
+    this.copyHex.className = "secondary-button";
+    this.copyHex.type = "button";
+    this.copyHex.textContent = "Copy Hex";
+    this.copyLossy = document.createElement("button");
+    this.copyLossy.className = "secondary-button";
+    this.copyLossy.type = "button";
+    this.copyLossy.textContent = "Copy Lossy Text";
+    controls.append(this.copyRaw, this.copyHex, this.copyLossy);
     header.append(controls);
+    this.copyStatus = document.createElement("span");
+    this.copyStatus.className = "copy-status";
+    this.copyStatus.setAttribute("role", "status");
+    this.copyStatus.setAttribute("aria-live", "polite");
 
     this.representationTabs = document.createElement("div");
     this.representationTabs.className = "view-tabs raw-representation-tabs";
@@ -185,7 +208,7 @@ export class RawView {
     this.pre.id = "raw-chunk";
     this.pre.tabIndex = 0;
 
-    this.panel.replaceChildren(header, this.representationTabs, this.representationNote, this.pageLabel, this.status, this.pre);
+    this.panel.replaceChildren(header, this.copyStatus, this.representationTabs, this.representationNote, this.pageLabel, this.status, this.pre);
     this.previous.addEventListener("click", () => {
       this.previous.focus();
       this.previousPage();
@@ -198,6 +221,9 @@ export class RawView {
       this.retry.focus();
       this.retryPage();
     });
+    this.copyRaw.addEventListener("click", () => void this.copyNodeRaw());
+    this.copyHex.addEventListener("click", () => void this.copyCurrentBytes("hex"));
+    this.copyLossy.addEventListener("click", () => void this.copyCurrentBytes("lossy"));
     this.lossyTab.addEventListener("click", () => {
       this.lossyTab.focus();
       this.setRepresentation("lossy");
@@ -212,6 +238,9 @@ export class RawView {
 
   setSession(revision: number, root: NodeDto | null, sourceSize?: number, sourceKind: RawSourceKind = "document"): void {
     this.epoch += 1;
+    this.copyEpoch += 1;
+    this.copyBusy = false;
+    this.copyStatus.textContent = "";
     this.session = root ? { revision } : null;
     const size = sourceSize !== undefined && safeNonNegativeInteger(sourceSize) ? sourceSize : root?.spanEnd ?? 0;
     this.baseScope = root ? { kind: "source", source: sourceKind, size } : null;
@@ -229,6 +258,9 @@ export class RawView {
       return;
     }
     this.epoch += 1;
+    this.copyEpoch += 1;
+    this.copyBusy = false;
+    this.copyStatus.textContent = "";
     this.session = { revision };
     this.baseScope = { kind: "node", node: item, source: sourceKind };
     this.scope = this.baseScope;
@@ -246,6 +278,9 @@ export class RawView {
       return false;
     }
     this.epoch += 1;
+    this.copyEpoch += 1;
+    this.copyBusy = false;
+    this.copyStatus.textContent = "";
     this.session = { revision };
     this.baseScope = scope;
     this.scope = this.baseScope;
@@ -264,6 +299,9 @@ export class RawView {
       return false;
     }
     this.epoch += 1;
+    this.copyEpoch += 1;
+    this.copyBusy = false;
+    this.copyStatus.textContent = "";
     this.session = { revision };
     this.baseScope = scope;
     this.scope = this.baseScope;
@@ -285,6 +323,9 @@ export class RawView {
 
   clear(reason?: string): void {
     this.epoch += 1;
+    this.copyEpoch += 1;
+    this.copyBusy = false;
+    this.copyStatus.textContent = "";
     this.session = null;
     this.baseScope = null;
     this.scope = null;
@@ -296,6 +337,9 @@ export class RawView {
   setScope(node: NodeDto): void {
     if (!this.session) return;
     this.epoch += 1;
+    this.copyEpoch += 1;
+    this.copyBusy = false;
+    this.copyStatus.textContent = "";
     this.scope = { kind: "node", node, source: rawSourceKind(this.baseScope) ?? "document" };
     this.reveal = null;
     this.representation = "lossy";
@@ -313,11 +357,77 @@ export class RawView {
       return;
     }
     this.epoch += 1;
+    this.copyEpoch += 1;
+    this.copyBusy = false;
+    this.copyStatus.textContent = "";
     this.scope = base;
     this.reveal = { start, end, label };
     this.resetPages(`Seeking to ${label}…`);
     this.render();
     if (this.active) this.requestPage(start, 0);
+  }
+
+  private async copyNodeRaw(): Promise<void> {
+    const session = this.session;
+    const scope = this.scope;
+    if (!session || !scope || scope.kind !== "node" || this.copyBusy) return;
+    const copyEpoch = this.copyEpoch;
+    const revision = session.revision;
+    const nodeId = scope.node.id;
+    this.copyBusy = true;
+    this.copyStatus.textContent = "Copying…";
+    this.render();
+    try {
+      await this.invoke("copy_node", {
+        nodeId,
+        scopeId: null,
+        sessionRevision: revision,
+        format: "raw"
+      });
+      if (!this.isCopyCurrent(copyEpoch, revision, scope)) return;
+      this.copyStatus.textContent = "Copied Raw";
+    } catch (error) {
+      if (!this.isCopyCurrent(copyEpoch, revision, scope)) return;
+      if (isGlobalError(error)) this.onError(error);
+      else this.copyStatus.textContent = `Copy failed: ${errorMessage(error)}`;
+    } finally {
+      if (this.isCopyCurrent(copyEpoch, revision, scope)) {
+        this.copyBusy = false;
+        this.render();
+      }
+    }
+  }
+
+  private async copyCurrentBytes(format: "hex" | "lossy"): Promise<void> {
+    const session = this.session;
+    const scope = this.scope;
+    if (!session || !scope || scope.kind !== "entryBytes" && scope.kind !== "rawDocument" || this.copyBusy) return;
+    const copyEpoch = this.copyEpoch;
+    const revision = session.revision;
+    this.copyBusy = true;
+    this.copyStatus.textContent = "Copying…";
+    this.render();
+    try {
+      await this.invoke("copy_current_bytes", { format, sessionRevision: revision });
+      if (!this.isCopyCurrent(copyEpoch, revision, scope)) return;
+      this.copyStatus.textContent = format === "hex" ? "Copied Hex" : "Copied Lossy Text";
+    } catch (error) {
+      if (!this.isCopyCurrent(copyEpoch, revision, scope)) return;
+      if (isGlobalError(error)) this.onError(error);
+      else this.copyStatus.textContent = `Copy failed: ${errorMessage(error)}`;
+    } finally {
+      if (this.isCopyCurrent(copyEpoch, revision, scope)) {
+        this.copyBusy = false;
+        this.render();
+      }
+    }
+  }
+
+  private isCopyCurrent(copyEpoch: number, revision: number, scope: RawScope): boolean {
+    const current = this.scope;
+    if (this.copyEpoch !== copyEpoch || this.session?.revision !== revision || !current || current.kind !== scope.kind) return false;
+    if (current.kind === "node" && scope.kind === "node") return current.node.id === scope.node.id;
+    return scopeStart(current) === scopeStart(scope) && scopeEnd(current) === scopeEnd(scope);
   }
 
   setBusy(busy: boolean): void {
@@ -612,6 +722,15 @@ export class RawView {
       ? pageLabel(scope, this.pageStart, this.pageEnd)
       : "No raw chunk loaded.";
     this.status.textContent = this.statusMessage;
+    const nodeCopyAvailable = scope?.kind === "node" && this.session !== null;
+    const byteCopyAvailable = (scope?.kind === "entryBytes" || scope?.kind === "rawDocument") && this.session !== null;
+    this.copyRaw.hidden = !nodeCopyAvailable;
+    this.copyHex.hidden = !byteCopyAvailable;
+    this.copyLossy.hidden = !byteCopyAvailable;
+    for (const button of [this.copyRaw, this.copyHex, this.copyLossy]) {
+      button.disabled = this.copyBusy || busy || button.hidden;
+    }
+    this.copyStatus.hidden = this.copyStatus.textContent === "";
     this.representationTabs.hidden = !invalidUtf8;
     this.lossyTab.setAttribute("aria-selected", String(this.representation === "lossy"));
     this.hexTab.setAttribute("aria-selected", String(this.representation === "hex"));

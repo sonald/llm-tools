@@ -42,6 +42,14 @@ type NodeRecord = {
   error: string | null;
 };
 
+export type TreeCopyElements = {
+  raw: HTMLButtonElement;
+  subtree: HTMLButtonElement;
+  decoded: HTMLButtonElement;
+  path: HTMLButtonElement;
+  status: HTMLElement;
+};
+
 type TreeViewOptions = {
   panel: HTMLElement;
   tab: HTMLButtonElement;
@@ -59,6 +67,7 @@ type TreeViewOptions = {
   onStringOpen: (target: ContentTarget, opener: HTMLElement) => void;
   onError: (error: unknown) => void;
   invoke?: typeof invoke;
+  copy?: TreeCopyElements;
 };
 
 export type FocusKey = number | `load:${number}` | `retry:${number}` | null;
@@ -94,6 +103,7 @@ export class TreeView {
   private readonly onStringOpen: (target: ContentTarget, opener: HTMLElement) => void;
   private readonly onError: (error: unknown) => void;
   private readonly invokeRequest: typeof invoke;
+  private readonly copy: TreeViewOptions["copy"];
   private session: TreeSession | null = null;
   private generation = 0;
   private rootId: number | null = null;
@@ -102,6 +112,8 @@ export class TreeView {
   private selectedId: number | null = null;
   private focusKey: FocusKey = null;
   private readonly records = new Map<number, NodeRecord>();
+  private copyGeneration = 0;
+  private copyBusy = false;
 
   constructor(options: TreeViewOptions) {
     this.panel = options.panel;
@@ -113,13 +125,21 @@ export class TreeView {
     this.onStringOpen = options.onStringOpen;
     this.onError = options.onError;
     this.invokeRequest = options.invoke ?? invoke;
+    this.copy = options.copy;
     this.panel.addEventListener("click", (event) => this.handleClick(event));
     this.panel.addEventListener("keydown", (event) => this.handleKeydown(event));
+    this.copy?.raw.addEventListener("click", () => void this.copySelected("raw", "Copied Raw"));
+    this.copy?.subtree.addEventListener("click", () => void this.copySelected("raw", "Copied JSON Subtree"));
+    this.copy?.decoded.addEventListener("click", () => void this.copySelected("decoded", "Copied Decoded Value"));
+    this.copy?.path.addEventListener("click", () => void this.copySelected("path", "Copied Path"));
     this.clear();
   }
 
   setSession(session: TreeSession, seededRoot?: unknown | null): void {
     this.generation += 1;
+    this.copyGeneration += 1;
+    this.copyBusy = false;
+    if (this.copy) this.copy.status.textContent = "";
     this.session = session;
     const root = seededRoot === undefined || seededRoot === null
       ? null
@@ -168,6 +188,9 @@ export class TreeView {
   restore(snapshot: TreeViewSnapshot | null): void {
     if (!snapshot) return;
     this.generation += 1;
+    this.copyGeneration += 1;
+    this.copyBusy = false;
+    if (this.copy) this.copy.status.textContent = "";
     this.session = { ...snapshot.session };
     this.rootId = snapshot.rootId;
     this.rootLoading = false;
@@ -201,6 +224,9 @@ export class TreeView {
 
   clear(message = "Open a Document or Collection to load its Tree."): void {
     this.generation += 1;
+    this.copyGeneration += 1;
+    this.copyBusy = false;
+    if (this.copy) this.copy.status.textContent = "";
     this.session = null;
     this.rootId = null;
     this.rootLoading = false;
@@ -326,6 +352,9 @@ export class TreeView {
   }
 
   private select(record: NodeRecord): void {
+    this.copyGeneration += 1;
+    this.copyBusy = false;
+    if (this.copy) this.copy.status.textContent = "";
     this.selectedId = record.node.id;
     this.focusKey = record.node.id;
     this.onSelection(record.node);
@@ -622,25 +651,83 @@ export class TreeView {
   }
 
   private renderInspector(node: NodeDto | null): void {
-    if (!this.inspector || !this.fields) return;
-    this.inspector.hidden = node === null;
-    if (!node) {
-      this.clearInspector();
-      return;
+    if (this.inspector && this.fields) {
+      this.inspector.hidden = node === null;
+      if (!node) {
+        this.clearInspector();
+      } else {
+        this.fields.id.textContent = String(node.id);
+        this.fields.label.textContent = node.label + (node.labelHasMore ? " · truncated" : "");
+        this.fields.kind.textContent = node.kind;
+        this.fields.span.textContent = `[${node.spanStart}, ${node.spanEnd})`;
+        this.fields.children.textContent = String(node.childCount);
+        this.fields.value.textContent = node.valuePreview ?? "—";
+        if (node.valueHasMore) this.fields.value.textContent += " · truncated";
+      }
     }
-    this.fields.id.textContent = String(node.id);
-    this.fields.label.textContent = node.label + (node.labelHasMore ? " · truncated" : "");
-    this.fields.kind.textContent = node.kind;
-    this.fields.span.textContent = `[${node.spanStart}, ${node.spanEnd})`;
-    this.fields.children.textContent = String(node.childCount);
-    this.fields.value.textContent = node.valuePreview ?? "—";
-    if (node.valueHasMore) this.fields.value.textContent += " · truncated";
+    this.renderCopyActions(node);
   }
 
   private clearInspector(): void {
-    if (!this.inspector || !this.fields) return;
-    this.inspector.hidden = true;
-    for (const field of Object.values(this.fields)) field.textContent = "—";
+    if (this.inspector && this.fields) {
+      this.inspector.hidden = true;
+      for (const field of Object.values(this.fields)) field.textContent = "—";
+    }
+    this.renderCopyActions(null);
+  }
+
+  private renderCopyActions(node: NodeDto | null): void {
+    const copy = this.copy;
+    if (!copy) return;
+    const enabled = node !== null && this.session !== null && !this.copyBusy;
+    copy.raw.hidden = node === null;
+    copy.subtree.hidden = node === null;
+    copy.path.hidden = node === null;
+    copy.decoded.hidden = node === null || !isScalarKind(node.kind);
+    for (const button of [copy.raw, copy.subtree, copy.decoded, copy.path]) {
+      button.disabled = !enabled || button.hidden || this.copyBusy;
+    }
+  }
+
+  private async copySelected(format: "raw" | "decoded" | "path", successLabel: string): Promise<void> {
+    const copy = this.copy;
+    const session = this.session;
+    const node = this.selectedId === null ? null : this.records.get(this.selectedId)?.node ?? null;
+    if (!copy || !session || !node || this.copyBusy || format === "decoded" && !isScalarKind(node.kind)) return;
+    const generation = this.copyGeneration;
+    const sessionRevision = session.sessionRevision;
+    const nodeId = node.id;
+    this.copyBusy = true;
+    copy.status.textContent = "Copying…";
+    this.renderCopyActions(node);
+    try {
+      await this.invokeRequest("copy_node", {
+        nodeId,
+        scopeId: session.scopeId,
+        sessionRevision,
+        format
+      });
+      if (!this.isCopyCurrent(generation, sessionRevision, nodeId)) return;
+      copy.status.textContent = successLabel;
+    } catch (error) {
+      if (!this.isCopyCurrent(generation, sessionRevision, nodeId)) return;
+      if (this.isGlobalError(error)) {
+        this.onError(error);
+      } else {
+        copy.status.textContent = `Copy failed: ${errorMessage(error)}`;
+      }
+    } finally {
+      if (this.isCopyCurrent(generation, sessionRevision, nodeId)) {
+        this.copyBusy = false;
+        this.renderCopyActions(node);
+      }
+    }
+  }
+
+  private isCopyCurrent(generation: number, revision: number, nodeId: number): boolean {
+    return this.copyGeneration === generation
+      && this.session?.sessionRevision === revision
+      && this.selectedId === nodeId;
   }
 
   private restoreFocus(): void {
@@ -728,6 +815,10 @@ function errorMessage(error: unknown): string {
   }
   if (error instanceof Error) return error.message;
   return "The tree request failed.";
+}
+
+function isScalarKind(kind: string): boolean {
+  return kind === "string" || kind === "number" || kind === "true" || kind === "false" || kind === "null";
 }
 
 const TREE_KINDS = new Set(["object", "array", "string", "number", "true", "false", "null"]);

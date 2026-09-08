@@ -147,6 +147,11 @@ const nodeKind = required<HTMLElement>("node-kind");
 const nodeSpan = required<HTMLElement>("node-span");
 const nodeChildren = required<HTMLElement>("node-children");
 const nodeValue = required<HTMLElement>("node-value");
+const nodeCopyRaw = required<HTMLButtonElement>("node-copy-raw");
+const nodeCopySubtree = required<HTMLButtonElement>("node-copy-subtree");
+const nodeCopyDecoded = required<HTMLButtonElement>("node-copy-decoded");
+const nodeCopyPath = required<HTMLButtonElement>("node-copy-path");
+const nodeCopyStatus = required<HTMLElement>("node-copy-status");
 const entryInspector = required<HTMLElement>("entry-inspector");
 const entryInspectorOrdinal = required<HTMLElement>("entry-inspector-ordinal");
 const entryInspectorStatus = required<HTMLElement>("entry-inspector-status");
@@ -173,6 +178,11 @@ const contentViewerRange = required<HTMLElement>("content-viewer-range");
 const contentViewerStatus = required<HTMLElement>("content-viewer-status");
 const contentViewerAlert = required<HTMLElement>("content-viewer-alert");
 const contentViewerContent = required<HTMLElement>("content-viewer-content");
+const contentViewerCopyRaw = required<HTMLButtonElement>("content-viewer-copy-raw");
+const contentViewerCopyDecoded = required<HTMLButtonElement>("content-viewer-copy-decoded");
+const contentViewerCopyMarkdown = required<HTMLButtonElement>("content-viewer-copy-markdown");
+const contentViewerCopyParsed = required<HTMLButtonElement>("content-viewer-copy-parsed");
+const contentViewerCopyStatus = required<HTMLElement>("content-viewer-copy-status");
 const contentViewerRenderAs = required<HTMLSelectElement>("content-viewer-render-as");
 const contentViewerMarkdownAnyway = required<HTMLButtonElement>("content-viewer-markdown-anyway");
 const contentViewerPrevious = required<HTMLButtonElement>("content-viewer-previous");
@@ -218,6 +228,13 @@ const contentViewer = new ContentViewer({
     status: contentViewerStatus,
     alert: contentViewerAlert,
     content: contentViewerContent,
+    copy: {
+      raw: contentViewerCopyRaw,
+      decoded: contentViewerCopyDecoded,
+      markdown: contentViewerCopyMarkdown,
+      parsed: contentViewerCopyParsed,
+      status: contentViewerCopyStatus
+    },
     renderAs: contentViewerRenderAs,
     markdownAnyway: contentViewerMarkdownAnyway,
     previous: contentViewerPrevious,
@@ -255,9 +272,16 @@ const treeView = new TreeView({
   inspector: nodeInspector,
   fields: { id: nodeId, label: nodeLabel, kind: nodeKind, span: nodeSpan, children: nodeChildren, value: nodeValue },
   onSelection: handleTreeSelection,
-  onStringSelection: handleStringSelection,
-  onStringOpen: handleStringOpen,
-  onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
+    onStringSelection: handleStringSelection,
+    onStringOpen: handleStringOpen,
+  onError: (error) => handleCurrentSessionAsyncError(ipcError(error)),
+  copy: {
+    raw: nodeCopyRaw,
+    subtree: nodeCopySubtree,
+    decoded: nodeCopyDecoded,
+    path: nodeCopyPath,
+    status: nodeCopyStatus
+  }
 });
 
 const rawView = new RawView({

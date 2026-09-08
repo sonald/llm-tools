@@ -8,7 +8,7 @@ import {
   type CodeRenderReason
 } from "./code-renderer";
 import { renderSafeMarkdown } from "./markdown-renderer";
-import { TreeView, type NodeDto, type TreeViewSnapshot } from "./tree-view";
+import { TreeView, type NodeDto, type TreeCopyElements, type TreeViewSnapshot } from "./tree-view";
 
 export type ContentTarget = {
   revision: number;
@@ -39,6 +39,13 @@ export type ContentViewerElements = {
   status: HTMLElement;
   alert: HTMLElement;
   content: HTMLElement;
+  copy?: {
+    raw: HTMLButtonElement;
+    decoded: HTMLButtonElement;
+    markdown: HTMLButtonElement;
+    parsed: HTMLButtonElement;
+    status: HTMLElement;
+  };
   renderAs?: HTMLSelectElement;
   markdownAnyway?: HTMLButtonElement;
   previous: HTMLButtonElement;
@@ -67,6 +74,41 @@ export type HtmlViewerElements = {
   previewPanel: HTMLElement;
   previewFrame: HTMLIFrameElement;
 };
+
+function createCopyElements(): NonNullable<ContentViewerElements["copy"]> {
+  const button = (): HTMLButtonElement => document.createElement("button");
+  const status = document.createElement("span");
+  return { raw: button(), decoded: button(), markdown: button(), parsed: button(), status };
+}
+
+function createNestedCopyElements(): { elements: TreeCopyElements; container: HTMLElement } {
+  const container = document.createElement("div");
+  container.className = "copy-actions nested-copy-actions";
+  container.setAttribute("aria-label", "Copy selected nested node");
+  const button = (label: string): HTMLButtonElement => {
+    const value = document.createElement("button");
+    value.className = "secondary-button";
+    value.type = "button";
+    value.textContent = label;
+    container.append(value);
+    return value;
+  };
+  const status = document.createElement("span");
+  status.className = "copy-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  container.append(status);
+  return {
+    elements: {
+      raw: button("Copy Raw"),
+      subtree: button("Copy JSON Subtree"),
+      decoded: button("Copy Decoded Value"),
+      path: button("Copy Path"),
+      status
+    },
+    container
+  };
+}
 
 type StringDetection = {
   semanticType: "plainText" | "markdown" | "nestedJson" | "code" | "html";
@@ -178,6 +220,11 @@ export class ContentViewer {
   private readonly htmlElements: HtmlViewerElements | null;
   private readonly renderAs: HTMLSelectElement | null;
   private readonly markdownAnyway: HTMLButtonElement | null;
+  private readonly copyRaw: HTMLButtonElement;
+  private readonly copyDecoded: HTMLButtonElement;
+  private readonly copyMarkdown: HTMLButtonElement;
+  private readonly copyParsed: HTMLButtonElement;
+  private readonly copyStatus: HTMLElement;
   private nestedFrames: NestedFrame[] = [];
   private nestedRepresentation: "parsed" | "decoded" | "raw" | null = null;
   private htmlRepresentation: "preview" | "source" | null = null;
@@ -197,6 +244,8 @@ export class ContentViewer {
   private readonly closingScopes = new Map<string, Promise<void>>();
   private readonly rootCloseAttempts = new Map<string, number>();
   private nestedBusy = false;
+  private copyEpoch = 0;
+  private copyBusy = false;
 
   constructor(options: ContentViewerOptions) {
     this.elements = options.elements;
@@ -207,6 +256,14 @@ export class ContentViewer {
     this.htmlElements = options.elements.html ?? null;
     this.renderAs = options.elements.renderAs ?? null;
     this.markdownAnyway = options.elements.markdownAnyway ?? null;
+    const copy = options.elements.copy ?? createCopyElements();
+    this.copyRaw = copy.raw;
+    this.copyDecoded = copy.decoded;
+    this.copyMarkdown = copy.markdown;
+    this.copyParsed = copy.parsed;
+    this.copyStatus = copy.status;
+    const nestedCopy = this.nestedElements ? createNestedCopyElements() : null;
+    nestedCopy?.container && this.nestedElements?.parsedPanel.prepend(nestedCopy.container);
     this.nestedTree = this.nestedElements
       ? new TreeView({
         panel: this.nestedElements.parsedTree,
@@ -217,10 +274,15 @@ export class ContentViewer {
         onStringSelection: () => undefined,
         onStringOpen: (target) => { void this.openNestedChild(target); },
         onError: (error) => this.handleFailure(error),
-        invoke: this.invokeRequest
+        invoke: this.invokeRequest,
+        copy: nestedCopy?.elements
       })
       : null;
     this.elements.close.addEventListener("click", () => this.close());
+    this.copyRaw.addEventListener("click", () => void this.copyTarget("raw", "Copied Raw Lexeme"));
+    this.copyDecoded.addEventListener("click", () => void this.copyTarget("decoded", "Copied Decoded Value"));
+    this.copyMarkdown.addEventListener("click", () => void this.copyTarget("decoded", "Copied Markdown Source"));
+    this.copyParsed.addEventListener("click", () => void this.copyParsedJson());
     this.renderAs?.addEventListener("change", () => void this.changeRenderAs());
     this.markdownAnyway?.addEventListener("click", () => void this.renderMarkdownAnyway());
     this.elements.previous.addEventListener("click", () => void this.readPrevious());
@@ -264,6 +326,7 @@ export class ContentViewer {
     this.releaseNestedScopes();
     this.clearHtmlPreviewFrame();
     this.generation += 1;
+    this.invalidateCopy();
     const generation = this.generation;
     this.restoreFocusOnClose = null;
     this.target = cloneTarget(target);
@@ -331,6 +394,7 @@ export class ContentViewer {
     this.clearHtmlPreviewFrame();
     this.restoreFocusOnClose = restoreFocus;
     this.generation += 1;
+    this.invalidateCopy();
     this.target = null;
     this.detection = null;
     this.busy = false;
@@ -364,6 +428,110 @@ export class ContentViewer {
     this.renderMetadata();
     this.renderPaging();
     this.finishDialogClose();
+  }
+
+  private async copyTarget(format: "raw" | "decoded", successLabel: string): Promise<void> {
+    const target = this.target;
+    const detection = this.detection;
+    if (!target || !detection || this.copyBusy) return;
+    const copyEpoch = this.copyEpoch;
+    const generation = this.generation;
+    this.copyBusy = true;
+    this.copyStatus.textContent = "Copying…";
+    this.renderCopyControls();
+    try {
+      await this.invokeRequest("copy_node", {
+        nodeId: target.nodeId,
+        scopeId: target.scopeId,
+        sessionRevision: target.revision,
+        format
+      });
+      if (!this.isCopyCurrent(copyEpoch, generation, target)) return;
+      this.copyStatus.textContent = successLabel;
+    } catch (error) {
+      if (!this.isCopyCurrent(copyEpoch, generation, target)) return;
+      if (isGlobalError(error)) this.onSessionError(error);
+      else this.copyStatus.textContent = `Copy failed: ${errorMessage(error)}`;
+    } finally {
+      if (this.isCopyCurrent(copyEpoch, generation, target)) {
+        this.copyBusy = false;
+        this.renderCopyControls();
+      }
+    }
+  }
+
+  private async copyParsedJson(): Promise<void> {
+    const target = this.target;
+    const frame = this.nestedFrames.at(-1);
+    if (!target || !frame || frame.kind !== "json" || this.nestedRepresentation !== "parsed" || this.copyBusy) return;
+    const copyEpoch = this.copyEpoch;
+    const generation = this.generation;
+    const scopeId = frame.scope.scopeId;
+    const sessionRevision = frame.scope.sessionRevision;
+    const nodeId = frame.scope.root.id;
+    this.copyBusy = true;
+    this.copyStatus.textContent = "Copying…";
+    this.renderCopyControls();
+    try {
+      await this.invokeRequest("copy_node", {
+        nodeId,
+        scopeId,
+        sessionRevision,
+        format: "parsed"
+      });
+      if (!this.isCopyCurrent(copyEpoch, generation, target, scopeId, nodeId)) return;
+      this.copyStatus.textContent = "Copied Parsed JSON";
+    } catch (error) {
+      if (!this.isCopyCurrent(copyEpoch, generation, target, scopeId, nodeId)) return;
+      if (isGlobalError(error)) this.onSessionError(error);
+      else this.copyStatus.textContent = `Copy failed: ${errorMessage(error)}`;
+    } finally {
+      if (this.isCopyCurrent(copyEpoch, generation, target, scopeId, nodeId)) {
+        this.copyBusy = false;
+        this.renderCopyControls();
+      }
+    }
+  }
+
+  private isCopyCurrent(
+    copyEpoch: number,
+    generation: number,
+    target: ContentTarget,
+    parsedScopeId?: number,
+    parsedNodeId?: number
+  ): boolean {
+    const current = this.target;
+    const frame = this.nestedFrames.at(-1);
+    return this.copyEpoch === copyEpoch
+      && this.generation === generation
+      && current !== null
+      && current.revision === target.revision
+      && current.nodeId === target.nodeId
+      && current.scopeId === target.scopeId
+      && (parsedScopeId === undefined
+        ? true
+        : frame?.kind === "json" && frame.scope.scopeId === parsedScopeId && frame.scope.root.id === parsedNodeId);
+  }
+
+  private renderCopyControls(): void {
+    const targetAvailable = this.target !== null && this.detection !== null;
+    const parsedFrame = this.nestedFrames.at(-1);
+    const parsedAvailable = parsedFrame?.kind === "json" && this.nestedRepresentation === "parsed";
+    this.copyRaw.hidden = !targetAvailable;
+    this.copyDecoded.hidden = !targetAvailable;
+    this.copyMarkdown.hidden = !targetAvailable || this.renderMode !== "markdown";
+    this.copyParsed.hidden = !parsedAvailable;
+    const disabled = this.copyBusy || this.busy || this.nestedBusy || !targetAvailable;
+    for (const button of [this.copyRaw, this.copyDecoded, this.copyMarkdown, this.copyParsed]) {
+      button.disabled = disabled || button.hidden;
+    }
+    this.copyStatus.hidden = this.copyStatus.textContent === "";
+  }
+
+  private invalidateCopy(): void {
+    this.copyEpoch += 1;
+    this.copyBusy = false;
+    this.copyStatus.textContent = "";
   }
 
   close(): void {
@@ -565,6 +733,7 @@ export class ContentViewer {
     const previousMapValue = this.overrides.get(key);
     if (next === previous) return;
     const generation = ++this.generation;
+    this.invalidateCopy();
     if (next === "nestedJson") {
       this.renderOverride = next;
       try {
@@ -623,6 +792,7 @@ export class ContentViewer {
     const target = this.target;
     if (!target || this.busy || this.renderMode !== "markdown" || this.semanticLimitBytes !== MARKDOWN_AUTO_RENDER_LIMIT_BYTES) return;
     const generation = ++this.generation;
+    this.invalidateCopy();
     this.prepareRendererLoad(this.nestedFrames.length > 0);
     try {
       await this.openSemantic(target, generation, "markdown", null, true);
@@ -1067,6 +1237,7 @@ export class ContentViewer {
     const tree = this.nestedTree;
     if (!parent || !tree || this.nestedBusy || target.scopeId !== parent.scope.scopeId) return;
     const generation = ++this.generation;
+    this.invalidateCopy();
     const parentSnapshot = tree.snapshot();
     this.nestedBusy = true;
     this.syncRenderAsSelect();
@@ -1206,6 +1377,7 @@ export class ContentViewer {
     const frame = this.nestedFrames.at(-1);
     if (!frame || this.nestedBusy) return;
     const generation = ++this.generation;
+    this.invalidateCopy();
     this.nestedBusy = true;
     this.syncRenderAsSelect();
     this.elements.range.textContent = "—";
@@ -1670,6 +1842,7 @@ export class ContentViewer {
     const hadContent = wasOpen || this.target !== null || opener !== null;
     this.restoreFocusOnClose = null;
     this.generation += 1;
+    this.invalidateCopy();
     this.target = null;
     this.detection = null;
     this.busy = false;
@@ -1795,6 +1968,7 @@ export class ContentViewer {
   }
 
   private renderPaging(): void {
+    this.renderCopyControls();
     this.syncRenderAsSelect();
     if (this.nestedRepresentation === "parsed") {
       this.elements.previous.disabled = true;
@@ -2121,6 +2295,11 @@ function canRestoreFocus(element: HTMLElement | null): element is HTMLElement {
 
 function errorCode(error: unknown): string | undefined {
   return isRecord(error) && typeof error.code === "string" ? error.code : undefined;
+}
+
+function isGlobalError(error: unknown): boolean {
+  const code = errorCode(error);
+  return code === "file_changed" || code === "stale_session";
 }
 
 function isTerminalCloseError(error: unknown): boolean {

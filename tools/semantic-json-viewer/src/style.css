@@ -284,6 +284,12 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .raw-controls { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 6px; }
 
+.copy-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+.copy-status { color: var(--muted); font-size: 10px; }
+
+.nested-copy-actions { padding: 9px 12px; border-bottom: 1px solid var(--line); }
+
 .raw-controls .secondary-button { min-height: 29px; padding: 0 9px; font-size: 10px; }
 
 .raw-page-label { min-height: 14px; color: var(--muted); font: 9px "SFMono-Regular", Consolas, monospace; }

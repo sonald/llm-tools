@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "test:safe-markdown": "node scripts/test-safe-markdown.mjs",
     "test:search-ui": "node scripts/test-search-ui.mjs",
+    "test:copy-ui": "node scripts/test-copy-ui.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {

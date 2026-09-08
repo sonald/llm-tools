@@ -167,6 +167,13 @@
               <div><dt>Children</dt><dd id="node-children">—</dd></div>
               <div><dt>Value</dt><dd id="node-value">—</dd></div>
             </dl>
+            <div class="copy-actions" aria-label="Copy selected node">
+              <button class="secondary-button" id="node-copy-raw" type="button">Copy Raw</button>
+              <button class="secondary-button" id="node-copy-subtree" type="button">Copy JSON Subtree</button>
+              <button class="secondary-button" id="node-copy-decoded" type="button">Copy Decoded Value</button>
+              <button class="secondary-button" id="node-copy-path" type="button">Copy Path</button>
+              <span class="copy-status" id="node-copy-status" role="status" aria-live="polite"></span>
+            </div>
           </section>
         </aside>
       </div>
@@ -264,6 +271,13 @@
             <span class="content-viewer-range" id="content-viewer-range">—</span>
             <span class="content-viewer-status" id="content-viewer-status" role="status" aria-live="polite"></span>
             <span class="content-viewer-toolbar-spacer"></span>
+            <div class="copy-actions content-viewer-copy-actions" aria-label="Copy content">
+              <button class="secondary-button" id="content-viewer-copy-raw" type="button">Copy Raw Lexeme</button>
+              <button class="secondary-button" id="content-viewer-copy-decoded" type="button">Copy Decoded Value</button>
+              <button class="secondary-button" id="content-viewer-copy-markdown" type="button" hidden>Copy Markdown Source</button>
+              <button class="secondary-button" id="content-viewer-copy-parsed" type="button" hidden>Copy Parsed JSON</button>
+              <span class="copy-status" id="content-viewer-copy-status" role="status" aria-live="polite"></span>
+            </div>
             <button class="secondary-button" id="content-viewer-previous" type="button" aria-controls="content-viewer-content" disabled>Prev</button>
             <button class="secondary-button" id="content-viewer-next" type="button" aria-controls="content-viewer-content" disabled>Next</button>
           </div>
