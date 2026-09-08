@@ -259,6 +259,13 @@ pub enum CopyFormatDto {
     Parsed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CopyCurrentBytesFormatDto {
+    Hex,
+    Lossy,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SearchCursorDto {
@@ -493,6 +500,20 @@ pub fn copy_node(
                 .map_err(|error| error.to_string())
         },
     )
+}
+
+#[tauri::command(async)]
+pub fn copy_current_bytes(
+    format: CopyCurrentBytesFormatDto,
+    session_revision: u64,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), IpcError> {
+    copy_current_bytes_to_sink(&state, session_revision, format, |text| {
+        app.clipboard()
+            .write_text(text)
+            .map_err(|error| error.to_string())
+    })
 }
 
 #[tauri::command(async)]
@@ -1194,6 +1215,202 @@ fn copy_node_to_sink(
         }
         sink(text).map_err(clipboard_error)
     })
+}
+
+fn copy_current_bytes_to_sink(
+    state: &AppState,
+    session_revision: u64,
+    format: CopyCurrentBytesFormatDto,
+    sink: impl FnOnce(String) -> Result<(), String>,
+) -> Result<(), IpcError> {
+    with_session_scope(state, None, session_revision, |session, _| {
+        let bytes = read_current_bytes(session)?;
+        let text = match format {
+            CopyCurrentBytesFormatDto::Hex => format_copy_hex(&bytes)?,
+            CopyCurrentBytesFormatDto::Lossy => format_copy_lossy(&bytes)?,
+        };
+        if !session.is_current() {
+            return Err(file_changed());
+        }
+        sink(text).map_err(clipboard_error)
+    })
+}
+
+fn read_current_bytes(session: &OpenSession) -> Result<Vec<u8>, IpcError> {
+    match session {
+        OpenSession::Entry(session) => {
+            let Some((start, end)) = session.selected_raw_range().map_err(copy_read_error)? else {
+                return Err(invalid_request("no Entry is selected"));
+            };
+            let length = end
+                .checked_sub(start)
+                .ok_or_else(|| internal("selected Entry range overflow"))?;
+            read_all_copy_bytes(length, |offset, length| {
+                session
+                    .read_selected_raw_window(offset, length)
+                    .map_err(copy_read_error)?
+                    .ok_or_else(|| invalid_request("no Entry is selected"))
+            })
+        }
+        OpenSession::RawDocument { source, .. } => {
+            let length = source.identity().size;
+            read_all_copy_bytes(length, |offset, requested| {
+                source
+                    .read_chunk(offset, requested)
+                    .map_err(copy_read_error)
+            })
+        }
+        OpenSession::Document(_) => Err(invalid_request(
+            "copy current bytes is unavailable for a parsed document",
+        )),
+    }
+}
+
+fn read_all_copy_bytes(
+    length: u64,
+    mut read: impl FnMut(u64, usize) -> Result<ReadChunk, IpcError>,
+) -> Result<Vec<u8>, IpcError> {
+    let capacity = usize::try_from(length)
+        .map_err(|_| invalid_request("copy source exceeds addressable memory"))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| internal("copy buffer allocation failed"))?;
+
+    let mut offset = 0u64;
+    while offset < length {
+        let chunk = read(offset, usize::MAX)?;
+        if chunk.start != offset || chunk.bytes.is_empty() {
+            return Err(internal("copy source ended before its recorded range"));
+        }
+        let read_len = u64::try_from(chunk.bytes.len())
+            .map_err(|_| internal("copy chunk length exceeds addressable range"))?;
+        let next = offset
+            .checked_add(read_len)
+            .ok_or_else(|| internal("copy source range overflow"))?;
+        if next > length {
+            return Err(internal("copy chunk exceeded its recorded range"));
+        }
+        let has_more = next < length;
+        if chunk.has_more != has_more || chunk.next_offset != has_more.then_some(next) {
+            return Err(internal("copy source returned an inconsistent range"));
+        }
+        bytes.extend_from_slice(&chunk.bytes);
+        offset = next;
+    }
+    Ok(bytes)
+}
+
+fn format_copy_hex(bytes: &[u8]) -> Result<String, IpcError> {
+    use std::fmt::Write;
+
+    let (_rows, _offset_width, capacity) = hex_copy_layout(bytes.len())?;
+    let mut output = String::new();
+    output
+        .try_reserve(capacity)
+        .map_err(|_| internal("hex copy buffer allocation failed"))?;
+
+    for (row_index, row) in bytes.chunks(16).enumerate() {
+        if row_index > 0 {
+            output.push('\n');
+        }
+        let offset = row_index
+            .checked_mul(16)
+            .ok_or_else(|| invalid_request("hex copy offset overflow"))?;
+        write!(&mut output, "{offset:08x}  ").expect("writing to String cannot fail");
+
+        let mut hex = String::with_capacity(16 * 3 - 1);
+        for (index, byte) in row.iter().enumerate() {
+            if index > 0 {
+                hex.push(' ');
+            }
+            write!(&mut hex, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        while hex.len() < 16 * 3 - 1 {
+            hex.push(' ');
+        }
+        output.push_str(&hex);
+        output.push_str("  |");
+        for byte in row {
+            output.push(if (0x20..=0x7e).contains(byte) {
+                char::from(*byte)
+            } else {
+                '.'
+            });
+        }
+        for _ in row.len()..16 {
+            output.push(' ');
+        }
+        output.push('|');
+    }
+    Ok(output)
+}
+
+fn hex_copy_layout(byte_len: usize) -> Result<(usize, usize, usize), IpcError> {
+    let rows = byte_len.saturating_add(15) / 16;
+    if rows == 0 {
+        return Ok((0, 8, 0));
+    }
+    let last_offset = (rows - 1)
+        .checked_mul(16)
+        .ok_or_else(|| invalid_request("hex copy offset overflow"))?;
+    let offset_width = hex_digits(last_offset).max(8);
+    let line_width = offset_width
+        .checked_add(69)
+        .ok_or_else(|| invalid_request("hex copy line width overflow"))?;
+    let capacity = rows
+        .checked_mul(line_width)
+        .and_then(|value| value.checked_add(rows - 1))
+        .ok_or_else(|| invalid_request("hex copy exceeds addressable memory"))?;
+    Ok((rows, offset_width, capacity))
+}
+
+fn hex_digits(value: usize) -> usize {
+    if value == 0 {
+        1
+    } else {
+        (usize::BITS - value.leading_zeros()).div_ceil(4) as usize
+    }
+}
+
+fn format_copy_lossy(bytes: &[u8]) -> Result<String, IpcError> {
+    let mut output = String::new();
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        match std::str::from_utf8(remaining) {
+            Ok(text) => {
+                output
+                    .try_reserve(text.len())
+                    .map_err(|_| internal("lossy copy buffer allocation failed"))?;
+                output.push_str(text);
+                break;
+            }
+            Err(error) => {
+                let valid_len = error.valid_up_to();
+                if valid_len > 0 {
+                    output
+                        .try_reserve(valid_len)
+                        .map_err(|_| internal("lossy copy buffer allocation failed"))?;
+                    output.push_str(
+                        std::str::from_utf8(&remaining[..valid_len])
+                            .expect("valid UTF-8 prefix was reported by from_utf8"),
+                    );
+                }
+                output
+                    .try_reserve('\u{fffd}'.len_utf8())
+                    .map_err(|_| internal("lossy copy buffer allocation failed"))?;
+                output.push('\u{fffd}');
+                let invalid_len = error
+                    .error_len()
+                    .unwrap_or(remaining.len().saturating_sub(valid_len));
+                if invalid_len == 0 {
+                    return Err(internal("UTF-8 decoder did not advance"));
+                }
+                remaining = &remaining[valid_len + invalid_len..];
+            }
+        }
+    }
+    Ok(output)
 }
 
 fn copy_node_text_for_session(
@@ -2377,6 +2594,14 @@ fn clipboard_error(error: impl std::fmt::Display) -> IpcError {
         code: "clipboard_failed".to_owned(),
         message: format!("failed to write the system clipboard: {error}"),
         parse_error: None,
+    }
+}
+
+fn copy_read_error(error: io::Error) -> IpcError {
+    match error.kind() {
+        ErrorKind::InvalidData => file_changed(),
+        ErrorKind::InvalidInput => invalid_request(error.to_string()),
+        _ => internal(format!("failed to read copy source: {error}")),
     }
 }
 
@@ -7149,6 +7374,227 @@ mod tests {
         );
         assert_eq!(result.unwrap_err().code, "stale_session");
         assert!(writes.is_empty());
+        fs::remove_file(path).unwrap();
+    }
+
+    fn capture_current_bytes(
+        state: &AppState,
+        revision: u64,
+        format: CopyCurrentBytesFormatDto,
+    ) -> (Result<(), IpcError>, Vec<String>) {
+        let mut writes = Vec::new();
+        let result = copy_current_bytes_to_sink(state, revision, format, |text| {
+            writes.push(text);
+            Ok(())
+        });
+        (result, writes)
+    }
+
+    #[test]
+    fn copy_current_bytes_formats_raw_document_hex_and_lossy_without_truncation() {
+        let path = temp_path("ipc-copy-current-raw-document");
+        let bytes = [
+            b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'a', b'b', b'c', b'd',
+            b'e', b'f', 0xff,
+        ];
+        fs::write(&path, bytes).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let (result, writes) = capture_current_bytes(
+            &state,
+            opened.session_revision,
+            CopyCurrentBytesFormatDto::Hex,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0],
+            "00000000  30 31 32 33 34 35 36 37 38 39 61 62 63 64 65 66  |0123456789abcdef|\n00000010  ff                                               |.               |"
+        );
+
+        let bom_path = temp_path("ipc-copy-current-bom");
+        fs::write(&bom_path, b"\xEF\xBB\xBFx\xC3\xA9\xFF").unwrap();
+        let bom_state = AppState::default();
+        let bom = open_file_inner(&bom_state, bom_path.to_str().unwrap()).unwrap();
+        let (result, writes) = capture_current_bytes(
+            &bom_state,
+            bom.session_revision,
+            CopyCurrentBytesFormatDto::Lossy,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, ["\u{feff}xé�"]);
+
+        fs::remove_file(path).unwrap();
+        fs::remove_file(bom_path).unwrap();
+    }
+
+    #[test]
+    fn copy_current_bytes_reads_selected_entry_relative_span_without_crlf_or_neighbors() {
+        let path = temp_jsonl_path("ipc-copy-current-entry");
+        let input = b"{\"value\":\"a\"}\r\n  {\"value\":\"b\"}\r\n{\"value\":\"c\"}";
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let selected = select_entry_inner(&state, 1, opened.session_revision).unwrap();
+        let expected = "  {\"value\":\"b\"}";
+        let (result, writes) = capture_current_bytes(
+            &state,
+            selected.session_revision,
+            CopyCurrentBytesFormatDto::Lossy,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, [expected.to_owned()]);
+        let (result, writes) = capture_current_bytes(
+            &state,
+            selected.session_revision,
+            CopyCurrentBytesFormatDto::Hex,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes.len(), 1);
+        assert!(writes[0].starts_with("00000000  20 20 7b 22 76 61 6c 75 65 22 3a 22 62 22 7d"));
+        assert!(!writes[0].contains("0d 0a"));
+        assert!(!writes[0].contains("7b 22 76 61 6c 75 65 22 3a 22 61"));
+        assert!(!writes[0].contains("7b 22 76 61 6c 75 65 22 3a 22 63"));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn copy_current_bytes_rejects_unselected_entries_and_parsed_documents() {
+        let entry_path = temp_jsonl_path("ipc-copy-current-unselected");
+        fs::write(&entry_path, br#"{"value":"entry"}"#).unwrap();
+        let entry_state = AppState::default();
+        let entry = open_file_inner(&entry_state, entry_path.to_str().unwrap()).unwrap();
+        let (result, writes) = capture_current_bytes(
+            &entry_state,
+            entry.session_revision,
+            CopyCurrentBytesFormatDto::Lossy,
+        );
+        assert_eq!(result.unwrap_err().code, "invalid_request");
+        assert!(writes.is_empty());
+
+        let document_path = temp_path("ipc-copy-current-document");
+        fs::write(&document_path, br#"{"value":"document"}"#).unwrap();
+        let document_state = AppState::default();
+        let document = open_file_inner(&document_state, document_path.to_str().unwrap()).unwrap();
+        let (result, writes) = capture_current_bytes(
+            &document_state,
+            document.session_revision,
+            CopyCurrentBytesFormatDto::Hex,
+        );
+        assert_eq!(result.unwrap_err().code, "invalid_request");
+        assert!(writes.is_empty());
+
+        fs::remove_file(entry_path).unwrap();
+        fs::remove_file(document_path).unwrap();
+    }
+
+    #[test]
+    fn copy_current_bytes_preserves_utf8_across_chunks_and_replaces_invalid_bytes() {
+        let path = temp_jsonl_path("ipc-copy-current-utf8-boundary");
+        let prefix = br#"{"value":""#;
+        let ascii_count = 256 * 1024 - prefix.len() - 1;
+        let mut input = prefix.to_vec();
+        input.extend(std::iter::repeat_n(b'a', ascii_count));
+        input.extend_from_slice("é".as_bytes());
+        input.extend(std::iter::repeat_n(b'z', 1024 * 1024));
+        input.extend_from_slice(br#""}"#);
+        fs::write(&path, &input).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        while !scan_entries_inner(&state, opened.session_revision)
+            .unwrap()
+            .complete
+        {}
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        let (result, writes) = capture_current_bytes(
+            &state,
+            selected.session_revision,
+            CopyCurrentBytesFormatDto::Lossy,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, [String::from_utf8(input.clone()).unwrap()]);
+
+        let invalid_path = temp_jsonl_path("ipc-copy-current-invalid");
+        fs::write(&invalid_path, b"prefix\xC3").unwrap();
+        let invalid_state = AppState::default();
+        let invalid = open_file_inner(&invalid_state, invalid_path.to_str().unwrap()).unwrap();
+        let selected = select_entry_inner(&invalid_state, 0, invalid.session_revision).unwrap();
+        let (result, writes) = capture_current_bytes(
+            &invalid_state,
+            selected.session_revision,
+            CopyCurrentBytesFormatDto::Lossy,
+        );
+        assert!(result.is_ok());
+        assert_eq!(writes, ["prefix�"]);
+
+        fs::remove_file(path).unwrap();
+        fs::remove_file(invalid_path).unwrap();
+    }
+
+    #[test]
+    fn copy_current_bytes_rejects_stale_and_changed_state_before_sink() {
+        let path = temp_jsonl_path("ipc-copy-current-stale");
+        fs::write(&path, br#"{"value":"before"}"#).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        let (result, writes) = capture_current_bytes(
+            &state,
+            selected.session_revision - 1,
+            CopyCurrentBytesFormatDto::Lossy,
+        );
+        assert_eq!(result.unwrap_err().code, "stale_session");
+        assert!(writes.is_empty());
+
+        fs::write(&path, br#"{"value":"after!!"}"#).unwrap();
+        let (result, writes) = capture_current_bytes(
+            &state,
+            selected.session_revision,
+            CopyCurrentBytesFormatDto::Lossy,
+        );
+        assert_eq!(result.unwrap_err().code, "file_changed");
+        assert!(writes.is_empty());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn hex_copy_layout_accounts_for_wide_offsets_without_allocating() {
+        let (rows, width, capacity) = hex_copy_layout(17).unwrap();
+        assert_eq!((rows, width, capacity), (2, 8, 155));
+        if usize::BITS > 32 {
+            let byte_len = (1u64 << 32) as usize + 16;
+            let (rows, width, capacity) = hex_copy_layout(byte_len).unwrap();
+            assert_eq!(rows, (1usize << 28) + 1);
+            assert_eq!(width, 9);
+            assert_eq!(capacity, rows * 78 + rows - 1);
+        }
+        assert!(hex_copy_layout(usize::MAX).is_err());
+    }
+
+    #[test]
+    fn copy_current_bytes_holds_session_lock_until_sink_and_reports_sink_errors() {
+        let path = temp_jsonl_path("ipc-copy-current-lock");
+        fs::write(&path, br#"{"value":"text"}"#).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        let result = copy_current_bytes_to_sink(
+            &state,
+            selected.session_revision,
+            CopyCurrentBytesFormatDto::Lossy,
+            |_| {
+                assert!(matches!(
+                    state.session.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                Err("clipboard unavailable".to_owned())
+            },
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.code, "clipboard_failed");
+        assert!(error.message.contains("clipboard unavailable"));
+        assert!(state.session.try_lock().is_ok());
         fs::remove_file(path).unwrap();
     }
 }

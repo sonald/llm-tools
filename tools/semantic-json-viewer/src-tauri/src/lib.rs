@@ -30,6 +30,7 @@ pub fn run() {
             ipc::read_raw_document_bytes,
             ipc::read_decoded_text,
             ipc::copy_node,
+            ipc::copy_current_bytes,
             ipc::search_current,
             ipc::get_string_detection,
             ipc::get_html_preview,
