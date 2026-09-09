@@ -126,6 +126,129 @@ const conversationCalls=calls.filter((call)=>call.command==="get_conversation_bl
 check(conversationCalls.at(-1)?.args.cursor===null,"Previous did not return to the first page");
 host.remove();
 
+const inlineHost=document.createElement("div");document.body.append(inlineHost);inlineHost.style.height="420px";
+const inlineRoot=node(800,"array","messages",0,500000,31);
+const inlineTexts=new Map([
+  [801,{text:"# Safe markdown\\n\\n**visible** and <script>blocked</script>",semanticType:"markdown"}],
+  [802,{text:"const answer = 42;\\nconsole.log(answer);",semanticType:"code"}],
+  [804,{text:"# object-shaped source",semanticType:"markdown"}],
+  [905,{text:"late visible boundary",semanticType:"plainText"}],
+  [806,{text:"L".repeat(140000),semanticType:"plainText"}],
+  [811,{text:"OpenAI text body",semanticType:"plainText"}],
+  [821,{text:"System instruction",semanticType:"plainText"}],
+  [822,{text:"private reasoning",semanticType:"plainText"}],
+  [823,{text:"# redacted **opaque**",semanticType:"markdown"}],
+  [824,{text:"",semanticType:"plainText"}]
+]);
+const inlineRef=(id)=>ref(id,id*10,id*10+5);
+const inlineBlock=(id,category="content",role="assistant",kind="source",style="generic",refs={})=>({
+  kind,messageNodeId:kind==="system"?null:700,messageSpanStart:kind==="system"?null:7000,messageSpanEnd:kind==="system"?null:7005,
+  sourceNodeId:id,sourceSpanStart:id*10,sourceSpanEnd:id*10+5,fieldNodeId:id,fieldSpanStart:id*10,fieldSpanEnd:id*10+5,
+  category,role,roleSourceNodeId:null,roleSourceSpanStart:null,roleSourceSpanEnd:null,
+  openaiRefs:style==="openai"?{block:inlineRef(id),text:refs.text??null,image:null,callId:null,function:null,name:null,arguments:null}:null,
+  anthropicRefs:style==="anthropic"?{block:inlineRef(id),text:refs.text??null,thinking:refs.thinking??null,data:refs.data??null,id:null,name:null,input:null,toolUseId:null,content:null}:null
+});
+const genericInlineBlocks=[
+  {kind:"message",messageNodeId:700,messageSpanStart:7000,messageSpanEnd:7005,sourceNodeId:null,sourceSpanStart:null,sourceSpanEnd:null,fieldNodeId:null,fieldSpanStart:null,fieldSpanEnd:null,category:"message",role:"assistant",roleSourceNodeId:null,roleSourceSpanStart:null,roleSourceSpanEnd:null,openaiRefs:null,anthropicRefs:null},
+  inlineBlock(801,"content"),inlineBlock(802,"content"),
+  inlineBlock(804,"value"),
+  ...Array.from({length:26},(_,index)=>inlineBlock(850+index,"unknown")),
+  inlineBlock(806,"content")
+];
+const openaiInlineBlocks=[inlineBlock(811,"content","assistant","source","openai",{text:inlineRef(811)})];
+const anthropicInlineBlocks=[
+  inlineBlock(821,"system","","system","anthropic",{text:inlineRef(821)}),
+  inlineBlock(822,"thinking","assistant","source","anthropic",{thinking:inlineRef(822)}),
+  inlineBlock(823,"redactedThinking","assistant","source","anthropic",{data:inlineRef(823)}),
+  inlineBlock(824,"content","assistant","source","anthropic",{text:inlineRef(824)})
+];
+const inlineCalls=[];
+const inlineInvoke=async(command,args)=>{
+  inlineCalls.push({command,args});
+  if(command==="get_conversation_candidate")return {nodeId:800,spanStart:0,spanEnd:500000,messageCount:31,kind:"generic",scopeRootId:800,scopeRootSpanStart:0,scopeRootSpanEnd:500000,sessionRevision:18};
+  if(command==="get_conversation_blocks"){
+    const blocks=args.style==="openai"?openaiInlineBlocks:args.style==="anthropic"?anthropicInlineBlocks:genericInlineBlocks;
+    return {blocks,hasMore:false,nextCursor:null,wrapperRef:{scopeRootId:800,scopeRootSpanStart:0,scopeRootSpanEnd:500000,candidateNodeId:800,candidateSpanStart:0,candidateSpanEnd:500000}};
+  }
+  if(command==="get_node_summary")return node(args.nodeId,args.nodeId===804?"object":"string","content",args.nodeId*10,args.nodeId*10+5,0);
+  const text=inlineTexts.get(args.nodeId);
+  if(command==="get_string_metrics"&&text){const bytes=new TextEncoder().encode(text.text).byteLength;return {decodedBytes:bytes,characterCount:text.text.length,lineCount:text.text.split(/\\r\\n|\\r|\\n/).length};}
+  if(command==="get_string_detection"&&text)return {semanticType:text.semanticType,detectionSource:"contentDetected",plainReason:text.semanticType==="plainText"?"short":null};
+  if(command==="read_decoded_text"&&text){const bytes=new TextEncoder().encode(text.text).byteLength;const partial=bytes>args.length;return {start:0,text:partial?text.text.slice(0,args.length):text.text,hasMore:partial,nextOffset:partial?args.length:null};}
+  throw new Error("unexpected inline command "+command);
+};
+const inlineView=new ConversationView({panel:inlineHost,invoke:inlineInvoke,onError:(error)=>{throw error;},onRaw:()=>{},onTree:()=>{},onContent:()=>{}});
+inlineView.setContext({mode:"document",sessionRevision:18,sourceSize:500000,scopeRoot:inlineRoot,scopeLabel:"inline fixture"});await settle();await settle();await settle();
+check(inlineHost.querySelector(".conversation-inline-markdown strong")?.textContent==="visible","visible Markdown was not rendered as safe structured content");
+check(inlineHost.querySelector("script")==null&&inlineHost.textContent.includes("<script>blocked</script>"),"inline Markdown allowed executable HTML or lost escaped source text");
+check(inlineHost.querySelector(".conversation-inline-code code")?.textContent?.includes("const answer = 42"),"visible code content was not rendered inline");
+check(inlineCalls.some((call)=>call.command==="get_node_summary"&&call.args.nodeId===804)&&!inlineCalls.some((call)=>call.command==="get_string_metrics"&&call.args.nodeId===804),"structured value was sent to string metrics instead of remaining a source-preserving Tree target");
+check(!inlineCalls.some((call)=>call.command==="get_string_metrics"&&call.args.nodeId===806),"offscreen long content was read before entering the viewport");
+const inlineViewport=inlineHost.querySelector(".conversation-block-viewport");inlineViewport.style.height="240px";
+inlineViewport.dispatchEvent(new Event("scroll"));await settle();
+const stableInlineTree=inlineHost.querySelector('[data-conversation-action="tree"][data-conversation-block-index="0"]');inlineViewport.scrollTop=1;inlineViewport.dispatchEvent(new Event("scroll"));await settle();
+check(stableInlineTree===inlineHost.querySelector('[data-conversation-action="tree"][data-conversation-block-index="0"]'),"same-window inline scroll rebuilt a stable offscreen action node");
+inlineViewport.scrollTop=Math.max(0,inlineViewport.scrollHeight-inlineViewport.clientHeight);inlineViewport.dispatchEvent(new Event("scroll"));await settle();await settle();await settle();
+check(inlineCalls.some((call)=>call.command==="get_string_metrics"&&call.args.nodeId===806),"visible long content did not trigger bounded string metrics");
+check(inlineHost.querySelector(".conversation-inline-partial")!==null&&inlineHost.querySelector('[data-conversation-action="content"][data-conversation-block-index="30"]')!==null,"long inline content did not expose a partial preview and exact Content Viewer entry");
+const inlineStyle=inlineHost.querySelector("select[data-conversation-style]");inlineStyle.value="openai";inlineStyle.dispatchEvent(new Event("change",{bubbles:true}));await settle();await settle();await settle();
+check(inlineHost.textContent.includes("OpenAI text body")&&inlineHost.querySelector(".conversation-inline-plain")!==null,"explicit OpenAI inline projection did not render text");
+const anthropicStyle=inlineHost.querySelector("select[data-conversation-style]");anthropicStyle.value="anthropic";anthropicStyle.dispatchEvent(new Event("change",{bubbles:true}));await settle();await settle();await settle();
+check(inlineHost.textContent.includes("System instruction")&&inlineHost.textContent.includes("private reasoning")&&inlineHost.textContent.includes("# redacted **opaque**"),"Anthropic System/Thinking/redacted data were not rendered inline");
+check(inlineHost.querySelector(".conversation-block-system h1")===null&&inlineHost.textContent.includes("# redacted **opaque**"),"redacted data was interpreted as Markdown instead of opaque source");
+check(inlineHost.querySelectorAll(".conversation-block-system").length===1&&inlineHost.querySelector(".conversation-block-system [data-conversation-action=content]"),"Anthropic System was not kept as an independent block with a Viewer action");
+check(inlineHost.querySelector('[data-conversation-inline-node="824"] .conversation-inline-plain')!==null&&!inlineCalls.some((call)=>call.command==="read_decoded_text"&&call.args.nodeId===824),"empty inline content did not render without an invalid zero-length decoded read");
+inlineHost.remove();
+
+const headHost=document.createElement("div");document.body.append(headHost);
+const headRoot=node(950,"array","messages",0,500000,20);
+const headBlocks=Array.from({length:20},(_,index)=>index===5?inlineBlock(905,"content"):inlineBlock(9500+index,"unknown"));
+const headCalls=[];
+const headInvoke=async(command,args)=>{
+  headCalls.push({command,args});
+  if(command==="get_conversation_candidate")return {nodeId:950,spanStart:0,spanEnd:500000,messageCount:20,kind:"generic",scopeRootId:950,scopeRootSpanStart:0,scopeRootSpanEnd:500000,sessionRevision:19};
+  if(command==="get_conversation_blocks")return {blocks:headBlocks,hasMore:false,nextCursor:null,wrapperRef:{scopeRootId:950,scopeRootSpanStart:0,scopeRootSpanEnd:500000,candidateNodeId:950,candidateSpanStart:0,candidateSpanEnd:500000}};
+  if(command==="get_node_summary")return node(args.nodeId,"string","content",args.nodeId*10,args.nodeId*10+5,0);
+  const text=inlineTexts.get(args.nodeId);
+  if(command==="get_string_metrics"&&text){const bytes=new TextEncoder().encode(text.text).byteLength;return {decodedBytes:bytes,characterCount:text.text.length,lineCount:1};}
+  if(command==="get_string_detection"&&text)return {semanticType:text.semanticType,detectionSource:"contentDetected",plainReason:"short"};
+  if(command==="read_decoded_text"&&text)return {start:0,text:text.text,hasMore:false,nextOffset:null};
+  throw new Error("unexpected head command "+command);
+};
+const headView=new ConversationView({panel:headHost,invoke:headInvoke,onError:(error)=>{throw error;},onRaw:()=>{},onTree:()=>{},onContent:()=>{}});
+headView.setContext({mode:"document",sessionRevision:19,sourceSize:500000,scopeRoot:headRoot,scopeLabel:"head window"});await settle();await settle();await settle();
+const headViewport=headHost.querySelector(".conversation-block-viewport");headViewport.style.height="180px";headViewport.dispatchEvent(new Event("scroll"));await settle();
+const stableHeadRow=headHost.querySelector('[data-conversation-block-index="0"]');
+const headSummaryTen=headHost.querySelector('[data-conversation-block-index="10"] .conversation-block-summary');
+check(headSummaryTen?.textContent?.includes("Summary loads when this block enters the viewport."),"head-window fixture did not keep the offscreen summary lazy");
+check(!headCalls.some((call)=>call.command==="get_string_metrics"&&call.args.nodeId===905),"head-window offscreen block was read before it became visible");
+headViewport.scrollTop=5*136;headViewport.dispatchEvent(new Event("scroll"));await settle();await settle();
+check(stableHeadRow===headHost.querySelector('[data-conversation-block-index="0"]'),"overscan-only head-window scroll rebuilt stable DOM");
+check(headCalls.some((call)=>call.command==="get_string_metrics"&&call.args.nodeId===905)&&headHost.textContent.includes("late visible boundary"),"visible-boundary change inside one overscan window did not start inline loading");
+headViewport.scrollTop=10*136;headViewport.dispatchEvent(new Event("scroll"));await settle();await settle();
+const visibleSummaryTen=headHost.querySelector('[data-conversation-block-index="10"] .conversation-block-summary');
+check(!visibleSummaryTen?.textContent?.includes("Summary loads when this block enters the viewport.")&&visibleSummaryTen?.textContent?.includes("string Node 9510"),"visible unknown/message block kept its overscan summary placeholder");
+check(headCalls.some((call)=>call.command==="get_node_summary"&&call.args.nodeId===9510),"visible unknown/message block did not request its bounded source summary");
+headHost.remove();
+
+const deferredHost=document.createElement("div");document.body.append(deferredHost);let releaseInline;
+const deferredRoot=node(970,"array","messages",0,500000,1);
+const deferredBlock=inlineBlock(971,"content");
+const deferredInvoke=async(command,args)=>{
+  if(command==="get_conversation_candidate")return {nodeId:970,spanStart:0,spanEnd:500000,messageCount:1,kind:"generic",scopeRootId:970,scopeRootSpanStart:0,scopeRootSpanEnd:500000,sessionRevision:20};
+  if(command==="get_conversation_blocks")return {blocks:[deferredBlock],hasMore:false,nextCursor:null,wrapperRef:{scopeRootId:970,scopeRootSpanStart:0,scopeRootSpanEnd:500000,candidateNodeId:970,candidateSpanStart:0,candidateSpanEnd:500000}};
+  if(command==="get_node_summary")return node(args.nodeId,"string","content",args.nodeId*10,args.nodeId*10+5,0);
+  if(command==="get_string_metrics")return {decodedBytes:4,characterCount:4,lineCount:1};
+  if(command==="get_string_detection")return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"short"};
+  if(command==="read_decoded_text")return new Promise((resolve)=>{releaseInline=()=>resolve({start:0,text:"late",hasMore:false,nextOffset:null});});
+  throw new Error("unexpected deferred command "+command);
+};
+const deferredView=new ConversationView({panel:deferredHost,invoke:deferredInvoke,onError:(error)=>{throw error;},onRaw:()=>{},onTree:()=>{},onContent:()=>{}});
+deferredView.setContext({mode:"document",sessionRevision:20,sourceSize:500000,scopeRoot:deferredRoot,scopeLabel:"deferred inline"});await settle();await settle();await settle();
+check(typeof releaseInline==="function","deferred inline fixture did not reach its decoded read");
+deferredView.setContext(null);releaseInline?.();await settle();await settle();
+check(deferredHost.hidden&&deferredHost.textContent==="","late inline response mutated a closed Conversation context");deferredHost.remove();
+
 const possibleHost=document.createElement("div");document.body.append(possibleHost);possible=true;
 const possibleView=new ConversationView({panel:possibleHost,invoke,onError:(error)=>{throw error;},onRaw:()=>{},onTree:()=>{},onContent:()=>{}});
 possibleView.setContext({mode:"document",sessionRevision:7,sourceSize:1000,scopeRoot:node(55,"array","messages",0,1000,1),scopeLabel:"Possible scope"});await settle();await settle();
@@ -220,7 +343,7 @@ check(document.activeElement===outsideFocus,"background Conversation completion 
 
 const previousTauri=window.__TAURI_INTERNALS__;
 const mainCalls=[];
-let openRevision=31;let deferTree=false;let releaseTree;
+let openRevision=31;let deferTree=false;let releaseTree;let deferInlineRead=false;let releaseInlineRead;
 window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
   mainCalls.push({command,args});
   if(command==="plugin:dialog|open")return "/tmp/conversation-ui.json";
@@ -231,17 +354,30 @@ window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
   if(command==="get_conversation_blocks")return {blocks:[block("source","content","user")],hasMore:false,nextCursor:null,wrapperRef:{scopeRootId:1,scopeRootSpanStart:0,scopeRootSpanEnd:1000,candidateNodeId:10,candidateSpanStart:100,candidateSpanEnd:900}};
   if(command==="get_node_summary"&&deferTree)return new Promise((resolve)=>{releaseTree=resolve;});
   if(command==="get_node_summary")return node(args.nodeId,"string","content",160,220,0);
+  if(command==="get_string_metrics")return {decodedBytes:11,characterCount:11,lineCount:1};
+  if(command==="get_string_detection")return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"short"};
+  if(command==="read_decoded_text"&&deferInlineRead)return new Promise((resolve)=>{releaseInlineRead=()=>resolve({start:0,text:"main inline",hasMore:false,nextOffset:null});});
+  if(command==="read_decoded_text")return {start:0,text:"main inline",hasMore:false,nextOffset:null};
   if(command==="read_raw_slice")return {start:args.sourceStart,text:"source",hasMore:false,nextOffset:null};
   throw new Error("unexpected main command "+command);
 }};
-document.getElementById("open-file").click();await settle();await settle();await settle();
+deferInlineRead=true;document.getElementById("open-file").click();await settle();await settle();await settle();
 const mainHost=document.getElementById("conversation-view");
 check(!mainHost.hidden&&mainHost.textContent.includes("Conversation"),"main Semantic entry did not expose Conversation view");
 check(mainCalls.some((call)=>call.command==="get_conversation_blocks"),"main Semantic entry did not invoke paged Conversation IPC");
 check(document.getElementById("reader-state").hidden,"Conversation context did not replace the generic reader placeholder");
+const inlineCommands=()=>mainCalls.filter((call)=>call.command==="get_string_metrics"||call.command==="get_string_detection"||call.command==="read_decoded_text");
+check(inlineCommands().some((call)=>call.command==="read_decoded_text"),"main fixture did not reach a deferred inline decoded read");
+const inlineBeforeHidden=inlineCommands().length;
 mainHost.querySelector('[data-conversation-action="tree"][data-conversation-block-index]').click();await settle();await settle();await settle();
 check(!document.getElementById("tree-panel").hidden&&document.getElementById("tree-panel").querySelector('[data-node-id="12"]')!==null,"main Tree action did not load the exact source NodeId as a narrow Tree root");
 check(document.getElementById("raw-panel").hidden,"main Tree action fell back to Raw instead of opening Tree");
+document.getElementById("raw-tab").click();await settle();
+deferInlineRead=false;releaseInlineRead?.();await settle();await settle();
+check(inlineCommands().length===inlineBeforeHidden,"Tree/Raw-hidden Semantic panel applied or started a late inline response");
+document.getElementById("semantic-tab").click();await settle();await settle();await settle();
+check(inlineCommands().length>inlineBeforeHidden&&mainHost.textContent.includes("main inline"),"returning to Semantic did not resume the current visible inline block");
+check(document.getElementById("semantic-panel").hidden===false&&document.getElementById("raw-panel").hidden===true,"Semantic visibility hook did not restore the projection panel");
 const returnScope=document.getElementById("tree-panel").querySelector("[data-return-scope-tree]");check(returnScope!==null,"narrow Tree root did not expose a Return to scope Tree action");returnScope.click();await settle();await settle();
 check(document.getElementById("tree-panel").querySelector('[data-node-id="1"]')!==null,"Return to scope Tree did not restore the original scope root");
 deferTree=true;mainHost.querySelector('[data-conversation-action="tree"][data-conversation-block-index]').click();await settle();

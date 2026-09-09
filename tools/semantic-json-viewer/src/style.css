@@ -368,7 +368,7 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .conversation-block-list { display: grid; gap: 0; }
 
-.conversation-block { display: flex; min-width: 0; height: 136px; flex-direction: column; padding: 9px 10px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); box-shadow: 0 1px 1px rgb(24 32 45 / 3%); }
+.conversation-block { display: flex; min-width: 0; min-height: 136px; flex-direction: column; padding: 9px 10px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); box-shadow: 0 1px 1px rgb(24 32 45 / 3%); }
 
 .conversation-block-message { border-left: 3px solid var(--blue); }
 
@@ -385,6 +385,22 @@ h3 { font-size: 16px; font-weight: 700; }
 .conversation-category { margin-left: auto; color: var(--faint); font: 9px "SFMono-Regular", Consolas, monospace; }
 
 .conversation-block-summary { margin: 6px 0 8px; color: var(--muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+
+.conversation-message-owner { color: var(--faint); font: 9px "SFMono-Regular", Consolas, monospace; }
+
+.conversation-inline-content { min-width: 0; margin: 6px 0 8px; color: var(--text); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+
+.conversation-inline-placeholder, .conversation-inline-partial { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+
+.conversation-inline-raw, .conversation-inline-plain { max-height: 280px; margin: 6px 0 0; padding: 7px 8px; overflow: auto; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: #f8fafc; font: 10px/1.5 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.conversation-inline-markdown, .conversation-inline-code { max-height: 300px; margin-top: 4px; overflow: auto; }
+
+.conversation-inline-code pre { margin: 0; }
+
+.conversation-inline-markdown > :first-child { margin-top: 0; }
+
+.conversation-inline-markdown > :last-child { margin-bottom: 0; }
 
 .conversation-block-actions { min-height: 28px; max-height: 76px; align-content: flex-start; overflow: auto; }
 

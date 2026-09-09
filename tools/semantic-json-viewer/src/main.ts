@@ -1080,6 +1080,7 @@ function setActiveView(view: "semantic" | "tree" | "raw"): void {
   if (view === "tree") treeView.activate();
   if (view === "raw") rawView.activate();
   else rawView.deactivate();
+  if (view === "semantic" && state.summary && !summaryIsInvalidated(state.summary)) conversationView.onSemanticVisible();
 }
 
 function currentSearchScope(): SearchScope | null {

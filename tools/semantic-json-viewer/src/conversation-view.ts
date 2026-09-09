@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { renderCode } from "./code-renderer";
 import type { ContentTarget } from "./content-viewer";
+import { renderSafeMarkdown } from "./markdown-renderer";
 import type { NodeDto } from "./tree-view";
 
 export type ConversationStyle = "generic" | "openai" | "anthropic";
@@ -112,13 +114,36 @@ type FocusIntent = {
   candidateId?: number;
 };
 
+type StringMetrics = {
+  decodedBytes: number;
+  characterCount: number;
+  lineCount: number;
+};
+
+type StringDetection = {
+  semanticType: "plainText" | "markdown" | "code" | "nestedJson" | "html";
+};
+
+type InlineState = {
+  status: "loading" | "ready" | "partial" | "unavailable";
+  text?: string;
+  metrics?: StringMetrics;
+  detection?: StringDetection;
+  opaque?: boolean;
+  reason?: string;
+};
+
+type InlineAnchor = {
+  index: number;
+  offset: number;
+};
+
 const CANDIDATE_FIELDS = new Set(["messages", "conversation", "conversations"]);
 const BLOCK_KINDS = new Set(["message", "source", "system"]);
 const MAX_CHILD_PAGES = 16;
 const PAGE_LIMIT = 100;
-// Cards use a fixed height in CSS so the spacer math remains stable while
-// only the visible window plus 20 rows on each side is materialized.
 const ROW_HEIGHT = 136;
+const INLINE_READ_BYTES = 128 * 1024;
 
 export class ConversationView {
   private readonly panel: HTMLElement;
@@ -144,11 +169,21 @@ export class ConversationView {
   private windowPageIdentity: string | null = null;
   private windowStart = -1;
   private windowEnd = -1;
+  private windowVisibleStart = -1;
+  private windowVisibleEnd = -1;
   private windowTopSpacer: HTMLElement | null = null;
   private windowList: HTMLElement | null = null;
   private windowBottomSpacer: HTMLElement | null = null;
   private readonly blockSummaries = new Map<number, string>();
   private readonly summaryRequests = new Set<string>();
+  private readonly inlineStates = new Map<number, InlineState>();
+  private readonly inlineRequests = new Set<string>();
+  private readonly renderedInlineStates = new WeakMap<HTMLElement, InlineState>();
+  private readonly rowHeights = new Map<number, number>();
+  private readonly rowResizeObserver: ResizeObserver | null;
+  private layoutVersion = 0;
+  private renderedLayoutVersion = -1;
+  private pendingAnchor: InlineAnchor | null = null;
 
   constructor(options: ConversationViewOptions) {
     this.panel = options.panel;
@@ -157,6 +192,9 @@ export class ConversationView {
     this.onRaw = options.onRaw;
     this.onTree = options.onTree;
     this.onContent = options.onContent;
+    this.rowResizeObserver = typeof ResizeObserver === "function"
+      ? new ResizeObserver((entries) => this.handleRowResize(entries))
+      : null;
     this.panel.addEventListener("click", (event) => this.handleClick(event));
     this.panel.addEventListener("change", (event) => this.handleChange(event));
     this.panel.addEventListener("scroll", (event) => {
@@ -189,6 +227,8 @@ export class ConversationView {
     this.resetWindowElements();
     this.blockSummaries.clear();
     this.summaryRequests.clear();
+    this.inlineStates.clear();
+    this.inlineRequests.clear();
     this.render();
     if (context) void this.discoverCandidates(context, this.generation);
   }
@@ -209,6 +249,8 @@ export class ConversationView {
     this.resetWindowElements();
     this.blockSummaries.clear();
     this.summaryRequests.clear();
+    this.inlineStates.clear();
+    this.inlineRequests.clear();
     this.panel.hidden = true;
     this.panel.replaceChildren();
   }
@@ -308,6 +350,9 @@ export class ConversationView {
     this.style = candidate.kind === "openai" ? "openai" : candidate.kind === "anthropic" ? "anthropic" : "generic";
     this.page = null;
     this.previousPages = [];
+    this.inlineStates.clear();
+    this.inlineRequests.clear();
+    this.pendingAnchor = null;
     this.requestGeneration += 1;
     this.loading = false;
     this.statusMessage = candidate.kind === "possible" && !confirmPossible
@@ -347,6 +392,9 @@ export class ConversationView {
       this.page = { ...page, pageStart: cursor };
       this.blockSummaries.clear();
       this.summaryRequests.clear();
+      this.inlineStates.clear();
+      this.inlineRequests.clear();
+      this.pendingAnchor = null;
       this.loading = false;
       this.statusMessage = page.blocks.length === 0 && page.hasMore
         ? "This page contains no blocks; continue to scan the wrapper."
@@ -393,6 +441,9 @@ export class ConversationView {
       this.selectedCandidate = null;
       this.page = null;
       this.previousPages = [];
+      this.inlineStates.clear();
+      this.inlineRequests.clear();
+      this.pendingAnchor = null;
       this.possibleConfirmed = false;
       this.requestGeneration += 1;
       this.loading = false;
@@ -442,6 +493,9 @@ export class ConversationView {
     this.loading = false;
     this.page = null;
     this.previousPages = [];
+    this.inlineStates.clear();
+    this.inlineRequests.clear();
+    this.pendingAnchor = null;
     this.statusMessage = "Style changed; restarting from the first Conversation block page.";
     this.render();
     void this.loadPage(null, "initial");
@@ -584,6 +638,12 @@ export class ConversationView {
       mixed.append(element("strong", "", "Mixed conversation schema detected"));
       mixed.append(element("span", "", "Generic keeps both ecosystems lossless. Choose a brand style explicitly when needed."));
       shell.append(mixed);
+    }
+    if (this.page?.pageStart && (this.page.pageStart.messageIndex > 0 || this.page.pageStart.phase === "fields")) {
+      const continuation = element("div", "conversation-banner conversation-banner-continuation");
+      continuation.append(element("strong", "", "Continuation page"));
+      continuation.append(element("span", "", `This page resumes at message ${this.page.pageStart.messageIndex + 1}; earlier blocks are on the previous page.`));
+      shell.append(continuation);
     }
     shell.append(this.renderPageControls());
     shell.append(this.renderBlockViewport());
@@ -728,12 +788,21 @@ export class ConversationView {
   }
 
   private resetWindowElements(): void {
+    if (this.windowList && this.rowResizeObserver) {
+      for (const child of Array.from(this.windowList.children)) this.rowResizeObserver.unobserve(child);
+    }
     this.windowPageIdentity = null;
     this.windowStart = -1;
     this.windowEnd = -1;
+    this.windowVisibleStart = -1;
+    this.windowVisibleEnd = -1;
     this.windowTopSpacer = null;
     this.windowList = null;
     this.windowBottomSpacer = null;
+    this.rowHeights.clear();
+    this.layoutVersion += 1;
+    this.renderedLayoutVersion = -1;
+    this.pendingAnchor = null;
   }
 
   private renderBlocks(): void {
@@ -760,11 +829,20 @@ export class ConversationView {
     const focusedRefKey = document.activeElement instanceof HTMLElement
       ? document.activeElement.dataset.conversationRefKey
       : undefined;
-    const height = viewport.clientHeight || 560;
-    const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - 20);
-    const end = Math.min(blocks.length, Math.ceil((scrollTop + height) / ROW_HEIGHT) + 20);
-    if (this.windowPageIdentity === pageIdentity && this.windowStart === start && this.windowEnd === end
-      && this.windowTopSpacer !== null && this.windowList !== null && this.windowBottomSpacer !== null) {
+    const panelVisible = this.isPanelVisible();
+    const height = panelVisible ? viewport.clientHeight || 560 : 0;
+    const visibleStart = panelVisible ? this.indexAtOffset(scrollTop, blocks.length) : 0;
+    const visibleEnd = panelVisible ? Math.min(blocks.length, this.indexAtOffset(scrollTop + height, blocks.length) + 1) : 0;
+    const start = Math.max(0, visibleStart - 20);
+    const end = panelVisible ? Math.min(blocks.length, visibleEnd + 20) : Math.min(blocks.length, 20);
+    const hasWindow = this.windowPageIdentity === pageIdentity && this.windowStart === start && this.windowEnd === end
+      && this.windowTopSpacer !== null && this.windowList !== null && this.windowBottomSpacer !== null;
+    if (hasWindow && this.renderedLayoutVersion === this.layoutVersion && this.pendingAnchor === null) {
+      if (this.windowVisibleStart !== visibleStart || this.windowVisibleEnd !== visibleEnd) {
+        this.windowVisibleStart = visibleStart;
+        this.windowVisibleEnd = visibleEnd;
+        this.ensureVisibleInline(visibleStart, visibleEnd);
+      }
       return;
     }
     if (this.windowTopSpacer === null || this.windowList === null || this.windowBottomSpacer === null) {
@@ -776,13 +854,35 @@ export class ConversationView {
     this.windowPageIdentity = pageIdentity;
     this.windowStart = start;
     this.windowEnd = end;
-    this.windowTopSpacer.style.height = `${start * ROW_HEIGHT}px`;
-    this.windowBottomSpacer.style.height = `${Math.max(0, blocks.length - end) * ROW_HEIGHT}px`;
-    const fragment = document.createDocumentFragment();
-    for (let index = start; index < end; index += 1) fragment.append(this.renderBlock(blocks[index], index));
-    this.windowList.replaceChildren(fragment);
+    this.windowVisibleStart = visibleStart;
+    this.windowVisibleEnd = visibleEnd;
+    const anchor = this.pendingAnchor;
+    const topHeight = this.prefixHeight(start);
+    const bottomHeight = Math.max(0, this.totalHeight(blocks.length) - this.prefixHeight(end));
+    this.windowTopSpacer.style.height = `${topHeight}px`;
+    this.windowBottomSpacer.style.height = `${bottomHeight}px`;
+    if (!hasWindow || this.renderedLayoutVersion < 0 || this.pendingAnchor === null && this.windowList.childElementCount === 0) {
+      if (this.rowResizeObserver) {
+        for (const child of Array.from(this.windowList.children)) this.rowResizeObserver.unobserve(child);
+      }
+      const fragment = document.createDocumentFragment();
+      for (let index = start; index < end; index += 1) {
+        const row = this.renderBlock(blocks[index], index, index >= visibleStart && index < visibleEnd);
+        fragment.append(row);
+      }
+      this.windowList.replaceChildren(fragment);
+      if (this.rowResizeObserver) {
+        for (const child of Array.from(this.windowList.children)) this.rowResizeObserver.observe(child);
+      }
+    }
+    this.renderedLayoutVersion = this.layoutVersion;
+    this.pendingAnchor = null;
+    this.ensureVisibleInline(visibleStart, visibleEnd);
     const maxScroll = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-    viewport.scrollTop = wasAtBottom ? maxScroll : Math.min(scrollTop, maxScroll);
+    const anchoredScroll = anchor ? this.prefixHeight(anchor.index) + anchor.offset : null;
+    viewport.scrollTop = anchoredScroll !== null
+      ? Math.min(anchoredScroll, maxScroll)
+      : wasAtBottom ? maxScroll : Math.min(scrollTop, maxScroll);
     if (focusedIndex !== null) {
       const blockSelector = `[data-conversation-block-index="${focusedIndex}"]`;
       const refSelector = focusedRefKey ? `[data-conversation-ref-key="${focusedRefKey}"]` : "";
@@ -795,7 +895,104 @@ export class ConversationView {
     }
   }
 
-  private renderBlock(block: ConversationBlock, index: number): HTMLElement {
+  private rowHeight(index: number): number {
+    return this.rowHeights.get(index) ?? ROW_HEIGHT;
+  }
+
+  private prefixHeight(count: number): number {
+    let total = 0;
+    for (let index = 0; index < count; index += 1) total += this.rowHeight(index);
+    return total;
+  }
+
+  private totalHeight(count: number): number {
+    return this.prefixHeight(count);
+  }
+
+  private indexAtOffset(offset: number, count: number): number {
+    if (count <= 1) return 0;
+    const target = Math.max(0, offset);
+    let cursor = 0;
+    for (let index = 0; index < count; index += 1) {
+      const next = cursor + this.rowHeight(index);
+      if (target < next) return index;
+      cursor = next;
+    }
+    return count - 1;
+  }
+
+  private anchorAtOffset(offset: number): InlineAnchor | null {
+    const blocks = this.page?.blocks ?? [];
+    if (blocks.length === 0) return null;
+    const index = this.indexAtOffset(offset, blocks.length);
+    return { index, offset: Math.max(0, offset - this.prefixHeight(index)) };
+  }
+
+  private handleRowResize(entries: ResizeObserverEntry[]): void {
+    const viewport = this.blockViewport;
+    if (!viewport || !this.page || entries.length === 0 || !this.isPanelVisible()) return;
+    const anchor = this.anchorAtOffset(viewport.scrollTop);
+    let changed = false;
+    for (const entry of entries) {
+      if (!this.windowList?.contains(entry.target)) continue;
+      const row = entry.target.closest<HTMLElement>("[data-conversation-block-index]");
+      const index = row ? numberFromDataset(row.dataset.conversationBlockIndex) : null;
+      if (index === null) continue;
+      const borderBoxSize = entry.borderBoxSize as ResizeObserverSize | readonly ResizeObserverSize[] | undefined;
+      const borderBox = Array.isArray(borderBoxSize)
+        ? borderBoxSize[0]?.blockSize
+        : borderBoxSize && "blockSize" in borderBoxSize ? borderBoxSize.blockSize : undefined;
+      const measured = Math.max(ROW_HEIGHT, Math.ceil(borderBox ?? entry.contentRect.height));
+      if (this.rowHeights.get(index) !== measured) {
+        this.rowHeights.set(index, measured);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    this.layoutVersion += 1;
+    this.pendingAnchor = anchor;
+    queueMicrotask(() => {
+      if (this.blockViewport === viewport && this.page !== null) this.renderBlocks();
+    });
+  }
+
+  private ensureVisibleInline(start: number, end: number): void {
+    const blocks = this.page?.blocks ?? [];
+    if (!this.isPanelVisible() || !this.windowList) return;
+    for (let index = start; index < end && index < blocks.length; index += 1) {
+      const block = blocks[index];
+      const source = this.inlineSourceFor(block);
+      const row = this.windowList.querySelector<HTMLElement>(`[data-conversation-block-index="${index}"]`);
+      if (!row) continue;
+      const summary = row.querySelector<HTMLElement>(".conversation-block-summary");
+      if (summary && !source) {
+        summary.textContent = this.blockSummary(block);
+        this.loadBlockSummary(block, index);
+      }
+      if (!source) continue;
+      const host = row?.querySelector<HTMLElement>(".conversation-inline-content");
+      if (host && summary) this.loadInlineContent(index, host, source, summary, block.category === "redactedThinking");
+    }
+  }
+
+  onSemanticVisible(): void {
+    if (!this.context || !this.isPanelVisible()) return;
+    this.windowVisibleStart = -1;
+    this.windowVisibleEnd = -1;
+    this.renderBlocks();
+  }
+
+  private isPanelVisible(): boolean {
+    if (!this.panel.isConnected) return false;
+    for (let ancestor: HTMLElement | null = this.panel; ancestor; ancestor = ancestor.parentElement) {
+      if (ancestor.hidden) return false;
+      const style = window.getComputedStyle(ancestor);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+    }
+    return true;
+  }
+
+  private renderBlock(block: ConversationBlock, index: number, shouldInline = false): HTMLElement {
     const item = element("article", `conversation-block conversation-block-${block.kind}`);
     item.dataset.conversationBlockIndex = String(index);
     item.setAttribute("role", "listitem");
@@ -806,18 +1003,36 @@ export class ConversationView {
       ? `Message · Node ${block.message?.nodeId ?? "unknown"}`
       : block.kind === "system" ? "System section" : block.category;
     heading.append(element("strong", "conversation-block-title", title));
+    if (block.kind !== "message" && block.message) {
+      heading.append(element("span", "conversation-message-owner", `Message Node ${block.message.nodeId}`));
+    }
     if (block.role) heading.append(element("span", "conversation-role", block.role));
     heading.append(element("span", "conversation-category", block.category));
     item.append(heading);
-    const summary = element("p", "conversation-block-summary", this.blockSummary(block));
-    item.append(summary);
-    this.loadBlockSummary(block, index);
+    const inlineSource = this.inlineSourceFor(block);
+    if (inlineSource) {
+      const summary = element("p", "conversation-block-summary", shouldInline
+        ? this.blockSummary(block)
+        : "Summary loads when this block enters the viewport.");
+      item.append(summary);
+      const inline = element("div", "conversation-inline-content");
+      inline.dataset.conversationInlineNode = String(inlineSource.nodeId);
+      item.append(inline);
+      if (shouldInline) this.loadInlineContent(index, inline, inlineSource, summary, block.category === "redactedThinking");
+      else inline.append(element("p", "conversation-inline-placeholder", "Inline content loads when this block enters the viewport."));
+    } else {
+      const summary = element("p", "conversation-block-summary", shouldInline
+        ? this.blockSummary(block)
+        : "Summary loads when this block enters the viewport.");
+      item.append(summary);
+      if (shouldInline) this.loadBlockSummary(block, index);
+    }
     const actions = element("div", "conversation-block-actions");
     const source = this.sourceFor(block, "raw");
     if (block.roleSource) actions.append(this.blockActionButton("Role source", "role", index));
     if (source) {
       actions.append(this.blockActionButton("Raw", "raw", index), this.blockActionButton("Tree", "tree", index));
-      if (isContentCategory(block.category) && this.sourceFor(block, "content")) {
+      if ((isContentCategory(block.category) || inlineSource) && this.sourceFor(block, "content")) {
         actions.append(this.blockActionButton("Open content", "content", index));
       }
     }
@@ -852,6 +1067,216 @@ export class ConversationView {
       return "Tool data is summarized here; every source reference remains available.";
     }
     return "Source-preserving Conversation block.";
+  }
+
+  private inlineSourceFor(block: ConversationBlock): SourceRef | null {
+    const anthropic = block.anthropicRefs;
+    const openai = block.openaiRefs;
+    if (block.kind === "system") return anthropic?.text ?? block.source;
+    if (anthropic) {
+      return anthropic.text ?? anthropic.thinking ?? anthropic.data ?? anthropic.content;
+    }
+    if (openai?.text) return openai.text;
+    if (isContentCategory(block.category)) return block.source;
+    return null;
+  }
+
+  private inlineRequestKey(pageIdentity: string, source: SourceRef): string {
+    return `${this.generation}:${this.requestGeneration}:${this.style}:${pageIdentity}:${source.nodeId}:${source.spanStart}:${source.spanEnd}`;
+  }
+
+  private isCurrentInlineHost(
+    context: ConversationContext,
+    generation: number,
+    requestGeneration: number,
+    pageIdentity: string,
+    candidateId: number | null,
+    style: ConversationStyle,
+    index: number,
+    source: SourceRef,
+    host: HTMLElement
+  ): boolean {
+    if (!this.isCurrentProjection(context, generation, requestGeneration, pageIdentity, candidateId, style)
+      || !this.isPanelVisible() || !this.windowList || index < this.windowVisibleStart || index >= this.windowVisibleEnd || !host.isConnected) return false;
+    const row = this.windowList.querySelector<HTMLElement>(`[data-conversation-block-index="${index}"]`);
+    const currentHost = row?.querySelector<HTMLElement>(".conversation-inline-content");
+    const currentSource = this.page?.blocks[index] ? this.inlineSourceFor(this.page.blocks[index]) : null;
+    return currentHost === host && currentSource?.nodeId === source.nodeId
+      && currentSource.spanStart === source.spanStart && currentSource.spanEnd === source.spanEnd;
+  }
+
+  private loadInlineContent(index: number, host: HTMLElement, source: SourceRef, summaryHost: HTMLElement, opaque: boolean): void {
+    const context = this.context;
+    const pageIdentity = cursorKey(this.page?.pageStart ?? null);
+    const candidateId = this.selectedCandidate?.node.id ?? null;
+    const style = this.style;
+    const requestGeneration = this.requestGeneration;
+    const generation = this.generation;
+    const requestKey = this.inlineRequestKey(pageIdentity, source);
+    const existing = this.inlineStates.get(source.nodeId);
+    if (existing && existing.status !== "loading") {
+      this.renderInlineState(host, existing);
+      return;
+    }
+    if (!context) return;
+    if (existing?.status === "loading" && !this.inlineRequests.has(requestKey)) {
+      this.inlineStates.delete(source.nodeId);
+    }
+    if (this.inlineRequests.has(requestKey)) {
+      if (!existing) this.inlineStates.set(source.nodeId, { status: "loading" });
+      host.replaceChildren(element("p", "conversation-inline-placeholder", "Loading inline content…"));
+      return;
+    }
+    this.inlineRequests.add(requestKey);
+    const loadingState: InlineState = { status: "loading" };
+    this.inlineStates.set(source.nodeId, loadingState);
+    this.renderInlineState(host, loadingState);
+    void (async () => {
+      try {
+        const summaryValue = await this.invokeRequest<unknown>("get_node_summary", {
+          nodeId: source.nodeId,
+          sessionRevision: context.sessionRevision,
+          scopeId: null
+        });
+        const summaryNode = validateNode(summaryValue, context.sourceSize);
+        if (!summaryNode || summaryNode.id !== source.nodeId || summaryNode.spanStart !== source.spanStart || summaryNode.spanEnd !== source.spanEnd) {
+          throw new Error("The inline source summary response was invalid.");
+        }
+        if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) return;
+        summaryHost.textContent = summaryNode.valuePreview === null ? `${summaryNode.kind} Node ${summaryNode.id}` : summaryNode.valuePreview.slice(0, 240);
+        this.blockSummaries.set(source.nodeId, summaryHost.textContent);
+        if (summaryNode.kind !== "string") {
+          const state: InlineState = { status: "unavailable", opaque, reason: "Structured content stays source-preserving; use Tree or Open content." };
+          this.inlineStates.set(source.nodeId, state);
+          this.renderInlineState(host, state);
+          return;
+        }
+        if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) return;
+        const metricsValue = await this.invokeRequest<unknown>("get_string_metrics", {
+          nodeId: source.nodeId,
+          sessionRevision: context.sessionRevision,
+          scopeId: null
+        });
+        const metrics = validateInlineMetrics(metricsValue);
+        if (!metrics) throw new Error("The inline string metrics response was invalid.");
+        if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) return;
+        let detection: StringDetection | undefined;
+        if (!opaque) {
+          const detectionValue = await this.invokeRequest<unknown>("get_string_detection", {
+            nodeId: source.nodeId,
+            sessionRevision: context.sessionRevision,
+            scopeId: null
+          });
+          detection = validateInlineDetection(detectionValue) ?? undefined;
+          if (!detection) throw new Error("The inline string detection response was invalid.");
+          if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) return;
+        }
+        const length = Math.min(INLINE_READ_BYTES, metrics.decodedBytes);
+        const chunk = metrics.decodedBytes === 0
+          ? { text: "", hasMore: false }
+          : await this.readInlineChunk(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host, length, metrics.decodedBytes);
+        const partial = metrics.decodedBytes > INLINE_READ_BYTES || chunk.hasMore;
+        const state: InlineState = {
+          status: partial ? "partial" : "ready",
+          text: chunk.text,
+          metrics,
+          detection,
+          opaque,
+          reason: partial ? `Showing the first ${INLINE_READ_BYTES.toLocaleString()} decoded bytes.` : undefined
+        };
+        if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) return;
+        this.inlineStates.set(source.nodeId, state);
+        this.renderInlineState(host, state);
+      } catch (error) {
+        if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) return;
+        const state: InlineState = {
+          status: "unavailable",
+          opaque,
+          reason: isSessionError(error) ? "The session changed while loading this content." : errorMessage(error)
+        };
+        this.inlineStates.set(source.nodeId, state);
+        this.renderInlineState(host, state);
+        if (isSessionError(error)) this.onError(error);
+      } finally {
+        this.inlineRequests.delete(requestKey);
+        if (this.inlineStates.get(source.nodeId)?.status === "loading") {
+          this.inlineStates.delete(source.nodeId);
+          if (this.isCurrentProjection(context, generation, requestGeneration, pageIdentity, candidateId, style)) {
+            queueMicrotask(() => this.ensureVisibleInline(this.windowVisibleStart, this.windowVisibleEnd));
+          }
+        }
+      }
+    })();
+  }
+
+  private renderInlineState(host: HTMLElement, state: InlineState): void {
+    if (this.renderedInlineStates.get(host) === state) return;
+    this.renderedInlineStates.set(host, state);
+    host.replaceChildren();
+    if (state.status === "loading") {
+      host.append(element("p", "conversation-inline-placeholder", "Loading inline content…"));
+      return;
+    }
+    if (state.status === "unavailable") {
+      host.append(element("p", "conversation-inline-placeholder", state.reason || "Inline content is unavailable; use Open content."));
+      return;
+    }
+    if (state.status === "partial") {
+      const note = element("p", "conversation-inline-partial", `${state.reason || "Partial source preview."} Use Open content for the complete value.`);
+      const raw = element("pre", "conversation-inline-raw", state.text || "");
+      raw.setAttribute("aria-label", "Partial decoded source");
+      host.append(note, raw);
+      return;
+    }
+    const text = state.text || "";
+    const type = state.opaque ? "plainText" : state.detection?.semanticType;
+    if (type === "markdown") {
+      const fragment = renderSafeMarkdown(text);
+      if (fragment) {
+        const content = element("div", "conversation-inline-markdown");
+        content.append(fragment);
+        host.append(content);
+        return;
+      }
+    }
+    if (type === "code" || type === "nestedJson") {
+      const rendered = renderCode(text, type === "nestedJson" ? "json" : null);
+      const content = element("div", "conversation-inline-code");
+      content.append(rendered.fragment);
+      host.append(content);
+      return;
+    }
+    const plain = element("pre", "conversation-inline-plain", text);
+    plain.setAttribute("aria-label", "Decoded Conversation content");
+    host.append(plain);
+  }
+
+  private async readInlineChunk(
+    context: ConversationContext,
+    generation: number,
+    requestGeneration: number,
+    pageIdentity: string,
+    candidateId: number | null,
+    style: ConversationStyle,
+    index: number,
+    source: SourceRef,
+    host: HTMLElement,
+    length: number,
+    totalBytes: number
+  ): Promise<{ text: string; hasMore: boolean }> {
+    if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) {
+      throw new Error("Inline content is no longer visible.");
+    }
+    const chunkValue = await this.invokeRequest<unknown>("read_decoded_text", {
+      nodeId: source.nodeId,
+      offset: 0,
+      length,
+      sessionRevision: context.sessionRevision,
+      scopeId: null
+    });
+    const chunk = validateInlineChunk(chunkValue, totalBytes, length);
+    if (!chunk) throw new Error("The inline decoded text response was invalid.");
+    return chunk;
   }
 
   private loadBlockSummary(block: ConversationBlock, index: number): void {
@@ -961,6 +1386,41 @@ function numberFromDataset(value: string | undefined): number | null {
 
 function safeNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function validateInlineMetrics(value: unknown): StringMetrics | null {
+  const object = record(value);
+  if (!object || Object.keys(object).length !== 3
+    || !Object.keys(object).every((key) => key === "decodedBytes" || key === "characterCount" || key === "lineCount")) return null;
+  const decodedBytes = safeNumber(object.decodedBytes);
+  const characterCount = safeNumber(object.characterCount);
+  const lineCount = safeNumber(object.lineCount);
+  if (decodedBytes === null || characterCount === null || lineCount === null || lineCount < 1) return null;
+  return { decodedBytes, characterCount, lineCount };
+}
+
+function validateInlineDetection(value: unknown): StringDetection | null {
+  const object = record(value);
+  const semanticType = object?.semanticType;
+  if (object?.detectionSource !== "contentDetected"
+    || (semanticType !== "plainText" && semanticType !== "markdown" && semanticType !== "code"
+      && semanticType !== "nestedJson" && semanticType !== "html")) return null;
+  return { semanticType };
+}
+
+function validateInlineChunk(value: unknown, totalBytes: number, requestedLength: number): { text: string; hasMore: boolean } | null {
+  const object = record(value);
+  if (!object || safeNumber(object.start) !== 0 || typeof object.text !== "string" || typeof object.hasMore !== "boolean") return null;
+  const nextOffset = object.nextOffset === null ? null : safeNumber(object.nextOffset);
+  if (object.nextOffset !== null && nextOffset === null) return null;
+  const bytes = new TextEncoder().encode(object.text).byteLength;
+  if (bytes > requestedLength) return null;
+  if (object.hasMore) {
+    if (nextOffset === null || nextOffset !== bytes || nextOffset <= 0) return null;
+  } else if (nextOffset !== null || bytes !== totalBytes) {
+    return null;
+  }
+  return { text: object.text, hasMore: object.hasMore };
 }
 
 function stringValue(value: unknown): string | null {
