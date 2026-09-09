@@ -75,6 +75,19 @@ export type NestedViewerElements = {
   parsedPanel: HTMLElement;
   parsedTree: HTMLElement;
   sharedTextPanel: HTMLElement;
+  parsedSearchPeek?: ParsedSearchPeekElements;
+};
+
+export type ParsedSearchPeekElements = {
+  panel: HTMLElement;
+  field: HTMLElement;
+  node: HTMLElement;
+  path: HTMLElement;
+  sourceSpan: HTMLElement;
+  displayedRange: HTMLElement;
+  decodedRange: HTMLElement;
+  source: HTMLElement;
+  note: HTMLElement;
 };
 
 export type HtmlViewerElements = {
@@ -189,6 +202,14 @@ type NestedFrame = {
   renderOverride: RenderAs;
 };
 
+type ParsedSearchPeek = {
+  match: SearchMatch;
+  sourceStart: number;
+  sourceEnd: number;
+  text: string;
+  truncated: boolean;
+};
+
 const TEXT_CHUNK_BYTES = 128 * 1024;
 const TEXT_PAGE_CACHE_BYTES = 32 * 1024 * 1024;
 const MARKDOWN_AUTO_RENDER_LIMIT_BYTES = 2 * 1024 * 1024;
@@ -231,6 +252,7 @@ export class ContentViewer {
   private readonly htmlElements: HtmlViewerElements | null;
   private readonly stringElements: StringViewerElements | null;
   private readonly sourceSearch: SearchView | null;
+  private readonly parsedSearchPeekElements: ParsedSearchPeekElements | null;
   private readonly renderAs: HTMLSelectElement | null;
   private readonly markdownAnyway: HTMLButtonElement | null;
   private readonly copyRaw: HTMLButtonElement;
@@ -268,6 +290,8 @@ export class ContentViewer {
   private nestedBusy = false;
   private copyEpoch = 0;
   private copyBusy = false;
+  private parsedSearchPeek: ParsedSearchPeek | null = null;
+  private parsedSearchPeekBytes = 0;
 
   constructor(options: ContentViewerOptions) {
     this.elements = options.elements;
@@ -295,6 +319,7 @@ export class ContentViewer {
         onRepresentationChange: (representation) => this.activateContentSearchRepresentation(representation)
       })
       : null;
+    this.parsedSearchPeekElements = this.nestedElements?.parsedSearchPeek ?? null;
     const nestedCopy = this.nestedElements ? createNestedCopyElements() : null;
     nestedCopy?.container && this.nestedElements?.parsedPanel.prepend(nestedCopy.container);
     this.nestedTree = this.nestedElements
@@ -366,6 +391,7 @@ export class ContentViewer {
     this.clearHtmlPreviewFrame();
     this.generation += 1;
     this.sourceRevealEpoch += 1;
+    this.clearParsedSearchPeek();
     this.invalidateCopy();
     const generation = this.generation;
     this.restoreFocusOnClose = null;
@@ -440,6 +466,7 @@ export class ContentViewer {
     this.restoreFocusOnClose = restoreFocus;
     this.generation += 1;
     this.sourceRevealEpoch += 1;
+    this.clearParsedSearchPeek();
     this.invalidateCopy();
     this.target = null;
     this.detection = null;
@@ -790,7 +817,7 @@ export class ContentViewer {
   }
 
   private trimTextCaches(): void {
-    while (this.decodedPageCacheBytes + this.rawCacheBytes + this.nestedPageCacheBytes > TEXT_PAGE_CACHE_BYTES) {
+    while (this.decodedPageCacheBytes + this.rawCacheBytes + this.nestedPageCacheBytes + this.parsedSearchPeekBytes > TEXT_PAGE_CACHE_BYTES) {
       if (this.decodedPages.size > 1) {
         const oldest = this.decodedPages.keys().next().value;
         if (typeof oldest === "number") {
@@ -946,6 +973,8 @@ export class ContentViewer {
     const previousMapValue = this.overrides.get(key);
     if (next === previous) return;
     const generation = ++this.generation;
+    this.clearParsedSearchPeek();
+    this.sourceRevealEpoch += 1;
     this.invalidateCopy();
     if (next === "nestedJson") {
       this.renderOverride = next;
@@ -1055,6 +1084,7 @@ export class ContentViewer {
   }
 
   private prepareRendererLoad(keepNestedNavigation = false): void {
+    this.clearParsedSearchPeek();
     this.contentReadBusy = false;
     this.busy = true;
     this.offsets = [0];
@@ -1472,7 +1502,14 @@ export class ContentViewer {
   private async openNestedChild(target: ContentTarget): Promise<void> {
     const parent = this.nestedFrames.at(-1);
     const tree = this.nestedTree;
-    if (!parent || !tree || this.nestedBusy || target.scopeId !== parent.scope.scopeId) return;
+    if (!parent || !tree || target.scopeId !== parent.scope.scopeId) return;
+    if (this.nestedBusy && !(this.nestedRepresentation === "parsed" && this.contentReadBusy)) return;
+    this.clearParsedSearchPeek();
+    this.sourceRevealEpoch += 1;
+    this.contentReadBusy = false;
+    this.nestedBusy = false;
+    this.elements.dialog.removeAttribute("aria-busy");
+    this.elements.content.removeAttribute("aria-busy");
     const generation = ++this.generation;
     this.invalidateCopy();
     const parentSnapshot = tree.snapshot();
@@ -1613,8 +1650,15 @@ export class ContentViewer {
 
   private async backNested(): Promise<void> {
     const frame = this.nestedFrames.at(-1);
-    if (!frame || this.nestedBusy) return;
+    if (!frame) return;
+    if (this.nestedBusy && !(this.nestedRepresentation === "parsed" && this.contentReadBusy)) return;
     const generation = ++this.generation;
+    this.clearParsedSearchPeek();
+    this.sourceRevealEpoch += 1;
+    this.contentReadBusy = false;
+    this.nestedBusy = false;
+    this.elements.dialog.removeAttribute("aria-busy");
+    this.elements.content.removeAttribute("aria-busy");
     this.invalidateCopy();
     this.nestedBusy = true;
     this.syncRenderAsSelect();
@@ -1701,8 +1745,14 @@ export class ContentViewer {
   }
 
   private activateNestedRepresentation(representation: "parsed" | "decoded" | "raw"): void {
-    if (!this.nestedFrames.length || this.nestedFrames.at(-1)?.kind !== "json" || this.nestedBusy) return;
+    if (!this.nestedFrames.length || this.nestedFrames.at(-1)?.kind !== "json") return;
+    if (this.nestedBusy && !(this.nestedRepresentation === "parsed" && this.contentReadBusy)) return;
+    this.clearParsedSearchPeek();
     this.sourceRevealEpoch += 1;
+    this.contentReadBusy = false;
+    this.nestedBusy = false;
+    this.elements.dialog.removeAttribute("aria-busy");
+    this.elements.content.removeAttribute("aria-busy");
     this.sourceSearch?.invalidate();
     this.nestedRepresentation = representation;
     this.setNestedVisible(true);
@@ -1902,22 +1952,29 @@ export class ContentViewer {
       search.clear();
       return;
     }
-    const representation = this.currentSearchRepresentation();
-    const parsed = this.nestedRepresentation === "parsed";
+    const frame = this.nestedFrames.at(-1);
+    const parsed = frame?.kind === "json" && this.nestedRepresentation === "parsed";
+    const representation = parsed ? "decoded" : this.currentSearchRepresentation();
     const preview = this.renderMode === "html" && this.htmlRepresentation === "preview";
-    const available = representation !== null;
+    const available = parsed || representation !== null;
+    const scopeStart = parsed ? frame.scope.root.spanStart : target.spanStart;
+    const scopeEnd = parsed ? frame.scope.root.spanEnd : target.spanEnd;
+    const sessionRevision = parsed ? frame.scope.sessionRevision : target.revision;
+    const scopeId = parsed ? frame.scope.scopeId : target.scopeId;
+    const targetNodeId = parsed ? frame.scope.root.id : target.nodeId;
+    search.setRawEnabled(!parsed);
     search.setScope({
-      label: "Content Viewer",
-      description: parsed ? "Parsed search is unavailable; switch to Decoded String or Raw Lexeme." : preview || !available ? "Rendered search is unavailable; switch to a source tab." : representation === "rawSource" ? "Search the raw lexeme." : "Search the decoded source.",
+      label: parsed ? "Parsed JSON" : "Content Viewer",
+      description: parsed ? "Search parsed JSON keys and values." : preview || !available ? "Rendered search is unavailable; switch to a source tab." : representation === "rawSource" ? "Search the raw lexeme." : "Search the decoded source.",
       enabled: available && !this.busy && !this.nestedBusy,
       decodedEnabled: true,
-      scopeStart: target.spanStart,
-      scopeEnd: target.spanEnd,
-      sessionRevision: target.revision,
-      scopeId: target.scopeId,
-      targetNodeId: target.nodeId
+      scopeStart,
+      scopeEnd,
+      sessionRevision,
+      scopeId,
+      targetNodeId
     });
-    search.setRepresentation(representation === "rawSource" ? "rawSource" : "decoded");
+    search.setRepresentation(parsed ? "decoded" : representation === "rawSource" ? "rawSource" : "decoded");
   }
 
   private searchTarget(): ContentTarget | null {
@@ -1967,6 +2024,7 @@ export class ContentViewer {
     const search = this.sourceSearch;
     const target = this.searchTarget();
     if (!search || !target) return;
+    this.clearParsedSearchPeek();
     const query = search.query;
     const searchEpoch = search.intentEpoch;
     const revealEpoch = ++this.sourceRevealEpoch;
@@ -1983,6 +2041,10 @@ export class ContentViewer {
     this.renderPaging();
     try {
       if (frame?.kind === "json") {
+        if (this.nestedRepresentation === "parsed") {
+          await this.revealParsedSearchMatch(frame, match, query, revealEpoch, searchEpoch, generation);
+          return;
+        }
         this.nestedRepresentation = representation === "raw" ? "raw" : "decoded";
         this.setNestedVisible(true);
         this.renderPaging();
@@ -2002,9 +2064,13 @@ export class ContentViewer {
       if (representation === "raw") await this.revealRawSearch(target, match, query, frame ? frame.scope.sessionRevision : target.revision, revealEpoch, searchEpoch, generation);
       else await this.revealDecodedSearch(target, match, query, target.revision, revealEpoch, searchEpoch, generation);
     } catch (error) {
-      if (!this.isRevealCurrent(generation, target, revealEpoch, searchEpoch, query, representation)) return;
+      const parsedReveal = frame?.kind === "json" && this.nestedRepresentation === "parsed";
+      if (parsedReveal
+        ? !this.isParsedRevealCurrent(frame, generation, revealEpoch, searchEpoch, query)
+        : !this.isRevealCurrent(generation, target, revealEpoch, searchEpoch, query, representation)) return;
       if (isGlobalError(error)) this.handleFailure(error);
       else {
+        if (parsedReveal) this.clearParsedSearchPeek();
         this.contentReadBusy = false;
         this.busy = false;
         this.nestedBusy = false;
@@ -2026,6 +2092,86 @@ export class ContentViewer {
       return;
     }
     await this.revealDecodedSearch(target, match, query, frame.scope.sessionRevision, revealEpoch, searchEpoch, generation);
+  }
+
+  private async revealParsedSearchMatch(frame: NestedFrame, match: SearchMatch, query: string, revealEpoch: number, searchEpoch: number, generation: number): Promise<void> {
+    const scope = frame.scope;
+    const sourceStart = match.sourceSpanStart;
+    const sourceEnd = match.sourceSpanEnd;
+    const requestLength = Math.min(TEXT_CHUNK_BYTES, sourceEnd - sourceStart);
+    if (match.field === "rawSource" || sourceStart >= sourceEnd || requestLength <= 0) throw new Error("The parsed search result is invalid.");
+    const value = await this.invokeRequest<unknown>("read_raw_slice", {
+      sourceStart,
+      length: requestLength,
+      sessionRevision: scope.sessionRevision,
+      scopeId: scope.scopeId
+    });
+    if (!this.isParsedRevealCurrent(frame, generation, revealEpoch, searchEpoch, query)) return;
+    const peek = validateParsedSearchPeek(value, sourceStart, sourceEnd, requestLength);
+    if (!peek) throw new Error("The parsed search source response was invalid.");
+    this.parsedSearchPeek = { match, sourceStart: peek.start, sourceEnd: peek.end, text: peek.text, truncated: peek.end < sourceEnd };
+    this.parsedSearchPeekBytes = utf8ByteLength(peek.text);
+    this.trimTextCaches();
+    this.contentReadBusy = false;
+    this.nestedBusy = false;
+    this.elements.alert.hidden = true;
+    this.elements.dialog.removeAttribute("aria-busy");
+    this.elements.content.removeAttribute("aria-busy");
+    this.renderParsedSearchPeek();
+    this.setStatus("Parsed source match ready");
+    this.renderMetadata();
+    this.renderPaging();
+  }
+
+  private isParsedRevealCurrent(frame: NestedFrame, generation: number, revealEpoch: number, searchEpoch: number, query: string): boolean {
+    return this.isCurrent(generation, frame.source)
+      && this.nestedFrames.at(-1) === frame
+      && frame.kind === "json"
+      && this.nestedRepresentation === "parsed"
+      && this.sourceRevealEpoch === revealEpoch
+      && this.sourceSearch?.intentEpoch === searchEpoch
+      && this.sourceSearch?.query === query
+      && frame.scope.sessionRevision === frame.source.revision
+      && frame.scope.sourceNodeId === frame.source.nodeId;
+  }
+
+  private renderParsedSearchPeek(): void {
+    const elements = this.parsedSearchPeekElements;
+    const peek = this.parsedSearchPeek;
+    if (!elements) return;
+    if (!peek) {
+      elements.panel.hidden = true;
+      return;
+    }
+    elements.panel.hidden = false;
+    elements.field.textContent = peek.match.field === "key" ? "Key" : "Value";
+    elements.node.textContent = peek.match.nodeId === null ? "—" : `#${peek.match.nodeId}`;
+    elements.path.textContent = formatPath(peek.match.pathSegments, peek.match.pathTruncated);
+    elements.sourceSpan.textContent = `[${peek.match.sourceSpanStart}, ${peek.match.sourceSpanEnd})`;
+    elements.displayedRange.textContent = `[${peek.sourceStart}, ${peek.sourceEnd})`;
+    elements.decodedRange.textContent = `[${peek.match.matchStart}, ${peek.match.matchEnd})`;
+    elements.source.textContent = peek.text;
+    elements.note.textContent = peek.truncated
+      ? "Only the first 128 KiB of this source token is shown; the decoded match range identifies the field text and does not infer escaped source bytes."
+      : "The shown source token identifies the field; the decoded match range does not infer escaped source bytes.";
+  }
+
+  private clearParsedSearchPeek(): void {
+    this.parsedSearchPeek = null;
+    this.parsedSearchPeekBytes = 0;
+    const elements = this.parsedSearchPeekElements;
+    if (elements) {
+      elements.field.textContent = "—";
+      elements.node.textContent = "—";
+      elements.path.textContent = "—";
+      elements.sourceSpan.textContent = "—";
+      elements.displayedRange.textContent = "—";
+      elements.decodedRange.textContent = "—";
+      elements.source.textContent = "";
+      elements.note.textContent = "";
+    }
+    this.renderParsedSearchPeek();
+    this.trimTextCaches();
   }
 
   private async revealDecodedSearch(target: ContentTarget, match: SearchMatch, query: string, sessionRevision = target.revision, revealEpoch = this.sourceRevealEpoch, searchEpoch = this.sourceSearch?.intentEpoch ?? 0, generation = this.generation): Promise<void> {
@@ -2336,6 +2482,7 @@ export class ContentViewer {
   }
 
   private releaseNestedScopes(): void {
+    this.clearParsedSearchPeek();
     const root = this.nestedFrames[0];
     if (root) {
       const revision = root.scope.sessionRevision;
@@ -2601,6 +2748,7 @@ export class ContentViewer {
 
   private cancelContentRead(): void {
     this.sourceRevealEpoch += 1;
+    this.clearParsedSearchPeek();
     if (!this.contentReadBusy) return;
     this.contentReadBusy = false;
     this.busy = false;
@@ -2788,6 +2936,21 @@ function normalizeRawChunk(
     nextOffset: hasMore ? end - spanStart : null,
     lineState: { line: 1, previousWasCR: false }
   };
+}
+
+function validateParsedSearchPeek(
+  value: unknown,
+  requestedStart: number,
+  sourceSpanEnd: number,
+  requestLength: number
+): { start: number; end: number; text: string } | undefined {
+  if (!isRecord(value) || typeof value.text !== "string" || typeof value.hasMore !== "boolean"
+    || value.nextOffset !== null && safeOffset(value.nextOffset) === undefined) return undefined;
+  const start = safeOffset(value.start);
+  if (start === undefined || start !== requestedStart || start >= sourceSpanEnd) return undefined;
+  const byteLength = utf8ByteLength(value.text);
+  if (byteLength === 0 || byteLength > requestLength || byteLength > sourceSpanEnd - start) return undefined;
+  return { start, end: start + byteLength, text: value.text };
 }
 
 function safeOffset(value: unknown): number | undefined {

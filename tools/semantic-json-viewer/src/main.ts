@@ -196,6 +196,17 @@ const decodedTab = required<HTMLButtonElement>("content-viewer-decoded-tab");
 const nestedRawTab = required<HTMLButtonElement>("content-viewer-raw-lexeme-tab");
 const parsedPanel = required<HTMLElement>("content-viewer-parsed-panel");
 const parsedTree = required<HTMLElement>("content-viewer-parsed-tree");
+const parsedSearchPeek = {
+  panel: required<HTMLElement>("content-viewer-parsed-search-peek"),
+  field: required<HTMLElement>("content-viewer-parsed-search-peek-field"),
+  node: required<HTMLElement>("content-viewer-parsed-search-peek-node"),
+  path: required<HTMLElement>("content-viewer-parsed-search-peek-path"),
+  sourceSpan: required<HTMLElement>("content-viewer-parsed-search-peek-source-span"),
+  displayedRange: required<HTMLElement>("content-viewer-parsed-search-peek-displayed-range"),
+  decodedRange: required<HTMLElement>("content-viewer-parsed-search-peek-decoded-range"),
+  source: required<HTMLElement>("content-viewer-parsed-search-peek-source"),
+  note: required<HTMLElement>("content-viewer-parsed-search-peek-note")
+};
 const sharedTextPanel = required<HTMLElement>("content-viewer-text-panel");
 const stringRepresentations = required<HTMLElement>("content-viewer-string-representations");
 const stringRenderedTab = required<HTMLButtonElement>("content-viewer-rendered-tab");
@@ -266,7 +277,8 @@ const contentViewer = new ContentViewer({
       rawTab: nestedRawTab,
       parsedPanel,
       parsedTree,
-      sharedTextPanel
+      sharedTextPanel,
+      parsedSearchPeek
     },
     string: {
       representations: stringRepresentations,

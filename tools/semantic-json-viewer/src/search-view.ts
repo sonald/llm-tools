@@ -88,6 +88,7 @@ export class SearchView {
   private readonly onError: (error: unknown) => void;
   private readonly onIntentChange: () => void;
   private readonly onRepresentationChange: ((representation: SearchRepresentation) => void) | undefined;
+  private rawEnabled = true;
   private scope: SearchScope | null = null;
   private history: SearchHistoryPage[] = [];
   private currentIndex = -1;
@@ -149,6 +150,15 @@ export class SearchView {
   setRepresentation(representation: SearchRepresentation): void {
     this.elements.decoded.checked = representation === "decoded";
     this.elements.rawSource.checked = representation === "rawSource";
+    this.render();
+  }
+
+  setRawEnabled(enabled: boolean): void {
+    this.rawEnabled = enabled;
+    if (!enabled) {
+      this.elements.rawSource.checked = false;
+      this.elements.decoded.checked = true;
+    }
     this.render();
   }
 
@@ -351,7 +361,7 @@ export class SearchView {
     this.elements.description.textContent = scope?.description ?? "Open a file to search its current scope.";
     this.elements.query.disabled = !enabled;
     this.elements.decoded.disabled = !enabled || scope?.decodedEnabled === false;
-    this.elements.rawSource.disabled = !enabled;
+    this.elements.rawSource.disabled = !enabled || !this.rawEnabled;
     this.elements.submit.disabled = !enabled;
     if (scope && !scope.decodedEnabled && this.elements.decoded.checked) this.elements.rawSource.checked = true;
     this.elements.previous.disabled = this.busy || this.currentIndex <= 0;
