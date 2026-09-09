@@ -9,6 +9,7 @@ import {
 } from "./code-renderer";
 import { renderSafeMarkdown } from "./markdown-renderer";
 import { TreeView, type NodeDto, type TreeCopyElements, type TreeViewSnapshot } from "./tree-view";
+import { SearchView, type SearchMatch, type SearchViewElements } from "./search-view";
 
 export type ContentTarget = {
   revision: number;
@@ -52,6 +53,15 @@ export type ContentViewerElements = {
   next: HTMLButtonElement;
   nested?: NestedViewerElements;
   html?: HtmlViewerElements;
+  string?: StringViewerElements;
+  search?: SearchViewElements;
+};
+
+export type StringViewerElements = {
+  representations: HTMLElement;
+  renderedTab: HTMLButtonElement;
+  decodedTab: HTMLButtonElement;
+  rawTab: HTMLButtonElement;
 };
 
 export type NestedViewerElements = {
@@ -71,6 +81,7 @@ export type HtmlViewerElements = {
   representations: HTMLElement;
   previewTab: HTMLButtonElement;
   sourceTab: HTMLButtonElement;
+  rawTab?: HTMLButtonElement;
   previewPanel: HTMLElement;
   previewFrame: HTMLIFrameElement;
 };
@@ -179,7 +190,7 @@ type NestedFrame = {
 };
 
 const TEXT_CHUNK_BYTES = 128 * 1024;
-const DECODED_PAGE_CACHE_BYTES = 32 * 1024 * 1024;
+const TEXT_PAGE_CACHE_BYTES = 32 * 1024 * 1024;
 const MARKDOWN_AUTO_RENDER_LIMIT_BYTES = 2 * 1024 * 1024;
 const MARKDOWN_ANYWAY_LIMIT_BYTES = 32 * 1024 * 1024;
 const CODE_AUTO_RENDER_LIMIT_BYTES = 1 * 1024 * 1024;
@@ -218,6 +229,8 @@ export class ContentViewer {
   private readonly nestedElements: NestedViewerElements | null;
   private readonly nestedTree: TreeView | null;
   private readonly htmlElements: HtmlViewerElements | null;
+  private readonly stringElements: StringViewerElements | null;
+  private readonly sourceSearch: SearchView | null;
   private readonly renderAs: HTMLSelectElement | null;
   private readonly markdownAnyway: HTMLButtonElement | null;
   private readonly copyRaw: HTMLButtonElement;
@@ -227,10 +240,19 @@ export class ContentViewer {
   private readonly copyStatus: HTMLElement;
   private nestedFrames: NestedFrame[] = [];
   private nestedRepresentation: "parsed" | "decoded" | "raw" | null = null;
-  private htmlRepresentation: "preview" | "source" | null = null;
+  private htmlRepresentation: "preview" | "source" | "raw" | null = null;
   private htmlPreview: string | null = null;
   private htmlPreviewUnavailable = false;
   private htmlNote = "";
+  private ordinaryRepresentation: "rendered" | "decoded" | "raw" | null = null;
+  private rawPages = new Map<number, TextChunk>();
+  private rawPageOffsets: number[] = [];
+  private rawPageIndex = -1;
+  private rawNextOffset: number | null = null;
+  private rawCacheBytes = 0;
+  private nestedPageCacheBytes = 0;
+  private sourceRevealEpoch = 0;
+  private contentReadBusy = false;
   private renderMode: "plainText" | "markdown" | "code" | "html" | "nestedJson" | null = null;
   private codeLanguageHint: CodeLanguage | null = null;
   private renderOverride: RenderAs = "auto";
@@ -254,6 +276,7 @@ export class ContentViewer {
     this.onClose = options.onClose;
     this.nestedElements = options.elements.nested ?? null;
     this.htmlElements = options.elements.html ?? null;
+    this.stringElements = options.elements.string ?? null;
     this.renderAs = options.elements.renderAs ?? null;
     this.markdownAnyway = options.elements.markdownAnyway ?? null;
     const copy = options.elements.copy ?? createCopyElements();
@@ -262,6 +285,16 @@ export class ContentViewer {
     this.copyMarkdown = copy.markdown;
     this.copyParsed = copy.parsed;
     this.copyStatus = copy.status;
+    this.sourceSearch = options.elements.search
+      ? new SearchView({
+        ...options.elements.search,
+        invoke: this.invokeRequest,
+        onReveal: (match) => void this.revealSearchMatch(match),
+        onError: (error) => this.handleSearchError(error),
+        onIntentChange: () => this.cancelContentRead(),
+        onRepresentationChange: (representation) => this.activateContentSearchRepresentation(representation)
+      })
+      : null;
     const nestedCopy = this.nestedElements ? createNestedCopyElements() : null;
     nestedCopy?.container && this.nestedElements?.parsedPanel.prepend(nestedCopy.container);
     this.nestedTree = this.nestedElements
@@ -279,6 +312,7 @@ export class ContentViewer {
       })
       : null;
     this.elements.close.addEventListener("click", () => this.close());
+    this.elements.dialog.addEventListener("keydown", (event) => this.handleDialogKeydown(event));
     this.copyRaw.addEventListener("click", () => void this.copyTarget("raw", "Copied Raw Lexeme"));
     this.copyDecoded.addEventListener("click", () => void this.copyTarget("decoded", "Copied Decoded Value"));
     this.copyMarkdown.addEventListener("click", () => void this.copyTarget("decoded", "Copied Markdown Source"));
@@ -294,7 +328,12 @@ export class ContentViewer {
     this.nestedElements?.representations.addEventListener("keydown", (event) => this.handleNestedTabKeydown(event));
     this.htmlElements?.previewTab.addEventListener("click", () => this.activateHtmlRepresentation("preview"));
     this.htmlElements?.sourceTab.addEventListener("click", () => this.activateHtmlRepresentation("source"));
+    this.htmlElements?.rawTab?.addEventListener("click", () => this.activateHtmlRepresentation("raw"));
     this.htmlElements?.representations.addEventListener("keydown", (event) => this.handleHtmlTabKeydown(event));
+    this.stringElements?.renderedTab.addEventListener("click", () => this.activateOrdinaryRepresentation("rendered"));
+    this.stringElements?.decodedTab.addEventListener("click", () => this.activateOrdinaryRepresentation("decoded"));
+    this.stringElements?.rawTab.addEventListener("click", () => this.activateOrdinaryRepresentation("raw"));
+    this.stringElements?.representations.addEventListener("keydown", (event) => this.handleStringTabKeydown(event));
     this.elements.dialog.addEventListener("cancel", () => {
       // Let the platform close the dialog and let the close event restore focus.
       this.restoreFocusOnClose = true;
@@ -326,6 +365,7 @@ export class ContentViewer {
     this.releaseNestedScopes();
     this.clearHtmlPreviewFrame();
     this.generation += 1;
+    this.sourceRevealEpoch += 1;
     this.invalidateCopy();
     const generation = this.generation;
     this.restoreFocusOnClose = null;
@@ -333,6 +373,7 @@ export class ContentViewer {
     this.renderOverride = this.overrides.get(renderOverrideKey(target)) ?? "auto";
     this.detection = null;
     this.opener = opener;
+    this.contentReadBusy = false;
     this.busy = true;
     this.offsets = [0];
     this.offsetIndex = 0;
@@ -353,10 +394,14 @@ export class ContentViewer {
     this.htmlPreview = null;
     this.htmlPreviewUnavailable = false;
     this.htmlNote = "";
+    this.ordinaryRepresentation = null;
     this.clearDecodedPages();
+    this.clearRawPages();
     this.clearCodeLineCheckpoints();
     this.setNestedVisible(false);
+    this.setStringVisible(false);
     this.setHtmlVisible(false);
+    this.sourceSearch?.clear();
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
     this.elements.alert.hidden = true;
@@ -394,9 +439,11 @@ export class ContentViewer {
     this.clearHtmlPreviewFrame();
     this.restoreFocusOnClose = restoreFocus;
     this.generation += 1;
+    this.sourceRevealEpoch += 1;
     this.invalidateCopy();
     this.target = null;
     this.detection = null;
+    this.contentReadBusy = false;
     this.busy = false;
     this.offsets = [];
     this.offsetIndex = -1;
@@ -417,10 +464,14 @@ export class ContentViewer {
     this.htmlPreview = null;
     this.htmlPreviewUnavailable = false;
     this.htmlNote = "";
+    this.ordinaryRepresentation = null;
     this.clearDecodedPages();
+    this.clearRawPages();
     this.clearCodeLineCheckpoints();
     this.setNestedVisible(false);
+    this.setStringVisible(false);
     this.setHtmlVisible(false);
+    this.sourceSearch?.clear();
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
@@ -555,6 +606,10 @@ export class ContentViewer {
       return;
     }
     if (this.htmlRepresentation === "preview") return;
+    if (this.ordinaryRepresentation === "raw" || this.htmlRepresentation === "raw") {
+      await this.readRawPage("next");
+      return;
+    }
     if (this.busy || !this.target || this.nextOffset === null) return;
     const offset = this.nextOffset;
     await this.readPage(offset, "next");
@@ -566,30 +621,40 @@ export class ContentViewer {
       return;
     }
     if (this.htmlRepresentation === "preview") return;
+    if (this.ordinaryRepresentation === "raw" || this.htmlRepresentation === "raw") {
+      await this.readRawPage("previous");
+      return;
+    }
     if (this.busy || !this.target || this.offsetIndex <= 0) return;
     await this.readPage(this.offsets[this.offsetIndex - 1], "previous", this.offsets[this.offsetIndex]);
   }
 
-  private async readPage(offset: number, direction: "next" | "previous", expectedNextOffset?: number): Promise<void> {
+  private async readPage(offset: number, direction: "initial" | "next" | "previous", expectedNextOffset?: number): Promise<void> {
     const target = this.target;
     if (!target) return;
+    const intent = ++this.sourceRevealEpoch;
     const cached = this.decodedPages.get(offset);
     if (cached) {
       if (direction === "next") {
         this.offsets = this.offsets.slice(0, this.offsetIndex + 1);
         this.offsets.push(offset);
         this.offsetIndex += 1;
-      } else {
+      } else if (direction === "previous") {
         this.offsetIndex -= 1;
+      } else {
+        this.offsets = [offset];
+        this.offsetIndex = 0;
       }
       this.installChunk(cached);
       return;
     }
     const generation = this.generation;
+    this.contentReadBusy = true;
     this.busy = true;
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
     this.setStatus("Loading decoded source…");
+    this.renderMetadata();
     this.renderPaging();
     try {
       const pageStartState = this.codeLineCheckpoints.get(offset) ?? { line: 1, previousWasCR: false };
@@ -600,20 +665,165 @@ export class ContentViewer {
         sessionRevision: target.revision,
         scopeId: target.scopeId
       });
-      if (!this.isCurrent(generation, target)) return;
+      if (!this.isReadCurrent(generation, target, intent)) return;
       const chunk = validateChunk(value, offset, rawSpanLength(target), expectedNextOffset, false, pageStartState);
       if (!chunk) throw new Error("The decoded text response was invalid.");
       if (direction === "next") {
         this.offsets = this.offsets.slice(0, this.offsetIndex + 1);
         this.offsets.push(offset);
         this.offsetIndex += 1;
-      } else {
+      } else if (direction === "previous") {
         this.offsetIndex -= 1;
+      } else {
+        this.offsets = [chunk.start];
+        this.offsetIndex = 0;
       }
       this.installChunk(chunk);
     } catch (error) {
-      if (!this.isCurrent(generation, target)) return;
+      if (!this.isReadCurrent(generation, target, intent)) return;
       this.handleFailure(error);
+    }
+  }
+
+  private async readRawPage(direction: "initial" | "next" | "previous"): Promise<void> {
+    const target = this.target;
+    if (!target || this.busy || (this.nestedRepresentation !== null && this.nestedRepresentation !== "raw")) return;
+    const intent = ++this.sourceRevealEpoch;
+    const start = 0;
+    const end = target.spanEnd - target.spanStart;
+    const offset = direction === "initial" ? (this.rawPageOffsets[this.rawPageIndex] ?? start)
+      : direction === "next" ? this.rawNextOffset ?? end
+        : this.rawPageOffsets[this.rawPageIndex - 1] ?? start;
+    if (offset < start || offset > end || direction !== "initial" && offset === end) return;
+    const cached = this.rawPages.get(offset);
+    if (cached) {
+      if (direction === "next") {
+        this.rawPageOffsets = this.rawPageOffsets.slice(0, this.rawPageIndex + 1);
+        this.rawPageOffsets.push(offset);
+        this.rawPageIndex += 1;
+      } else if (direction === "previous") this.rawPageIndex -= 1;
+      this.installRawChunk(cached);
+      return;
+    }
+    const generation = this.generation;
+    this.contentReadBusy = true;
+    this.busy = true;
+    this.elements.dialog.setAttribute("aria-busy", "true");
+    this.elements.content.setAttribute("aria-busy", "true");
+    this.setStatus("Loading raw lexeme…");
+    this.renderMetadata();
+    this.renderPaging();
+    try {
+      const value = await this.invokeRequest<unknown>("read_raw_slice", {
+        sourceStart: target.spanStart + offset,
+        length: Math.min(TEXT_CHUNK_BYTES, end - offset),
+        sessionRevision: target.revision,
+        scopeId: target.scopeId
+      });
+      if (!this.isReadCurrent(generation, target, intent)) return;
+      const chunk = normalizeRawChunk(value, target.spanStart + offset, target.spanStart, target.spanEnd, Math.min(TEXT_CHUNK_BYTES, end - offset));
+      if (!chunk) throw new Error("The raw lexeme response was invalid.");
+      if (direction === "next") {
+        this.rawPageOffsets = this.rawPageOffsets.slice(0, this.rawPageIndex + 1);
+        this.rawPageOffsets.push(chunk.start);
+        this.rawPageIndex += 1;
+      } else if (direction === "initial") {
+        this.rawPageOffsets = [chunk.start];
+        this.rawPageIndex = 0;
+      } else {
+        this.rawPageIndex = Math.max(0, this.rawPageIndex - 1);
+      }
+      this.cacheRawPage(chunk);
+      this.installRawChunk(chunk);
+    } catch (error) {
+      if (!this.isReadCurrent(generation, target, intent)) return;
+      this.handleFailure(error);
+    }
+  }
+
+  private installRawChunk(chunk: TextChunk): void {
+    this.contentReadBusy = false;
+    this.busy = false;
+    this.elements.content.classList.remove("is-markdown");
+    this.elements.content.textContent = chunk.text;
+    this.representation = "decoded";
+    this.ordinaryRepresentation = "raw";
+    this.rawNextOffset = chunk.nextOffset;
+    const target = this.target;
+    const absoluteStart = target ? target.spanStart + chunk.start : chunk.start;
+    this.elements.range.textContent = `[${absoluteStart}, ${absoluteStart + utf8ByteLength(chunk.text)})`;
+    this.setStatus("Raw lexeme ready");
+    this.elements.alert.hidden = true;
+    this.elements.dialog.removeAttribute("aria-busy");
+    this.elements.content.removeAttribute("aria-busy");
+    this.setStringVisible(true);
+    this.renderMetadata();
+    this.renderPaging();
+  }
+
+  private cacheRawPage(chunk: TextChunk): void {
+    const previous = this.rawPages.get(chunk.start);
+    if (previous) this.rawCacheBytes -= utf8ByteLength(previous.text);
+    this.rawPages.set(chunk.start, chunk);
+    this.rawCacheBytes += utf8ByteLength(chunk.text);
+    this.trimTextCaches();
+  }
+
+  private cacheNestedPage(frame: NestedFrame, representation: "decoded" | "raw", chunk: TextChunk): void {
+    const state = textState(frame, representation);
+    const previous = state.pages.get(chunk.start);
+    if (previous) this.nestedPageCacheBytes -= utf8ByteLength(previous.text);
+    state.pages.set(chunk.start, chunk);
+    this.nestedPageCacheBytes += utf8ByteLength(chunk.text);
+    this.trimTextCaches();
+  }
+
+  private clearNestedPageCache(state: TextState): void {
+    for (const chunk of state.pages.values()) this.nestedPageCacheBytes -= utf8ByteLength(chunk.text);
+    state.pages.clear();
+    this.nestedPageCacheBytes = Math.max(0, this.nestedPageCacheBytes);
+  }
+
+  private discardNestedFrame(frame: NestedFrame): void {
+    this.clearNestedPageCache(frame.decoded);
+    this.clearNestedPageCache(frame.raw);
+  }
+
+  private trimTextCaches(): void {
+    while (this.decodedPageCacheBytes + this.rawCacheBytes + this.nestedPageCacheBytes > TEXT_PAGE_CACHE_BYTES) {
+      if (this.decodedPages.size > 1) {
+        const oldest = this.decodedPages.keys().next().value;
+        if (typeof oldest === "number") {
+          const page = this.decodedPages.get(oldest);
+          this.decodedPages.delete(oldest);
+          if (page) this.decodedPageCacheBytes -= utf8ByteLength(page.text);
+          continue;
+        }
+      }
+      if (this.rawPages.size > 1) {
+        const oldest = this.rawPages.keys().next().value;
+        if (typeof oldest === "number") {
+          const page = this.rawPages.get(oldest);
+          this.rawPages.delete(oldest);
+          if (page) this.rawCacheBytes -= utf8ByteLength(page.text);
+          continue;
+        }
+      }
+      let evicted = false;
+      for (const frame of this.nestedFrames) {
+        for (const state of [frame.decoded, frame.raw]) {
+          if (state.pages.size <= 1) continue;
+          const oldest = state.pages.keys().next().value;
+          if (typeof oldest !== "number") continue;
+          const page = state.pages.get(oldest);
+          state.pages.delete(oldest);
+          if (page) this.nestedPageCacheBytes -= utf8ByteLength(page.text);
+          evicted = true;
+          break;
+        }
+        if (evicted) break;
+      }
+      if (!evicted) break;
     }
   }
 
@@ -686,6 +896,9 @@ export class ContentViewer {
     const chunk = validateChunk(chunkValue, 0, rawSpanLength(target));
     if (!chunk) throw new Error("The decoded text response was invalid.");
     this.installChunk(chunk, true);
+    this.ordinaryRepresentation = "rendered";
+    this.setStringVisible(true);
+    this.renderMetadata();
   }
 
   private async openSemantic(
@@ -842,6 +1055,7 @@ export class ContentViewer {
   }
 
   private prepareRendererLoad(keepNestedNavigation = false): void {
+    this.contentReadBusy = false;
     this.busy = true;
     this.offsets = [0];
     this.offsetIndex = 0;
@@ -941,6 +1155,7 @@ export class ContentViewer {
   }
 
   private installChunk(chunk: TextChunk, initial = false, sourceFallback: TextChunk | null = null): void {
+    this.contentReadBusy = false;
     this.busy = false;
     this.elements.content.classList.remove("is-markdown");
     this.markdownRenderFailed = false;
@@ -949,7 +1164,7 @@ export class ContentViewer {
       && (this.renderMode === "markdown" || this.renderMode === "code");
     let sourceChunk = chunk;
     let cacheChunk: TextChunk | null = canRenderSemantic ? null : chunk;
-    if (this.renderMode === "code" && this.semanticLimit === "code") {
+    if (this.renderMode === "code" && this.semanticLimit === "code" && this.ordinaryRepresentation !== "decoded") {
       const result = renderPlainCodePage(
         chunk.text,
         this.codeLanguageHint,
@@ -958,6 +1173,7 @@ export class ContentViewer {
       );
       this.elements.content.replaceChildren(result.fragment);
       this.representation = "rendered";
+      this.ordinaryRepresentation = "rendered";
       this.codeRenderReason = result.reason;
     } else if (canRenderSemantic && this.renderMode === "markdown") {
       const fragment = renderSafeMarkdown(chunk.text);
@@ -970,16 +1186,19 @@ export class ContentViewer {
         cacheChunk = sourceChunk;
         this.elements.content.textContent = sourceChunk.text;
         this.representation = "decoded";
+        this.ordinaryRepresentation = "decoded";
         this.markdownRenderFailed = true;
       }
     } else if (canRenderSemantic && this.renderMode === "code") {
       const result = renderCode(chunk.text, this.codeLanguageHint);
       this.elements.content.replaceChildren(result.fragment);
       this.representation = "rendered";
+      this.ordinaryRepresentation = "rendered";
       this.codeRenderReason = result.reason;
     } else {
       this.elements.content.textContent = chunk.text;
       this.representation = "decoded";
+      this.ordinaryRepresentation = "decoded";
     }
     if (cacheChunk) this.cacheDecodedPage(cacheChunk);
     this.rememberCodeChunk(sourceChunk);
@@ -987,6 +1206,8 @@ export class ContentViewer {
     if (this.renderMode === "html") {
       this.htmlRepresentation = "source";
       this.setHtmlVisible(true);
+    } else {
+      this.setStringVisible(true);
     }
     this.renderMetadata();
     this.elements.alert.hidden = true;
@@ -1147,6 +1368,8 @@ export class ContentViewer {
 
   private async openHtmlSource(target: ContentTarget, generation: number, note: string): Promise<void> {
     if (!this.isCurrent(generation, target)) return;
+    const intent = ++this.sourceRevealEpoch;
+    this.contentReadBusy = true;
     this.htmlRepresentation = "source";
     this.htmlNote = note;
     this.setHtmlVisible(true);
@@ -1169,18 +1392,19 @@ export class ContentViewer {
         sessionRevision: target.revision,
         scopeId: target.scopeId
       });
-      if (!this.isCurrent(generation, target) || this.htmlRepresentation !== "source") return;
+      if (!this.isReadCurrent(generation, target, intent) || this.htmlRepresentation !== "source") return;
       const chunk = validateChunk(value, 0, rawSpanLength(target));
       if (!chunk) throw new Error("The decoded text response was invalid.");
       this.installChunk(chunk, true);
     } catch (error) {
-      if (!this.isCurrent(generation, target)) return;
+      if (!this.isReadCurrent(generation, target, intent)) return;
       this.handleFailure(error);
     }
   }
 
-  private activateHtmlRepresentation(representation: "preview" | "source"): void {
+  private activateHtmlRepresentation(representation: "preview" | "source" | "raw", preserveSearch = false): void {
     if (this.renderMode !== "html" || this.busy) return;
+    if (!preserveSearch) this.sourceRevealEpoch += 1;
     if (representation === "preview") {
       if (this.htmlPreviewUnavailable || this.htmlPreview === null || !this.htmlElements) return;
       this.htmlRepresentation = "preview";
@@ -1191,11 +1415,24 @@ export class ContentViewer {
       this.renderMetadata();
       this.renderPaging();
       this.writeHtmlPreview(this.htmlPreview, this.generation, this.target);
+      if (!preserveSearch) this.sourceSearch?.invalidate();
+      return;
+    }
+    if (representation === "raw") {
+      this.htmlRepresentation = "raw";
+      this.htmlNote = "";
+      this.clearDecodedPages();
+      this.setHtmlVisible(true);
+      this.syncSourceSearch();
+      if (!preserveSearch) this.sourceSearch?.invalidate();
+      void this.readRawPage("initial");
       return;
     }
     this.htmlRepresentation = "source";
     this.htmlNote = "";
     this.setHtmlVisible(true);
+    this.syncSourceSearch();
+    if (!preserveSearch) this.sourceSearch?.invalidate();
     this.renderMetadata();
     this.renderPaging();
     const current = this.decodedPages.get(this.offsets[this.offsetIndex] ?? 0);
@@ -1209,7 +1446,7 @@ export class ContentViewer {
 
   private handleHtmlTabKeydown(event: Event): void {
     if (!(event instanceof KeyboardEvent) || !this.htmlElements) return;
-    const tabs = [this.htmlElements.previewTab, this.htmlElements.sourceTab];
+    const tabs = [this.htmlElements.previewTab, this.htmlElements.sourceTab, ...(this.htmlElements.rawTab ? [this.htmlElements.rawTab] : [])];
     const current = tabs.indexOf(event.target as HTMLButtonElement);
     if (current < 0) return;
     if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
@@ -1218,10 +1455,10 @@ export class ContentViewer {
       tabs[(current + direction + tabs.length) % tabs.length].focus();
     } else if (event.key === "Home" || event.key === "End") {
       event.preventDefault();
-      (event.key === "Home" ? tabs[0] : tabs[1]).focus();
+      (event.key === "Home" ? tabs[0] : tabs.at(-1))?.focus();
     } else if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      this.activateHtmlRepresentation(current === 0 ? "preview" : "source");
+      this.activateHtmlRepresentation(current === 0 ? "preview" : current === 1 ? "source" : "raw");
     }
   }
 
@@ -1298,6 +1535,7 @@ export class ContentViewer {
         return;
       }
       if (pushedFrame && this.nestedFrames.at(-1) === pushedFrame) {
+        this.discardNestedFrame(pushedFrame);
         this.nestedFrames.pop();
         await this.restoreNestedParent(parent, parentSnapshot, generation);
       } else {
@@ -1384,6 +1622,7 @@ export class ContentViewer {
     this.setStatus(frame.kind === "json" ? "Closing nested JSON…" : "Returning to parent…");
     this.renderPaging();
     if (frame.kind === "string") {
+      this.discardNestedFrame(frame);
       this.nestedFrames.pop();
       const parent = this.nestedFrames.at(-1);
       if (!parent) {
@@ -1403,6 +1642,7 @@ export class ContentViewer {
       await this.closeScope(frame.scope.scopeId, frame.scope.sessionRevision);
       if (generation !== this.generation) return;
       this.elements.alert.hidden = true;
+      this.discardNestedFrame(frame);
       this.nestedFrames.pop();
       this.nestedBusy = false;
       if (this.nestedFrames.length === 0) {
@@ -1423,6 +1663,7 @@ export class ContentViewer {
     } catch (error) {
       if (generation !== this.generation) return;
       if (errorCode(error) === "not_found") {
+        this.discardNestedFrame(frame);
         this.nestedFrames.pop();
         this.nestedBusy = false;
         if (this.nestedFrames.length === 0) this.close();
@@ -1461,6 +1702,8 @@ export class ContentViewer {
 
   private activateNestedRepresentation(representation: "parsed" | "decoded" | "raw"): void {
     if (!this.nestedFrames.length || this.nestedFrames.at(-1)?.kind !== "json" || this.nestedBusy) return;
+    this.sourceRevealEpoch += 1;
+    this.sourceSearch?.invalidate();
     this.nestedRepresentation = representation;
     this.setNestedVisible(true);
     this.renderMetadata();
@@ -1498,6 +1741,7 @@ export class ContentViewer {
     const representation = this.nestedRepresentation;
     if (!frame || (representation !== "decoded" && representation !== "raw") || this.nestedBusy) return;
     const state = textState(frame, representation);
+    const intent = ++this.sourceRevealEpoch;
     let offset: number;
     if (direction === "initial") offset = state.offsets[state.offsetIndex] ?? 0;
     else if (direction === "next") {
@@ -1518,11 +1762,13 @@ export class ContentViewer {
       return;
     }
     const generation = this.generation;
+    this.contentReadBusy = true;
     this.nestedBusy = true;
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
     this.renderNestedRange();
     this.setStatus(representation === "decoded" ? "Loading decoded nested string…" : "Loading raw nested lexeme…");
+    this.renderMetadata();
     this.renderPaging();
     try {
       const boundary = representation === "decoded" ? frame.scope.parsedBytes : rawSpanLength(frame.source);
@@ -1533,7 +1779,7 @@ export class ContentViewer {
       const value = await this.invokeRequest<unknown>(representation === "decoded" ? "read_decoded_text" : "read_raw_slice", representation === "decoded"
         ? { nodeId: frame.source.nodeId, offset, length: TEXT_CHUNK_BYTES, sessionRevision: frame.scope.sessionRevision, scopeId: frame.source.scopeId }
         : { sourceStart: rawStart, length: requestLength, sessionRevision: frame.scope.sessionRevision, scopeId: frame.source.scopeId });
-      if (generation !== this.generation || this.nestedFrames.at(-1) !== frame || this.nestedRepresentation !== representation) return;
+      if (!this.isReadCurrent(generation, frame.source, intent) || this.nestedFrames.at(-1) !== frame || this.nestedRepresentation !== representation) return;
       const chunk = representation === "raw"
         ? normalizeRawChunk(value, rawStart, frame.source.spanStart, frame.source.spanEnd, requestLength)
         : validateChunk(value, offset, boundary, undefined, true);
@@ -1544,17 +1790,20 @@ export class ContentViewer {
         state.offsetIndex += 1;
       } else if (direction === "previous") state.offsetIndex -= 1;
       state.current = chunk;
-      state.pages.set(chunk.start, chunk);
       this.installNestedChunk(frame, representation, chunk);
     } catch (error) {
-      if (generation !== this.generation) return;
+      if (!this.isReadCurrent(generation, frame.source, intent)) return;
+      this.contentReadBusy = false;
       this.nestedBusy = false;
       this.elements.alert.hidden = false;
       this.elements.alert.textContent = `Content could not be opened: ${errorMessage(error)}`;
       if (errorCode(error) === "file_changed" || errorCode(error) === "stale_session") {
         this.handleFailure(error);
       } else {
+        this.elements.dialog.removeAttribute("aria-busy");
+        this.elements.content.removeAttribute("aria-busy");
         this.setStatus("Unable to load nested text");
+        this.renderMetadata();
         this.renderPaging();
       }
     }
@@ -1563,8 +1812,9 @@ export class ContentViewer {
   private installNestedChunk(frame: NestedFrame, representation: "decoded" | "raw", chunk: TextChunk): void {
     const state = textState(frame, representation);
     state.current = chunk;
-    state.pages.set(chunk.start, chunk);
+    this.cacheNestedPage(frame, representation, chunk);
     state.nextOffset = chunk.nextOffset;
+    this.contentReadBusy = false;
     this.nestedBusy = false;
     this.elements.content.classList.remove("is-markdown");
     this.elements.content.textContent = chunk.text;
@@ -1574,6 +1824,299 @@ export class ContentViewer {
     this.elements.content.removeAttribute("aria-busy");
     this.renderMetadata();
     this.renderPaging();
+  }
+
+  private activateOrdinaryRepresentation(representation: "rendered" | "decoded" | "raw", preserveSearch = false): void {
+    if (!this.target || this.nestedRepresentation !== null || this.busy || this.renderMode === "html") return;
+    this.ordinaryRepresentation = representation;
+    if (!preserveSearch) this.sourceRevealEpoch += 1;
+    if (representation === "raw") {
+      this.clearDecodedPages();
+      this.setStringVisible(true);
+      this.syncSourceSearch();
+      if (!preserveSearch) this.sourceSearch?.invalidate();
+      void this.readRawPage("initial");
+      return;
+    }
+    this.clearRawPages();
+    this.setStringVisible(true);
+    this.syncSourceSearch();
+    if (!preserveSearch) this.sourceSearch?.invalidate();
+    if (representation === "rendered") {
+      const target = this.target;
+      const override = this.renderOverride;
+      const generation = ++this.generation;
+      this.prepareRendererLoad(false);
+      void this.renderSelection(target, generation, override).catch((error) => {
+        if (this.isCurrent(generation, target)) this.handleFailure(error);
+      });
+      return;
+    }
+    const cached = this.decodedPages.get(this.offsets[this.offsetIndex] ?? 0);
+    if (cached) {
+      this.installChunk(cached);
+      return;
+    }
+    void this.readPage(this.offsets[this.offsetIndex] ?? 0, "initial");
+  }
+
+  private handleStringTabKeydown(event: Event): void {
+    if (!(event instanceof KeyboardEvent) || !this.stringElements) return;
+    const tabs = [this.stringElements.renderedTab, this.stringElements.decodedTab, this.stringElements.rawTab];
+    const current = tabs.indexOf(event.target as HTMLButtonElement);
+    if (current < 0) return;
+    if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+      event.preventDefault();
+      const direction = event.key === "ArrowRight" ? 1 : -1;
+      tabs[(current + direction + tabs.length) % tabs.length].focus();
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      (event.key === "Home" ? tabs[0] : tabs.at(-1))?.focus();
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      this.activateOrdinaryRepresentation(current === 0 ? "rendered" : current === 1 ? "decoded" : "raw");
+    }
+  }
+
+  private setStringVisible(active: boolean): void {
+    const elements = this.stringElements;
+    if (!elements) return;
+    const visible = active && this.renderMode !== "html" && this.nestedRepresentation === null;
+    elements.representations.hidden = !visible;
+    const tabs = [elements.renderedTab, elements.decodedTab, elements.rawTab];
+    const activeTab = this.ordinaryRepresentation === "raw" ? elements.rawTab
+      : this.ordinaryRepresentation === "decoded" ? elements.decodedTab : elements.renderedTab;
+    for (const tab of tabs) {
+      const selected = visible && tab === activeTab;
+      tab.classList.toggle("is-active", selected);
+      tab.setAttribute("aria-selected", String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+    }
+  }
+
+  private syncSourceSearch(): void {
+    const search = this.sourceSearch;
+    if (!search) return;
+    const target = this.searchTarget();
+    if (!target || !this.detection) {
+      search.clear();
+      return;
+    }
+    const representation = this.currentSearchRepresentation();
+    const parsed = this.nestedRepresentation === "parsed";
+    const preview = this.renderMode === "html" && this.htmlRepresentation === "preview";
+    const available = representation !== null;
+    search.setScope({
+      label: "Content Viewer",
+      description: parsed ? "Parsed search is unavailable; switch to Decoded String or Raw Lexeme." : preview || !available ? "Rendered search is unavailable; switch to a source tab." : representation === "rawSource" ? "Search the raw lexeme." : "Search the decoded source.",
+      enabled: available && !this.busy && !this.nestedBusy,
+      decodedEnabled: true,
+      scopeStart: target.spanStart,
+      scopeEnd: target.spanEnd,
+      sessionRevision: target.revision,
+      scopeId: target.scopeId,
+      targetNodeId: target.nodeId
+    });
+    search.setRepresentation(representation === "rawSource" ? "rawSource" : "decoded");
+  }
+
+  private searchTarget(): ContentTarget | null {
+    const frame = this.nestedFrames.at(-1);
+    if (frame) return frame.source;
+    return this.target;
+  }
+
+  private currentSearchRepresentation(): "decoded" | "rawSource" | null {
+    if (this.nestedRepresentation === "parsed") return null;
+    if (this.renderMode === "html") {
+      if (this.htmlRepresentation === "raw") return "rawSource";
+      if (this.htmlRepresentation === "source") return "decoded";
+      return null;
+    }
+    if (this.nestedRepresentation === "raw" || this.ordinaryRepresentation === "raw") return "rawSource";
+    if (this.nestedRepresentation === "decoded" || this.ordinaryRepresentation === "decoded") return "decoded";
+    return null;
+  }
+
+  private activateContentSearchRepresentation(representation: "decoded" | "rawSource"): void {
+    if (this.nestedFrames.at(-1)?.kind === "json") {
+      this.activateNestedRepresentation(representation === "rawSource" ? "raw" : "decoded");
+    } else if (this.renderMode === "html") {
+      this.activateHtmlRepresentation(representation === "rawSource" ? "raw" : "source");
+    } else {
+      this.activateOrdinaryRepresentation(representation === "rawSource" ? "raw" : "decoded");
+    }
+  }
+
+  private handleSearchError(error: unknown): void {
+    if (isGlobalError(error)) this.handleFailure(error);
+  }
+
+  private handleDialogKeydown(event: Event): void {
+    if (!(event instanceof KeyboardEvent)) return;
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f" && this.sourceSearch) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.sourceSearch.focusQuery();
+      return;
+    }
+    if (event.key === "Escape" && this.sourceSearch?.handleEscape(event)) return;
+  }
+
+  private async revealSearchMatch(match: SearchMatch): Promise<void> {
+    const search = this.sourceSearch;
+    const target = this.searchTarget();
+    if (!search || !target) return;
+    const query = search.query;
+    const searchEpoch = search.intentEpoch;
+    const revealEpoch = ++this.sourceRevealEpoch;
+    const generation = this.generation;
+    const frame = this.nestedFrames.at(-1);
+    const representation = match.field === "rawSource" ? "raw" : "decoded";
+    this.contentReadBusy = true;
+    if (frame?.kind === "json") this.nestedBusy = true;
+    else this.busy = true;
+    this.elements.dialog.setAttribute("aria-busy", "true");
+    this.elements.content.setAttribute("aria-busy", "true");
+    this.setStatus("Loading search match…");
+    this.renderMetadata();
+    this.renderPaging();
+    try {
+      if (frame?.kind === "json") {
+        this.nestedRepresentation = representation === "raw" ? "raw" : "decoded";
+        this.setNestedVisible(true);
+        this.renderPaging();
+        await this.revealNestedSearch(frame, match, query, representation, revealEpoch, searchEpoch, generation);
+        return;
+      }
+      if (this.renderMode === "html") {
+        this.htmlRepresentation = representation === "raw" ? "raw" : "source";
+        this.setHtmlVisible(true);
+      } else {
+        this.ordinaryRepresentation = representation;
+        if (representation === "raw") this.clearDecodedPages();
+        else this.clearRawPages();
+        this.setStringVisible(true);
+      }
+      this.renderPaging();
+      if (representation === "raw") await this.revealRawSearch(target, match, query, frame ? frame.scope.sessionRevision : target.revision, revealEpoch, searchEpoch, generation);
+      else await this.revealDecodedSearch(target, match, query, target.revision, revealEpoch, searchEpoch, generation);
+    } catch (error) {
+      if (!this.isRevealCurrent(generation, target, revealEpoch, searchEpoch, query, representation)) return;
+      if (isGlobalError(error)) this.handleFailure(error);
+      else {
+        this.contentReadBusy = false;
+        this.busy = false;
+        this.nestedBusy = false;
+        this.elements.dialog.removeAttribute("aria-busy");
+        this.elements.content.removeAttribute("aria-busy");
+        this.elements.alert.hidden = false;
+        this.elements.alert.textContent = `Search match could not be loaded: ${errorMessage(error)}`;
+        this.setStatus("Unable to load search match");
+        this.renderMetadata();
+        this.renderPaging();
+      }
+    }
+  }
+
+  private async revealNestedSearch(frame: NestedFrame, match: SearchMatch, query: string, representation: "decoded" | "raw", revealEpoch: number, searchEpoch: number, generation: number): Promise<void> {
+    const target = frame.source;
+    if (representation === "raw") {
+      await this.revealRawSearch(target, match, query, frame.scope.sessionRevision, revealEpoch, searchEpoch, generation);
+      return;
+    }
+    await this.revealDecodedSearch(target, match, query, frame.scope.sessionRevision, revealEpoch, searchEpoch, generation);
+  }
+
+  private async revealDecodedSearch(target: ContentTarget, match: SearchMatch, query: string, sessionRevision = target.revision, revealEpoch = this.sourceRevealEpoch, searchEpoch = this.sourceSearch?.intentEpoch ?? 0, generation = this.generation): Promise<void> {
+    const value = await this.invokeRequest<unknown>("read_decoded_text", {
+      nodeId: target.nodeId,
+      offset: match.matchStart,
+      length: TEXT_CHUNK_BYTES,
+      sessionRevision,
+      scopeId: target.scopeId
+    });
+    if (!this.isRevealCurrent(generation, target, revealEpoch, searchEpoch, query, "decoded")) return;
+    const chunk = validateChunk(value, match.matchStart, rawSpanLength(target));
+    if (!chunk) throw new Error("The decoded search result could not be loaded.");
+    this.installSearchChunk(chunk, query, match.matchStart, false, "decoded");
+  }
+
+  private async revealRawSearch(target: ContentTarget, match: SearchMatch, query: string, sessionRevision: number, revealEpoch = this.sourceRevealEpoch, searchEpoch = this.sourceSearch?.intentEpoch ?? 0, generation = this.generation): Promise<void> {
+    const relativeStart = match.matchStart - target.spanStart;
+    const sourceStart = target.spanStart + relativeStart;
+    const sourceEnd = target.spanEnd;
+    const requestLength = Math.min(TEXT_CHUNK_BYTES, sourceEnd - sourceStart);
+    if (relativeStart < 0 || sourceStart >= sourceEnd) return;
+    const value = await this.invokeRequest<unknown>("read_raw_slice", {
+      sourceStart,
+      length: requestLength,
+      sessionRevision,
+      scopeId: target.scopeId
+    });
+    if (!this.isRevealCurrent(generation, target, revealEpoch, searchEpoch, query, "raw")) return;
+    const chunk = normalizeRawChunk(value, sourceStart, target.spanStart, sourceEnd, requestLength);
+    if (!chunk) throw new Error("The raw search result could not be loaded.");
+    this.installSearchChunk(chunk, query, relativeStart, true, "raw");
+  }
+
+  private installSearchChunk(chunk: TextChunk, query: string, matchStart: number, raw = false, representation: "decoded" | "raw" = raw ? "raw" : "decoded"): void {
+    this.contentReadBusy = false;
+    this.nestedBusy = false;
+    this.busy = false;
+    this.elements.content.classList.remove("is-markdown");
+    const queryBytes = utf8ByteLength(query);
+    const relative = Math.max(0, matchStart - chunk.start);
+    const start = utf8ByteOffsetToUtf16(chunk.text, relative);
+    const end = utf8ByteOffsetToUtf16(chunk.text, relative + queryBytes);
+    const before = chunk.text.slice(0, start);
+    const marked = chunk.text.slice(start, end);
+    const after = chunk.text.slice(end);
+    const fragment = document.createDocumentFragment();
+    if (before) fragment.append(document.createTextNode(before));
+    const mark = document.createElement("mark");
+    mark.textContent = marked;
+    mark.dataset.searchMatch = "true";
+    fragment.append(mark);
+    if (after) fragment.append(document.createTextNode(after));
+    this.elements.content.replaceChildren(fragment);
+    this.representation = "decoded";
+    const frame = this.nestedFrames.at(-1);
+    if (frame && this.nestedRepresentation === representation) {
+      const state = textState(frame, representation);
+      this.clearNestedPageCache(state);
+      state.offsets = [chunk.start];
+      state.offsetIndex = 0;
+      state.nextOffset = chunk.nextOffset;
+      state.current = chunk;
+      this.cacheNestedPage(frame, representation, chunk);
+    } else if (representation === "raw") {
+      this.rawPageOffsets = [chunk.start];
+      this.rawPageIndex = 0;
+      this.rawNextOffset = chunk.nextOffset;
+      this.cacheRawPage(chunk);
+    } else {
+      this.offsets = [chunk.start];
+      this.offsetIndex = 0;
+      this.nextOffset = chunk.nextOffset;
+      this.cacheDecodedPage(chunk);
+    }
+    const target = this.searchTarget();
+    const rangeStart = raw && target ? target.spanStart + chunk.start : chunk.start;
+    this.elements.range.textContent = `[${rangeStart}, ${rangeStart + utf8ByteLength(chunk.text)})`;
+    this.setStatus("Search match ready");
+    this.elements.alert.hidden = true;
+    this.elements.dialog.removeAttribute("aria-busy");
+    this.elements.content.removeAttribute("aria-busy");
+    this.renderMetadata();
+    this.renderPaging();
+  }
+
+  private isRevealCurrent(generation: number, target: ContentTarget, revealEpoch: number, searchEpoch: number, query: string, representation: "decoded" | "raw"): boolean {
+    if (!this.isCurrent(generation, target) || this.sourceRevealEpoch !== revealEpoch || this.sourceSearch?.intentEpoch !== searchEpoch || this.sourceSearch?.query !== query) return false;
+    if (this.nestedRepresentation !== null) return this.nestedRepresentation === representation;
+    if (this.renderMode === "html") return representation === "raw" ? this.htmlRepresentation === "raw" : this.htmlRepresentation === "source";
+    return this.ordinaryRepresentation === representation;
   }
 
   private setNestedVisible(active: boolean): void {
@@ -1631,8 +2174,8 @@ export class ContentViewer {
     const nested = this.nestedElements;
     const html = this.htmlElements;
     if (!nested && !html) return;
-    if (html && this.renderMode === "html" && this.htmlRepresentation === "source") {
-      this.elements.content.setAttribute("aria-label", "HTML Source");
+    if (html && this.renderMode === "html" && (this.htmlRepresentation === "source" || this.htmlRepresentation === "raw")) {
+      this.elements.content.setAttribute("aria-label", this.htmlRepresentation === "source" ? "Decoded Source" : "Raw Lexeme");
       if (nested) {
         nested.sharedTextPanel.setAttribute("role", "tabpanel");
         nested.sharedTextPanel.setAttribute("aria-labelledby", html.sourceTab.id);
@@ -1664,8 +2207,9 @@ export class ContentViewer {
     html.previewPanel.hidden = !visible || this.htmlRepresentation !== "preview";
     html.previewTab.disabled = !visible || this.htmlPreviewUnavailable || this.htmlPreview === null;
     html.sourceTab.disabled = !visible;
-    const tabs = [html.previewTab, html.sourceTab];
-    const activeTab = this.htmlRepresentation === "preview" ? html.previewTab : html.sourceTab;
+    const tabs = [html.previewTab, html.sourceTab, ...(html.rawTab ? [html.rawTab] : [])];
+    const activeTab = this.htmlRepresentation === "preview" ? html.previewTab
+      : this.htmlRepresentation === "raw" ? html.rawTab : html.sourceTab;
     for (const tab of tabs) {
       const selected = visible && tab === activeTab;
       tab.classList.toggle("is-active", selected);
@@ -1700,13 +2244,7 @@ export class ContentViewer {
     }
     this.decodedPages.set(chunk.start, chunk);
     this.decodedPageCacheBytes += utf8ByteLength(chunk.text);
-    while (this.decodedPageCacheBytes > DECODED_PAGE_CACHE_BYTES && this.decodedPages.size > 1) {
-      const oldestOffset = this.decodedPages.keys().next().value;
-      if (typeof oldestOffset !== "number") break;
-      const oldest = this.decodedPages.get(oldestOffset);
-      this.decodedPages.delete(oldestOffset);
-      if (oldest) this.decodedPageCacheBytes -= utf8ByteLength(oldest.text);
-    }
+    this.trimTextCaches();
   }
 
   private rememberCodeChunk(chunk: TextChunk): void {
@@ -1720,6 +2258,14 @@ export class ContentViewer {
   private clearDecodedPages(): void {
     this.decodedPages.clear();
     this.decodedPageCacheBytes = 0;
+  }
+
+  private clearRawPages(): void {
+    this.rawPages.clear();
+    this.rawPageOffsets = [];
+    this.rawPageIndex = -1;
+    this.rawNextOffset = null;
+    this.rawCacheBytes = 0;
   }
 
   private clearCodeLineCheckpoints(): void {
@@ -1799,6 +2345,7 @@ export class ContentViewer {
         void this.closeRootScope(root.scope.scopeId, revision, key);
       }
     }
+    for (const frame of this.nestedFrames) this.discardNestedFrame(frame);
     this.nestedFrames = [];
     this.nestedTree?.clear();
     this.nestedRepresentation = null;
@@ -1818,7 +2365,9 @@ export class ContentViewer {
   }
 
   private handleFailure(error: unknown): void {
+    this.contentReadBusy = false;
     this.busy = false;
+    this.nestedBusy = false;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
     const code = errorCode(error);
@@ -1842,6 +2391,7 @@ export class ContentViewer {
     const hadContent = wasOpen || this.target !== null || opener !== null;
     this.restoreFocusOnClose = null;
     this.generation += 1;
+    this.contentReadBusy = false;
     this.invalidateCopy();
     this.target = null;
     this.detection = null;
@@ -1865,11 +2415,15 @@ export class ContentViewer {
     this.htmlPreview = null;
     this.htmlPreviewUnavailable = false;
     this.htmlNote = "";
+    this.ordinaryRepresentation = null;
     this.clearDecodedPages();
+    this.clearRawPages();
     this.clearCodeLineCheckpoints();
     this.elements.range.textContent = "—";
     this.setNestedVisible(false);
+    this.setStringVisible(false);
     this.setHtmlVisible(false);
+    this.sourceSearch?.clear();
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
@@ -1923,7 +2477,11 @@ export class ContentViewer {
     this.elements.representation.textContent = this.nestedRepresentation !== null
       ? nestedRepresentationLabel(this.nestedRepresentation)
       : this.renderMode === "html"
-      ? this.htmlRepresentation === "preview" ? "Preview" : this.htmlRepresentation === "source" ? "Source" : "Loading…"
+      ? this.htmlRepresentation === "preview" ? "Preview" : this.htmlRepresentation === "source" ? "Source" : this.htmlRepresentation === "raw" ? "Raw Lexeme" : "Loading…"
+      : this.ordinaryRepresentation === "raw"
+      ? "Raw Lexeme"
+      : this.ordinaryRepresentation === "decoded"
+      ? "Decoded Source"
       : this.renderMode === "plainText"
       ? "Plain Text"
       : this.representation === "rendered" ? "Rendered" : "Decoded Source";
@@ -1936,11 +2494,18 @@ export class ContentViewer {
       this.elements.rendererNote.textContent = override && note ? `${override}\n${note}` : override || note;
       this.renderNestedRange();
       this.syncRenderAsSelect();
+      this.syncSourceSearch();
       return;
     }
     let note = "";
-    if (this.renderMode === "html") {
+    if (this.renderMode === "html" && this.htmlRepresentation === "raw") {
+      note = "Raw Lexeme.";
+    } else if (this.renderMode === "html") {
       note = this.htmlNote;
+    } else if (this.ordinaryRepresentation === "raw") {
+      note = "Raw Lexeme.";
+    } else if (this.ordinaryRepresentation === "decoded" && this.semanticLimit === null && !this.markdownRenderFailed) {
+      note = "Decoded Source.";
     } else if (this.renderMode === "plainText") {
       note = "";
     } else if (this.renderMode === "markdown" && this.semanticLimit === "markdown") {
@@ -1965,6 +2530,7 @@ export class ContentViewer {
     const override = this.renderOverride === "auto" ? "" : `User override: ${renderAsLabel(this.renderOverride)}`;
     this.elements.rendererNote.textContent = override && note ? `${override}\n${note}` : override || note;
     this.syncRenderAsSelect();
+    this.syncSourceSearch();
   }
 
   private renderPaging(): void {
@@ -1987,6 +2553,12 @@ export class ContentViewer {
     if (this.htmlRepresentation === "preview") {
       this.elements.previous.disabled = true;
       this.elements.next.disabled = true;
+      this.elements.close.disabled = false;
+      return;
+    }
+    if (this.ordinaryRepresentation === "raw" || this.htmlRepresentation === "raw") {
+      this.elements.previous.disabled = this.busy || this.rawPageIndex <= 0;
+      this.elements.next.disabled = this.busy || this.rawNextOffset === null;
       this.elements.close.disabled = false;
       return;
     }
@@ -2021,6 +2593,22 @@ export class ContentViewer {
       && this.target.scopeId === target.scopeId
       && this.target.spanStart === target.spanStart
       && this.target.spanEnd === target.spanEnd;
+  }
+
+  private isReadCurrent(generation: number, target: ContentTarget, intent: number): boolean {
+    return this.isCurrent(generation, target) && this.sourceRevealEpoch === intent;
+  }
+
+  private cancelContentRead(): void {
+    this.sourceRevealEpoch += 1;
+    if (!this.contentReadBusy) return;
+    this.contentReadBusy = false;
+    this.busy = false;
+    this.nestedBusy = false;
+    this.elements.dialog.removeAttribute("aria-busy");
+    this.elements.content.removeAttribute("aria-busy");
+    this.renderMetadata();
+    this.renderPaging();
   }
 }
 
@@ -2208,6 +2796,19 @@ function safeOffset(value: unknown): number | undefined {
 
 function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
+}
+
+function utf8ByteOffsetToUtf16(value: string, byteOffset: number): number {
+  if (byteOffset <= 0) return 0;
+  let bytes = 0;
+  let index = 0;
+  for (const character of value) {
+    const size = utf8ByteLength(character);
+    if (bytes + size > byteOffset) break;
+    bytes += size;
+    index += character.length;
+  }
+  return index;
 }
 
 function rawSpanLength(target: ContentTarget): number {

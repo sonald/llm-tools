@@ -9,6 +9,7 @@ export type SearchScope = {
   scopeStart: number;
   scopeEnd: number;
   sessionRevision: number;
+  scopeId: number | null;
   targetNodeId: number | null;
 };
 
@@ -30,7 +31,7 @@ export type SearchCursor = {
   byteOffset: number;
   query: string;
   sessionRevision: number;
-  scopeId: null;
+  scopeId: number | null;
   targetNodeId: number | null;
 };
 
@@ -42,7 +43,7 @@ export type SearchPage = {
 
 type Invoke = <T = unknown>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
-type SearchViewElements = {
+export type SearchViewElements = {
   form: HTMLFormElement;
   query: HTMLInputElement;
   decoded: HTMLInputElement;
@@ -61,6 +62,8 @@ type SearchViewOptions = SearchViewElements & {
   invoke: Invoke;
   onReveal: (match: SearchMatch) => void;
   onError: (error: unknown) => void;
+  onIntentChange?: () => void;
+  onRepresentationChange?: (representation: SearchRepresentation) => void;
 };
 
 type SearchHistoryPage = {
@@ -83,6 +86,8 @@ export class SearchView {
   private readonly invoke: Invoke;
   private readonly onReveal: (match: SearchMatch) => void;
   private readonly onError: (error: unknown) => void;
+  private readonly onIntentChange: () => void;
+  private readonly onRepresentationChange: ((representation: SearchRepresentation) => void) | undefined;
   private scope: SearchScope | null = null;
   private history: SearchHistoryPage[] = [];
   private currentIndex = -1;
@@ -96,6 +101,8 @@ export class SearchView {
     this.invoke = options.invoke;
     this.onReveal = options.onReveal;
     this.onError = options.onError;
+    this.onIntentChange = options.onIntentChange ?? (() => undefined);
+    this.onRepresentationChange = options.onRepresentationChange;
     this.elements.form.addEventListener("submit", (event) => {
       event.preventDefault();
       void this.submit();
@@ -103,27 +110,27 @@ export class SearchView {
     this.elements.previous.addEventListener("click", () => this.showPrevious());
     this.elements.next.addEventListener("click", () => void this.showNext());
     this.elements.query.addEventListener("input", () => this.criteriaChanged());
-    this.elements.decoded.addEventListener("change", () => this.criteriaChanged());
-    this.elements.rawSource.addEventListener("change", () => this.criteriaChanged());
+    this.elements.decoded.addEventListener("change", () => this.representationChanged());
+    this.elements.rawSource.addEventListener("change", () => this.representationChanged());
     this.clear();
   }
 
   setScope(scope: SearchScope | null): void {
     const changed = scopeKey(this.scope) !== scopeKey(scope);
     this.scope = scope;
-    if (changed) this.resetResults(true);
+    if (changed) this.resetResults(true, true);
     else this.render();
   }
 
   clear(): void {
     this.scope = null;
-    this.resetResults(true);
+    this.resetResults(true, false);
   }
 
   invalidate(): void {
     this.epoch += 1;
     this.request = null;
-    this.resetResults(false);
+    this.resetResults(false, true);
   }
 
   focusQuery(): void {
@@ -131,20 +138,43 @@ export class SearchView {
     this.elements.query.select();
   }
 
+  get query(): string {
+    return this.elements.query.value;
+  }
+
+  get intentEpoch(): number {
+    return this.epoch;
+  }
+
+  setRepresentation(representation: SearchRepresentation): void {
+    this.elements.decoded.checked = representation === "decoded";
+    this.elements.rawSource.checked = representation === "rawSource";
+    this.render();
+  }
+
   handleEscape(event: KeyboardEvent): boolean {
     if (this.elements.resultsPanel.hidden) return false;
     event.preventDefault();
     event.stopPropagation();
-    this.resetResults(false);
+    this.resetResults(false, true);
     this.focusQuery();
     return true;
   }
 
   private criteriaChanged(): void {
-    this.resetResults(false);
+    this.resetResults(false, true);
   }
 
-  private resetResults(clearQuery: boolean): void {
+  private representationChanged(): void {
+    const scope = this.scope;
+    if (scope && this.onRepresentationChange) {
+      this.onRepresentationChange(this.selectedRepresentation(scope));
+      return;
+    }
+    this.criteriaChanged();
+  }
+
+  private resetResults(clearQuery: boolean, notify: boolean): void {
     this.epoch += 1;
     this.request = null;
     this.history = [];
@@ -155,6 +185,7 @@ export class SearchView {
     this.elements.results.replaceChildren();
     this.elements.resultsPanel.hidden = true;
     this.render();
+    if (notify) this.onIntentChange();
   }
 
   private async submit(): Promise<void> {
@@ -169,6 +200,7 @@ export class SearchView {
     const representation = this.selectedRepresentation(scope);
     const requestCursor = null;
     this.epoch += 1;
+    this.onIntentChange();
     this.history = [];
     this.currentIndex = -1;
     const token = { epoch: this.epoch, serial: ++this.serial };
@@ -181,7 +213,7 @@ export class SearchView {
       const value = await this.invoke<unknown>("search_current", {
         query,
         representation,
-        scopeId: null,
+        scopeId: scope.scopeId,
         nodeId: scope.targetNodeId,
         cursor: requestCursor,
         limit: PAGE_SIZE,
@@ -224,6 +256,7 @@ export class SearchView {
     const query = this.elements.query.value;
     const representation = this.selectedRepresentation(scope);
     this.epoch += 1;
+    this.onIntentChange();
     const token = { epoch: this.epoch, serial: ++this.serial };
     this.request = token;
     this.busy = true;
@@ -234,7 +267,7 @@ export class SearchView {
       const value = await this.invoke<unknown>("search_current", {
         query,
         representation,
-        scopeId: null,
+        scopeId: scope.scopeId,
         nodeId: scope.targetNodeId,
         cursor,
         limit: PAGE_SIZE,
@@ -282,7 +315,10 @@ export class SearchView {
       button.dataset.resultIndex = String(index);
       button.textContent = resultLabel(match);
       button.title = resultLabel(match);
-      button.addEventListener("click", () => this.onReveal(match));
+      const resultEpoch = this.epoch;
+      button.addEventListener("click", () => {
+        if (this.epoch === resultEpoch && this.history[this.currentIndex]?.page.matches[index] === match) this.onReveal(match);
+      });
       fragment.append(button);
     });
     this.elements.results.replaceChildren(fragment);
@@ -299,6 +335,7 @@ export class SearchView {
     this.elements.results.replaceChildren();
     this.history = [];
     this.currentIndex = -1;
+    this.onIntentChange();
     this.render();
   }
 
@@ -346,7 +383,7 @@ function searchPageValue(
   const matches = value.matches.map((match) => searchMatchValue(match, representation, query, scope));
   const nextCursor = value.nextCursor === null
     ? null
-    : searchCursorValue(value.nextCursor, representation, query, scope.sessionRevision, requestCursor, scope.scopeEnd, scope.targetNodeId);
+    : searchCursorValue(value.nextCursor, representation, query, scope.sessionRevision, scope.scopeId, requestCursor, scope.scopeEnd, scope.targetNodeId);
   if (value.hasMore !== (nextCursor !== null)) throw new Error("The search response cursor state is invalid.");
   return { matches, hasMore: value.hasMore, nextCursor };
 }
@@ -393,12 +430,13 @@ function searchCursorValue(
   representation: SearchRepresentation,
   query: string,
   sessionRevision: number,
+  scopeId: number | null,
   previous: SearchCursor | null,
   scopeEnd: number,
   scopeTargetNodeId: number | null
 ): SearchCursor {
   if (!isRecord(value) || typeof value.kind !== "string" || typeof value.query !== "string"
-    || typeof value.sessionRevision !== "number" || value.scopeId !== null || value.targetNodeId !== scopeTargetNodeId
+    || typeof value.sessionRevision !== "number" || value.scopeId !== scopeId || value.targetNodeId !== scopeTargetNodeId
     || value.query !== query || value.sessionRevision !== sessionRevision) {
     throw new Error("The search cursor is invalid.");
   }
@@ -406,7 +444,7 @@ function searchCursorValue(
     if (!recordWithKeys(value, ["kind", "byteOffset", "query", "sessionRevision", "scopeId", "targetNodeId"])) throw new Error("The search cursor is invalid.");
     const byteOffset = safeInteger(value.byteOffset);
     if (byteOffset === undefined || byteOffset < 0 || byteOffset > scopeEnd || representation !== "rawSource") throw new Error("The raw search cursor is invalid.");
-    const cursor: SearchCursor = { kind: "rawSource", byteOffset, query, sessionRevision, scopeId: null, targetNodeId: scopeTargetNodeId };
+    const cursor: SearchCursor = { kind: "rawSource", byteOffset, query, sessionRevision, scopeId, targetNodeId: scopeTargetNodeId };
     if (previous && (previous.kind !== cursor.kind || cursor.byteOffset <= previous.byteOffset)) throw new Error("The search cursor did not advance.");
     return cursor;
   }
@@ -418,7 +456,7 @@ function searchCursorValue(
   if (nodeId === undefined || byteOffset === undefined || (value.field !== "key" && value.field !== "value") || representation !== "decoded") {
     throw new Error("The decoded search cursor is invalid.");
   }
-  const cursor: SearchCursor = { kind: "decoded", nodeId, field: value.field, byteOffset, query, sessionRevision, scopeId: null, targetNodeId: scopeTargetNodeId };
+  const cursor: SearchCursor = { kind: "decoded", nodeId, field: value.field, byteOffset, query, sessionRevision, scopeId, targetNodeId: scopeTargetNodeId };
   if (previous && (previous.kind !== cursor.kind || !decodedCursorAdvanced(previous, cursor))) throw new Error("The search cursor did not advance.");
   return cursor;
 }
@@ -450,7 +488,7 @@ function isSearchField(value: unknown): value is SearchField {
 
 function scopeKey(scope: SearchScope | null): string {
   if (!scope) return "none";
-  return [scope.label, scope.enabled, scope.decodedEnabled, scope.scopeStart, scope.scopeEnd, scope.sessionRevision, scope.targetNodeId].join("\u0000");
+  return [scope.label, scope.decodedEnabled, scope.scopeStart, scope.scopeEnd, scope.sessionRevision, scope.scopeId, scope.targetNodeId].join("\u0000");
 }
 
 function resultLabel(match: SearchMatch): string {

@@ -197,11 +197,28 @@ const nestedRawTab = required<HTMLButtonElement>("content-viewer-raw-lexeme-tab"
 const parsedPanel = required<HTMLElement>("content-viewer-parsed-panel");
 const parsedTree = required<HTMLElement>("content-viewer-parsed-tree");
 const sharedTextPanel = required<HTMLElement>("content-viewer-text-panel");
+const stringRepresentations = required<HTMLElement>("content-viewer-string-representations");
+const stringRenderedTab = required<HTMLButtonElement>("content-viewer-rendered-tab");
+const stringDecodedTab = required<HTMLButtonElement>("content-viewer-decoded-source-tab");
+const stringRawTab = required<HTMLButtonElement>("content-viewer-string-raw-lexeme-tab");
 const htmlRepresentations = required<HTMLElement>("content-viewer-html-representations");
 const htmlPreviewTab = required<HTMLButtonElement>("content-viewer-html-preview-tab");
 const htmlSourceTab = required<HTMLButtonElement>("content-viewer-html-source-tab");
+const htmlRawTab = required<HTMLButtonElement>("content-viewer-html-raw-lexeme-tab");
 const htmlPreviewPanel = required<HTMLElement>("content-viewer-html-preview-panel");
 const htmlPreviewFrame = required<HTMLIFrameElement>("content-viewer-html-preview-frame");
+const contentViewerSearchForm = required<HTMLFormElement>("content-viewer-search");
+const contentViewerSearchQuery = required<HTMLInputElement>("content-viewer-search-query");
+const contentViewerSearchDecoded = required<HTMLInputElement>("content-viewer-search-decoded");
+const contentViewerSearchRaw = required<HTMLInputElement>("content-viewer-search-raw");
+const contentViewerSearchSubmit = required<HTMLButtonElement>("content-viewer-search-submit");
+const contentViewerSearchDescription = required<HTMLElement>("content-viewer-search-description");
+const contentViewerSearchPanel = required<HTMLElement>("content-viewer-search-panel");
+const contentViewerSearchResultsPanel = required<HTMLElement>("content-viewer-search-results-panel");
+const contentViewerSearchStatus = required<HTMLElement>("content-viewer-search-status");
+const contentViewerSearchResults = required<HTMLElement>("content-viewer-search-results");
+const contentViewerSearchPrevious = required<HTMLButtonElement>("content-viewer-search-prev");
+const contentViewerSearchNext = required<HTMLButtonElement>("content-viewer-search-next");
 
 const PREVIEW_ARIA_LABEL = "Preview selected string in Content Viewer";
 const previewButton = required<HTMLButtonElement>("content-viewer-preview");
@@ -251,12 +268,33 @@ const contentViewer = new ContentViewer({
       parsedTree,
       sharedTextPanel
     },
+    string: {
+      representations: stringRepresentations,
+      renderedTab: stringRenderedTab,
+      decodedTab: stringDecodedTab,
+      rawTab: stringRawTab
+    },
     html: {
       representations: htmlRepresentations,
       previewTab: htmlPreviewTab,
       sourceTab: htmlSourceTab,
+      rawTab: htmlRawTab,
       previewPanel: htmlPreviewPanel,
       previewFrame: htmlPreviewFrame
+    },
+    search: {
+      form: contentViewerSearchForm,
+      query: contentViewerSearchQuery,
+      decoded: contentViewerSearchDecoded,
+      rawSource: contentViewerSearchRaw,
+      submit: contentViewerSearchSubmit,
+      description: contentViewerSearchDescription,
+      panel: contentViewerSearchPanel,
+      resultsPanel: contentViewerSearchResultsPanel,
+      status: contentViewerSearchStatus,
+      results: contentViewerSearchResults,
+      previous: contentViewerSearchPrevious,
+      next: contentViewerSearchNext
     }
   },
   invoke,
@@ -947,6 +985,7 @@ function currentSearchScope(): SearchScope | null {
       scopeStart: 0,
       scopeEnd: summary.size,
       sessionRevision: summary.sessionRevision,
+      scopeId: null,
       targetNodeId: null
     };
   }
@@ -959,6 +998,7 @@ function currentSearchScope(): SearchScope | null {
       scopeStart: 0,
       scopeEnd: summary.size,
       sessionRevision: summary.sessionRevision,
+      scopeId: null,
       targetNodeId: null
     };
   }
@@ -973,6 +1013,7 @@ function currentSearchScope(): SearchScope | null {
         scopeStart: 0,
         scopeEnd: 0,
         sessionRevision: summary.sessionRevision,
+        scopeId: null,
         targetNodeId: null
       };
     }
@@ -984,6 +1025,7 @@ function currentSearchScope(): SearchScope | null {
       scopeStart: item.node.spanStart,
       scopeEnd: item.node.spanEnd,
       sessionRevision: summary.sessionRevision,
+      scopeId: null,
       targetNodeId: item.node.id
     };
   }
@@ -997,6 +1039,7 @@ function currentSearchScope(): SearchScope | null {
       scopeStart: 0,
       scopeEnd: 0,
       sessionRevision: summary.sessionRevision,
+      scopeId: null,
       targetNodeId: null
     };
   }
@@ -1015,6 +1058,7 @@ function currentSearchScope(): SearchScope | null {
     scopeStart: 0,
     scopeEnd,
     sessionRevision: summary.sessionRevision,
+    scopeId: null,
     targetNodeId: null
   };
 }

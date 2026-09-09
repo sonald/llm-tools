@@ -251,6 +251,12 @@
           <ol id="content-viewer-nested-breadcrumbs" aria-label="Nested JSON breadcrumb"></ol>
         </nav>
 
+        <div class="content-viewer-representations" id="content-viewer-string-representations" role="tablist" aria-label="String representations" hidden>
+          <button class="view-tab is-active" id="content-viewer-rendered-tab" type="button" role="tab" aria-selected="true" aria-controls="content-viewer-text-panel" tabindex="0">Rendered</button>
+          <button class="view-tab" id="content-viewer-decoded-source-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Decoded Source</button>
+          <button class="view-tab" id="content-viewer-string-raw-lexeme-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Raw Lexeme</button>
+        </div>
+
         <div class="nested-representations" id="content-viewer-representations" role="tablist" aria-label="Nested JSON representations" hidden>
           <button class="view-tab is-active" id="content-viewer-parsed-tab" type="button" role="tab" aria-selected="true" aria-controls="content-viewer-parsed-panel" tabindex="0">Parsed</button>
           <button class="view-tab" id="content-viewer-decoded-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Decoded String</button>
@@ -260,7 +266,34 @@
         <div class="html-representations" id="content-viewer-html-representations" role="tablist" aria-label="HTML representations" hidden>
           <button class="view-tab is-active" id="content-viewer-html-preview-tab" type="button" role="tab" aria-selected="true" aria-controls="content-viewer-html-preview-panel" tabindex="0">Preview</button>
           <button class="view-tab" id="content-viewer-html-source-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Source</button>
+          <button class="view-tab" id="content-viewer-html-raw-lexeme-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Raw Lexeme</button>
         </div>
+
+        <section class="content-viewer-search-panel" id="content-viewer-search-panel" aria-label="Search content viewer" hidden>
+          <form class="scope-search-form" id="content-viewer-search" role="search" aria-describedby="content-viewer-search-description">
+            <div class="scope-search-controls">
+              <label class="scope-search-query" for="content-viewer-search-query">
+                <span>Search content</span>
+                <input id="content-viewer-search-query" name="query" type="search" autocomplete="off" spellcheck="false" />
+              </label>
+              <fieldset class="scope-search-representation">
+                <legend>Search in</legend>
+                <label><input id="content-viewer-search-decoded" type="radio" name="content-viewer-representation" value="decoded" checked /> Decoded Source</label>
+                <label><input id="content-viewer-search-raw" type="radio" name="content-viewer-representation" value="rawSource" /> Raw Lexeme</label>
+              </fieldset>
+              <button class="primary-button scope-search-submit" id="content-viewer-search-submit" type="submit">Search</button>
+            </div>
+            <p class="scope-search-description" id="content-viewer-search-description">Search is available for the decoded string and raw lexeme.</p>
+          </form>
+          <div class="scope-search-results-panel" id="content-viewer-search-results-panel" hidden>
+            <div class="scope-search-status" id="content-viewer-search-status" role="status" aria-live="polite"></div>
+            <div class="scope-search-results" id="content-viewer-search-results" role="list" aria-label="Content Viewer search results"></div>
+            <div class="scope-search-footer">
+              <button class="secondary-button" id="content-viewer-search-prev" type="button">Previous page</button>
+              <button class="secondary-button" id="content-viewer-search-next" type="button">Next page</button>
+            </div>
+          </div>
+        </section>
 
         <p class="content-viewer-renderer-note" id="content-viewer-renderer-note" role="note"></p>
         <button class="secondary-button content-viewer-markdown-anyway" id="content-viewer-markdown-anyway" type="button" hidden>Render Markdown Anyway</button>
