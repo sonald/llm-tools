@@ -12,6 +12,8 @@
     "test:rendered-search-ui": "node scripts/test-rendered-search-ui.mjs",
     "test:html-rendered-search-ui": "node scripts/test-html-rendered-search-ui.mjs",
     "test:string-metrics-ui": "node scripts/test-string-metrics-ui.mjs",
+    "benchmark:core": "node scripts/run-core-performance.mjs",
+    "test:core-performance": "node scripts/test-core-performance.mjs",
     "test:copy-ui": "node scripts/test-copy-ui.mjs",
     "tauri": "tauri"
   },
