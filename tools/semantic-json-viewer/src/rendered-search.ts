@@ -71,7 +71,7 @@ const MAX_QUERY_BYTES = 4096;
 const MAX_PROJECTION_BYTES = 32 * 1024 * 1024;
 const PROJECTION_SEGMENT_BYTES = 128;
 const PROJECTION_TEXT_CHUNK_BYTES = 64 * 1024;
-const BLOCK_ELEMENTS = new Set(["BLOCKQUOTE", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "P", "TABLE", "TR", "TD", "TH", "PRE"]);
+const BLOCK_ELEMENTS = new Set(["ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DIV", "DL", "DT", "DD", "FIGURE", "FIGCAPTION", "FOOTER", "H1", "H2", "H3", "H4", "H5", "H6", "HEADER", "HR", "LI", "MAIN", "P", "PRE", "SECTION", "TABLE", "TR", "TD", "TH", "UL", "OL"]);
 const ASCII_WHITESPACE_RUN = /[ \t\r\n\f\v]+/g;
 
 export type RenderedProjectionOptions = {
@@ -242,6 +242,7 @@ export async function projectRenderedText(root: HTMLElement, options: RenderedPr
 
 function preservesWhitespace(element: HTMLElement): boolean {
   const whiteSpace = getComputedStyle(element).whiteSpace;
+  if (!whiteSpace) return element.tagName === "PRE";
   return whiteSpace === "pre" || whiteSpace === "pre-wrap" || whiteSpace === "break-spaces";
 }
 
@@ -455,6 +456,15 @@ export class RenderedSearch {
     }
   }
 
+  serializeHighlightedMarkup(anchorId: string): string | null {
+    if (!this.isOwner() || !this.projection || this.marks.length === 0 || !/^sjv-html-search-\d+$/.test(anchorId)) return null;
+    this.marks.forEach((mark, index) => {
+      mark.removeAttribute("id");
+      if (index === 0) mark.id = anchorId;
+    });
+    return this.projection.root.innerHTML;
+  }
+
   clear(keepQuery = true): void {
     this.cancelProjection();
     const ownsForm = this.isOwner();
@@ -516,7 +526,7 @@ export class RenderedSearch {
     for (const segment of this.projection.segments) {
       const overlapStart = Math.max(match.start, segment.textStart);
       const overlapEnd = Math.min(match.end, segment.textEnd);
-      if (overlapStart >= overlapEnd || !segment.node.isConnected) continue;
+      if (overlapStart >= overlapEnd || (!segment.node.isConnected && !this.projection.root.contains(segment.node))) continue;
       const projectedLength = segment.textEnd - segment.textStart;
       const sourceLength = segment.nodeEnd - segment.nodeStart;
       const sourceStart = sourceLength === projectedLength
@@ -725,7 +735,7 @@ export class RenderedSearch {
 
   private wrapTextRange(restore: TextRestore, start: number, end: number): void {
     const node = restore.original;
-    if (!node.isConnected || start < 0 || end <= start || end > node.data.length) return;
+    if ((!node.isConnected && !this.projection?.root.contains(node)) || start < 0 || end <= start || end > node.data.length) return;
     let target = node;
     if (start > 0) {
       target = node.splitText(start);

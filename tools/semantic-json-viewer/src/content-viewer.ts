@@ -266,6 +266,8 @@ export class ContentViewer {
   private nestedRepresentation: "parsed" | "decoded" | "raw" | null = null;
   private htmlRepresentation: "preview" | "source" | "raw" | null = null;
   private htmlPreview: string | null = null;
+  private htmlSearchRoot: HTMLElement | null = null;
+  private htmlSearchAnchorSerial = 0;
   private htmlPreviewUnavailable = false;
   private htmlNote = "";
   private ordinaryRepresentation: "rendered" | "decoded" | "raw" | null = null;
@@ -327,7 +329,7 @@ export class ContentViewer {
         ...options.elements.search,
         invoke: this.invokeRequest,
         onReveal: (match) => void this.revealRenderedMatch(match),
-        onIntentChange: () => this.cancelContentRead(),
+        onIntentChange: () => this.handleRenderedIntentChange(),
         onError: (error) => this.handleSearchError(error),
         onProjectionUnavailable: () => {
           this.sourceSearch?.refresh();
@@ -1390,6 +1392,7 @@ export class ContentViewer {
         return;
       }
       this.htmlPreview = preview.html;
+      this.prepareHtmlSearchRoot(preview.html);
       this.htmlPreviewUnavailable = false;
       this.htmlNote = HTML_PREVIEW_NOTE;
       this.htmlRepresentation = "preview";
@@ -1456,6 +1459,7 @@ export class ContentViewer {
       if (this.htmlPreviewUnavailable || this.htmlPreview === null || !this.htmlElements) return;
       this.htmlRepresentation = "preview";
       this.htmlNote = HTML_PREVIEW_NOTE;
+      if (!this.htmlSearchRoot && this.htmlPreview !== null) this.prepareHtmlSearchRoot(this.htmlPreview);
       this.elements.range.textContent = "—";
       this.setHtmlVisible(true);
       this.setStatus("HTML Preview ready");
@@ -1509,11 +1513,11 @@ export class ContentViewer {
     }
   }
 
-  private writeHtmlPreview(html: string, generation: number, target: ContentTarget | null): void {
+  private writeHtmlPreview(html: string, generation: number, target: ContentTarget | null, navigation = ""): void {
     if (!this.htmlElements || !target || this.renderMode !== "html" || this.htmlRepresentation !== "preview") return;
     if (generation !== this.generation || this.target?.nodeId !== target.nodeId || this.target.scopeId !== target.scopeId
       || this.target.revision !== target.revision) return;
-    this.htmlElements.previewFrame.srcdoc = htmlPreviewDocument(html);
+    this.htmlElements.previewFrame.srcdoc = htmlPreviewDocument(html, navigation);
   }
 
   private async openNestedChild(target: ContentTarget): Promise<void> {
@@ -2017,8 +2021,10 @@ export class ContentViewer {
   private syncRenderedSearch(): void {
     const rendered = this.renderedSearch;
     const target = this.target;
-    if (!rendered || !target || !this.detection || this.nestedRepresentation !== null || this.renderMode === "html"
-      || this.ordinaryRepresentation !== "rendered") {
+    const htmlRendered = this.renderMode === "html" && this.htmlRepresentation === "preview"
+      && this.htmlPreview !== null && this.htmlSearchRoot !== null;
+    if (!rendered || !target || !this.detection || this.nestedRepresentation !== null
+      || (this.renderMode === "html" ? !htmlRendered : this.ordinaryRepresentation !== "rendered")) {
       rendered?.clear();
       this.sourceSearch?.refresh();
       return;
@@ -2031,7 +2037,8 @@ export class ContentViewer {
       scopeStart: target.spanStart,
       scopeEnd: target.spanEnd
     };
-    if (backend) rendered.activate("backend", renderedTarget, null, "Search the visible rendered text.");
+    if (htmlRendered) rendered.activateDom(renderedTarget, this.htmlSearchRoot!, "Search the visible HTML preview text.");
+    else if (backend) rendered.activate("backend", renderedTarget, null, "Search the visible rendered text.");
     else rendered.activateDom(renderedTarget, this.elements.content, "Search the visible rendered text.");
   }
 
@@ -2047,6 +2054,13 @@ export class ContentViewer {
 
   private handleSearchError(error: unknown): void {
     if (isGlobalError(error)) this.handleFailure(error);
+  }
+
+  private handleRenderedIntentChange(): void {
+    this.cancelContentRead();
+    if (this.renderMode === "html" && this.htmlRepresentation === "preview" && this.htmlPreview !== null) {
+      this.writeHtmlPreview(this.htmlPreview, this.generation, this.target);
+    }
   }
 
   private handleDialogKeydown(event: Event): void {
@@ -2127,6 +2141,10 @@ export class ContentViewer {
   }
 
   private async revealRenderedMatch(match: RenderedMatch): Promise<void> {
+    if (match.kind === "dom" && this.renderMode === "html" && this.htmlRepresentation === "preview") {
+      await this.revealHtmlRenderedMatch(match);
+      return;
+    }
     if (match.kind !== "backend" || !match.backend || !this.target) return;
     const target = this.target;
     const backend = match.backend;
@@ -2201,6 +2219,22 @@ export class ContentViewer {
         this.renderPaging();
       }
     }
+  }
+
+  private async revealHtmlRenderedMatch(match: RenderedMatch): Promise<void> {
+    if (match.kind !== "dom") return;
+    const target = this.target;
+    const rendered = this.renderedSearch;
+    if (!target || !rendered || !this.htmlSearchRoot || this.htmlPreview === null) return;
+    const generation = this.generation;
+    const intent = ++this.sourceRevealEpoch;
+    const anchorId = `sjv-html-search-${++this.htmlSearchAnchorSerial}`;
+    const markup = rendered.serializeHighlightedMarkup(anchorId);
+    if (markup === null || !this.isCurrent(generation, target) || this.sourceRevealEpoch !== intent) return;
+    this.setStatus("HTML rendered search match ready");
+    this.writeHtmlPreview(markup, generation, target, htmlSearchNavigation(anchorId));
+    this.renderMetadata();
+    this.renderPaging();
   }
 
   private async codeLineStateAt(target: ContentTarget, offset: number, generation: number, intent: number): Promise<CodeLineState | null> {
@@ -2520,7 +2554,15 @@ export class ContentViewer {
   }
 
   private clearHtmlPreviewFrame(): void {
+    this.htmlSearchRoot = null;
     if (this.htmlElements) this.htmlElements.previewFrame.srcdoc = "";
+  }
+
+  private prepareHtmlSearchRoot(html: string): void {
+    const template = document.createElement("template");
+    template.innerHTML = `<div>${html}</div>`;
+    this.htmlSearchRoot = template.content.firstElementChild as HTMLElement | null;
+    this.htmlSearchAnchorSerial = 0;
   }
 
   private cleanupParsedPresentation(): void {
@@ -3030,8 +3072,12 @@ function validateHtmlPreview(value: unknown): HtmlPreviewResult | undefined {
   return { html, reason };
 }
 
-function htmlPreviewDocument(html: string): string {
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${HTML_PREVIEW_CSP}"></head><body>${html}</body></html>`;
+function htmlPreviewDocument(html: string, navigation = ""): string {
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${HTML_PREVIEW_CSP}"></head><body>${navigation}${html}</body></html>`;
+}
+
+function htmlSearchNavigation(anchorId: string): string {
+  return `<nav id="sjv-html-search" aria-label="HTML search result"><a id="sjv-html-search-link" href="about:srcdoc#${anchorId}">Jump to matched text</a></nav>`;
 }
 
 function validateChunk(
