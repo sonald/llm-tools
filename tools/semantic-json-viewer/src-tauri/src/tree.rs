@@ -95,6 +95,34 @@ impl TreeDocument {
         node.decoded.as_deref()
     }
 
+    pub fn string_metrics(&self, node_id: usize) -> Option<StringMetrics> {
+        let text = self.decoded_text(node_id)?;
+        let mut character_count = 0usize;
+        let mut line_count = 1usize;
+        let mut previous_was_cr = false;
+        for character in text.chars() {
+            character_count += 1;
+            match character {
+                '\r' => {
+                    line_count += 1;
+                    previous_was_cr = true;
+                }
+                '\n' => {
+                    if !previous_was_cr {
+                        line_count += 1;
+                    }
+                    previous_was_cr = false;
+                }
+                _ => previous_was_cr = false,
+            }
+        }
+        Some(StringMetrics {
+            decoded_bytes: text.len(),
+            character_count,
+            line_count,
+        })
+    }
+
     pub fn raw_text(&self, node_id: usize) -> Option<&str> {
         let node = self.parsed.node_at(node_id)?;
         str::from_utf8(&self.parsed.source()[node.span.start..node.span.end]).ok()
@@ -311,6 +339,13 @@ pub struct TextChunk {
     pub next_offset: Option<usize>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StringMetrics {
+    pub decoded_bytes: usize,
+    pub character_count: usize,
+    pub line_count: usize,
+}
+
 fn truncate_chars(value: &str, max_chars: usize) -> (String, bool) {
     let mut chars = value.chars();
     let truncated: String = chars.by_ref().take(max_chars).collect();
@@ -465,6 +500,41 @@ mod tests {
         assert_eq!(decoded.text, "a\né");
         assert!(!decoded.has_more);
         assert_eq!(decoded.next_offset, None);
+    }
+
+    #[test]
+    fn string_metrics_count_decoded_scalars_and_line_endings() {
+        let cases = [
+            ("", 0, 0, 1),
+            ("ASCII", 5, 5, 1),
+            ("你😀é", 10, 4, 1),
+            (r#"\r\nX\rY\n"#, 6, 6, 4),
+            (r#"\ud83d\ude00"#, 4, 1, 1),
+        ];
+        for (source, decoded_bytes, character_count, line_count) in cases {
+            let tree = document(&format!(r#"["{source}"]"#));
+            let node = tree.node(1).unwrap();
+            let metrics = tree.string_metrics(node.id).unwrap();
+            assert_eq!(metrics.decoded_bytes, decoded_bytes, "{source:?}");
+            assert_eq!(metrics.character_count, character_count, "{source:?}");
+            assert_eq!(metrics.line_count, line_count, "{source:?}");
+        }
+    }
+
+    #[test]
+    fn string_metrics_scan_full_strings_beyond_the_text_page_limit() {
+        let value = "a".repeat(200_000);
+        let tree = document(&format!(r#"["{value}"]"#));
+        let metrics = tree.string_metrics(1).unwrap();
+        assert_eq!(metrics.decoded_bytes, 200_000);
+        assert_eq!(metrics.character_count, 200_000);
+        assert_eq!(metrics.line_count, 1);
+    }
+
+    #[test]
+    fn string_metrics_reject_non_string_nodes() {
+        let tree = document(r#"[42]"#);
+        assert!(tree.string_metrics(1).is_none());
     }
 
     #[test]

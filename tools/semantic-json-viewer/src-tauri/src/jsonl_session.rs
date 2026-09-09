@@ -10,7 +10,7 @@ use crate::jsonl_entry::{inspect_entry, EntryStatus, MAX_ENTRY_BYTES, PREVIEW_BY
 use crate::jsonl_index::{Checkpoint, EntryLocation, JsonlIndex, JsonlIndexer};
 use crate::search::{SearchError, SearchPage, SearchRequest};
 use crate::semantic_detection::{Detection, NestedBudget};
-use crate::tree::{NodePage, NodeProjection, TextChunk, TreeDocument};
+use crate::tree::{NodePage, NodeProjection, StringMetrics, TextChunk, TreeDocument};
 
 const MAX_ENTRY_PAGE: usize = 200;
 
@@ -388,6 +388,14 @@ impl JsonlSession {
             .selected
             .as_ref()
             .and_then(|(_, tree)| tree.decoded_text(node_id)))
+    }
+
+    pub fn selected_string_metrics(&self, node_id: usize) -> io::Result<Option<StringMetrics>> {
+        self.ensure_current()?;
+        Ok(self
+            .selected
+            .as_ref()
+            .and_then(|(_, tree)| tree.string_metrics(node_id)))
     }
 
     pub fn selected_raw_text(&self, node_id: usize) -> io::Result<Option<&str>> {

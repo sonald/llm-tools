@@ -8,7 +8,7 @@ use crate::file_source::FileSource;
 use crate::json::ParseError;
 use crate::search::{SearchError, SearchPage, SearchRequest};
 use crate::semantic_detection::{Detection, NestedBudget};
-use crate::tree::{NodePage, NodeProjection, TextChunk, TreeDocument};
+use crate::tree::{NodePage, NodeProjection, StringMetrics, TextChunk, TreeDocument};
 
 #[derive(Debug)]
 pub enum DocumentOpenError {
@@ -150,6 +150,11 @@ impl DocumentSession {
     pub fn decoded_text(&self, node_id: usize) -> io::Result<Option<&str>> {
         self.ensure_current()?;
         Ok(self.tree.decoded_text(node_id))
+    }
+
+    pub fn string_metrics(&self, node_id: usize) -> io::Result<Option<StringMetrics>> {
+        self.ensure_current()?;
+        Ok(self.tree.string_metrics(node_id))
     }
 
     pub fn raw_text(&self, node_id: usize) -> io::Result<Option<&str>> {

@@ -29,7 +29,7 @@ use crate::search::{
 use crate::semantic_detection::{
     Detection, NestedBudget, PlainReason, HARD_MAX_DEPTH, MAX_CUMULATIVE_BYTES, MAX_INPUT_BYTES,
 };
-use crate::tree::{NodePage, NodeProjection, TextChunk, TreeDocument};
+use crate::tree::{NodePage, NodeProjection, StringMetrics, TextChunk, TreeDocument};
 
 // AppState is a singleton with one session; boxing this variant adds indirection without value.
 #[allow(clippy::large_enum_variant)]
@@ -215,6 +215,14 @@ pub struct StringDetectionDto {
     pub semantic_type: SemanticTypeDto,
     pub detection_source: DetectionSourceDto,
     pub plain_reason: Option<PlainReasonDto>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StringMetricsDto {
+    pub decoded_bytes: usize,
+    pub character_count: usize,
+    pub line_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -684,6 +692,16 @@ pub fn get_string_detection(
     state: State<'_, AppState>,
 ) -> Result<StringDetectionDto, IpcError> {
     get_string_detection_scoped_inner(&state, node_id, scope_id, session_revision)
+}
+
+#[tauri::command]
+pub fn get_string_metrics(
+    node_id: usize,
+    session_revision: u64,
+    scope_id: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<StringMetricsDto, IpcError> {
+    get_string_metrics_scoped_inner(&state, node_id, scope_id, session_revision)
 }
 
 #[tauri::command]
@@ -2411,6 +2429,54 @@ fn get_string_detection_scoped_inner(
     })
 }
 
+#[cfg(test)]
+fn get_string_metrics_inner(
+    state: &AppState,
+    node_id: usize,
+    session_revision: u64,
+) -> Result<StringMetricsDto, IpcError> {
+    get_string_metrics_scoped_inner(state, node_id, None, session_revision)
+}
+
+fn get_string_metrics_scoped_inner(
+    state: &AppState,
+    node_id: usize,
+    scope_id: Option<u64>,
+    session_revision: u64,
+) -> Result<StringMetricsDto, IpcError> {
+    with_session_scope(state, scope_id, session_revision, |session, scope| {
+        let metrics = if let Some(scope) = scope {
+            scope
+                .tree
+                .string_metrics(node_id)
+                .ok_or_else(|| invalid_request("node does not contain decoded text"))?
+        } else {
+            match session {
+                OpenSession::Document(session) => session
+                    .string_metrics(node_id)
+                    .map_err(session_error)?
+                    .ok_or_else(|| invalid_request("node does not contain decoded text"))?,
+                OpenSession::Entry(session) => {
+                    require_selected(session)?;
+                    session
+                        .selected_string_metrics(node_id)
+                        .map_err(session_error)?
+                        .ok_or_else(|| invalid_request("node does not contain decoded text"))?
+                }
+                OpenSession::RawDocument { .. } => {
+                    return Err(invalid_request(
+                        "command is unavailable for a raw-only document session",
+                    ));
+                }
+            }
+        };
+        if !session.is_current() {
+            return Err(file_changed());
+        }
+        Ok(string_metrics_dto(metrics))
+    })
+}
+
 fn get_html_preview_inner(
     state: &AppState,
     node_id: usize,
@@ -3303,6 +3369,14 @@ fn string_detection_dto(detection: Detection) -> StringDetectionDto {
         semantic_type,
         detection_source: DetectionSourceDto::ContentDetected,
         plain_reason,
+    }
+}
+
+fn string_metrics_dto(metrics: StringMetrics) -> StringMetricsDto {
+    StringMetricsDto {
+        decoded_bytes: metrics.decoded_bytes,
+        character_count: metrics.character_count,
+        line_count: metrics.line_count,
     }
 }
 
@@ -7081,6 +7155,210 @@ mod tests {
         assert_eq!(next.session_revision, changed.session_revision + 1);
 
         for path in [document_path, entry_path, raw_path, changed_path, next_path] {
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn string_metrics_ipc_covers_document_nested_entry_and_file_guards() {
+        let path = temp_path("ipc-string-metrics-document");
+        let input =
+            r#"{"empty":"","unicode":"你😀é","escaped":"\ud83d\ude00","lines":"a\r\nb\rc\n"}"#;
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let document = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let root = document.root.as_ref().unwrap().id;
+        let children = get_children_inner(&state, root, 0, 10, document.session_revision)
+            .unwrap()
+            .nodes;
+        let metric_for = |label: &str| {
+            children
+                .iter()
+                .find(|node| node.label == label)
+                .map(|node| node.id)
+                .unwrap()
+        };
+        let expected = [
+            ("empty", 0, 0, 1),
+            ("unicode", 10, 4, 1),
+            ("escaped", 4, 1, 1),
+            ("lines", 7, 7, 4),
+        ];
+        for (label, decoded_bytes, character_count, line_count) in expected {
+            let metrics =
+                get_string_metrics_inner(&state, metric_for(label), document.session_revision)
+                    .unwrap();
+            assert_eq!(
+                metrics,
+                StringMetricsDto {
+                    decoded_bytes,
+                    character_count,
+                    line_count,
+                },
+                "{label}"
+            );
+            let payload = serde_json::to_value(metrics).unwrap();
+            assert_eq!(payload["decodedBytes"], decoded_bytes);
+            assert_eq!(payload["characterCount"], character_count);
+            assert_eq!(payload["lineCount"], line_count);
+            assert!(payload.get("decoded_bytes").is_none());
+        }
+        assert_eq!(
+            get_string_metrics_inner(&state, root, document.session_revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            get_string_metrics_inner(&state, 999, document.session_revision)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+
+        let large_path = temp_path("ipc-string-metrics-large");
+        let large = "a".repeat(200_000);
+        fs::write(
+            &large_path,
+            format!(r#"{{"large":{}}}"#, serde_json::to_string(&large).unwrap()),
+        )
+        .unwrap();
+        let large_state = AppState::default();
+        let large_summary = open_file_inner(&large_state, large_path.to_str().unwrap()).unwrap();
+        let large_node = child_id(
+            &large_state,
+            None,
+            large_summary.root.as_ref().unwrap().id,
+            "large",
+            large_summary.session_revision,
+        );
+        let large_metrics =
+            get_string_metrics_inner(&large_state, large_node, large_summary.session_revision)
+                .unwrap();
+        assert_eq!(large_metrics.decoded_bytes, 200_000);
+        assert_eq!(large_metrics.character_count, 200_000);
+        assert_eq!(large_metrics.line_count, 1);
+        assert!(serde_json::to_vec(&large_metrics).unwrap().len() < 128);
+
+        let nested_path = temp_path("ipc-string-metrics-nested");
+        fs::write(&nested_path, r#"{"payload":"{\"inner\":\"你😀\"}"}"#).unwrap();
+        let nested_state = AppState::default();
+        let nested_summary = open_file_inner(&nested_state, nested_path.to_str().unwrap()).unwrap();
+        let payload_node = child_id(
+            &nested_state,
+            None,
+            nested_summary.root.as_ref().unwrap().id,
+            "payload",
+            nested_summary.session_revision,
+        );
+        let scope = open_nested_json_inner(
+            &nested_state,
+            None,
+            payload_node,
+            None,
+            nested_summary.session_revision,
+        )
+        .unwrap();
+        let inner_node = get_children_scoped_inner(
+            &nested_state,
+            scope.root.id,
+            0,
+            1,
+            Some(scope.scope_id),
+            nested_summary.session_revision,
+        )
+        .unwrap()
+        .nodes[0]
+            .id;
+        assert_eq!(
+            get_string_metrics_scoped_inner(
+                &nested_state,
+                inner_node,
+                Some(scope.scope_id),
+                nested_summary.session_revision,
+            )
+            .unwrap(),
+            StringMetricsDto {
+                decoded_bytes: 7,
+                character_count: 2,
+                line_count: 1,
+            }
+        );
+
+        let entry_path = temp_jsonl_path("ipc-string-metrics-entry");
+        fs::write(&entry_path, "{\"value\":\"你😀\"}\n{\"value\":\"later\"}\n").unwrap();
+        let entry_state = AppState::default();
+        let entry = open_file_inner(&entry_state, entry_path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            get_string_metrics_inner(&entry_state, 0, entry.session_revision)
+                .unwrap_err()
+                .message,
+            "no valid entry is selected"
+        );
+        let selected = select_entry_inner(&entry_state, 0, entry.session_revision).unwrap();
+        let value_node = child_id(
+            &entry_state,
+            None,
+            selected.root.as_ref().unwrap().id,
+            "value",
+            selected.session_revision,
+        );
+        assert_eq!(
+            get_string_metrics_inner(&entry_state, value_node, selected.session_revision)
+                .unwrap()
+                .character_count,
+            2
+        );
+        assert_eq!(
+            get_string_metrics_inner(&entry_state, value_node, selected.session_revision - 1)
+                .unwrap_err()
+                .code,
+            "stale_session"
+        );
+
+        let raw_path = temp_path("ipc-string-metrics-raw");
+        fs::write(&raw_path, b"{").unwrap();
+        let raw = open_file_inner(&entry_state, raw_path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            get_string_metrics_inner(&entry_state, 0, raw.session_revision)
+                .unwrap_err()
+                .message,
+            "command is unavailable for a raw-only document session"
+        );
+
+        let changed_path = temp_path("ipc-string-metrics-changed");
+        fs::write(&changed_path, r#"{"value":"before"}"#).unwrap();
+        let changed_state = AppState::default();
+        let changed = open_file_inner(&changed_state, changed_path.to_str().unwrap()).unwrap();
+        let before = fs::metadata(&changed_path).unwrap().modified().unwrap();
+        let mut timestamp_changed = false;
+        for _ in 0..100 {
+            fs::write(&changed_path, r#"{"value":"after"}"#).unwrap();
+            if fs::metadata(&changed_path).unwrap().modified().unwrap() != before {
+                timestamp_changed = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(
+            timestamp_changed,
+            "filesystem did not expose modified timestamp change"
+        );
+        assert_eq!(
+            get_string_metrics_inner(&changed_state, 1, changed.session_revision)
+                .unwrap_err()
+                .code,
+            "file_changed"
+        );
+
+        for path in [
+            path,
+            large_path,
+            nested_path,
+            entry_path,
+            raw_path,
+            changed_path,
+        ] {
             fs::remove_file(path).unwrap();
         }
     }

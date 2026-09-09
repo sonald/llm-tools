@@ -34,6 +34,7 @@ pub fn run() {
             ipc::copy_current_bytes,
             ipc::search_current,
             ipc::get_string_detection,
+            ipc::get_string_metrics,
             ipc::get_html_preview,
             ipc::get_conversation_candidate,
             ipc::get_generic_conversation_blocks,
