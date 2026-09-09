@@ -2,6 +2,7 @@ use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::str::from_utf8;
 
+use crate::conversation::ConversationCandidate;
 use crate::file_source::{FileIdentity, FileSource, ReadChunk};
 use crate::jsonl_entry::{inspect_entry, EntryStatus, MAX_ENTRY_BYTES, PREVIEW_BYTES};
 use crate::jsonl_index::{Checkpoint, EntryLocation, JsonlIndex, JsonlIndexer};
@@ -421,6 +422,18 @@ impl JsonlSession {
     ) -> io::Result<Option<Result<SearchPage, SearchError>>> {
         self.ensure_current()?;
         Ok(self.selected.as_ref().map(|(_, tree)| tree.search(request)))
+    }
+
+    pub fn selected_conversation_candidate(
+        &self,
+        scope_root_id: usize,
+        candidate_node_id: usize,
+    ) -> io::Result<Option<ConversationCandidate>> {
+        self.ensure_current()?;
+        let Some((_, tree)) = self.selected.as_ref() else {
+            return Ok(None);
+        };
+        Ok(tree.conversation_candidate(scope_root_id, candidate_node_id))
     }
 
     pub fn selected_raw_range(&self) -> io::Result<Option<(u64, u64)>> {

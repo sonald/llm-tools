@@ -1,6 +1,7 @@
 use std::io::{self, ErrorKind};
 use std::path::Path;
 
+use crate::conversation::ConversationCandidate;
 use crate::file_source::FileSource;
 use crate::json::ParseError;
 use crate::search::{SearchError, SearchPage, SearchRequest};
@@ -171,6 +172,17 @@ impl DocumentSession {
     pub fn search(&self, request: SearchRequest) -> io::Result<Result<SearchPage, SearchError>> {
         self.ensure_current()?;
         Ok(self.tree.search(request))
+    }
+
+    pub fn conversation_candidate(
+        &self,
+        scope_root_id: usize,
+        candidate_node_id: usize,
+    ) -> io::Result<Option<ConversationCandidate>> {
+        self.ensure_current()?;
+        Ok(self
+            .tree
+            .conversation_candidate(scope_root_id, candidate_node_id))
     }
 }
 

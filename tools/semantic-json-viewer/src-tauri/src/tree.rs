@@ -1,5 +1,6 @@
 use std::str;
 
+use crate::conversation::{self, ConversationCandidate};
 use crate::json::{
     parse_json_owned, ChildLocator, JsonKind, JsonNode, ParseError, ParsedJson, SourceSpan,
 };
@@ -154,6 +155,14 @@ impl TreeDocument {
 
     pub fn search(&self, request: SearchRequest) -> Result<SearchPage, SearchError> {
         search::search(&self.parsed, request)
+    }
+
+    pub fn conversation_candidate(
+        &self,
+        scope_root_id: usize,
+        candidate_node_id: usize,
+    ) -> Option<ConversationCandidate> {
+        conversation::detect_candidate(&self.parsed, scope_root_id, candidate_node_id)
     }
 
     fn projection(&self, id: usize, node: &JsonNode) -> NodeProjection {

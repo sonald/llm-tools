@@ -1,3 +1,4 @@
+pub mod conversation;
 pub mod document_session;
 pub mod file_route;
 pub mod file_source;
@@ -34,6 +35,7 @@ pub fn run() {
             ipc::search_current,
             ipc::get_string_detection,
             ipc::get_html_preview,
+            ipc::get_conversation_candidate,
             ipc::scan_entries,
             ipc::list_entries,
             ipc::select_entry,

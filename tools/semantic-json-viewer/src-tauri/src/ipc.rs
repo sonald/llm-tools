@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
+use crate::conversation::ConversationCandidate;
 use crate::document_session::DocumentSession;
 use crate::file_route::{
     route_read_limit, route_with_override, FileMode, OpenDecision, OverrideError,
@@ -372,6 +373,20 @@ pub struct EntrySelectionDto {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ConversationCandidateDto {
+    pub node_id: usize,
+    pub span_start: usize,
+    pub span_end: usize,
+    pub message_count: usize,
+    pub kind: String,
+    pub scope_root_id: usize,
+    pub scope_root_span_start: usize,
+    pub scope_root_span_end: usize,
+    pub session_revision: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OversizedPreviewDto {
     pub entry: EntryDto,
     pub head: Vec<u8>,
@@ -548,6 +563,23 @@ pub fn get_string_detection(
     state: State<'_, AppState>,
 ) -> Result<StringDetectionDto, IpcError> {
     get_string_detection_scoped_inner(&state, node_id, scope_id, session_revision)
+}
+
+#[tauri::command]
+pub fn get_conversation_candidate(
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    scope_id: Option<u64>,
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<ConversationCandidateDto, IpcError> {
+    get_conversation_candidate_inner(
+        &state,
+        scope_root_id,
+        candidate_node_id,
+        scope_id,
+        session_revision,
+    )
 }
 
 #[tauri::command]
@@ -852,6 +884,61 @@ fn get_file_summary_inner(state: &AppState) -> Result<FileSummary, IpcError> {
     let guard = lock_session(state)?;
     let session = guard.session.as_ref().ok_or_else(no_session)?;
     file_summary(session, guard.revision)
+}
+
+fn get_conversation_candidate_inner(
+    state: &AppState,
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    scope_id: Option<u64>,
+    session_revision: u64,
+) -> Result<ConversationCandidateDto, IpcError> {
+    with_session_scope(state, scope_id, session_revision, |session, scope| {
+        if scope.is_some() {
+            return Err(invalid_request(
+                "conversation detection is unavailable for a nested JSON scope",
+            ));
+        }
+        let scope_root = match session {
+            OpenSession::Document(session) => session.node(scope_root_id).map_err(session_error)?,
+            OpenSession::Entry(session) => {
+                require_selected(session)?;
+                session
+                    .selected_node(scope_root_id)
+                    .map_err(session_error)?
+            }
+            OpenSession::RawDocument { .. } => {
+                return Err(invalid_request(
+                    "command is unavailable for a raw-only document session",
+                ));
+            }
+        }
+        .ok_or_else(|| not_found(format!("scope root node {scope_root_id} was not found")))?;
+        let candidate = match session {
+            OpenSession::Document(session) => session
+                .conversation_candidate(scope_root_id, candidate_node_id)
+                .map_err(session_error)?,
+            OpenSession::Entry(session) => session
+                .selected_conversation_candidate(scope_root_id, candidate_node_id)
+                .map_err(session_error)?,
+            OpenSession::RawDocument { .. } => {
+                return Err(invalid_request(
+                    "command is unavailable for a raw-only document session",
+                ));
+            }
+        }
+        .ok_or_else(|| invalid_request("candidate is not a supported conversation array"))?;
+        if !session.is_current() {
+            return Err(file_changed());
+        }
+
+        Ok(conversation_candidate_dto(
+            candidate,
+            scope_root_id,
+            scope_root.span,
+            session_revision,
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -2635,6 +2722,25 @@ fn node_dto(node: NodeProjection) -> NodeDto {
     }
 }
 
+fn conversation_candidate_dto(
+    candidate: ConversationCandidate,
+    scope_root_id: usize,
+    scope_root_span: crate::json::SourceSpan,
+    session_revision: u64,
+) -> ConversationCandidateDto {
+    ConversationCandidateDto {
+        node_id: candidate.node_id,
+        span_start: candidate.span.start,
+        span_end: candidate.span.end,
+        message_count: candidate.message_count,
+        kind: candidate.kind.as_str().to_owned(),
+        scope_root_id,
+        scope_root_span_start: scope_root_span.start,
+        scope_root_span_end: scope_root_span.end,
+        session_revision,
+    }
+}
+
 fn text_chunk_dto(chunk: TextChunk) -> TextChunkDto {
     TextChunkDto {
         start: chunk.start,
@@ -2828,6 +2934,7 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
+    use std::process::Command;
     use std::sync::TryLockError;
     use std::time::SystemTime;
 
@@ -2892,6 +2999,76 @@ mod tests {
         )
     }
 
+    #[test]
+    fn conversation_candidate_ipc_consumes_generated_f03_f05_fixtures() {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system clock is before Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "semantic-json-viewer-ipc-conversation-fixtures-{}-{nanos}",
+            std::process::id()
+        ));
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/generate-semantic-fixtures.mjs");
+        let output = Command::new("node")
+            .arg(script)
+            .arg(&directory)
+            .output()
+            .expect("node must be available to generate conversation fixtures");
+        assert!(
+            output.status.success(),
+            "fixture generation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let cases = [
+            ("openai-conversation.json", "messages", "openai"),
+            ("anthropic-system-string.json", "messages", "anthropic"),
+            ("anthropic-system-blocks.json", "messages", "anthropic"),
+            ("generic-role-content.json", "conversation", "generic"),
+            ("generic-from-value.json", "conversation", "generic"),
+            ("generic-non-conversation.json", "$", "none"),
+            ("generic-threshold-79.json", "$", "possible"),
+            ("generic-threshold-80.json", "$", "generic"),
+        ];
+        let state = AppState::default();
+        for (name, candidate_label, expected_kind) in cases {
+            let summary = open_file_inner(
+                &state,
+                directory
+                    .join(name)
+                    .to_str()
+                    .expect("fixture path is UTF-8"),
+            )
+            .unwrap();
+            let root_id = summary.root.as_ref().map_or(0, |root| root.id);
+            let candidate_id = if candidate_label == "$" {
+                root_id
+            } else {
+                child_id(
+                    &state,
+                    None,
+                    root_id,
+                    candidate_label,
+                    summary.session_revision,
+                )
+            };
+            let candidate = get_conversation_candidate_inner(
+                &state,
+                root_id,
+                candidate_id,
+                None,
+                summary.session_revision,
+            )
+            .unwrap();
+            assert_eq!(candidate.kind, expected_kind, "{name}");
+            assert_eq!(candidate.node_id, candidate_id, "{name} node id");
+            assert_eq!(candidate.scope_root_id, root_id, "{name} scope root");
+        }
+        fs::remove_dir_all(directory).expect("generated fixture directory should be removable");
+    }
+
     fn nested_chain(depth: usize) -> String {
         assert!(depth >= 1);
         let mut current = r#"{"leaf":true}"#.to_owned();
@@ -2937,6 +3114,143 @@ mod tests {
         assert!(encoded.contains("labelHasMore"));
         assert!(encoded.contains("nextCursor"));
         assert!(!encoded.contains("span_start"));
+    }
+
+    #[test]
+    fn conversation_candidate_ipc_requires_explicit_direct_array() {
+        let path = temp_path("ipc-conversation-direct-candidate");
+        fs::write(
+            &path,
+            br#"{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"}],"conversation":[{"role":"user","content":"c"},{"role":"assistant","content":"d"}],"meta":{"messages":[{"role":"user","content":"deep"},{"role":"assistant","content":"deep"}]}}"#,
+        )
+        .unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let messages = child_id(
+            &state,
+            None,
+            opened.root.as_ref().unwrap().id,
+            "messages",
+            opened.session_revision,
+        );
+        let conversation = child_id(
+            &state,
+            None,
+            opened.root.as_ref().unwrap().id,
+            "conversation",
+            opened.session_revision,
+        );
+
+        let first = get_conversation_candidate_inner(
+            &state,
+            opened.root.as_ref().unwrap().id,
+            messages,
+            None,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(first.node_id, messages);
+        assert_eq!(first.kind, "generic");
+        assert_eq!(first.message_count, 2);
+        assert_eq!(first.scope_root_id, opened.root.as_ref().unwrap().id);
+        assert_eq!(first.scope_root_span_start, 0);
+
+        let second = get_conversation_candidate_inner(
+            &state,
+            opened.root.as_ref().unwrap().id,
+            conversation,
+            None,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(second.node_id, conversation);
+        assert_eq!(second.kind, "generic");
+
+        let root_error = get_conversation_candidate_inner(
+            &state,
+            opened.root.as_ref().unwrap().id,
+            opened.root.as_ref().unwrap().id,
+            None,
+            opened.session_revision,
+        )
+        .unwrap_err();
+        assert_eq!(root_error.code, "invalid_request");
+
+        let meta = child_id(
+            &state,
+            None,
+            opened.root.as_ref().unwrap().id,
+            "meta",
+            opened.session_revision,
+        );
+        let deep_messages = child_id(&state, None, meta, "messages", opened.session_revision);
+        let deep_error = get_conversation_candidate_inner(
+            &state,
+            meta,
+            deep_messages,
+            None,
+            opened.session_revision,
+        )
+        .unwrap_err();
+        assert_eq!(deep_error.code, "invalid_request");
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn conversation_candidate_ipc_binds_jsonl_selection_revision_and_file_state() {
+        let path = temp_jsonl_path("ipc-conversation-entry");
+        let line = br#"{"messages":[{"role":"user","content":"a"},{"role":"assistant","tool_calls":[{"function":{"name":"lookup","arguments":"{}"}}]}]}"#;
+        let mut input = Vec::new();
+        input.extend_from_slice(line);
+        input.push(b'\n');
+        input.extend_from_slice(line);
+        input.push(b'\n');
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+
+        let unselected =
+            get_conversation_candidate_inner(&state, 0, 0, None, opened.session_revision)
+                .unwrap_err();
+        assert_eq!(unselected.code, "invalid_request");
+
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        let selected_revision = selected.session_revision;
+        let messages = child_id(&state, None, 0, "messages", selected_revision);
+        let candidate =
+            get_conversation_candidate_inner(&state, 0, messages, None, selected_revision).unwrap();
+        assert_eq!(candidate.kind, "openai");
+        assert_eq!(candidate.message_count, 2);
+
+        let second = select_entry_inner(&state, 1, selected_revision).unwrap();
+        let stale = get_conversation_candidate_inner(&state, 0, messages, None, selected_revision)
+            .unwrap_err();
+        assert_eq!(stale.code, "stale_session");
+        assert_eq!(second.session_revision, selected_revision + 1);
+
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"\n").unwrap();
+        file.flush().unwrap();
+        let changed =
+            get_conversation_candidate_inner(&state, 0, messages, None, second.session_revision)
+                .unwrap_err();
+        assert_eq!(changed.code, "file_changed");
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn conversation_candidate_ipc_rejects_raw_only_sessions() {
+        let path = temp_path("ipc-conversation-raw-only");
+        fs::write(&path, b"not valid json").unwrap();
+        let state = AppState::default();
+        let summary =
+            open_file_with_override(&state, path.to_str().unwrap(), Some("json")).unwrap();
+        let error = get_conversation_candidate_inner(&state, 0, 0, None, summary.session_revision)
+            .unwrap_err();
+        assert_eq!(error.code, "invalid_request");
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
