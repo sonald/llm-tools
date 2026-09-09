@@ -7,9 +7,9 @@ use tauri::State;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::conversation::{
-    ConversationCandidate, ConversationOpenAiRefs, ConversationStyle, GenericConversationBlock,
-    GenericConversationBlockKind, GenericConversationCursor, GenericConversationPage,
-    GenericConversationPhase,
+    ConversationAnthropicRefs, ConversationCandidate, ConversationOpenAiRefs, ConversationStyle,
+    GenericConversationBlock, GenericConversationBlockKind, GenericConversationCursor,
+    GenericConversationPage, GenericConversationPhase,
 };
 use crate::document_session::DocumentSession;
 use crate::file_route::{
@@ -401,6 +401,8 @@ pub enum ConversationStyleDto {
     Generic,
     #[serde(rename = "openai")]
     OpenAi,
+    #[serde(rename = "anthropic")]
+    Anthropic,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -408,6 +410,8 @@ pub enum ConversationStyleDto {
 pub enum GenericConversationPhaseDto {
     Message,
     Fields,
+    SystemHeader,
+    SystemContent,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -428,9 +432,9 @@ pub struct GenericConversationCursorDto {
 #[serde(rename_all = "camelCase")]
 pub struct GenericConversationBlockDto {
     pub kind: String,
-    pub message_node_id: usize,
-    pub message_span_start: usize,
-    pub message_span_end: usize,
+    pub message_node_id: Option<usize>,
+    pub message_span_start: Option<usize>,
+    pub message_span_end: Option<usize>,
     pub source_node_id: Option<usize>,
     pub source_span_start: Option<usize>,
     pub source_span_end: Option<usize>,
@@ -444,6 +448,8 @@ pub struct GenericConversationBlockDto {
     pub role_source_span_end: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openai_refs: Option<ConversationOpenAiRefsDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anthropic_refs: Option<ConversationAnthropicRefsDto>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -456,6 +462,20 @@ pub struct ConversationOpenAiRefsDto {
     pub function: Option<ConversationSourceRefDto>,
     pub name: Option<ConversationSourceRefDto>,
     pub arguments: Option<ConversationSourceRefDto>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationAnthropicRefsDto {
+    pub block: Option<ConversationSourceRefDto>,
+    pub text: Option<ConversationSourceRefDto>,
+    pub thinking: Option<ConversationSourceRefDto>,
+    pub data: Option<ConversationSourceRefDto>,
+    pub id: Option<ConversationSourceRefDto>,
+    pub name: Option<ConversationSourceRefDto>,
+    pub input: Option<ConversationSourceRefDto>,
+    pub tool_use_id: Option<ConversationSourceRefDto>,
+    pub content: Option<ConversationSourceRefDto>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -3002,6 +3022,7 @@ fn conversation_style_from_dto(style: ConversationStyleDto) -> ConversationStyle
     match style {
         ConversationStyleDto::Generic => ConversationStyle::Generic,
         ConversationStyleDto::OpenAi => ConversationStyle::OpenAi,
+        ConversationStyleDto::Anthropic => ConversationStyle::Anthropic,
     }
 }
 
@@ -3009,6 +3030,7 @@ fn conversation_style_dto(style: ConversationStyle) -> ConversationStyleDto {
     match style {
         ConversationStyle::Generic => ConversationStyleDto::Generic,
         ConversationStyle::OpenAi => ConversationStyleDto::OpenAi,
+        ConversationStyle::Anthropic => ConversationStyleDto::Anthropic,
     }
 }
 
@@ -3028,6 +3050,8 @@ fn generic_conversation_cursor_dto(
         phase: match cursor.phase {
             GenericConversationPhase::Message => GenericConversationPhaseDto::Message,
             GenericConversationPhase::Fields => GenericConversationPhaseDto::Fields,
+            GenericConversationPhase::SystemHeader => GenericConversationPhaseDto::SystemHeader,
+            GenericConversationPhase::SystemContent => GenericConversationPhaseDto::SystemContent,
         },
         field_index: cursor.field_index,
         element_index: cursor.element_index,
@@ -3059,6 +3083,12 @@ fn generic_conversation_cursor_from_dto(
                 phase: match cursor.phase {
                     GenericConversationPhaseDto::Message => GenericConversationPhase::Message,
                     GenericConversationPhaseDto::Fields => GenericConversationPhase::Fields,
+                    GenericConversationPhaseDto::SystemHeader => {
+                        GenericConversationPhase::SystemHeader
+                    }
+                    GenericConversationPhaseDto::SystemContent => {
+                        GenericConversationPhase::SystemContent
+                    }
                 },
                 field_index: cursor.field_index,
                 element_index: cursor.element_index,
@@ -3096,11 +3126,12 @@ fn generic_conversation_block_dto(block: GenericConversationBlock) -> GenericCon
         kind: match block.kind {
             GenericConversationBlockKind::Message => "message",
             GenericConversationBlockKind::Source => "source",
+            GenericConversationBlockKind::System => "system",
         }
         .to_owned(),
-        message_node_id: block.message.node_id,
-        message_span_start: block.message.span.start,
-        message_span_end: block.message.span.end,
+        message_node_id: block.message.map(|message| message.node_id),
+        message_span_start: block.message.map(|message| message.span.start),
+        message_span_end: block.message.map(|message| message.span.end),
         source_node_id,
         source_span_start,
         source_span_end,
@@ -3113,6 +3144,7 @@ fn generic_conversation_block_dto(block: GenericConversationBlock) -> GenericCon
         role_source_span_start,
         role_source_span_end,
         openai_refs: block.openai_refs.map(conversation_openai_refs_dto),
+        anthropic_refs: block.anthropic_refs.map(conversation_anthropic_refs_dto),
     }
 }
 
@@ -3125,6 +3157,22 @@ fn conversation_openai_refs_dto(refs: ConversationOpenAiRefs) -> ConversationOpe
         function: refs.function.map(conversation_source_ref_dto),
         name: refs.name.map(conversation_source_ref_dto),
         arguments: refs.arguments.map(conversation_source_ref_dto),
+    }
+}
+
+fn conversation_anthropic_refs_dto(
+    refs: ConversationAnthropicRefs,
+) -> ConversationAnthropicRefsDto {
+    ConversationAnthropicRefsDto {
+        block: refs.block.map(conversation_source_ref_dto),
+        text: refs.text.map(conversation_source_ref_dto),
+        thinking: refs.thinking.map(conversation_source_ref_dto),
+        data: refs.data.map(conversation_source_ref_dto),
+        id: refs.id.map(conversation_source_ref_dto),
+        name: refs.name.map(conversation_source_ref_dto),
+        input: refs.input.map(conversation_source_ref_dto),
+        tool_use_id: refs.tool_use_id.map(conversation_source_ref_dto),
+        content: refs.content.map(conversation_source_ref_dto),
     }
 }
 
@@ -3831,7 +3879,7 @@ mod tests {
         assert_eq!(page.blocks.len(), 100);
         assert!(page.has_more);
         assert!(serde_json::to_vec(&page).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
-        assert_eq!(page.blocks[0].message_node_id, 1);
+        assert_eq!(page.blocks[0].message_node_id, Some(1));
         fs::remove_file(path).unwrap();
     }
 
@@ -3997,6 +4045,74 @@ mod tests {
     }
 
     #[test]
+    fn conversation_blocks_ipc_anthropic_entry_stale_and_file_change_guards() {
+        let path = temp_jsonl_path("ipc-anthropic-entry-guards");
+        let line = br#"{"system":"sys","messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"}]}"#;
+        let mut input = Vec::new();
+        input.extend_from_slice(line);
+        input.push(b'\n');
+        input.extend_from_slice(line);
+        input.push(b'\n');
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let unselected = get_conversation_blocks_inner(
+            &state,
+            0,
+            0,
+            None,
+            1,
+            opened.session_revision,
+            None,
+            ConversationStyle::Anthropic,
+        )
+        .unwrap_err();
+        assert_eq!(unselected.code, "invalid_request");
+        let selection = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        let candidate = child_id(&state, None, 0, "messages", selection.session_revision);
+        let first = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            None,
+            1,
+            selection.session_revision,
+            None,
+            ConversationStyle::Anthropic,
+        )
+        .unwrap();
+        assert_eq!(first.blocks[0].kind, "system");
+        let stale = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            None,
+            1,
+            selection.session_revision + 1,
+            None,
+            ConversationStyle::Anthropic,
+        )
+        .unwrap_err();
+        assert_eq!(stale.code, "stale_session");
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"\n").unwrap();
+        file.flush().unwrap();
+        let changed = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            None,
+            1,
+            selection.session_revision,
+            None,
+            ConversationStyle::Anthropic,
+        )
+        .unwrap_err();
+        assert_eq!(changed.code, "file_changed");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn generic_conversation_blocks_ipc_consumes_generated_openai_and_anthropic_sources() {
         let nanos = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -4059,8 +4175,8 @@ mod tests {
                 assert!(block.source_node_id.is_some(), "{name} source node");
                 assert!(block.field_node_id.is_some(), "{name} field node");
                 assert!(
-                    block.source_span_start.unwrap() >= block.message_span_start
-                        && block.source_span_end.unwrap() <= block.message_span_end,
+                    block.source_span_start.unwrap() >= block.message_span_start.unwrap()
+                        && block.source_span_end.unwrap() <= block.message_span_end.unwrap(),
                     "{name} source span"
                 );
             }
@@ -4185,6 +4301,506 @@ mod tests {
         assert!(payload.len() < MAX_IPC_PAYLOAD_BYTES);
         assert!(!String::from_utf8_lossy(&payload).contains("OPENAI_CONTENT_UNKNOWN_SENTINEL"));
         fs::remove_dir_all(directory).expect("generated fixture directory should be removable");
+    }
+
+    #[test]
+    fn conversation_blocks_ipc_explicit_anthropic_projects_f04_system_and_blocks() {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system clock is before Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "semantic-json-viewer-ipc-anthropic-fixtures-{}-{nanos}",
+            std::process::id()
+        ));
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/generate-semantic-fixtures.mjs");
+        let output = Command::new("node")
+            .arg(script)
+            .arg(&directory)
+            .output()
+            .expect("node must be available to generate conversation fixtures");
+        assert!(
+            output.status.success(),
+            "fixture generation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let state = AppState::default();
+        for name in [
+            "anthropic-system-string.json",
+            "anthropic-system-blocks.json",
+        ] {
+            let summary = open_file_inner(
+                &state,
+                directory
+                    .join(name)
+                    .to_str()
+                    .expect("fixture path is UTF-8"),
+            )
+            .unwrap();
+            let root_id = summary.root.as_ref().unwrap().id;
+            let candidate = child_id(&state, None, root_id, "messages", summary.session_revision);
+            let mut cursor = None;
+            let mut blocks = Vec::new();
+            loop {
+                let page = get_conversation_blocks_inner(
+                    &state,
+                    root_id,
+                    candidate,
+                    cursor,
+                    100,
+                    summary.session_revision,
+                    None,
+                    ConversationStyle::Anthropic,
+                )
+                .unwrap();
+                assert!(serde_json::to_vec(&page).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
+                blocks.extend(page.blocks);
+                cursor = page.next_cursor;
+                if !page.has_more {
+                    break;
+                }
+            }
+            let first_message = blocks
+                .iter()
+                .position(|block| block.kind == "message")
+                .unwrap();
+            assert!(blocks[..first_message]
+                .iter()
+                .all(|block| block.message_node_id.is_none()));
+            assert!(blocks[..first_message]
+                .iter()
+                .all(|block| block.source_node_id.is_some() && block.field_node_id.is_some()));
+            let roles: Vec<_> = blocks
+                .iter()
+                .filter(|block| block.kind == "message")
+                .map(|block| block.role.as_str())
+                .collect();
+            assert_eq!(roles, ["user", "assistant", "user"]);
+            for category in [
+                "text",
+                "thinking",
+                "redactedThinking",
+                "toolUse",
+                "toolResult",
+            ] {
+                assert!(
+                    blocks.iter().any(|block| block.category == category),
+                    "{name}: missing {category}"
+                );
+            }
+            assert!(blocks.iter().any(|block| block.category == "unknown"));
+            assert!(blocks.iter().any(|block| {
+                matches!(
+                    block.category.as_str(),
+                    "text" | "thinking" | "redactedThinking" | "toolUse" | "toolResult"
+                ) && block.anthropic_refs.is_some()
+            }));
+            let expected_text = [
+                "Use source-preserving reasoning and identify tool results explicitly.",
+                "Use source-preserving reasoning.",
+                "Please inspect the attached result.",
+                "I will use the lookup tool.",
+                "status: ready",
+            ];
+            for block in &blocks {
+                if let Some(source) = block.source_node_id {
+                    let node =
+                        get_node_summary_inner(&state, source, summary.session_revision).unwrap();
+                    assert_eq!(node.span_start, block.source_span_start.unwrap(), "{name}");
+                    assert_eq!(node.span_end, block.source_span_end.unwrap(), "{name}");
+                    let raw = read_raw_slice_inner(
+                        &state,
+                        block.source_span_start.unwrap(),
+                        block.source_span_end.unwrap() - block.source_span_start.unwrap(),
+                        summary.session_revision,
+                    )
+                    .unwrap();
+                    assert_eq!(raw.start, block.source_span_start.unwrap(), "{name}");
+                    assert_eq!(
+                        raw.text.len(),
+                        block.source_span_end.unwrap() - block.source_span_start.unwrap(),
+                        "{name} source {source}"
+                    );
+                }
+                let Some(refs) = block.anthropic_refs.as_ref() else {
+                    continue;
+                };
+                for source in [
+                    refs.block.as_ref(),
+                    refs.text.as_ref(),
+                    refs.thinking.as_ref(),
+                    refs.data.as_ref(),
+                    refs.id.as_ref(),
+                    refs.name.as_ref(),
+                    refs.input.as_ref(),
+                    refs.tool_use_id.as_ref(),
+                    refs.content.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let node =
+                        get_node_summary_inner(&state, source.node_id, summary.session_revision)
+                            .unwrap();
+                    assert_eq!(node.span_start, source.span_start, "{name}");
+                    assert_eq!(node.span_end, source.span_end, "{name}");
+                    let raw = read_raw_slice_inner(
+                        &state,
+                        source.span_start,
+                        source.span_end - source.span_start,
+                        summary.session_revision,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        raw.text.len(),
+                        source.span_end - source.span_start,
+                        "{name}"
+                    );
+                }
+                let assert_decoded = |source: &ConversationSourceRefDto, expected: &[&str]| {
+                    let decoded = read_decoded_text_inner(
+                        &state,
+                        source.node_id,
+                        0,
+                        usize::MAX,
+                        summary.session_revision,
+                    )
+                    .unwrap();
+                    assert!(
+                        expected.contains(&decoded.text.as_str()),
+                        "{name} decoded {}",
+                        source.node_id
+                    );
+                };
+                if let Some(source) = refs.text.as_ref() {
+                    assert_decoded(source, &expected_text);
+                }
+                if let Some(source) = refs.thinking.as_ref() {
+                    assert_decoded(
+                        source,
+                        &["I should inspect the tool result before answering."],
+                    );
+                }
+                if let Some(source) = refs.data.as_ref() {
+                    assert_decoded(source, &["opaque-redacted-content"]);
+                }
+                if let Some(source) = refs.id.as_ref() {
+                    assert_decoded(source, &["toolu_lookup"]);
+                }
+                if let Some(source) = refs.name.as_ref() {
+                    assert_decoded(source, &["lookup_status"]);
+                }
+                if let Some(source) = refs.tool_use_id.as_ref() {
+                    assert_decoded(source, &["toolu_lookup"]);
+                }
+                if let Some(source) = refs.input.as_ref() {
+                    let raw = read_raw_slice_inner(
+                        &state,
+                        source.span_start,
+                        source.span_end - source.span_start,
+                        summary.session_revision,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        raw.text,
+                        "{\n            \"query\": \"status\"\n          }"
+                    );
+                }
+                if let Some(source) = refs.content.as_ref() {
+                    let raw = read_raw_slice_inner(
+                        &state,
+                        source.span_start,
+                        source.span_end - source.span_start,
+                        summary.session_revision,
+                    )
+                    .unwrap();
+                    assert!(raw.text.contains("status: ready"));
+                    assert!(raw.text.contains("ANTHROPIC_RESULT_TEXT_UNKNOWN_SENTINEL"));
+                }
+            }
+        }
+        fs::remove_dir_all(directory).expect("generated fixture directory should be removable");
+    }
+
+    #[test]
+    fn conversation_blocks_ipc_anthropic_pages_duplicate_system_and_content_arrays() {
+        let path = temp_path("ipc-anthropic-system-content-pages");
+        let system_elements = (0..205)
+            .map(|index| format!("\"system-{index}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let content_elements = (0..205)
+            .map(|index| format!(r#"{{"type":"text","text":"content-{index}"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let input = format!(
+            r#"{{"before":true,"system":[{system_elements}],"middle":1,"system":"second","messages":[{{"role":"user","content":[{content_elements}]}}]}}"#
+        );
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let candidate = child_id(&state, None, 0, "messages", summary.session_revision);
+        let first = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            None,
+            1,
+            summary.session_revision,
+            None,
+            ConversationStyle::Anthropic,
+        )
+        .unwrap();
+        let cross_style = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            first.next_cursor.clone(),
+            1,
+            summary.session_revision,
+            None,
+            ConversationStyle::Generic,
+        )
+        .unwrap_err();
+        assert_eq!(cross_style.code, "invalid_request");
+        let mut system_values = Vec::new();
+        let mut content_values = Vec::new();
+        let mut record_page = |page: &GenericConversationPageDto| {
+            assert!(page.blocks.len() <= 1);
+            for block in &page.blocks {
+                if block.message_node_id.is_none() && block.kind == "source" {
+                    let source = block.source_node_id.unwrap();
+                    let decoded = read_decoded_text_inner(
+                        &state,
+                        source,
+                        0,
+                        usize::MAX,
+                        summary.session_revision,
+                    )
+                    .unwrap();
+                    system_values.push(decoded.text);
+                }
+                if block.message_node_id.is_some() && block.category == "text" {
+                    let source = block
+                        .anthropic_refs
+                        .as_ref()
+                        .unwrap()
+                        .text
+                        .as_ref()
+                        .unwrap();
+                    let decoded = read_decoded_text_inner(
+                        &state,
+                        source.node_id,
+                        0,
+                        usize::MAX,
+                        summary.session_revision,
+                    )
+                    .unwrap();
+                    content_values.push(decoded.text);
+                }
+            }
+        };
+        record_page(&first);
+        let mut cursor = first.next_cursor;
+        let mut blocks = first.blocks;
+        loop {
+            let request_cursor = cursor.clone();
+            let page = get_conversation_blocks_inner(
+                &state,
+                0,
+                candidate,
+                cursor,
+                1,
+                summary.session_revision,
+                None,
+                ConversationStyle::Anthropic,
+            )
+            .unwrap();
+            if let Some(request_cursor) = request_cursor {
+                if page.has_more {
+                    assert_ne!(page.next_cursor.as_ref(), Some(&request_cursor));
+                }
+            }
+            record_page(&page);
+            assert!(serde_json::to_vec(&page).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
+            blocks.extend(page.blocks);
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        let first_message = blocks
+            .iter()
+            .position(|block| block.kind == "message")
+            .unwrap();
+        let system_headers: Vec<_> = blocks
+            .iter()
+            .filter(|block| block.kind == "system")
+            .collect();
+        assert_eq!(system_headers.len(), 2);
+        assert!(system_headers.iter().all(|block| {
+            block.message_node_id.is_none()
+                && block.source_node_id.is_some()
+                && block.field_node_id.is_some()
+        }));
+        assert!(blocks[..first_message]
+            .iter()
+            .all(|block| block.message_node_id.is_none()));
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|block| block.category == "text" && block.message_node_id.is_none())
+                .count(),
+            1
+        );
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|block| block.category == "unknown" && block.message_node_id.is_none())
+                .count(),
+            205
+        );
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|block| block.category == "text" && block.message_node_id.is_some())
+                .count(),
+            205
+        );
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|block| block.kind == "message")
+                .count(),
+            1
+        );
+        assert_eq!(
+            system_values,
+            (0..205)
+                .map(|index| format!("system-{index}"))
+                .chain(std::iter::once("second".to_owned()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            content_values,
+            (0..205)
+                .map(|index| format!("content-{index}"))
+                .collect::<Vec<_>>()
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn conversation_blocks_ipc_anthropic_empty_messages_and_bounded_wrapper_scan() {
+        let empty_path = temp_path("ipc-anthropic-empty-messages");
+        fs::write(&empty_path, br#"{"system":null,"messages":[]}"#).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, empty_path.to_str().unwrap()).unwrap();
+        let candidate = child_id(&state, None, 0, "messages", summary.session_revision);
+        let page = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            None,
+            100,
+            summary.session_revision,
+            None,
+            ConversationStyle::Anthropic,
+        )
+        .unwrap();
+        assert_eq!(page.blocks.len(), 2);
+        assert_eq!(page.blocks[0].kind, "system");
+        assert!(!page.has_more);
+        let forged = GenericConversationCursorDto {
+            kind: GenericConversationCursorKindDto::GenericConversation,
+            style: ConversationStyleDto::Anthropic,
+            scope_root_id: 0,
+            candidate_node_id: candidate,
+            message_index: 0,
+            phase: GenericConversationPhaseDto::SystemContent,
+            field_index: 1,
+            element_index: 0,
+            session_revision: summary.session_revision,
+        };
+        let forged_error = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            Some(forged),
+            1,
+            summary.session_revision,
+            None,
+            ConversationStyle::Anthropic,
+        )
+        .unwrap_err();
+        assert_eq!(forged_error.code, "invalid_request");
+        fs::remove_file(empty_path).unwrap();
+
+        let empty_array_path = temp_path("ipc-anthropic-empty-system-array");
+        fs::write(&empty_array_path, br#"{"system":[],"messages":[]}"#).unwrap();
+        let summary = open_file_inner(&state, empty_array_path.to_str().unwrap()).unwrap();
+        let candidate = child_id(&state, None, 0, "messages", summary.session_revision);
+        let page = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            None,
+            100,
+            summary.session_revision,
+            None,
+            ConversationStyle::Anthropic,
+        )
+        .unwrap();
+        assert_eq!(page.blocks.len(), 2);
+        assert_eq!(page.blocks[1].category, "unknown");
+        fs::remove_file(empty_array_path).unwrap();
+
+        let large_path = temp_path("ipc-anthropic-wrapper-scan");
+        let mut wrapper = String::from("{");
+        for index in 0..200 {
+            if index > 0 {
+                wrapper.push(',');
+            }
+            wrapper.push_str(&format!(r#""meta-{index}":{index}"#));
+        }
+        wrapper.push_str(r#", "messages":[{"role":"user","content":"done"}]}"#);
+        fs::write(&large_path, wrapper).unwrap();
+        let summary = open_file_inner(&state, large_path.to_str().unwrap()).unwrap();
+        let candidate =
+            get_children_scoped_inner(&state, 0, 200, 200, None, summary.session_revision)
+                .unwrap()
+                .nodes
+                .into_iter()
+                .find(|node| node.label == "messages")
+                .unwrap()
+                .id;
+        let first = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            None,
+            100,
+            summary.session_revision,
+            None,
+            ConversationStyle::Anthropic,
+        )
+        .unwrap();
+        assert!(first.blocks.is_empty());
+        assert!(first.has_more);
+        let second = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            first.next_cursor,
+            100,
+            summary.session_revision,
+            None,
+            ConversationStyle::Anthropic,
+        )
+        .unwrap();
+        assert!(second.blocks.iter().any(|block| block.kind == "message"));
+        fs::remove_file(large_path).unwrap();
     }
 
     #[test]
@@ -4516,7 +5132,7 @@ mod tests {
         let projected_message_ids: Vec<_> = blocks
             .iter()
             .filter(|block| block.kind == "message")
-            .map(|block| block.message_node_id)
+            .map(|block| block.message_node_id.unwrap())
             .collect();
         let expected_message_ids: Vec<_> = message_nodes.iter().map(|node| node.id).collect();
         assert_eq!(projected_message_ids, expected_message_ids);
@@ -4538,7 +5154,9 @@ mod tests {
         }
         let actual_tail_sources: Vec<_> = blocks
             .iter()
-            .filter(|block| block.kind == "source" && tail_ids.contains(&block.message_node_id))
+            .filter(|block| {
+                block.kind == "source" && tail_ids.contains(&block.message_node_id.unwrap())
+            })
             .map(|block| {
                 assert_eq!(block.category, "unknown");
                 block.source_node_id.unwrap()

@@ -42,12 +42,14 @@ pub struct ConversationCandidate {
 pub enum ConversationStyle {
     Generic,
     OpenAi,
+    Anthropic,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GenericConversationBlockKind {
     Message,
     Source,
+    System,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,6 +64,10 @@ pub enum GenericConversationCategory {
     Image,
     ToolCall,
     ToolResult,
+    System,
+    Thinking,
+    RedactedThinking,
+    ToolUse,
 }
 
 impl GenericConversationCategory {
@@ -77,6 +83,10 @@ impl GenericConversationCategory {
             Self::Image => "image",
             Self::ToolCall => "toolCall",
             Self::ToolResult => "toolResult",
+            Self::System => "system",
+            Self::Thinking => "thinking",
+            Self::RedactedThinking => "redactedThinking",
+            Self::ToolUse => "toolUse",
         }
     }
 }
@@ -121,22 +131,38 @@ pub struct ConversationOpenAiRefs {
     pub arguments: Option<ConversationSourceRef>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub struct ConversationAnthropicRefs {
+    pub block: Option<ConversationSourceRef>,
+    pub text: Option<ConversationSourceRef>,
+    pub thinking: Option<ConversationSourceRef>,
+    pub data: Option<ConversationSourceRef>,
+    pub id: Option<ConversationSourceRef>,
+    pub name: Option<ConversationSourceRef>,
+    pub input: Option<ConversationSourceRef>,
+    pub tool_use_id: Option<ConversationSourceRef>,
+    pub content: Option<ConversationSourceRef>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GenericConversationBlock {
     pub kind: GenericConversationBlockKind,
-    pub message: ConversationSourceRef,
+    pub message: Option<ConversationSourceRef>,
     pub source: Option<ConversationSourceRef>,
     pub field: Option<ConversationSourceRef>,
     pub category: GenericConversationCategory,
     pub role: NormalizedRole,
     pub role_source: Option<ConversationSourceRef>,
     pub openai_refs: Option<ConversationOpenAiRefs>,
+    pub anthropic_refs: Option<ConversationAnthropicRefs>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GenericConversationPhase {
     Message,
     Fields,
+    SystemHeader,
+    SystemContent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -414,6 +440,7 @@ fn is_recognized_role(value: &str) -> bool {
 }
 
 const MAX_GENERIC_BLOCKS: usize = 100;
+const MAX_SYSTEM_SCAN_FIELDS: usize = 128;
 
 /// Page a selected message array without materializing message bodies or the
 /// complete block list. The caller must bind cursor identity (revision,
@@ -488,22 +515,126 @@ fn conversation_page_impl(
     }
     let candidate = candidate_array(parsed, scope_root_id, candidate_node_id)?;
     let scope_root = parsed.node_at(scope_root_id)?;
+    let cursor_was_provided = cursor.is_some();
     let mut cursor = cursor.unwrap_or(GenericConversationCursor {
         message_index: 0,
-        phase: GenericConversationPhase::Message,
+        phase: if style == ConversationStyle::Anthropic && scope_root.kind == JsonKind::Object {
+            GenericConversationPhase::SystemHeader
+        } else {
+            GenericConversationPhase::Message
+        },
         field_index: 0,
         element_index: 0,
     });
-    if !cursor_position_is_valid(parsed, candidate, cursor, style, role_cache) {
+    if cursor_was_provided
+        && !cursor_position_is_valid(parsed, scope_root, candidate, cursor, style, role_cache)
+    {
         return None;
     }
+    let mut system_scan_budget = MAX_SYSTEM_SCAN_FIELDS;
+    normalize_cursor(
+        parsed,
+        scope_root,
+        candidate,
+        &mut cursor,
+        style,
+        role_cache,
+        &mut system_scan_budget,
+    );
 
     let mut blocks = Vec::with_capacity(limit.min(MAX_GENERIC_BLOCKS));
     let page_limit = limit.min(MAX_GENERIC_BLOCKS);
     while blocks.len() < page_limit {
-        normalize_cursor(parsed, candidate, &mut cursor, style, role_cache);
-        if cursor.message_index >= candidate.children.len() {
+        normalize_cursor(
+            parsed,
+            scope_root,
+            candidate,
+            &mut cursor,
+            style,
+            role_cache,
+            &mut system_scan_budget,
+        );
+        if cursor.phase == GenericConversationPhase::SystemHeader
+            && cursor.field_index < scope_root.children.len()
+            && object_key(parsed.node(scope_root.children[cursor.field_index])) != Some("system")
+        {
             break;
+        }
+        if cursor.message_index >= candidate.children.len()
+            && matches!(
+                cursor.phase,
+                GenericConversationPhase::Message | GenericConversationPhase::Fields
+            )
+        {
+            break;
+        }
+
+        if cursor.phase == GenericConversationPhase::SystemHeader {
+            let field = parsed.node(scope_root.children[cursor.field_index]);
+            let field_id = scope_root.children[cursor.field_index].index();
+            let field_ref = ConversationSourceRef {
+                node_id: field_id,
+                span: field.span,
+            };
+            let refs = anthropic_system_refs(field_id, field);
+            blocks.push(GenericConversationBlock {
+                kind: GenericConversationBlockKind::System,
+                message: None,
+                source: Some(field_ref),
+                field: Some(field_ref),
+                category: GenericConversationCategory::System,
+                role: NormalizedRole::System,
+                role_source: None,
+                openai_refs: None,
+                anthropic_refs: refs,
+            });
+            cursor.phase = GenericConversationPhase::SystemContent;
+            cursor.element_index = 0;
+            continue;
+        }
+        if cursor.phase == GenericConversationPhase::SystemContent {
+            let field = parsed.node(scope_root.children[cursor.field_index]);
+            let field_id = scope_root.children[cursor.field_index].index();
+            let field_ref = ConversationSourceRef {
+                node_id: field_id,
+                span: field.span,
+            };
+            let (source, category, refs) =
+                if field.kind == JsonKind::Array && !field.children.is_empty() {
+                    let element_id = field.children[cursor.element_index].index();
+                    let element = parsed.node(field.children[cursor.element_index]);
+                    let (category, refs) = anthropic_system_element(parsed, element_id, element);
+                    (
+                        ConversationSourceRef {
+                            node_id: element_id,
+                            span: element.span,
+                        },
+                        category,
+                        refs,
+                    )
+                } else {
+                    let (category, refs) = anthropic_system_scalar(field_id, field);
+                    (field_ref, category, refs)
+                };
+            blocks.push(GenericConversationBlock {
+                kind: GenericConversationBlockKind::Source,
+                message: None,
+                source: Some(source),
+                field: Some(field_ref),
+                category,
+                role: NormalizedRole::System,
+                role_source: None,
+                openai_refs: None,
+                anthropic_refs: refs,
+            });
+            if field.kind == JsonKind::Array && !field.children.is_empty() {
+                cursor.element_index += 1;
+            } else {
+                cursor.field_index += 1;
+                cursor.phase = GenericConversationPhase::SystemHeader;
+                cursor.element_index = 0;
+            }
+            continue;
         }
 
         let message_id = candidate.children[cursor.message_index].index();
@@ -526,13 +657,14 @@ fn conversation_page_impl(
             GenericConversationPhase::Message => {
                 blocks.push(GenericConversationBlock {
                     kind: GenericConversationBlockKind::Message,
-                    message: message_ref,
+                    message: Some(message_ref),
                     source: None,
                     field: None,
                     category: GenericConversationCategory::Message,
                     role,
                     role_source,
                     openai_refs: None,
+                    anthropic_refs: None,
                 });
                 cursor.phase = if message.kind == JsonKind::Object {
                     GenericConversationPhase::Fields
@@ -548,13 +680,13 @@ fn conversation_page_impl(
                     node_id: field_id,
                     span: field.span,
                 };
-                let (category, openai_refs) =
+                let classification =
                     source_classification(parsed, field_id, field, None, None, role, style);
                 let array_elements = content_or_value_array(field, style);
                 if let Some(elements) = array_elements {
                     let element_id = elements[cursor.element_index].index();
                     let element = parsed.node(elements[cursor.element_index]);
-                    let (category, openai_refs) = source_classification(
+                    let classification = source_classification(
                         parsed,
                         field_id,
                         field,
@@ -565,37 +697,50 @@ fn conversation_page_impl(
                     );
                     blocks.push(GenericConversationBlock {
                         kind: GenericConversationBlockKind::Source,
-                        message: message_ref,
+                        message: Some(message_ref),
                         source: Some(ConversationSourceRef {
                             node_id: element_id,
                             span: element.span,
                         }),
                         field: Some(field_ref),
-                        category,
+                        category: classification.category,
                         role,
                         role_source,
-                        openai_refs,
+                        openai_refs: classification.openai_refs,
+                        anthropic_refs: classification.anthropic_refs,
                     });
                     cursor.element_index += 1;
                 } else {
                     blocks.push(GenericConversationBlock {
                         kind: GenericConversationBlockKind::Source,
-                        message: message_ref,
+                        message: Some(message_ref),
                         source: Some(field_ref),
                         field: Some(field_ref),
-                        category,
+                        category: classification.category,
                         role,
                         role_source,
-                        openai_refs,
+                        openai_refs: classification.openai_refs,
+                        anthropic_refs: classification.anthropic_refs,
                     });
                     cursor.field_index += 1;
                 }
             }
+            GenericConversationPhase::SystemHeader | GenericConversationPhase::SystemContent => {
+                unreachable!("system phases are handled before message projection")
+            }
         }
     }
 
-    normalize_cursor(parsed, candidate, &mut cursor, style, role_cache);
-    let has_more = cursor.message_index < candidate.children.len();
+    normalize_cursor(
+        parsed,
+        scope_root,
+        candidate,
+        &mut cursor,
+        style,
+        role_cache,
+        &mut system_scan_budget,
+    );
+    let has_more = cursor_has_more(parsed, scope_root, candidate, cursor, style);
     Some(GenericConversationPage {
         blocks,
         has_more,
@@ -615,24 +760,48 @@ fn conversation_page_impl(
 
 fn cursor_position_is_valid(
     parsed: &ParsedJson<'_>,
+    scope_root: &JsonNode,
     candidate: &JsonNode,
     cursor: GenericConversationCursor,
     style: ConversationStyle,
     role_cache: Option<&std::sync::Mutex<Option<RoleCache>>>,
 ) -> bool {
-    if cursor.message_index > candidate.children.len() {
-        return false;
-    }
-    if cursor.message_index == candidate.children.len() {
-        return matches!(cursor.phase, GenericConversationPhase::Message)
-            && cursor.field_index == 0
-            && cursor.element_index == 0;
-    }
-
-    let message = parsed.node(candidate.children[cursor.message_index]);
     match cursor.phase {
-        GenericConversationPhase::Message => cursor.field_index == 0 && cursor.element_index == 0,
+        GenericConversationPhase::SystemHeader => {
+            style == ConversationStyle::Anthropic
+                && scope_root.kind == JsonKind::Object
+                && cursor.message_index == 0
+                && cursor.field_index <= scope_root.children.len()
+                && cursor.element_index == 0
+        }
+        GenericConversationPhase::SystemContent => {
+            if style != ConversationStyle::Anthropic
+                || scope_root.kind != JsonKind::Object
+                || cursor.message_index != 0
+                || cursor.field_index >= scope_root.children.len()
+            {
+                return false;
+            }
+            let field = parsed.node(scope_root.children[cursor.field_index]);
+            if object_key(field) != Some("system") {
+                return false;
+            }
+            if field.kind == JsonKind::Array && !field.children.is_empty() {
+                cursor.element_index < field.children.len()
+            } else {
+                cursor.element_index == 0
+            }
+        }
+        GenericConversationPhase::Message => {
+            cursor.message_index <= candidate.children.len()
+                && cursor.field_index == 0
+                && cursor.element_index == 0
+        }
         GenericConversationPhase::Fields => {
+            if cursor.message_index >= candidate.children.len() {
+                return false;
+            }
+            let message = parsed.node(candidate.children[cursor.message_index]);
             if message.kind != JsonKind::Object || cursor.field_index >= message.children.len() {
                 return false;
             }
@@ -657,12 +826,64 @@ fn cursor_position_is_valid(
 
 fn normalize_cursor(
     parsed: &ParsedJson<'_>,
+    scope_root: &JsonNode,
     candidate: &JsonNode,
     cursor: &mut GenericConversationCursor,
     style: ConversationStyle,
     role_cache: Option<&std::sync::Mutex<Option<RoleCache>>>,
+    system_scan_budget: &mut usize,
 ) {
     loop {
+        if style == ConversationStyle::Anthropic
+            && scope_root.kind == JsonKind::Object
+            && matches!(
+                cursor.phase,
+                GenericConversationPhase::SystemHeader | GenericConversationPhase::SystemContent
+            )
+        {
+            match cursor.phase {
+                GenericConversationPhase::SystemHeader => {
+                    if cursor.field_index >= scope_root.children.len() {
+                        cursor.phase = GenericConversationPhase::Message;
+                        cursor.message_index = 0;
+                        cursor.field_index = 0;
+                        cursor.element_index = 0;
+                        continue;
+                    }
+                    let field = parsed.node(scope_root.children[cursor.field_index]);
+                    if object_key(field) != Some("system") {
+                        if *system_scan_budget == 0 {
+                            return;
+                        }
+                        *system_scan_budget -= 1;
+                        cursor.field_index += 1;
+                        continue;
+                    }
+                    return;
+                }
+                GenericConversationPhase::SystemContent => {
+                    let field = parsed.node(scope_root.children[cursor.field_index]);
+                    if object_key(field) == Some("system")
+                        && if field.kind == JsonKind::Array {
+                            if field.children.is_empty() {
+                                cursor.element_index == 0
+                            } else {
+                                cursor.element_index < field.children.len()
+                            }
+                        } else {
+                            cursor.element_index == 0
+                        }
+                    {
+                        return;
+                    }
+                    cursor.field_index += 1;
+                    cursor.element_index = 0;
+                    cursor.phase = GenericConversationPhase::SystemHeader;
+                    continue;
+                }
+                GenericConversationPhase::Message | GenericConversationPhase::Fields => {}
+            }
+        }
         if cursor.message_index >= candidate.children.len() {
             cursor.message_index = candidate.children.len();
             cursor.phase = GenericConversationPhase::Message;
@@ -712,6 +933,36 @@ fn advance_message(cursor: &mut GenericConversationCursor) {
     cursor.element_index = 0;
 }
 
+fn cursor_has_more(
+    parsed: &ParsedJson<'_>,
+    scope_root: &JsonNode,
+    candidate: &JsonNode,
+    cursor: GenericConversationCursor,
+    style: ConversationStyle,
+) -> bool {
+    match cursor.phase {
+        GenericConversationPhase::SystemHeader => {
+            style == ConversationStyle::Anthropic && cursor.field_index < scope_root.children.len()
+        }
+        GenericConversationPhase::SystemContent => {
+            style == ConversationStyle::Anthropic
+                && cursor.field_index < scope_root.children.len()
+                && {
+                    let field = parsed.node(scope_root.children[cursor.field_index]);
+                    object_key(field) == Some("system")
+                        && if field.kind == JsonKind::Array && !field.children.is_empty() {
+                            cursor.element_index < field.children.len()
+                        } else {
+                            cursor.element_index == 0
+                        }
+                }
+        }
+        GenericConversationPhase::Message | GenericConversationPhase::Fields => {
+            cursor.message_index < candidate.children.len()
+        }
+    }
+}
+
 fn selected_role_node(
     parsed: &ParsedJson<'_>,
     message: &JsonNode,
@@ -724,7 +975,7 @@ fn selected_role_node(
         .iter()
         .copied()
         .find(|id| object_key(parsed.node(*id)) == Some("role"));
-    let selected = if role.is_some() || style == ConversationStyle::OpenAi {
+    let selected = if role.is_some() || style != ConversationStyle::Generic {
         role
     } else {
         message
@@ -797,6 +1048,20 @@ fn field_category(node: &JsonNode) -> GenericConversationCategory {
     }
 }
 
+struct SourceClassification {
+    category: GenericConversationCategory,
+    openai_refs: Option<ConversationOpenAiRefs>,
+    anthropic_refs: Option<ConversationAnthropicRefs>,
+}
+
+fn generic_classification(category: GenericConversationCategory) -> SourceClassification {
+    SourceClassification {
+        category,
+        openai_refs: None,
+        anthropic_refs: None,
+    }
+}
+
 fn source_classification(
     parsed: &ParsedJson<'_>,
     field_id: usize,
@@ -805,9 +1070,18 @@ fn source_classification(
     element: Option<&JsonNode>,
     role: NormalizedRole,
     style: ConversationStyle,
-) -> (GenericConversationCategory, Option<ConversationOpenAiRefs>) {
+) -> SourceClassification {
     if style == ConversationStyle::Generic {
-        return (field_category(field), None);
+        return generic_classification(field_category(field));
+    }
+    if style == ConversationStyle::Anthropic {
+        let (category, refs) =
+            anthropic_source_classification(parsed, field_id, field, element_id, element);
+        return SourceClassification {
+            category,
+            openai_refs: None,
+            anthropic_refs: refs,
+        };
     }
     let field_ref = ConversationSourceRef {
         node_id: field_id,
@@ -816,39 +1090,319 @@ fn source_classification(
     match object_key(field) {
         Some("content") => {
             if let (Some(element_id), Some(element)) = (element_id, element) {
-                return openai_content_block(parsed, element_id, element, role);
+                let (category, refs) = openai_content_block(parsed, element_id, element, role);
+                return SourceClassification {
+                    category,
+                    openai_refs: refs,
+                    anthropic_refs: None,
+                };
             }
             if role == NormalizedRole::Tool {
-                return (GenericConversationCategory::ToolResult, None);
+                return generic_classification(GenericConversationCategory::ToolResult);
             }
             if field.kind == JsonKind::String {
-                return (
-                    GenericConversationCategory::Text,
-                    Some(ConversationOpenAiRefs {
+                return SourceClassification {
+                    category: GenericConversationCategory::Text,
+                    openai_refs: Some(ConversationOpenAiRefs {
                         text: Some(field_ref),
                         ..ConversationOpenAiRefs::default()
                     }),
-                );
+                    anthropic_refs: None,
+                };
             }
-            (GenericConversationCategory::Content, None)
+            generic_classification(GenericConversationCategory::Content)
         }
-        Some("value") => (GenericConversationCategory::Value, None),
+        Some("value") => generic_classification(GenericConversationCategory::Value),
         Some("tool_calls") => {
             if let (Some(element_id), Some(element)) = (element_id, element) {
-                openai_tool_call(parsed, element_id, element)
+                let (category, refs) = openai_tool_call(parsed, element_id, element);
+                SourceClassification {
+                    category,
+                    openai_refs: refs,
+                    anthropic_refs: None,
+                }
             } else if field.kind == JsonKind::Array {
-                (GenericConversationCategory::Tool, None)
+                generic_classification(GenericConversationCategory::Tool)
             } else {
-                (GenericConversationCategory::Unknown, None)
+                generic_classification(GenericConversationCategory::Unknown)
             }
         }
-        Some("function_call") => openai_legacy_function_call(parsed, field_id, field),
-        Some("tool_call_id") if role == NormalizedRole::Tool => {
-            (GenericConversationCategory::ToolResult, None)
+        Some("function_call") => {
+            let (category, refs) = openai_legacy_function_call(parsed, field_id, field);
+            SourceClassification {
+                category,
+                openai_refs: refs,
+                anthropic_refs: None,
+            }
         }
-        Some("tool_call_id") => (GenericConversationCategory::Tool, None),
-        _ => (field_category(field), None),
+        Some("tool_call_id") if role == NormalizedRole::Tool => {
+            generic_classification(GenericConversationCategory::ToolResult)
+        }
+        Some("tool_call_id") => generic_classification(GenericConversationCategory::Tool),
+        _ => generic_classification(field_category(field)),
     }
+}
+
+fn anthropic_source_classification(
+    parsed: &ParsedJson<'_>,
+    field_id: usize,
+    field: &JsonNode,
+    element_id: Option<usize>,
+    element: Option<&JsonNode>,
+) -> (
+    GenericConversationCategory,
+    Option<ConversationAnthropicRefs>,
+) {
+    if object_key(field) != Some("content") {
+        return (field_category(field), None);
+    }
+    if let (Some(element_id), Some(element)) = (element_id, element) {
+        return anthropic_content_block(parsed, element_id, element);
+    }
+    if field.kind == JsonKind::String {
+        return (
+            GenericConversationCategory::Text,
+            Some(ConversationAnthropicRefs {
+                text: Some(ConversationSourceRef {
+                    node_id: field_id,
+                    span: field.span,
+                }),
+                ..ConversationAnthropicRefs::default()
+            }),
+        );
+    }
+    if field.kind == JsonKind::Array {
+        (GenericConversationCategory::Content, None)
+    } else {
+        (GenericConversationCategory::Unknown, None)
+    }
+}
+
+fn anthropic_content_block(
+    parsed: &ParsedJson<'_>,
+    element_id: usize,
+    element: &JsonNode,
+) -> (
+    GenericConversationCategory,
+    Option<ConversationAnthropicRefs>,
+) {
+    let element_ref = ConversationSourceRef {
+        node_id: element_id,
+        span: element.span,
+    };
+    let mut refs = ConversationAnthropicRefs {
+        block: Some(element_ref),
+        ..ConversationAnthropicRefs::default()
+    };
+    if element.kind != JsonKind::Object {
+        return (GenericConversationCategory::Unknown, Some(refs));
+    }
+    let Some(type_node) = direct_child_by_key(parsed, element, "type") else {
+        return (GenericConversationCategory::Unknown, Some(refs));
+    };
+    let Some(block_type) = string_value(type_node) else {
+        return (GenericConversationCategory::Unknown, Some(refs));
+    };
+    match block_type {
+        "text" => {
+            let Some(text) = direct_child_by_key(parsed, element, "text") else {
+                return (GenericConversationCategory::Unknown, Some(refs));
+            };
+            if text.kind != JsonKind::String {
+                return (GenericConversationCategory::Unknown, Some(refs));
+            }
+            refs.text = Some(ConversationSourceRef {
+                node_id: node_id_from_child(parsed, element, text),
+                span: text.span,
+            });
+            (GenericConversationCategory::Text, Some(refs))
+        }
+        "thinking" => {
+            let Some(thinking) = direct_child_by_key(parsed, element, "thinking") else {
+                return (GenericConversationCategory::Unknown, Some(refs));
+            };
+            if thinking.kind != JsonKind::String {
+                return (GenericConversationCategory::Unknown, Some(refs));
+            }
+            refs.thinking = Some(ConversationSourceRef {
+                node_id: node_id_from_child(parsed, element, thinking),
+                span: thinking.span,
+            });
+            (GenericConversationCategory::Thinking, Some(refs))
+        }
+        "redacted_thinking" => {
+            let Some(data) = direct_child_by_key(parsed, element, "data") else {
+                return (GenericConversationCategory::Unknown, Some(refs));
+            };
+            if data.kind != JsonKind::String {
+                return (GenericConversationCategory::Unknown, Some(refs));
+            }
+            refs.data = Some(ConversationSourceRef {
+                node_id: node_id_from_child(parsed, element, data),
+                span: data.span,
+            });
+            (GenericConversationCategory::RedactedThinking, Some(refs))
+        }
+        "tool_use" => {
+            let Some(id) = direct_child_by_key(parsed, element, "id") else {
+                return (GenericConversationCategory::Unknown, Some(refs));
+            };
+            let Some(name) = direct_child_by_key(parsed, element, "name") else {
+                return (GenericConversationCategory::Unknown, Some(refs));
+            };
+            let Some(input) = direct_child_by_key(parsed, element, "input") else {
+                return (GenericConversationCategory::Unknown, Some(refs));
+            };
+            if id.kind != JsonKind::String
+                || name.kind != JsonKind::String
+                || input.kind != JsonKind::Object
+            {
+                return (GenericConversationCategory::Unknown, Some(refs));
+            }
+            refs.id = Some(ConversationSourceRef {
+                node_id: node_id_from_child(parsed, element, id),
+                span: id.span,
+            });
+            refs.name = Some(ConversationSourceRef {
+                node_id: node_id_from_child(parsed, element, name),
+                span: name.span,
+            });
+            refs.input = Some(ConversationSourceRef {
+                node_id: node_id_from_child(parsed, element, input),
+                span: input.span,
+            });
+            (GenericConversationCategory::ToolUse, Some(refs))
+        }
+        "tool_result" => {
+            let Some(tool_use_id) = direct_child_by_key(parsed, element, "tool_use_id") else {
+                return (GenericConversationCategory::Unknown, Some(refs));
+            };
+            let Some(content) = direct_child_by_key(parsed, element, "content") else {
+                return (GenericConversationCategory::Unknown, Some(refs));
+            };
+            if tool_use_id.kind != JsonKind::String
+                || !matches!(content.kind, JsonKind::String | JsonKind::Array)
+            {
+                return (GenericConversationCategory::Unknown, Some(refs));
+            }
+            refs.tool_use_id = Some(ConversationSourceRef {
+                node_id: node_id_from_child(parsed, element, tool_use_id),
+                span: tool_use_id.span,
+            });
+            refs.content = Some(ConversationSourceRef {
+                node_id: node_id_from_child(parsed, element, content),
+                span: content.span,
+            });
+            (GenericConversationCategory::ToolResult, Some(refs))
+        }
+        _ => (GenericConversationCategory::Unknown, Some(refs)),
+    }
+}
+
+fn anthropic_system_refs(field_id: usize, field: &JsonNode) -> Option<ConversationAnthropicRefs> {
+    if field.kind == JsonKind::String {
+        return Some(ConversationAnthropicRefs {
+            text: Some(ConversationSourceRef {
+                node_id: field_id,
+                span: field.span,
+            }),
+            ..ConversationAnthropicRefs::default()
+        });
+    }
+    None
+}
+
+fn anthropic_system_scalar(
+    field_id: usize,
+    field: &JsonNode,
+) -> (
+    GenericConversationCategory,
+    Option<ConversationAnthropicRefs>,
+) {
+    if field.kind == JsonKind::String {
+        (
+            GenericConversationCategory::Text,
+            Some(ConversationAnthropicRefs {
+                text: Some(ConversationSourceRef {
+                    node_id: field_id,
+                    span: field.span,
+                }),
+                ..ConversationAnthropicRefs::default()
+            }),
+        )
+    } else {
+        (
+            GenericConversationCategory::Unknown,
+            Some(ConversationAnthropicRefs {
+                block: Some(ConversationSourceRef {
+                    node_id: field_id,
+                    span: field.span,
+                }),
+                ..ConversationAnthropicRefs::default()
+            }),
+        )
+    }
+}
+
+fn anthropic_system_element(
+    parsed: &ParsedJson<'_>,
+    element_id: usize,
+    element: &JsonNode,
+) -> (
+    GenericConversationCategory,
+    Option<ConversationAnthropicRefs>,
+) {
+    if element.kind == JsonKind::String {
+        return (
+            GenericConversationCategory::Unknown,
+            Some(ConversationAnthropicRefs {
+                block: Some(ConversationSourceRef {
+                    node_id: element_id,
+                    span: element.span,
+                }),
+                ..ConversationAnthropicRefs::default()
+            }),
+        );
+    }
+    let element_ref = ConversationSourceRef {
+        node_id: element_id,
+        span: element.span,
+    };
+    let unknown = || {
+        (
+            GenericConversationCategory::Unknown,
+            Some(ConversationAnthropicRefs {
+                block: Some(element_ref),
+                ..ConversationAnthropicRefs::default()
+            }),
+        )
+    };
+    if element.kind != JsonKind::Object {
+        return unknown();
+    }
+    let Some(type_node) = direct_child_by_key(parsed, element, "type") else {
+        return unknown();
+    };
+    if string_value(type_node) != Some("text") {
+        return unknown();
+    }
+    let Some(text) = direct_child_by_key(parsed, element, "text") else {
+        return unknown();
+    };
+    if text.kind != JsonKind::String {
+        return unknown();
+    }
+    (
+        GenericConversationCategory::Text,
+        Some(ConversationAnthropicRefs {
+            block: Some(element_ref),
+            text: Some(ConversationSourceRef {
+                node_id: node_id_from_child(parsed, element, text),
+                span: text.span,
+            }),
+            ..ConversationAnthropicRefs::default()
+        }),
+    )
 }
 
 fn openai_content_block(
@@ -1388,9 +1942,12 @@ mod tests {
             blocks[9].source.unwrap().node_id,
             blocks[9].field.unwrap().node_id
         );
-        assert!(blocks
-            .windows(2)
-            .all(|pair| pair[0].message.span.start <= pair[1].message.span.start));
+        assert!(
+            blocks
+                .windows(2)
+                .all(|pair| pair[0].message.unwrap().span.start
+                    <= pair[1].message.unwrap().span.start)
+        );
     }
 
     #[test]
@@ -1456,7 +2013,7 @@ mod tests {
                 page.blocks
                     .iter()
                     .filter(|block| block.kind == GenericConversationBlockKind::Message)
-                    .map(|block| block.message.node_id),
+                    .map(|block| block.message.unwrap().node_id),
             );
             cursor = page.next_cursor;
             if !page.has_more {
@@ -1521,8 +2078,9 @@ mod tests {
         }
         tail_fields.push_str(r#", "role":"assistant", "content":"tail""#);
         let input = format!(r#"[{{{tail_fields}}},{{{roleless_fields}}}]"#);
+        let bytes = input.into_bytes();
         reset_role_scan_count();
-        let tree = crate::tree::TreeDocument::from_bytes(input.into_bytes()).unwrap();
+        let tree = crate::tree::TreeDocument::from_bytes(bytes.clone()).unwrap();
         let root = tree.root().id;
         let mut cursor = None;
         let mut first_roles = Vec::new();
@@ -1532,7 +2090,7 @@ mod tests {
                 .generic_conversation_page(root, root, cursor, 1)
                 .unwrap();
             for block in page.blocks {
-                if block.message.node_id == 1 {
+                if block.message.unwrap().node_id == 1 {
                     first_roles.push(block.role);
                 } else {
                     second_roles.push(block.role);
@@ -1551,6 +2109,21 @@ mod tests {
         assert!(second_roles
             .iter()
             .all(|role| *role == NormalizedRole::Unknown));
+        assert_eq!(role_scan_count(), 2);
+
+        reset_role_scan_count();
+        let tree = crate::tree::TreeDocument::from_bytes(bytes).unwrap();
+        let root = tree.root().id;
+        let mut cursor = None;
+        loop {
+            let page = tree
+                .conversation_page(root, root, cursor, 1, ConversationStyle::Anthropic)
+                .unwrap();
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
         assert_eq!(role_scan_count(), 2);
     }
 
@@ -1576,12 +2149,14 @@ mod tests {
         let first_message = blocks
             .iter()
             .find(|block| {
-                block.message.node_id == 1 && block.kind == GenericConversationBlockKind::Message
+                block.message.unwrap().node_id == 1
+                    && block.kind == GenericConversationBlockKind::Message
             })
             .unwrap();
         assert_eq!(first_message.role, NormalizedRole::Unknown);
         assert!(blocks.iter().any(|block| {
-            block.message.node_id == 1 && block.category == GenericConversationCategory::Role
+            block.message.unwrap().node_id == 1
+                && block.category == GenericConversationCategory::Role
         }));
         let tool_message_id = blocks
             .iter()
@@ -1591,9 +2166,10 @@ mod tests {
             })
             .unwrap()
             .message
+            .unwrap()
             .node_id;
         assert!(blocks.iter().any(|block| {
-            block.message.node_id == tool_message_id
+            block.message.unwrap().node_id == tool_message_id
                 && block.category == GenericConversationCategory::ToolResult
         }));
         assert!(blocks.iter().any(|block| {
@@ -1602,5 +2178,34 @@ mod tests {
         assert!(!blocks
             .iter()
             .any(|block| block.category == GenericConversationCategory::ToolCall));
+    }
+
+    #[test]
+    fn anthropic_style_does_not_use_from_and_keeps_malformed_content_sources() {
+        let parsed = parse_json(
+            br#"[{"from":"tool","content":"from-content"},{"role":"user","content":null},{"role":"assistant","content":{}}]"#,
+        )
+        .unwrap();
+        let root = parsed.root().index();
+        let page = conversation_page(&parsed, root, root, None, 100, ConversationStyle::Anthropic)
+            .unwrap();
+        let first_role = page
+            .blocks
+            .iter()
+            .find(|block| {
+                block.kind == GenericConversationBlockKind::Message
+                    && block.role == NormalizedRole::Unknown
+            })
+            .unwrap();
+        assert_eq!(first_role.role, NormalizedRole::Unknown);
+        assert!(page.blocks.iter().any(|block| {
+            block.role == NormalizedRole::Unknown
+                && block.kind == GenericConversationBlockKind::Source
+                && block.category == GenericConversationCategory::Role
+        }));
+        assert!(page.blocks.iter().any(|block| {
+            block.role == NormalizedRole::Assistant
+                && block.category == GenericConversationCategory::Unknown
+        }));
     }
 }
