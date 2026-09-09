@@ -138,12 +138,62 @@ type InlineAnchor = {
   offset: number;
 };
 
+type ToolCardRow = {
+  label: string;
+  value: string;
+  ref: SourceRef | null;
+  mode: "plain" | "code" | "structure" | "status";
+  truncated?: boolean;
+};
+
+type ToolCardState = {
+  status: "loading" | "ready" | "unavailable";
+  rows: ToolCardRow[];
+  callId: string | null;
+  errorState: "ok" | "error" | "missing" | "invalid" | "unloaded" | null;
+  reason?: string;
+};
+
+type ToolCardRequest = {
+  context: ConversationContext;
+  generation: number;
+  requestGeneration: number;
+  pageIdentity: string;
+  candidateId: number | null;
+  style: ConversationStyle;
+  index: number;
+  host: HTMLElement;
+  textBudgetRemaining: number;
+};
+
+type LoadedCallMatch = {
+  status: "confirmed" | "ambiguous";
+  label: string;
+};
+
+type CardChildren = {
+  nodes: NodeDto[];
+  hasMore: boolean;
+};
+
+type ToolStringValue = {
+  text: string;
+  mode: "plain" | "code";
+  truncated: boolean;
+  nestedRows?: ToolCardRow[];
+};
+
 const CANDIDATE_FIELDS = new Set(["messages", "conversation", "conversations"]);
 const BLOCK_KINDS = new Set(["message", "source", "system"]);
 const MAX_CHILD_PAGES = 16;
 const PAGE_LIMIT = 100;
 const ROW_HEIGHT = 136;
 const INLINE_READ_BYTES = 128 * 1024;
+const TOOL_READ_BYTES = 16 * 1024;
+// At most 100 page cards can be retained; 100 * 256 KiB = 25 MiB of decoded
+// card text, below the 32 MiB frontend projection budget. Rows remain bounded.
+const TOOL_CARD_TEXT_BUDGET = 256 * 1024;
+const TOOL_CHILD_LIMIT = 32;
 
 export class ConversationView {
   private readonly panel: HTMLElement;
@@ -179,6 +229,9 @@ export class ConversationView {
   private readonly inlineStates = new Map<number, InlineState>();
   private readonly inlineRequests = new Set<string>();
   private readonly renderedInlineStates = new WeakMap<HTMLElement, InlineState>();
+  private readonly toolCardStates = new Map<number, ToolCardState>();
+  private readonly toolCardRequests = new Set<string>();
+  private readonly toolCardRefs = new Map<string, SourceRef>();
   private readonly rowHeights = new Map<number, number>();
   private readonly rowResizeObserver: ResizeObserver | null;
   private layoutVersion = 0;
@@ -229,6 +282,9 @@ export class ConversationView {
     this.summaryRequests.clear();
     this.inlineStates.clear();
     this.inlineRequests.clear();
+    this.toolCardStates.clear();
+    this.toolCardRequests.clear();
+    this.toolCardRefs.clear();
     this.render();
     if (context) void this.discoverCandidates(context, this.generation);
   }
@@ -251,6 +307,9 @@ export class ConversationView {
     this.summaryRequests.clear();
     this.inlineStates.clear();
     this.inlineRequests.clear();
+    this.toolCardStates.clear();
+    this.toolCardRequests.clear();
+    this.toolCardRefs.clear();
     this.panel.hidden = true;
     this.panel.replaceChildren();
   }
@@ -352,6 +411,9 @@ export class ConversationView {
     this.previousPages = [];
     this.inlineStates.clear();
     this.inlineRequests.clear();
+    this.toolCardStates.clear();
+    this.toolCardRequests.clear();
+    this.toolCardRefs.clear();
     this.pendingAnchor = null;
     this.requestGeneration += 1;
     this.loading = false;
@@ -394,6 +456,9 @@ export class ConversationView {
       this.summaryRequests.clear();
       this.inlineStates.clear();
       this.inlineRequests.clear();
+      this.toolCardStates.clear();
+      this.toolCardRequests.clear();
+      this.toolCardRefs.clear();
       this.pendingAnchor = null;
       this.loading = false;
       this.statusMessage = page.blocks.length === 0 && page.hasMore
@@ -443,6 +508,9 @@ export class ConversationView {
       this.previousPages = [];
       this.inlineStates.clear();
       this.inlineRequests.clear();
+      this.toolCardStates.clear();
+      this.toolCardRequests.clear();
+      this.toolCardRefs.clear();
       this.pendingAnchor = null;
       this.possibleConfirmed = false;
       this.requestGeneration += 1;
@@ -465,6 +533,18 @@ export class ConversationView {
     }
     if (action === "wrapper-tree" && this.page) {
       this.onTree(this.wrapperTarget(), actionElement);
+      return;
+    }
+    if (action === "card-raw" || action === "card-tree" || action === "card-content") {
+      const index = numberFromDataset(actionElement.dataset.conversationBlockIndex);
+      const cardRefKey = actionElement.dataset.conversationCardRef;
+      const block = index === null ? null : this.page?.blocks[index] ?? null;
+      const ref = cardRefKey ? this.toolCardRefs.get(cardRefKey) ?? null : null;
+      if (!block || !ref) return;
+      const targetInfo = { ref, label: `${block.category} card source` };
+      if (action === "card-raw") this.onRaw(targetInfo, actionElement);
+      else if (action === "card-tree") this.onTree(targetInfo, actionElement);
+      else void this.openContentIfString(ref, block, actionElement);
       return;
     }
     if (action === "raw" || action === "tree" || action === "content" || action === "role") {
@@ -495,6 +575,9 @@ export class ConversationView {
     this.previousPages = [];
     this.inlineStates.clear();
     this.inlineRequests.clear();
+    this.toolCardStates.clear();
+    this.toolCardRequests.clear();
+    this.toolCardRefs.clear();
     this.pendingAnchor = null;
     this.statusMessage = "Style changed; restarting from the first Conversation block page.";
     this.render();
@@ -965,6 +1048,8 @@ export class ConversationView {
       const row = this.windowList.querySelector<HTMLElement>(`[data-conversation-block-index="${index}"]`);
       if (!row) continue;
       const summary = row.querySelector<HTMLElement>(".conversation-block-summary");
+      const toolCard = row.querySelector<HTMLElement>(".conversation-tool-card");
+      if (toolCard && isToolBlock(block)) this.loadToolCard(block, index, toolCard);
       if (summary && !source) {
         summary.textContent = this.blockSummary(block);
         this.loadBlockSummary(block, index);
@@ -1009,8 +1094,11 @@ export class ConversationView {
     if (block.role) heading.append(element("span", "conversation-role", block.role));
     heading.append(element("span", "conversation-category", block.category));
     item.append(heading);
-    const inlineSource = this.inlineSourceFor(block);
-    if (inlineSource) {
+    const inlineSource = isToolBlock(block) ? null : this.inlineSourceFor(block);
+    if (isToolBlock(block)) {
+      // Tool cards own the bounded body; do not leave a generic summary
+      // placeholder above a card whose source is an array/object.
+    } else if (inlineSource) {
       const summary = element("p", "conversation-block-summary", shouldInline
         ? this.blockSummary(block)
         : "Summary loads when this block enters the viewport.");
@@ -1026,6 +1114,14 @@ export class ConversationView {
         : "Summary loads when this block enters the viewport.");
       item.append(summary);
       if (shouldInline) this.loadBlockSummary(block, index);
+    }
+    if (isToolBlock(block)) {
+      const card = element("section", "conversation-tool-card");
+      card.dataset.conversationToolCard = String(index);
+      card.setAttribute("aria-label", `${block.category} details`);
+      item.append(card);
+      if (shouldInline) queueMicrotask(() => this.loadToolCard(block, index, card));
+      else card.append(element("p", "conversation-tool-card-placeholder", "Tool details load when this block enters the viewport."));
     }
     const actions = element("div", "conversation-block-actions");
     const source = this.sourceFor(block, "raw");
@@ -1051,6 +1147,388 @@ export class ConversationView {
       button.dataset.conversationRefKey = name;
       button.title = `Source Node ${ref.nodeId}`;
       actions.append(button);
+    }
+  }
+
+  private loadToolCard(block: ConversationBlock, index: number, host: HTMLElement): void {
+    const context = this.context;
+    const request: ToolCardRequest | null = context ? {
+      context,
+      generation: this.generation,
+      requestGeneration: this.requestGeneration,
+      pageIdentity: cursorKey(this.page?.pageStart ?? null),
+      candidateId: this.selectedCandidate?.node.id ?? null,
+      style: this.style,
+      index,
+      host,
+      textBudgetRemaining: TOOL_CARD_TEXT_BUDGET
+    } : null;
+    if (!request) return;
+    const requestKey = this.toolCardRequestKey(request);
+    const existing = this.toolCardStates.get(index);
+    if (existing && existing.status !== "loading") {
+      this.renderToolCard(host, index, existing);
+      return;
+    }
+    if (existing?.status === "loading" && !this.toolCardRequests.has(requestKey)) {
+      this.toolCardStates.delete(index);
+    }
+    if (this.toolCardRequests.has(requestKey)) {
+      host.replaceChildren(element("p", "conversation-tool-card-placeholder", "Loading tool details…"));
+      return;
+    }
+    this.toolCardRequests.add(requestKey);
+    const loading: ToolCardState = { status: "loading", rows: [], callId: null, errorState: null };
+    this.toolCardStates.set(index, loading);
+    this.renderToolCard(host, index, loading);
+    void (async () => {
+      try {
+        const state = await this.buildToolCard(block, request);
+        if (!this.isCurrentToolProjection(request)) return;
+        this.toolCardStates.set(index, state);
+        const liveHost = this.windowList?.querySelector<HTMLElement>(`[data-conversation-block-index="${index}"] .conversation-tool-card`);
+        if (liveHost) this.renderToolCard(liveHost, index, state);
+        this.refreshToolCardRelations();
+      } catch (error) {
+        if (!this.isCurrentToolProjection(request)) return;
+        const state: ToolCardState = {
+          status: "unavailable",
+          rows: [],
+          callId: null,
+          errorState: null,
+          reason: isSessionError(error) ? "The session changed while loading this tool block." : errorMessage(error)
+        };
+        this.toolCardStates.set(index, state);
+        const liveHost = this.windowList?.querySelector<HTMLElement>(`[data-conversation-block-index="${index}"] .conversation-tool-card`);
+        if (liveHost) this.renderToolCard(liveHost, index, state);
+        if (isSessionError(error)) this.onError(error);
+      } finally {
+        this.toolCardRequests.delete(requestKey);
+        if (this.toolCardStates.get(index)?.status === "loading") {
+          this.toolCardStates.delete(index);
+          if (this.isCurrentProjection(request.context, request.generation, request.requestGeneration, request.pageIdentity, request.candidateId, request.style)) {
+            queueMicrotask(() => this.ensureVisibleInline(this.windowVisibleStart, this.windowVisibleEnd));
+          }
+        }
+      }
+    })();
+  }
+
+  private toolCardRequestKey(request: ToolCardRequest): string {
+    return `${request.generation}:${request.requestGeneration}:${request.style}:${request.pageIdentity}:${request.index}`;
+  }
+
+  private isCurrentToolProjection(request: ToolCardRequest): boolean {
+    return this.isCurrentProjection(request.context, request.generation, request.requestGeneration, request.pageIdentity, request.candidateId, request.style)
+      && this.isPanelVisible() && this.windowList !== null
+      && request.index >= this.windowVisibleStart && request.index < this.windowVisibleEnd;
+  }
+
+  private async buildToolCard(block: ConversationBlock, request: ToolCardRequest): Promise<ToolCardState> {
+    const rows: ToolCardRow[] = [];
+    let callId: string | null = null;
+    if (block.category === "toolCall" || block.category === "toolUse") {
+      const nameRef = block.openaiRefs?.name ?? block.anthropicRefs?.name;
+      const callIdRef = block.openaiRefs?.callId ?? block.anthropicRefs?.id;
+      if (nameRef) await this.appendCardPayload("Name", nameRef, request, rows);
+      else rows.push({ label: "Name", value: "Unavailable", ref: null, mode: "status" });
+      if (callIdRef) callId = await this.appendCardPayload("Call ID", callIdRef, request, rows);
+      else rows.push({ label: "Call ID", value: "Unavailable", ref: null, mode: "status" });
+      const payloadRef = block.openaiRefs?.arguments ?? block.anthropicRefs?.input;
+      if (payloadRef) await this.appendCardPayload(block.category === "toolUse" ? "Input" : "Arguments", payloadRef, request, rows);
+      else rows.push({ label: block.category === "toolUse" ? "Input" : "Arguments", value: "Unavailable; original source is preserved below.", ref: block.source, mode: "status" });
+    } else {
+      const anthropic = block.anthropicRefs;
+      const openai = block.openaiRefs;
+      const explicitId = anthropic?.toolUseId ?? openai?.callId;
+      let sourceNode: NodeDto | null = null;
+      const source = explicitId ?? block.source;
+      if (source) sourceNode = await this.cardNode(source, request);
+      const sourceLabel = sourceNode?.label ?? "";
+      if (explicitId || sourceLabel === "tool_call_id" || sourceLabel === "tool_use_id") {
+        const idRef = explicitId ?? block.source;
+        if (idRef) callId = await this.appendCardPayload("Tool call ID", idRef, request, rows, sourceNode ?? undefined);
+      }
+      const contentRef = anthropic?.content ?? openai?.text
+        ?? (sourceLabel === "tool_call_id" || sourceLabel === "tool_use_id" ? null : block.source);
+      if (contentRef) await this.appendCardPayload("Result", contentRef, request, rows, contentRef.nodeId === sourceNode?.id ? sourceNode ?? undefined : undefined);
+      else rows.push({ label: "Result", value: "Unavailable; original source is preserved below.", ref: block.source, mode: "status" });
+    }
+    const errorState = block.category === "toolResult" ? await this.cardErrorState(block, request) : null;
+    return { status: "ready", rows, callId, errorState };
+  }
+
+  private async cardNode(ref: SourceRef, request: ToolCardRequest): Promise<NodeDto> {
+    if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+    const value = await this.invokeRequest<unknown>("get_node_summary", {
+      nodeId: ref.nodeId,
+      sessionRevision: request.context.sessionRevision,
+      scopeId: null
+    });
+    if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+    const node = validateNode(value, request.context.sourceSize);
+    if (!node || node.id !== ref.nodeId || node.spanStart !== ref.spanStart || node.spanEnd !== ref.spanEnd) {
+      throw new Error("The tool card source summary response was invalid.");
+    }
+    return node;
+  }
+
+  private async appendCardPayload(
+    label: string,
+    ref: SourceRef,
+    request: ToolCardRequest,
+    rows: ToolCardRow[],
+    knownNode?: NodeDto
+  ): Promise<string | null> {
+    const node = knownNode ?? await this.cardNode(ref, request);
+    if (node.kind === "string") {
+      const value = await this.cardStringValue(ref, node, request);
+      rows.push({ label, value: value.text, ref, mode: value.mode, truncated: value.truncated });
+      if (value.nestedRows) rows.push(...value.nestedRows);
+      return value.truncated ? null : value.text;
+    }
+    if (node.kind === "object" || node.kind === "array") {
+      const children = await this.cardChildren(ref, request);
+      rows.push({
+        label,
+        value: `${node.kind === "object" ? "Object" : "Array"} · ${node.childCount.toLocaleString()} ${node.kind === "object" ? "fields" : "items"}${children.hasMore ? " · first 32 shown" : ""}`,
+        ref,
+        mode: "structure",
+        truncated: children.hasMore
+      });
+      for (const child of children.nodes) {
+        if (label === "Result" && child.kind === "object") {
+          const textRow = await this.toolResultTextBlock(child, request);
+          if (textRow) {
+            rows.push(textRow);
+            continue;
+          }
+        }
+        rows.push({
+          label: `${label}.${child.label}`,
+          value: child.valuePreview ?? `${child.kind} Node ${child.id}`,
+          ref: { nodeId: child.id, spanStart: child.spanStart, spanEnd: child.spanEnd },
+          mode: child.kind === "object" || child.kind === "array" ? "structure" : "plain",
+          truncated: child.valueHasMore
+        });
+      }
+      return null;
+    }
+    rows.push({ label, value: node.valuePreview ?? `${node.kind} Node ${node.id}`, ref, mode: "plain", truncated: node.valueHasMore });
+    return node.valuePreview;
+  }
+
+  private async cardStringValue(ref: SourceRef, node: NodeDto, request: ToolCardRequest): Promise<ToolStringValue> {
+    let text = node.valuePreview ?? "";
+    let mode: "plain" | "code" = "plain";
+    let truncated = node.valueHasMore;
+    let nestedRows: ToolCardRow[] | undefined;
+    let readUnavailable = false;
+    try {
+      if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+      const metricsValue = await this.invokeRequest<unknown>("get_string_metrics", {
+        nodeId: ref.nodeId,
+        sessionRevision: request.context.sessionRevision,
+        scopeId: null
+      });
+      const metrics = validateInlineMetrics(metricsValue);
+      if (!metrics) throw new Error("The tool card string metrics response was invalid.");
+      if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+      const detectionValue = await this.invokeRequest<unknown>("get_string_detection", {
+        nodeId: ref.nodeId,
+        sessionRevision: request.context.sessionRevision,
+        scopeId: null
+      });
+      const detection = validateInlineDetection(detectionValue);
+      if (detection?.semanticType === "nestedJson" || detection?.semanticType === "code") mode = "code";
+      if (detection?.semanticType === "nestedJson") {
+        nestedRows = await this.nestedPreviewRow(ref, request);
+      }
+      if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+      if (metrics.decodedBytes === 0) {
+        text = "";
+        truncated = false;
+      } else if (request.textBudgetRemaining === 0) {
+        truncated = true;
+      } else {
+        const length = Math.min(TOOL_READ_BYTES, metrics.decodedBytes, request.textBudgetRemaining);
+        const value = await this.invokeRequest<unknown>("read_decoded_text", {
+          nodeId: ref.nodeId,
+          offset: 0,
+          length,
+          sessionRevision: request.context.sessionRevision,
+          scopeId: null
+        });
+        const chunk = validateInlineChunk(value, metrics.decodedBytes, length);
+        if (!chunk) throw new Error("The tool card decoded text response was invalid.");
+        text = chunk.text;
+        const readBytes = new TextEncoder().encode(chunk.text).byteLength;
+        request.textBudgetRemaining = Math.max(0, request.textBudgetRemaining - readBytes);
+        truncated = metrics.decodedBytes > length || chunk.hasMore;
+      }
+    } catch (error) {
+      if (isSessionError(error) || !this.isCurrentToolProjection(request)) throw error;
+      readUnavailable = true;
+    }
+    return { text, mode, truncated: truncated || readUnavailable, nestedRows };
+  }
+
+  private async nestedPreviewRow(ref: SourceRef, request: ToolCardRequest): Promise<ToolCardRow[] | undefined> {
+    if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+    const value = await this.invokeRequest<unknown>("preview_nested_json", {
+      nodeId: ref.nodeId,
+      maxDepth: 3,
+      sessionRevision: request.context.sessionRevision
+    });
+    if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+    const preview = validateNestedPreview(value, request.context.sessionRevision);
+    if (!preview) throw new Error("The nested JSON preview response was invalid.");
+    const rows: ToolCardRow[] = [{
+      label: "Nested JSON",
+      value: `${preview.root.kind === "object" ? "Object" : "Array"} · ${preview.root.childCount.toLocaleString()} fields/items${preview.hasMore ? " · first 32 shown" : ""}`,
+      ref: null,
+      mode: "structure",
+      truncated: preview.hasMore
+    }];
+    for (const child of preview.children) {
+      rows.push({
+        label: `  ${child.label}`,
+        value: child.valuePreview ?? `${child.kind} Node ${child.id}`,
+        ref: null,
+        mode: child.kind === "object" || child.kind === "array" ? "structure" : "plain",
+        truncated: child.valueHasMore
+      });
+    }
+    return rows;
+  }
+
+  private async cardChildren(ref: SourceRef, request: ToolCardRequest): Promise<CardChildren> {
+    if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+    const value = await this.invokeRequest<unknown>("get_children", {
+      nodeId: ref.nodeId,
+      cursor: 0,
+      limit: TOOL_CHILD_LIMIT,
+      sessionRevision: request.context.sessionRevision,
+      scopeId: null
+    });
+    if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+    const page = validateChildrenPage(value, 0, request.context.sourceSize);
+    if (!page) throw new Error("The tool card children response was invalid.");
+    const nodes = page.nodes.filter((node) => refWithin(nodeRef(node), ref.spanStart, ref.spanEnd));
+    if (nodes.length !== page.nodes.length) throw new Error("The tool card children escaped its source scope.");
+    return { nodes: nodes.slice(0, TOOL_CHILD_LIMIT), hasMore: page.hasMore || nodes.length > TOOL_CHILD_LIMIT };
+  }
+
+  private async cardErrorState(block: ConversationBlock, request: ToolCardRequest): Promise<"ok" | "error" | "missing" | "invalid" | "unloaded"> {
+    const probe = block.anthropicRefs?.block ?? block.message ?? block.source;
+    if (!probe) return "missing";
+    const children = await this.cardChildren(probe, request);
+    const marker = children.nodes.find((node) => node.label === "is_error");
+    if (!marker) return children.hasMore ? "unloaded" : "missing";
+    if (marker.kind === "false") return "ok";
+    if (marker.kind === "true") return "error";
+    return "invalid";
+  }
+
+  private renderToolCard(host: HTMLElement, index: number, state: ToolCardState): void {
+    host.replaceChildren();
+    if (state.status === "loading") {
+      host.append(element("p", "conversation-tool-card-placeholder", "Loading tool details…"));
+      return;
+    }
+    if (state.status === "unavailable") {
+      host.append(element("p", "conversation-tool-card-placeholder", state.reason || "Tool details unavailable; use Raw or Tree."));
+      return;
+    }
+    const heading = element("div", "conversation-tool-card-heading");
+    heading.append(element("strong", "", "Tool details"));
+    const block = this.page?.blocks[index];
+    if (block) heading.append(element("span", "conversation-tool-card-kind", block.category));
+    if (state.errorState === "ok") heading.append(element("span", "conversation-tool-card-status is-ok", "is_error: false"));
+    if (state.errorState === "error") heading.append(element("span", "conversation-tool-card-status is-error", "is_error: true"));
+    if (state.errorState === "missing") heading.append(element("span", "conversation-tool-card-status", "is_error: missing"));
+    if (state.errorState === "invalid") heading.append(element("span", "conversation-tool-card-status is-error", "is_error: invalid"));
+    if (state.errorState === "unloaded") heading.append(element("span", "conversation-tool-card-status", "is_error: unavailable · first 32 fields"));
+    host.append(heading);
+    if (state.callId) {
+      const related = this.loadedCallLabel(index, state.callId);
+      host.append(element("p", "conversation-tool-card-relation", related?.status === "confirmed"
+        ? `Related call confirmed in loaded page: ${related.label}`
+        : related?.status === "ambiguous"
+          ? `Related call is ambiguous among loaded calls: ${related.label}`
+          : "Related call not confirmed in the loaded page."));
+    }
+    const rows = element("div", "conversation-tool-card-rows");
+    this.clearToolCardRefs(index);
+    state.rows.forEach((row, rowIndex) => {
+      const rowElement = element("div", "conversation-tool-card-row");
+      rowElement.append(element("span", "conversation-tool-card-label", row.label));
+      const value = row.mode === "code" ? element("pre", "conversation-tool-card-value conversation-tool-card-code", row.value)
+        : element("span", "conversation-tool-card-value", row.value);
+      if (row.truncated) value.append(element("span", "conversation-tool-card-truncated", " · partial"));
+      rowElement.append(value);
+      if (row.ref) {
+        const refKey = `${index}:${rowIndex}`;
+        this.toolCardRefs.set(refKey, row.ref);
+        const actions = element("span", "conversation-tool-card-actions");
+        const raw = this.blockActionButton("Raw", "card-raw", index);
+        raw.dataset.conversationCardRef = refKey;
+        const tree = this.blockActionButton("Tree", "card-tree", index);
+        tree.dataset.conversationCardRef = refKey;
+        actions.append(raw, tree);
+        if (row.mode === "plain" || row.mode === "code") {
+          const content = this.blockActionButton("Open content", "card-content", index);
+          content.dataset.conversationCardRef = refKey;
+          actions.append(content);
+        }
+        rowElement.append(actions);
+      }
+      rows.append(rowElement);
+    });
+    host.append(rows);
+  }
+
+  private clearToolCardRefs(index: number): void {
+    const prefix = `${index}:`;
+    for (const key of this.toolCardRefs.keys()) {
+      if (key.startsWith(prefix)) this.toolCardRefs.delete(key);
+    }
+  }
+
+  private loadedCallLabel(resultIndex: number, callId: string): LoadedCallMatch | null {
+    const matches: string[] = [];
+    for (const [index, state] of this.toolCardStates) {
+      if (index === resultIndex || state.status !== "ready" || state.callId !== callId) continue;
+      const block = this.page?.blocks[index];
+      if (block && (block.category === "toolCall" || block.category === "toolUse")) matches.push(`block ${index + 1}`);
+    }
+    if (matches.length === 1) return { status: "confirmed", label: matches[0] };
+    if (matches.length > 1) return { status: "ambiguous", label: matches.join(", ") };
+    return null;
+  }
+
+  private async toolResultTextBlock(child: NodeDto, request: ToolCardRequest): Promise<ToolCardRow | null> {
+    const children = await this.cardChildren(nodeRef(child), request);
+    const typeNode = children.nodes.find((node) => node.label === "type");
+    if (!typeNode || typeNode.kind !== "string" || typeNode.valuePreview !== "text") return null;
+    const textNode = children.nodes.find((node) => node.label === "text" && node.kind === "string");
+    if (!textNode) return null;
+    const textRef = nodeRef(textNode);
+    const value = await this.cardStringValue(textRef, textNode, request);
+    return {
+      label: `Result.${child.label}.text`,
+      value: value.text,
+      ref: textRef,
+      mode: value.mode,
+      truncated: value.truncated
+    };
+  }
+
+  private refreshToolCardRelations(): void {
+    for (const [index, state] of this.toolCardStates) {
+      if (state.status !== "ready" || !state.callId || !this.windowList) continue;
+      const host = this.windowList.querySelector<HTMLElement>(`[data-conversation-block-index="${index}"] .conversation-tool-card`);
+      if (host) this.renderToolCard(host, index, state);
     }
   }
 
@@ -1371,6 +1849,15 @@ function isContentCategory(category: string): boolean {
     || category === "redactedThinking" || category === "toolResult";
 }
 
+function isToolBlock(block: ConversationBlock): boolean {
+  return block.category === "toolCall" || block.category === "toolUse" || block.category === "toolResult"
+    || block.category === "tool" && (block.openaiRefs !== null || block.anthropicRefs !== null);
+}
+
+function nodeRef(node: NodeDto): SourceRef {
+  return { nodeId: node.id, spanStart: node.spanStart, spanEnd: node.spanEnd };
+}
+
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text?: string): HTMLElementTagNameMap[K] {
   const value = document.createElement(tag);
   if (className) value.className = className;
@@ -1406,6 +1893,22 @@ function validateInlineDetection(value: unknown): StringDetection | null {
     || (semanticType !== "plainText" && semanticType !== "markdown" && semanticType !== "code"
       && semanticType !== "nestedJson" && semanticType !== "html")) return null;
   return { semanticType };
+}
+
+function validateNestedPreview(value: unknown, sessionRevision: number): { parsedBytes: number; root: NodeDto; children: NodeDto[]; hasMore: boolean } | null {
+  const object = record(value);
+  const parsedBytes = safeNumber(object?.parsedBytes);
+  const responseRevision = safeNumber(object?.sessionRevision);
+  const hasMore = object?.hasMore;
+  if (parsedBytes === null || parsedBytes === 0 || parsedBytes > 2 * 1024 * 1024
+    || responseRevision !== sessionRevision || typeof hasMore !== "boolean" || !Array.isArray(object?.children)) return null;
+  const root = validateNode(object?.root, parsedBytes);
+  if (!root || root.kind !== "object" && root.kind !== "array") return null;
+  if (object.children.length > TOOL_CHILD_LIMIT) return null;
+  const children = object.children.map((child) => validateNode(child, parsedBytes));
+  if (children.some((child): child is null => child === null)) return null;
+  if ((children as NodeDto[]).some((child) => !refWithin(nodeRef(child), root.spanStart, root.spanEnd))) return null;
+  return { parsedBytes, root, children: children as NodeDto[], hasMore };
 }
 
 function validateInlineChunk(value: unknown, totalBytes: number, requestedLength: number): { text: string; hasMore: boolean } | null {

@@ -163,6 +163,16 @@ pub struct NodePageDto {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct NestedPreviewDto {
+    pub parsed_bytes: usize,
+    pub root: NodeDto,
+    pub children: Vec<NodeDto>,
+    pub has_more: bool,
+    pub session_revision: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NestedScopeDto {
     pub scope_id: u64,
     pub parent_scope_id: Option<u64>,
@@ -622,6 +632,16 @@ pub fn read_decoded_text(
     state: State<'_, AppState>,
 ) -> Result<TextChunkDto, IpcError> {
     read_decoded_text_scoped_inner(&state, node_id, offset, length, scope_id, session_revision)
+}
+
+#[tauri::command]
+pub fn preview_nested_json(
+    node_id: usize,
+    max_depth: Option<u8>,
+    session_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<NestedPreviewDto, IpcError> {
+    preview_nested_json_inner(&state, node_id, max_depth, session_revision)
 }
 
 #[tauri::command(async)]
@@ -2569,6 +2589,105 @@ fn get_html_preview_scoped_inner(
             html: preview.html,
             reason: preview.reason.map(html_preview_reason_dto),
         })
+    })
+}
+
+fn preview_nested_json_inner(
+    state: &AppState,
+    node_id: usize,
+    max_depth: Option<u8>,
+    session_revision: u64,
+) -> Result<NestedPreviewDto, IpcError> {
+    if let Some(max_depth) = max_depth {
+        if !(1..=HARD_MAX_DEPTH).contains(&max_depth) {
+            return Err(invalid_request("maxDepth must be between 1 and 10"));
+        }
+    }
+    let guard = lock_session(state)?;
+    if guard.revision != session_revision {
+        return Err(stale_session());
+    }
+    let session = guard.session.as_ref().ok_or_else(no_session)?;
+    if !session.is_current() {
+        return Err(file_changed());
+    }
+
+    let decoded = match session {
+        OpenSession::Document(session) => {
+            let node = session
+                .node(node_id)
+                .map_err(session_error)?
+                .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+            if node.kind != JsonKind::String {
+                return Err(invalid_request("node does not contain decoded text"));
+            }
+            let length = session
+                .decoded_text_len(node_id)
+                .map_err(session_error)?
+                .ok_or_else(|| invalid_request("node does not contain decoded text"))?;
+            if length > MAX_INPUT_BYTES {
+                return Err(invalid_request(
+                    "nested JSON preview exceeds the 2 MiB limit",
+                ));
+            }
+            session
+                .decoded_text_limited(node_id, MAX_INPUT_BYTES)
+                .map_err(session_error)?
+                .ok_or_else(|| invalid_request("nested JSON preview is unavailable"))?
+                .into_owned()
+                .into_bytes()
+        }
+        OpenSession::Entry(session) => {
+            require_selected(session)?;
+            let node = session
+                .selected_node(node_id)
+                .map_err(session_error)?
+                .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+            if node.kind != JsonKind::String {
+                return Err(invalid_request("node does not contain decoded text"));
+            }
+            let length = session
+                .selected_decoded_text_len(node_id)
+                .map_err(session_error)?
+                .ok_or_else(|| invalid_request("node does not contain decoded text"))?;
+            if length > MAX_INPUT_BYTES {
+                return Err(invalid_request(
+                    "nested JSON preview exceeds the 2 MiB limit",
+                ));
+            }
+            session
+                .selected_decoded_text_limited(node_id, MAX_INPUT_BYTES)
+                .map_err(session_error)?
+                .ok_or_else(|| invalid_request("nested JSON preview is unavailable"))?
+                .into_owned()
+                .into_bytes()
+        }
+        OpenSession::RawDocument { .. } => {
+            return Err(invalid_request(
+                "command is unavailable for a raw-only document session",
+            ));
+        }
+    };
+
+    let parsed_bytes = decoded.len();
+    let tree = TreeDocument::from_bytes(decoded)
+        .map_err(|_| invalid_request("node is not parseable nested JSON"))?;
+    let root_projection = tree.root();
+    if !matches!(root_projection.kind, JsonKind::Object | JsonKind::Array) {
+        return Err(invalid_request("node is not parseable nested JSON"));
+    }
+    let page = tree
+        .children(root_projection.id, 0, 32)
+        .ok_or_else(|| invalid_request("nested JSON preview children are unavailable"))?;
+    if !session.is_current() {
+        return Err(file_changed());
+    }
+    Ok(NestedPreviewDto {
+        parsed_bytes,
+        root: node_dto(root_projection),
+        children: page.nodes.into_iter().map(node_dto).collect(),
+        has_more: page.has_more,
+        session_revision,
     })
 }
 
@@ -7444,6 +7563,152 @@ mod tests {
         assert!(!payload
             .windows(sentinel.len())
             .any(|window| window == sentinel.as_bytes()));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn nested_preview_is_bounded_and_does_not_mutate_existing_nested_scope() {
+        let path = temp_path("ipc-nested-preview-isolated");
+        fs::write(
+            &path,
+            br#"{"first":"{\"a\":\"x\",\"a\":\"y\"}","second":"{\"b\":[1,2]}"}"#,
+        )
+        .unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let root = summary.root.as_ref().unwrap().id;
+        let first = child_id(&state, None, root, "first", summary.session_revision);
+        let second = child_id(&state, None, root, "second", summary.session_revision);
+
+        let scope =
+            open_nested_json_inner(&state, None, first, None, summary.session_revision).unwrap();
+        let first_preview =
+            preview_nested_json_inner(&state, first, Some(3), summary.session_revision).unwrap();
+        let second_preview =
+            preview_nested_json_inner(&state, second, Some(3), summary.session_revision).unwrap();
+        assert!(first_preview.parsed_bytes < 2 * 1024 * 1024);
+        assert!(second_preview.parsed_bytes < 2 * 1024 * 1024);
+        assert_eq!(first_preview.root.kind, "object");
+        assert_eq!(second_preview.root.kind, "object");
+        assert_eq!(
+            first_preview
+                .children
+                .iter()
+                .map(|node| node.label.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "a#2"]
+        );
+        assert_eq!(second_preview.children[0].label, "b");
+        assert!(first_preview
+            .children
+            .iter()
+            .all(|node| node.span_end <= first_preview.parsed_bytes));
+        assert!(second_preview
+            .children
+            .iter()
+            .all(|node| node.span_end <= second_preview.parsed_bytes));
+
+        let scope_children = get_children_scoped_inner(
+            &state,
+            scope.root.id,
+            0,
+            10,
+            Some(scope.scope_id),
+            summary.session_revision,
+        )
+        .unwrap();
+        assert_eq!(scope_children.nodes[0].label, "a");
+        let scope_text = read_decoded_text_scoped_inner(
+            &state,
+            scope_children.nodes[0].id,
+            0,
+            10,
+            Some(scope.scope_id),
+            summary.session_revision,
+        )
+        .unwrap();
+        assert_eq!(scope_text.text, "x");
+        assert_eq!(scope_text.next_offset, None);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn nested_preview_rejects_invalid_over_limit_stale_and_changed_sources() {
+        let path = temp_path("ipc-nested-preview-guards");
+        let large = "x".repeat(2 * 1024 * 1024 + 1);
+        fs::write(
+            &path,
+            format!(
+                r#"{{"bad":"not-json","large":{}}}"#,
+                serde_json::to_string(&large).unwrap()
+            ),
+        )
+        .unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let root = summary.root.as_ref().unwrap().id;
+        let bad = child_id(&state, None, root, "bad", summary.session_revision);
+        let large_id = child_id(&state, None, root, "large", summary.session_revision);
+        let invalid =
+            preview_nested_json_inner(&state, bad, None, summary.session_revision).unwrap_err();
+        assert_eq!(invalid.code, "invalid_request");
+        assert!(invalid.message.contains("parseable"));
+        let over_limit =
+            preview_nested_json_inner(&state, large_id, None, summary.session_revision)
+                .unwrap_err();
+        assert_eq!(over_limit.code, "invalid_request");
+        assert!(over_limit.message.contains("2 MiB"));
+        assert_eq!(
+            preview_nested_json_inner(&state, bad, None, summary.session_revision - 1)
+                .unwrap_err()
+                .code,
+            "stale_session"
+        );
+
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+        let mut timestamp_changed = false;
+        for _ in 0..100 {
+            fs::write(&path, br#"{"bad":"changed"}"#).unwrap();
+            if fs::metadata(&path).unwrap().modified().unwrap() != before {
+                timestamp_changed = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(
+            timestamp_changed,
+            "filesystem did not expose modified timestamp change"
+        );
+        assert_eq!(
+            preview_nested_json_inner(&state, bad, None, summary.session_revision)
+                .unwrap_err()
+                .code,
+            "file_changed"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn nested_preview_supports_selected_entry_without_publishing_scope() {
+        let path = temp_jsonl_path("ipc-nested-preview-entry");
+        fs::write(
+            &path,
+            br#"{"payload":"{\"entry\":true}"}
+{"payload":"{\"second\":2}"}
+"#,
+        )
+        .unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let selected = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        let root = selected.root.as_ref().unwrap().id;
+        let payload = child_id(&state, None, root, "payload", selected.session_revision);
+        let preview =
+            preview_nested_json_inner(&state, payload, None, selected.session_revision).unwrap();
+        assert_eq!(preview.root.kind, "object");
+        assert_eq!(preview.children[0].label, "entry");
+        assert!(preview.session_revision == selected.session_revision);
         fs::remove_file(path).unwrap();
     }
 

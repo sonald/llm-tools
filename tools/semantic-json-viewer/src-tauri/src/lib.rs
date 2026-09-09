@@ -30,6 +30,7 @@ pub fn run() {
             ipc::read_selected_entry_window,
             ipc::read_raw_document_bytes,
             ipc::read_decoded_text,
+            ipc::preview_nested_json,
             ipc::copy_node,
             ipc::copy_current_bytes,
             ipc::search_current,

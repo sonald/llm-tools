@@ -249,6 +249,81 @@ check(typeof releaseInline==="function","deferred inline fixture did not reach i
 deferredView.setContext(null);releaseInline?.();await settle();await settle();
 check(deferredHost.hidden&&deferredHost.textContent==="","late inline response mutated a closed Conversation context");deferredHost.remove();
 
+const toolHost=document.createElement("div");document.body.append(toolHost);toolHost.style.height="420px";
+const toolRoot=node(1200,"array","messages",0,500000,8);
+const toolRef=(id,start=id*10,end=start+5)=>({nodeId:id,spanStart:start,spanEnd:end});
+const openRefs=(blockId,nameId,callId,argsId,textId=null,argsRef=null)=>({block:toolRef(blockId),text:textId?toolRef(textId):null,image:null,callId:toolRef(callId),function:null,name:toolRef(nameId),arguments:argsRef??toolRef(argsId)});
+const anthRefs=(blockId,id,name,input,toolUseId=null,content=null,blockRef=null,inputRef=null,contentRef=null)=>({block:blockRef??toolRef(blockId),text:null,thinking:null,data:null,id:toolRef(id),name:toolRef(name),input:inputRef??toolRef(input),toolUseId:toolUseId?toolRef(toolUseId):null,content:content?(contentRef??toolRef(content)):null});
+const toolBlock=(id,category,role="assistant",openaiRefs=null,anthropicRefs=null,messageId=1300)=>({kind:"source",messageNodeId:messageId,messageSpanStart:1000,messageSpanEnd:1600,sourceNodeId:id,sourceSpanStart:id*10,sourceSpanEnd:id*10+5,fieldNodeId:id,fieldSpanStart:id*10,fieldSpanEnd:id*10+5,category,role,roleSourceNodeId:null,roleSourceSpanStart:null,roleSourceSpanEnd:null,openaiRefs,anthropicRefs});
+const toolBlocks=[
+  toolBlock(2101,"toolCall","assistant",openRefs(2101,2102,2104,2103,null,toolRef(2103,21030,21100))),
+  toolBlock(2111,"toolCall","assistant",openRefs(2111,2112,2114,2113)),
+  toolBlock(2120,"toolResult","tool",openRefs(2120,2122,2121,2123,2120),null,1301),
+  toolBlock(2130,"toolUse","assistant",null,anthRefs(2130,2131,2132,2133,null,null,toolRef(2130,21300,21450),toolRef(2133,21330,21400)),1302),
+  toolBlock(2140,"toolResult","user",null,anthRefs(2140,2141,2142,2143,2141,2143,toolRef(2140,21400,21540),null,toolRef(2143,21430,21500)),1303),
+  toolBlock(2150,"toolResult","user",null,anthRefs(2150,2151,2152,2153,2151,2153,toolRef(2150,21500,21540),null),1304),
+  toolBlock(2160,"toolResult","user",null,anthRefs(2160,2161,2162,2163,2161,2163,toolRef(2160,21600,21640),null),1305),
+  toolBlock(2170,"toolCall","assistant",openRefs(2170,2172,2171,2173),null,1306)
+];
+const toolTexts=new Map([[2102,"read_file"],[2104,"call_abc"],[2112,"parse_json"],[2114,"call_parse"],[2121,"call_abc"],[2131,"toolu_1"],[2132,"read_file"],[2141,"toolu_1"],[2151,"toolu_missing"],[2161,"toolu_bad"],[2171,"call_big"],[2172,"big_tool"],[2232,"Actual result text body"],[2113,JSON.stringify({path:"src",recursive:true})],[2120,JSON.stringify({status:"ok",items:28})],[2153,"plain result"],[2163,"not-json"],[2173,JSON.stringify({huge:"X".repeat(20000)})]]);
+const toolSummaries=new Map();
+const addToolSummary=(id,kind,label,preview,childCount=0,start=id*10,end=start+5)=>toolSummaries.set(id,{...node(id,kind,label,start,end,childCount),valuePreview:preview,valueHasMore:typeof preview==="string"&&preview.length>256});
+addToolSummary(2102,"string","name","read_file");addToolSummary(2104,"string","id","call_abc");addToolSummary(2103,"object","arguments",null,3,21030,21100);
+addToolSummary(2112,"string","name","parse_json");addToolSummary(2114,"string","id","call_parse");addToolSummary(2113,"string","arguments",toolTexts.get(2113));
+addToolSummary(2121,"string","tool_call_id","call_abc");addToolSummary(2120,"string","content",toolTexts.get(2120));
+addToolSummary(2131,"string","id","toolu_1");addToolSummary(2132,"string","name","read_file");addToolSummary(2133,"object","input",null,2,21330,21400);addToolSummary(2130,"object","tool_use",null,3,21300,21450);
+addToolSummary(2141,"string","tool_use_id","toolu_1");addToolSummary(2143,"array","content",null,2,21430,21500);addToolSummary(2140,"object","tool_result",null,3,21400,21540);
+addToolSummary(2151,"string","tool_use_id","toolu_missing");addToolSummary(2153,"string","content",toolTexts.get(2153));addToolSummary(2150,"object","tool_result",null,2,21500,21540);
+addToolSummary(2161,"string","tool_use_id","toolu_bad");addToolSummary(2163,"string","content",toolTexts.get(2163));addToolSummary(2160,"object","tool_result",null,2,21600,21640);
+addToolSummary(2172,"string","name","big_tool");addToolSummary(2171,"string","id","call_big");addToolSummary(2173,"string","arguments",toolTexts.get(2173));
+const toolChild=(id,label,kind,preview,start,end)=>({...node(id,kind,label,start,end,0),valuePreview:preview,valueHasMore:false});
+const toolChildren=new Map([
+  [2103,{nodes:[toolChild(2201,"same","string","src",21040,21050),toolChild(2202,"same#2","string","src2",21051,21061),toolChild(2203,"mystery","object",null,21062,21090)],hasMore:false,nextCursor:null}],
+  [2133,{nodes:[toolChild(2211,"path","string","src",21340,21350),toolChild(2212,"recursive","true","true",21351,21355)],hasMore:false,nextCursor:null}],
+  [2143,{nodes:[toolChild(2221,"[0]","string","ok",21440,21448),toolChild(2222,"[1]","object",null,21449,21480)],hasMore:false,nextCursor:null}],
+  [2222,{nodes:[toolChild(2231,"type","string","text",21450,21455),toolChild(2232,"text","string","Actual result text body",21456,21480)],hasMore:false,nextCursor:null}],
+  [2130,{nodes:[toolChild(2231,"type","string","tool_use",21310,21320),toolChild(2232,"is_error","false","false",21321,21326)],hasMore:false,nextCursor:null}],
+  [2140,{nodes:[toolChild(2241,"type","string","tool_result",21410,21420),toolChild(2242,"is_error","false","false",21421,21426)],hasMore:false,nextCursor:null}],
+  [2150,{nodes:[toolChild(2251,"type","string","tool_result",21510,21520)],hasMore:false,nextCursor:null}],
+  [2160,{nodes:[toolChild(2261,"is_error","string","yes",21610,21615)],hasMore:false,nextCursor:null}]
+]);
+let deferToolLong=false;let releaseToolLong;
+const toolCalls=[];
+const toolInvoke=async(command,args)=>{
+  toolCalls.push({command,args});
+  if(command==="get_conversation_candidate")return {nodeId:1200,spanStart:0,spanEnd:500000,messageCount:8,kind:"generic",scopeRootId:1200,scopeRootSpanStart:0,scopeRootSpanEnd:500000,sessionRevision:21};
+  if(command==="get_conversation_blocks")return {blocks:toolBlocks,hasMore:false,nextCursor:null,wrapperRef:{scopeRootId:1200,scopeRootSpanStart:0,scopeRootSpanEnd:500000,candidateNodeId:1200,candidateSpanStart:0,candidateSpanEnd:500000}};
+  if(command==="get_node_summary")return toolSummaries.get(args.nodeId)??node(args.nodeId,"object","unknown",args.nodeId*10,args.nodeId*10+5,0);
+  if(command==="preview_nested_json")return {parsedBytes:50,root:node(7700,"object","$",0,50,1),children:[toolChild(7701,"nested","string","value",5,15)],hasMore:false,sessionRevision:21};
+  if(command==="get_children"&&toolChildren.has(args.nodeId))return toolChildren.get(args.nodeId);
+  if(command==="get_children")return {nodes:[],hasMore:false,nextCursor:null};
+  const textValue=toolTexts.get(args.nodeId);
+  if(command==="get_string_metrics"&&textValue){const bytes=new TextEncoder().encode(textValue).byteLength;return {decodedBytes:bytes,characterCount:textValue.length,lineCount:1};}
+  if(command==="get_string_detection"&&textValue)return {semanticType:textValue.startsWith("{")?"nestedJson":"plainText",detectionSource:"contentDetected",plainReason:textValue.startsWith("{")?null:"short"};
+  if(command==="read_decoded_text"&&args.nodeId===2173&&deferToolLong)return new Promise((resolve)=>{releaseToolLong=()=>resolve({start:0,text:toolTexts.get(2173).slice(0,args.length),hasMore:true,nextOffset:args.length});});
+  if(command==="read_decoded_text"&&textValue){const partial=new TextEncoder().encode(textValue).byteLength>args.length;return {start:0,text:partial?textValue.slice(0,args.length):textValue,hasMore:partial,nextOffset:partial?args.length:null};}
+  throw new Error("unexpected tool command "+command);
+};
+const toolRaw=[];const toolTree=[];const toolContent=[];
+const toolView=new ConversationView({panel:toolHost,invoke:toolInvoke,onError:(error)=>{throw error;},onRaw:(target)=>toolRaw.push(target),onTree:(target)=>toolTree.push(target),onContent:(target)=>toolContent.push(target)});
+toolView.setContext({mode:"document",sessionRevision:21,sourceSize:500000,scopeRoot:toolRoot,scopeLabel:"tool fixture"});await settle();await settle();await settle();await settle();
+check(toolHost.querySelectorAll(".conversation-tool-card").length>0,"tool fixture did not render a Tool card");
+check(toolHost.querySelector('[data-conversation-block-index="2"] .conversation-block-summary')===null,"loaded ToolResult card kept the generic viewport summary placeholder");
+check(toolHost.textContent.includes("read_file")&&toolHost.textContent.includes("call_abc")&&toolHost.textContent.includes("same#2")&&toolHost.textContent.includes("mystery"),"OpenAI object arguments did not show actual name/id and duplicate/unknown fields");
+check(toolHost.textContent.includes("Nested JSON")&&toolCalls.some((call)=>call.command==="preview_nested_json")&&!toolCalls.some((call)=>call.command==="open_nested_json"||call.command==="close_nested_scope"),"string arguments did not use the isolated bounded preview command");
+const cardRaw=toolHost.querySelector('[data-conversation-action="card-raw"]');check(cardRaw!==null, "Tool card did not expose a precise Raw source action");cardRaw.click();check(toolRaw.length>0&&toolRaw.at(-1).ref.nodeId===2102,"Tool card Raw action did not preserve the exact source NodeId");
+const toolViewport=toolHost.querySelector(".conversation-block-viewport");toolViewport.style.height="220px";deferToolLong=true;toolViewport.scrollTop=Math.max(0,toolViewport.scrollHeight-toolViewport.clientHeight);toolViewport.dispatchEvent(new Event("scroll"));await settle();await settle();await settle();await settle();
+check(toolHost.textContent.includes("toolu_1")&&toolHost.textContent.includes("Actual result text body")&&toolHost.textContent.includes("is_error: false")&&toolHost.textContent.includes("is_error: missing")&&toolHost.textContent.includes("is_error: invalid")&&toolHost.textContent.includes("not-json"),"Anthropic ToolUse/ToolResult cards did not distinguish ids, text blocks, error states, or parse-failure text");
+const loadedResultBlock=toolHost.querySelector('[data-conversation-block-index="2"]');loadedResultBlock?.scrollIntoView({block:"center"});toolViewport.dispatchEvent(new Event("scroll"));await settle();await settle();
+check(toolHost.querySelector('[data-conversation-block-index="2"]')?.textContent?.includes("Related call confirmed in loaded page"),"Tool result association was not confirmed from a loaded call: "+toolHost.querySelector('[data-conversation-block-index="2"]')?.textContent);
+toolViewport.scrollTop=Math.max(0,toolViewport.scrollHeight-toolViewport.clientHeight);toolViewport.dispatchEvent(new Event("scroll"));await settle();await settle();
+check(typeof releaseToolLong==="function"&&!toolHost.querySelector(".conversation-tool-card-truncated"),"long Tool card did not pause before its deferred read");
+toolHost.hidden=true;releaseToolLong?.();await settle();await settle();check(!toolHost.textContent.includes("Showing the first"),"hidden Tool card applied a late deferred response");
+deferToolLong=false;toolHost.hidden=false;toolView.onSemanticVisible();await settle();await settle();await settle();
+const toolReadBytes=toolCalls.filter((call)=>call.command==="read_decoded_text").reduce((total,call)=>total+Number(call.args.length||0),0);
+check(toolReadBytes<=256*1024,"Tool card decoded text exceeded the 256 KiB per-card budget: "+toolReadBytes);
+check(toolHost.querySelector(".conversation-tool-card-truncated")!==null&&toolHost.textContent.includes("Tool details"),"Tool cards did not resume after a hidden panel");toolHost.remove();
+
 const possibleHost=document.createElement("div");document.body.append(possibleHost);possible=true;
 const possibleView=new ConversationView({panel:possibleHost,invoke,onError:(error)=>{throw error;},onRaw:()=>{},onTree:()=>{},onContent:()=>{}});
 possibleView.setContext({mode:"document",sessionRevision:7,sourceSize:1000,scopeRoot:node(55,"array","messages",0,1000,1),scopeLabel:"Possible scope"});await settle();await settle();
