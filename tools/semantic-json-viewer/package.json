@@ -11,6 +11,7 @@
     "test:parsed-search-ui": "node scripts/test-parsed-search-ui.mjs",
     "test:rendered-search-ui": "node scripts/test-rendered-search-ui.mjs",
     "test:html-rendered-search-ui": "node scripts/test-html-rendered-search-ui.mjs",
+    "test:string-metrics-ui": "node scripts/test-string-metrics-ui.mjs",
     "test:copy-ui": "node scripts/test-copy-ui.mjs",
     "tauri": "tauri"
   },

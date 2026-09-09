@@ -106,6 +106,7 @@ const commonSource=${JSON.stringify(commonSource)};
 const nl=String.fromCharCode(10);
 let assertions=0;
 const check=(condition,message)=>{assertions+=1;if(!condition)throw new Error(message);};
+const businessCommands=(calls)=>calls.filter((call)=>call.command!=="get_string_metrics").map((call)=>call.command).join("→");
 const allowedTags=new Set(["h1","h2","h3","h4","h5","h6","p","ul","ol","li","blockquote","table","thead","tbody","tr","th","td","strong","em","code","pre","br","hr","span"]);
 const allowedClasses=new Set(["safe-markdown-link","safe-markdown-del","safe-markdown-align-left","safe-markdown-align-center","safe-markdown-align-right"]);
 const allowedCodeClasses=new Set(["sjv-code","sjv-code-source","sjv-code-gutter","sjv-code-highlighted","sjv-code-plain","sjv-token-keyword","sjv-token-string","sjv-token-comment","sjv-token-number","sjv-token-operator","sjv-token-function","sjv-token-class-name","sjv-token-char","sjv-token-boolean","sjv-token-punctuation","sjv-token-property","sjv-token-tag","sjv-token-attr-name","sjv-token-attr-value","sjv-token-regex","sjv-token-builtin","sjv-token-constant","sjv-token-symbol","sjv-token-inserted","sjv-token-deleted","sjv-token-important","sjv-token-bold","sjv-token-italic","sjv-token-variable","sjv-token-namespace","sjv-token-parameter","sjv-token-interpolation","sjv-token-directive","sjv-token-decorator","sjv-token-annotation","sjv-token-selector","sjv-token-plain-text","sjv-token-generic"]);
@@ -1122,6 +1123,7 @@ let failNestedChildClose=true;
 let failNestedRootCleanup=true;
 const nestedInvoke=async(command,args)=>{
   nestedCalls.push({command,args});
+  if(command==="get_string_metrics") return {decodedBytes:nestedBytes,characterCount:nestedSource.length,lineCount:1};
   if(command==="get_string_detection") return {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
   if(command==="open_nested_json"){
     if(args.parentScopeId===null) return {scopeId:1,parentScopeId:null,sourceNodeId:7,root:nestedRoot,depth:1,maxDepth:5,parsedBytes:nestedBytes,cumulativeBytes:nestedBytes,sessionRevision:9};
@@ -1145,8 +1147,10 @@ const nestedViewer=new ContentViewer({elements:nestedParts.elements,invoke:neste
 const nestedTarget={revision:9,nodeId:7,spanStart:100,spanEnd:100+nestedBytes,scopeId:null,scopeLabel:"Document",pathSegments:["$","payload"],pathTruncated:false};
 await nestedViewer.open(nestedTarget,nestedParts.elements.close);
 await settle();
-check(nestedCalls.map((call)=>call.command).join("→")==="get_string_detection→open_nested_json","Nested initial calls were not exactly detection→open without a read");
-check(nestedCalls[1]?.command==="open_nested_json"&&nestedCalls[1].args.parentScopeId===null&&nestedCalls[1].args.maxDepth===null,"Nested root call did not carry null parent/maxDepth");
+check(businessCommands(nestedCalls)==="get_string_detection→open_nested_json","Nested initial business calls were not detection→open without a read");
+check(nestedCalls.filter((call)=>call.command==="get_string_metrics").length===1&&nestedCalls.find((call)=>call.command==="get_string_metrics")?.args.nodeId===7&&nestedCalls.find((call)=>call.command==="get_string_metrics")?.args.scopeId===null&&nestedCalls.find((call)=>call.command==="get_string_metrics")?.args.sessionRevision===9,"Nested initial metrics request did not bind the current string identity");
+const nestedRootCall=nestedCalls.find((call)=>call.command==="open_nested_json");
+check(nestedRootCall?.args.parentScopeId===null&&nestedRootCall.args.maxDepth===null,"Nested root call did not carry null parent/maxDepth");
 check(nestedParts.elements.close===document.activeElement,"Nested initial focus did not remain on Close");
 check(nestedParts.elements.nested.back.hidden,"Nested root Back should be hidden");
 check(nestedParts.elements.nested.parsedTab.getAttribute("aria-selected")==="true","Nested root did not default to Parsed");
@@ -1286,7 +1290,7 @@ const whitespaceViewer=new ContentViewer({elements:whitespaceParts.elements,invo
 }});
 await whitespaceViewer.open(whitespaceTarget,whitespaceParts.elements.close);
 await settle();
-check(whitespaceCalls.map((call)=>call.command).join("→")==="get_string_detection→open_nested_json"&&whitespaceParts.elements.alert.hidden,"Whitespace-padded nested root was not accepted");
+check(businessCommands(whitespaceCalls)==="get_string_detection→open_nested_json"&&whitespaceParts.elements.alert.hidden,"Whitespace-padded nested root was not accepted");
 check(whitespaceParts.elements.nested.parsedTree.querySelector('[data-node-id="20"]')!==null,"Whitespace-padded nested root was not shown");
 whitespaceViewer.close();
 await settle();
@@ -1635,7 +1639,7 @@ const htmlParts=makeHtmlViewer();
 const htmlViewer=new ContentViewer({elements:htmlParts.elements,invoke:htmlInvoke});
 await htmlViewer.open(htmlTarget,htmlParts.elements.close);
 await settle();
-check(htmlCalls.map((call)=>call.command).join("→")==="get_string_detection→get_html_preview","HTML initial IPC sequence changed");
+check(businessCommands(htmlCalls)==="get_string_detection→get_html_preview","HTML initial IPC sequence changed");
 check(htmlCalls.filter((call)=>call.command==="read_decoded_text").length===0,"successful HTML Preview read decoded source eagerly");
 check(htmlParts.elements.html.previewTab.getAttribute("aria-selected")==="true"&&!htmlParts.elements.html.sourceTab.disabled,"HTML Preview did not default active");
 const expectedCsp="default-src 'none'; script-src 'none'; connect-src 'none'; img-src 'none'; media-src 'none'; font-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; style-src 'unsafe-inline';";
@@ -1775,7 +1779,7 @@ for(const [caseId,expectedNote] of limitCases){
   check(parts.elements.html.previewTab.disabled,"HTML "+caseId+" left Preview bypass enabled");
   check(parts.elements.rendererNote.textContent===expectedNote,"HTML "+caseId+" note changed");
   check(parts.elements.content.textContent==="<p>source fallback</p>","HTML "+caseId+" lost Source text");
-  check(calls.map((call)=>call.command).join("→")==="get_string_detection→get_html_preview→read_decoded_text","HTML "+caseId+" IPC sequence changed");
+  check(businessCommands(calls)==="get_string_detection→get_html_preview→read_decoded_text","HTML "+caseId+" IPC sequence changed");
   viewer.close();
   await settle();
   parts.dialog.remove();
@@ -1801,11 +1805,12 @@ const unicodeTarget={revision:12,nodeId:44,spanStart:700,spanEnd:700+new TextEnc
 await unicodeViewer.open(unicodeTarget,unicodeParts.elements.close);
 await settle();
 check(new TextEncoder().encode(unicodePage0).byteLength===unicodePageBytes&&new TextEncoder().encode(unicodePage1).byteLength===unicodePageBytes,"Unicode page fixture is not exactly 128 KiB per page");
-check(unicodeCalls[2]?.command==="read_decoded_text"&&unicodeCalls[2].args.offset===0&&unicodeCalls[2].args.length===unicodePageBytes,"Unicode Source did not request page 0 with byte offsets");
+const unicodeReads=()=>unicodeCalls.filter((call)=>call.command==="read_decoded_text");
+check(unicodeReads()[0]?.args.offset===0&&unicodeReads()[0].args.length===unicodePageBytes,"Unicode Source did not request page 0 with byte offsets");
 check(unicodeParts.elements.content.textContent===unicodePage0&&!unicodeParts.elements.content.textContent.includes("�"),"Unicode page 0 was truncated or replaced");
 unicodeParts.elements.next.click();
 await settle();
-check(unicodeCalls[3]?.command==="read_decoded_text"&&unicodeCalls[3].args.offset===unicodePageBytes&&unicodeCalls[3].args.length===unicodePageBytes,"Unicode Source did not request page 1 with the exact byte offset");
+check(unicodeReads()[1]?.args.offset===unicodePageBytes&&unicodeReads()[1].args.length===unicodePageBytes,"Unicode Source did not request page 1 with the exact byte offset");
 check(unicodeParts.elements.content.textContent===unicodePage1&&!unicodeParts.elements.content.textContent.includes("�"),"Unicode page 1 was truncated or replaced");
 check(unicodePage0+unicodePage1===unicodeSource,"Unicode paging fixture has an overlap or omission");
 const unicodeCallsAfterNext=unicodeCalls.length;
@@ -1836,7 +1841,7 @@ for(const [caseId,dto] of invalidHtmlDtos){
   await settle();
   check(parts.elements.html.sourceTab.getAttribute("aria-selected")==="true"&&parts.elements.html.previewPanel.hidden&&parts.elements.html.previewTab.disabled,"HTML "+caseId+" DTO did not force Source fallback");
   check(parts.elements.content.textContent==="invalid DTO source fallback"&&parts.elements.rendererNote.textContent==="Semantic rendering failed. Showing plain text instead.","HTML "+caseId+" DTO lost the fallback source or note");
-  check(calls.map((call)=>call.command).join("→")==="get_string_detection→get_html_preview→read_decoded_text","HTML "+caseId+" DTO IPC sequence changed");
+  check(businessCommands(calls)==="get_string_detection→get_html_preview→read_decoded_text","HTML "+caseId+" DTO IPC sequence changed");
   viewer.close();
   await settle();
   parts.dialog.remove();
@@ -1856,7 +1861,7 @@ await ordinaryFailureViewer.open({...htmlTarget,nodeId:75},ordinaryFailureParts.
 await settle();
 check(ordinaryFailureParts.elements.html.sourceTab.getAttribute("aria-selected")==="true"&&ordinaryFailureParts.elements.html.previewPanel.hidden,"ordinary get_html_preview failure did not fall back to Source");
 check(ordinaryFailureParts.elements.content.textContent==="ordinary failure source"&&ordinaryFailureParts.elements.rendererNote.textContent==="Semantic rendering failed. Showing plain text instead.","ordinary HTML preview failure lost Source fallback");
-check(ordinaryFailureSessionError===undefined&&ordinaryFailureCalls.map((call)=>call.command).join("→")==="get_string_detection→get_html_preview→read_decoded_text","ordinary HTML preview failure was misclassified as a session failure");
+check(ordinaryFailureSessionError===undefined&&businessCommands(ordinaryFailureCalls)==="get_string_detection→get_html_preview→read_decoded_text","ordinary HTML preview failure was misclassified as a session failure");
 ordinaryFailureViewer.close();
 await settle();
 ordinaryFailureParts.dialog.remove();
@@ -1877,7 +1882,7 @@ check(sourceChangedParts.elements.html.previewFrame.srcdoc.includes("preview bef
 sourceChangedParts.elements.html.sourceTab.click();
 await settle();
 check(sourceChangedSessionError?.code==="file_changed"&&!sourceChangedViewer.isOpen&&sourceChangedParts.elements.html.previewFrame.srcdoc==="","HTML Source file_changed did not clear srcdoc and invalidate the session");
-check(sourceChangedCalls.map((call)=>call.command).join("→")==="get_string_detection→get_html_preview→read_decoded_text","HTML Source file_changed IPC sequence changed");
+check(businessCommands(sourceChangedCalls)==="get_string_detection→get_html_preview→read_decoded_text","HTML Source file_changed IPC sequence changed");
 sourceChangedParts.dialog.remove();
 
 const cachePageBytes=128*1024;

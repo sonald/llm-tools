@@ -135,6 +135,33 @@ function createNestedCopyElements(): { elements: TreeCopyElements; container: HT
   };
 }
 
+function createStringMetricsElements(anchor: HTMLElement): StringMetricsElements | null {
+  const host = anchor.closest<HTMLElement>(".content-viewer-meta") ?? anchor.parentElement;
+  if (!host) return null;
+  const container = document.createElement("div");
+  container.className = "content-viewer-string-metrics";
+  container.setAttribute("aria-label", "Decoded string metrics");
+  const dl = document.createElement("dl");
+  const make = (key: string, label: string, title: string): HTMLElement => {
+    const row = document.createElement("div");
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.dataset.metric = key;
+    dd.textContent = "—";
+    dd.title = title;
+    row.append(dt, dd);
+    dl.append(row);
+    return dd;
+  };
+  const bytes = make("decoded-bytes", "Decoded bytes", "Complete decoded string size in UTF-8 bytes.");
+  const characters = make("characters", "Unicode characters", "Unicode scalar values, not UTF-16 code units.");
+  const lines = make("lines", "Lines", "Empty string is one line; CRLF is one break; a terminal line break adds a trailing empty line.");
+  container.append(dl);
+  host.append(container);
+  return { container, bytes, characters, lines };
+}
+
 type StringDetection = {
   semanticType: "plainText" | "markdown" | "nestedJson" | "code" | "html";
   detectionSource: "contentDetected";
@@ -211,6 +238,19 @@ type ParsedSearchPeek = {
   truncated: boolean;
 };
 
+type StringMetricsElements = {
+  container: HTMLElement;
+  bytes: HTMLElement;
+  characters: HTMLElement;
+  lines: HTMLElement;
+};
+
+type StringMetrics = {
+  decodedBytes: number;
+  characterCount: number;
+  lineCount: number;
+};
+
 const TEXT_CHUNK_BYTES = 128 * 1024;
 const TEXT_PAGE_CACHE_BYTES = 32 * 1024 * 1024;
 const MARKDOWN_AUTO_RENDER_LIMIT_BYTES = 2 * 1024 * 1024;
@@ -255,6 +295,7 @@ export class ContentViewer {
   private readonly sourceSearch: SearchView | null;
   private readonly renderedSearch: RenderedSearch | null;
   private readonly parsedSearchPeekElements: ParsedSearchPeekElements | null;
+  private readonly stringMetricsElements: StringMetricsElements | null;
   private readonly renderAs: HTMLSelectElement | null;
   private readonly markdownAnyway: HTMLButtonElement | null;
   private readonly copyRaw: HTMLButtonElement;
@@ -296,6 +337,10 @@ export class ContentViewer {
   private copyBusy = false;
   private parsedSearchPeek: ParsedSearchPeek | null = null;
   private parsedSearchPeekBytes = 0;
+  private metricsKey: string | null = null;
+  private metricsEpoch = 0;
+  private metricsState: "hidden" | "loading" | "ready" | "unavailable" = "hidden";
+  private metrics: StringMetrics | null = null;
 
   constructor(options: ContentViewerOptions) {
     this.elements = options.elements;
@@ -324,6 +369,7 @@ export class ContentViewer {
       })
       : null;
     this.parsedSearchPeekElements = this.nestedElements?.parsedSearchPeek ?? null;
+    this.stringMetricsElements = createStringMetricsElements(this.elements.scope);
     this.renderedSearch = options.elements.search
       ? new RenderedSearch({
         ...options.elements.search,
@@ -406,6 +452,8 @@ export class ContentViewer {
     this.overrideRevision = target.revision;
     this.releaseNestedScopes();
     this.clearHtmlPreviewFrame();
+    this.metricsKey = null;
+    this.metricsEpoch += 1;
     this.generation += 1;
     this.sourceRevealEpoch += 1;
     this.clearParsedSearchPeek();
@@ -2777,6 +2825,7 @@ export class ContentViewer {
   private renderMetadata(): void {
     const target = this.target;
     const detection = this.detection;
+    this.ensureStringMetrics(target);
     if (!target) {
       this.elements.title.textContent = "Content Viewer";
       this.elements.scope.textContent = "—";
@@ -2870,6 +2919,67 @@ export class ContentViewer {
     this.elements.rendererNote.textContent = override && note ? `${override}\n${note}` : override || note;
     this.syncRenderAsSelect();
     this.syncSourceSearch();
+  }
+
+  private ensureStringMetrics(target: ContentTarget | null): void {
+    if (!target) {
+      this.metricsKey = null;
+      this.metricsEpoch += 1;
+      this.metrics = null;
+      this.metricsState = "hidden";
+      this.renderStringMetrics();
+      return;
+    }
+    const key = `${target.revision}:${target.scopeId ?? "root"}:${target.nodeId}:${target.spanStart}:${target.spanEnd}`;
+    if (this.metricsKey === key) {
+      this.renderStringMetrics();
+      return;
+    }
+    this.metricsKey = key;
+    const epoch = ++this.metricsEpoch;
+    const targetIdentity = cloneTarget(target);
+    this.metrics = null;
+    this.metricsState = "loading";
+    this.renderStringMetrics();
+    void this.invokeRequest<unknown>("get_string_metrics", {
+      nodeId: target.nodeId,
+      scopeId: target.scopeId,
+      sessionRevision: target.revision
+    }).then((value) => {
+      if (epoch !== this.metricsEpoch || !this.isCurrentMetricsTarget(targetIdentity)) return;
+      const metrics = validateStringMetrics(value);
+      if (!metrics) throw new Error("The string metrics response was invalid.");
+      this.metrics = metrics;
+      this.metricsState = "ready";
+      this.renderStringMetrics();
+    }).catch((error) => {
+      if (epoch !== this.metricsEpoch || !this.isCurrentMetricsTarget(targetIdentity)) return;
+      if (isGlobalError(error)) {
+        this.handleFailure(error);
+        return;
+      }
+      this.metrics = null;
+      this.metricsState = "unavailable";
+      this.renderStringMetrics();
+    });
+  }
+
+  private renderStringMetrics(): void {
+    const elements = this.stringMetricsElements;
+    if (!elements) return;
+    elements.container.hidden = this.metricsState === "hidden";
+    const value = this.metricsState === "ready" && this.metrics ? this.metrics : null;
+    elements.bytes.textContent = value ? String(value.decodedBytes) : this.metricsState === "loading" ? "Loading…" : this.metricsState === "unavailable" ? "Unavailable" : "—";
+    elements.characters.textContent = value ? String(value.characterCount) : this.metricsState === "loading" ? "Loading…" : this.metricsState === "unavailable" ? "Unavailable" : "—";
+    elements.lines.textContent = value ? String(value.lineCount) : this.metricsState === "loading" ? "Loading…" : this.metricsState === "unavailable" ? "Unavailable" : "—";
+  }
+
+  private isCurrentMetricsTarget(target: ContentTarget): boolean {
+    return this.target?.revision === target.revision
+      && this.target.nodeId === target.nodeId
+      && this.target.scopeId === target.scopeId
+      && this.target.spanStart === target.spanStart
+      && this.target.spanEnd === target.spanEnd;
   }
 
   private renderPaging(): void {
@@ -3056,6 +3166,17 @@ function validateDetection(value: unknown): StringDetection | undefined {
     return isPlainReason(plainReason) ? { semanticType, detectionSource, plainReason } : undefined;
   }
   return plainReason === null ? { semanticType, detectionSource, plainReason } : undefined;
+}
+
+function validateStringMetrics(value: unknown): StringMetrics | undefined {
+  if (!isRecord(value)) return undefined;
+  const keys = Object.keys(value);
+  if (keys.length !== 3 || !keys.every((key) => key === "decodedBytes" || key === "characterCount" || key === "lineCount")) return undefined;
+  const decodedBytes = safeOffset(value.decodedBytes);
+  const characterCount = safeOffset(value.characterCount);
+  const lineCount = safeOffset(value.lineCount);
+  if (decodedBytes === undefined || characterCount === undefined || lineCount === undefined || lineCount < 1) return undefined;
+  return { decodedBytes, characterCount, lineCount };
 }
 
 function validateHtmlPreview(value: unknown): HtmlPreviewResult | undefined {
