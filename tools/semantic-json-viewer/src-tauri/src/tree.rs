@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::str;
 
 use crate::conversation::{
@@ -5,10 +6,11 @@ use crate::conversation::{
     GenericConversationPage,
 };
 use crate::json::{
-    parse_json_owned, ChildLocator, JsonKind, JsonNode, ParseError, ParsedJson, SourceSpan,
+    parse_json_owned, ChildLocator, DecodedString, JsonKind, JsonNode, ParseError, ParsedJson,
+    SourceSpan,
 };
 use crate::search::{self, SearchError, SearchPage, SearchRequest};
-use crate::semantic_detection::{detect, Detection, NestedBudget};
+use crate::semantic_detection::{detect, Detection, NestedBudget, PlainReason, MAX_INPUT_BYTES};
 
 const MAX_LABEL_OR_VALUE_CHARS: usize = 256;
 const MAX_PAGE_SIZE: usize = 200;
@@ -79,29 +81,50 @@ impl TreeDocument {
         if node.kind != JsonKind::String {
             return None;
         }
-        let decoded = node.decoded.as_deref()?;
-        chunk_text(decoded, offset, requested_len)
+        let decoded = self.parsed.decoded_string_at(node_id)?;
+        chunk_decoded_text(decoded, offset, requested_len)
     }
 
     pub fn detect_string(&self, node_id: usize) -> Option<Detection> {
         self.detect_string_with_budget(node_id, NestedBudget::default())
     }
 
-    pub fn decoded_text(&self, node_id: usize) -> Option<&str> {
+    pub fn decoded_text(&self, node_id: usize) -> Option<Cow<'_, str>> {
         let node = self.parsed.node_at(node_id)?;
         if node.kind != JsonKind::String {
             return None;
         }
-        node.decoded.as_deref()
+        self.parsed
+            .decoded_string_at(node_id)
+            .map(DecodedString::to_cow)
+    }
+
+    pub fn decoded_text_limited(&self, node_id: usize, max_bytes: usize) -> Option<Cow<'_, str>> {
+        let node = self.parsed.node_at(node_id)?;
+        if node.kind != JsonKind::String {
+            return None;
+        }
+        self.parsed
+            .decoded_string_at(node_id)
+            .and_then(|decoded| decoded.to_cow_limit(max_bytes))
+    }
+
+    pub fn decoded_text_len(&self, node_id: usize) -> Option<usize> {
+        self.parsed
+            .decoded_string_at(node_id)
+            .map(DecodedString::decoded_len)
     }
 
     pub fn string_metrics(&self, node_id: usize) -> Option<StringMetrics> {
-        let text = self.decoded_text(node_id)?;
+        let decoded = self.parsed.decoded_string_at(node_id)?;
         let mut character_count = 0usize;
         let mut line_count = 1usize;
         let mut previous_was_cr = false;
-        for character in text.chars() {
+        let mut decoded_bytes = 0usize;
+        for scalar in decoded.iter() {
+            let character = scalar.value;
             character_count += 1;
+            decoded_bytes = scalar.end;
             match character {
                 '\r' => {
                     line_count += 1;
@@ -117,7 +140,7 @@ impl TreeDocument {
             }
         }
         Some(StringMetrics {
-            decoded_bytes: text.len(),
+            decoded_bytes,
             character_count,
             line_count,
         })
@@ -178,12 +201,16 @@ impl TreeDocument {
         if node.kind != JsonKind::String {
             return None;
         }
-        let decoded = node.decoded.as_deref()?;
+        let decoded = self.parsed.decoded_string_at(node_id)?;
+        let decoded = match decoded.to_cow_limit(MAX_INPUT_BYTES) {
+            Some(decoded) => decoded,
+            None => return Some(Detection::PlainText(PlainReason::SizeLimit)),
+        };
         let key = match &node.locator {
             ChildLocator::ObjectKey { key, .. } => Some(key.as_str()),
             ChildLocator::Root | ChildLocator::ArrayIndex(_) => None,
         };
-        Some(detect(decoded, key, budget))
+        Some(detect(decoded.as_ref(), key, budget))
     }
 
     pub fn search(&self, request: SearchRequest) -> Result<SearchPage, SearchError> {
@@ -236,20 +263,22 @@ impl TreeDocument {
     fn projection(&self, id: usize, node: &JsonNode) -> NodeProjection {
         let (label, label_has_more) = node_label(&node.locator);
 
-        let value = match node.kind {
-            JsonKind::String => node.decoded.as_deref(),
-            JsonKind::Number | JsonKind::True | JsonKind::False | JsonKind::Null => Some(
-                str::from_utf8(&self.parsed.source()[node.span.start..node.span.end])
-                    .expect("JSON source is valid UTF-8"),
-            ),
-            JsonKind::Object | JsonKind::Array => None,
-        };
-        let (value_preview, value_has_more) = match value {
-            Some(value) => {
+        let (value_preview, value_has_more) = match node.kind {
+            JsonKind::String => self
+                .parsed
+                .decoded_string_at(id)
+                .map(|decoded| {
+                    let (preview, has_more) = decoded.prefix_chars(MAX_LABEL_OR_VALUE_CHARS);
+                    (Some(preview), has_more)
+                })
+                .unwrap_or((None, false)),
+            JsonKind::Number | JsonKind::True | JsonKind::False | JsonKind::Null => {
+                let value = str::from_utf8(&self.parsed.source()[node.span.start..node.span.end])
+                    .expect("JSON source is valid UTF-8");
                 let (preview, has_more) = truncate_chars(value, MAX_LABEL_OR_VALUE_CHARS);
                 (Some(preview), has_more)
             }
-            None => (None, false),
+            JsonKind::Object | JsonKind::Array => (None, false),
         };
 
         NodeProjection {
@@ -384,6 +413,77 @@ fn chunk_text(text: &str, offset: usize, requested_len: usize) -> Option<TextChu
     })
 }
 
+fn chunk_decoded_text(
+    decoded: DecodedString<'_>,
+    offset: usize,
+    requested_len: usize,
+) -> Option<TextChunk> {
+    if requested_len == 0 {
+        return None;
+    }
+
+    let byte_limit = requested_len.min(MAX_TEXT_CHUNK_BYTES);
+    let mut iterator = decoded.iter();
+    let mut last_end = 0usize;
+    let mut started = false;
+    let mut output = String::new();
+    let mut end = offset;
+
+    while let Some(scalar) = iterator.next() {
+        last_end = scalar.end;
+        if !started {
+            if scalar.end <= offset {
+                continue;
+            }
+            if scalar.start != offset {
+                return None;
+            }
+            started = true;
+        }
+
+        let next_len = output.len().checked_add(scalar.value.len_utf8())?;
+        if next_len > byte_limit {
+            if output.is_empty() {
+                return None;
+            }
+            return Some(TextChunk {
+                start: offset,
+                text: output,
+                has_more: true,
+                next_offset: Some(end),
+            });
+        }
+        output.push(scalar.value);
+        end = scalar.end;
+
+        if output.len() == byte_limit {
+            let has_more = iterator.next().is_some();
+            return Some(TextChunk {
+                start: offset,
+                text: output,
+                has_more,
+                next_offset: has_more.then_some(end),
+            });
+        }
+    }
+
+    if !started {
+        return (last_end == offset).then_some(TextChunk {
+            start: offset,
+            text: String::new(),
+            has_more: false,
+            next_offset: None,
+        });
+    }
+
+    Some(TextChunk {
+        start: offset,
+        text: output,
+        has_more: false,
+        next_offset: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,6 +603,39 @@ mod tests {
     }
 
     #[test]
+    fn escaped_decoded_chunks_match_literal_chunks_at_scalar_boundaries() {
+        let literal = document("[\"a😀b\"]");
+        let escaped = document(r#"["a\ud83d\ude00b"]"#);
+
+        for tree in [&literal, &escaped] {
+            let first = tree.read_decoded_text(1, 0, 3).unwrap();
+            assert_eq!(first.text, "a");
+            assert!(first.has_more);
+            assert_eq!(first.next_offset, Some(1));
+
+            let second = tree
+                .read_decoded_text(1, first.next_offset.unwrap(), 4)
+                .unwrap();
+            assert_eq!(second.text, "😀");
+            assert!(second.has_more);
+            assert_eq!(second.next_offset, Some(5));
+
+            let tail = tree
+                .read_decoded_text(1, second.next_offset.unwrap(), 1)
+                .unwrap();
+            assert_eq!(tail.text, "b");
+            assert!(!tail.has_more);
+            assert_eq!(tail.next_offset, None);
+
+            let end = tree.read_decoded_text(1, 6, 1).unwrap();
+            assert!(end.text.is_empty());
+            assert!(!end.has_more);
+            assert_eq!(end.next_offset, None);
+            assert!(tree.read_decoded_text(1, 2, 1).is_none());
+        }
+    }
+
+    #[test]
     fn string_metrics_count_decoded_scalars_and_line_endings() {
         let cases = [
             ("", 0, 0, 1),
@@ -524,6 +657,16 @@ mod tests {
     #[test]
     fn string_metrics_scan_full_strings_beyond_the_text_page_limit() {
         let value = "a".repeat(200_000);
+        let tree = document(&format!(r#"["{value}"]"#));
+        let metrics = tree.string_metrics(1).unwrap();
+        assert_eq!(metrics.decoded_bytes, 200_000);
+        assert_eq!(metrics.character_count, 200_000);
+        assert_eq!(metrics.line_count, 1);
+    }
+
+    #[test]
+    fn string_metrics_scan_escaped_scalars_without_changing_the_counts() {
+        let value = r#"\u0061"#.repeat(200_000);
         let tree = document(&format!(r#"["{value}"]"#));
         let metrics = tree.string_metrics(1).unwrap();
         assert_eq!(metrics.decoded_bytes, 200_000);

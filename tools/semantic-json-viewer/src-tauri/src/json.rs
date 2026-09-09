@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::str::{self, from_utf8};
 
+const DECODED_CHECKPOINT_RAW_STRIDE: usize = 64 * 1024;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NodeId(usize);
 
@@ -47,12 +49,49 @@ pub struct JsonNode {
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
     pub decoded: Option<String>,
+    pub string_has_escape: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DecodedCheckpoint {
+    pub node_id: usize,
+    pub source_offset: usize,
+    pub decoded_offset: usize,
+}
+
+/// A validated JSON string exposed through its source span. Literal strings
+/// borrow their UTF-8 payload; escaped strings are decoded only as callers
+/// iterate or materialize them. The parser still validates every escape and
+/// surrogate pair before a `ParsedJson` is returned.
+#[derive(Clone, Copy, Debug)]
+pub struct DecodedString<'a> {
+    source: &'a [u8],
+    text: &'a str,
+    span: SourceSpan,
+    has_escape: bool,
+    checkpoints: &'a [DecodedCheckpoint],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DecodedScalar {
+    pub value: char,
+    pub start: usize,
+    pub end: usize,
+}
+
+pub struct DecodedScalarIter<'a> {
+    source: &'a [u8],
+    index: usize,
+    end: usize,
+    decoded_offset: usize,
+    escaped: bool,
 }
 
 #[derive(Debug)]
 pub struct ParsedJson<'a> {
-    source: Cow<'a, [u8]>,
+    source: Cow<'a, str>,
     nodes: Vec<JsonNode>,
+    checkpoints: Vec<DecodedCheckpoint>,
 }
 
 impl<'a> ParsedJson<'a> {
@@ -65,7 +104,7 @@ impl<'a> ParsedJson<'a> {
     }
 
     pub fn source(&self) -> &[u8] {
-        self.source.as_ref()
+        self.source.as_bytes()
     }
 
     pub fn node_count(&self) -> usize {
@@ -78,7 +117,282 @@ impl<'a> ParsedJson<'a> {
 
     pub fn raw_lexeme(&self, id: NodeId) -> &[u8] {
         let span = self.node(id).span;
-        &self.source[span.start..span.end]
+        &self.source.as_bytes()[span.start..span.end]
+    }
+
+    pub fn decoded_string_at(&self, id: usize) -> Option<DecodedString<'_>> {
+        let node = self.node_at(id)?;
+        let start = self
+            .checkpoints
+            .partition_point(|checkpoint| checkpoint.node_id < id);
+        let end = self
+            .checkpoints
+            .partition_point(|checkpoint| checkpoint.node_id <= id);
+        self.decoded_string(node, &self.checkpoints[start..end])
+    }
+
+    pub fn decoded_string_for_node(&self, node: &JsonNode) -> Option<DecodedString<'_>> {
+        self.decoded_string(node, &[])
+    }
+
+    fn decoded_string<'b>(
+        &'b self,
+        node: &JsonNode,
+        checkpoints: &'b [DecodedCheckpoint],
+    ) -> Option<DecodedString<'b>> {
+        (node.kind == JsonKind::String).then_some(DecodedString {
+            source: self.source(),
+            text: self.source.as_ref(),
+            span: node.span,
+            has_escape: node.string_has_escape,
+            checkpoints,
+        })
+    }
+}
+
+impl<'a> DecodedString<'a> {
+    fn inner(self) -> &'a [u8] {
+        &self.source[self.span.start + 1..self.span.end - 1]
+    }
+
+    pub fn borrowed(self) -> Option<&'a str> {
+        if self.has_escape {
+            return None;
+        }
+        Some(&self.text[self.span.start + 1..self.span.end - 1])
+    }
+
+    pub(crate) fn source_start(self) -> usize {
+        self.span.start + 1
+    }
+
+    pub(crate) fn source_end(self) -> usize {
+        self.span.end - 1
+    }
+
+    pub fn iter(self) -> DecodedScalarIter<'a> {
+        DecodedScalarIter {
+            source: self.source,
+            index: self.span.start + 1,
+            end: self.span.end - 1,
+            decoded_offset: 0,
+            escaped: self.has_escape,
+        }
+    }
+
+    pub(crate) fn iter_from_decoded_offset(
+        self,
+        decoded_offset: usize,
+    ) -> Option<(DecodedScalarIter<'a>, usize)> {
+        if !self.has_escape {
+            return None;
+        }
+        let checkpoint_index = self
+            .checkpoints
+            .partition_point(|checkpoint| checkpoint.decoded_offset <= decoded_offset);
+        let checkpoint = checkpoint_index
+            .checked_sub(1)
+            .and_then(|index| self.checkpoints.get(index));
+        let (source_offset, checkpoint_offset) = checkpoint
+            .map(|checkpoint| (checkpoint.source_offset, checkpoint.decoded_offset))
+            .unwrap_or((self.source_start(), 0));
+        if checkpoint_offset > decoded_offset {
+            return None;
+        }
+        let mut iterator = DecodedScalarIter {
+            source: self.source,
+            index: source_offset,
+            end: self.source_end(),
+            decoded_offset: checkpoint_offset,
+            escaped: true,
+        };
+        while iterator.decoded_offset() < decoded_offset {
+            let before = iterator.source_offset();
+            iterator.next()?;
+            if iterator.source_offset() == before || iterator.decoded_offset() > decoded_offset {
+                return None;
+            }
+        }
+        (iterator.decoded_offset() == decoded_offset).then_some((iterator, source_offset))
+    }
+
+    pub fn decoded_len(self) -> usize {
+        if !self.has_escape {
+            return self.inner().len();
+        }
+        self.iter().map(|scalar| scalar.value.len_utf8()).sum()
+    }
+
+    pub fn is_char_boundary(self, offset: usize) -> bool {
+        if let Some(text) = self.borrowed() {
+            return offset <= text.len() && text.is_char_boundary(offset);
+        }
+        if offset == 0 {
+            return true;
+        }
+        self.iter().any(|scalar| scalar.end == offset)
+    }
+
+    pub fn to_cow(self) -> Cow<'a, str> {
+        self.borrowed().map_or_else(
+            || Cow::Owned(self.iter().map(|scalar| scalar.value).collect()),
+            Cow::Borrowed,
+        )
+    }
+
+    pub fn to_cow_limit(self, max_bytes: usize) -> Option<Cow<'a, str>> {
+        if !self.has_escape {
+            if self.inner().len() > max_bytes {
+                return None;
+            }
+            let text = self.borrowed().expect("literal JSON string is valid UTF-8");
+            return Some(Cow::Borrowed(text));
+        }
+
+        let mut output = String::new();
+        for scalar in self.iter() {
+            let next_len = output.len().checked_add(scalar.value.len_utf8())?;
+            if next_len > max_bytes {
+                return None;
+            }
+            output.push(scalar.value);
+        }
+        Some(Cow::Owned(output))
+    }
+
+    pub fn prefix_chars(self, max_chars: usize) -> (String, bool) {
+        let mut output = String::new();
+        let mut iter = self.iter();
+        for _ in 0..max_chars {
+            let Some(scalar) = iter.next() else {
+                return (output, false);
+            };
+            output.push(scalar.value);
+        }
+        (output, iter.next().is_some())
+    }
+}
+
+impl<'a> DecodedScalarIter<'a> {
+    fn next_literal(&self) -> (char, usize) {
+        let width = utf8_width(self.source[self.index]);
+        let end = (self.index + width).min(self.end);
+        let text = str::from_utf8(&self.source[self.index..end])
+            .expect("parser validated JSON string UTF-8");
+        let character = text.chars().next().expect("iterator is not at the end");
+        (character, self.index + character.len_utf8())
+    }
+
+    pub(crate) fn source_offset(&self) -> usize {
+        self.index
+    }
+
+    pub(crate) fn source_end(&self) -> usize {
+        self.end
+    }
+
+    pub(crate) fn next_raw_width(&self) -> Option<usize> {
+        if self.index >= self.end {
+            return None;
+        }
+        if self.source[self.index] != b'\\' {
+            return Some(utf8_width(self.source[self.index]));
+        }
+        let escape = *self.source.get(self.index + 1)?;
+        if escape != b'u' {
+            return Some(2);
+        }
+        let high = self.parse_hex4(self.index + 2);
+        Some(if (0xd800..=0xdbff).contains(&high) {
+            12
+        } else {
+            6
+        })
+    }
+
+    pub(crate) fn decoded_offset(&self) -> usize {
+        self.decoded_offset
+    }
+
+    fn parse_hex4(&self, index: usize) -> u16 {
+        let mut value = 0u16;
+        for byte in &self.source[index..index + 4] {
+            let digit = match *byte {
+                b'0'..=b'9' => *byte - b'0',
+                b'a'..=b'f' => *byte - b'a' + 10,
+                b'A'..=b'F' => *byte - b'A' + 10,
+                _ => unreachable!("parser validated unicode escape digits"),
+            };
+            value = (value << 4) | u16::from(digit);
+        }
+        value
+    }
+
+    fn next_escape(&self) -> (char, usize) {
+        debug_assert_eq!(self.source[self.index], b'\\');
+        let escape = self.source[self.index + 1];
+        let next = self.index + 2;
+        match escape {
+            b'"' => ('"', next),
+            b'\\' => ('\\', next),
+            b'/' => ('/', next),
+            b'b' => ('\u{8}', next),
+            b'f' => ('\u{c}', next),
+            b'n' => ('\n', next),
+            b'r' => ('\r', next),
+            b't' => ('\t', next),
+            b'u' => {
+                let high = self.parse_hex4(next);
+                let mut end = next + 4;
+                let code_point = if (0xd800..=0xdbff).contains(&high) {
+                    debug_assert_eq!(self.source[end], b'\\');
+                    debug_assert_eq!(self.source[end + 1], b'u');
+                    let low = self.parse_hex4(end + 2);
+                    end += 6;
+                    0x10000 + (((u32::from(high) - 0xd800) << 10) | (u32::from(low) - 0xdc00))
+                } else {
+                    u32::from(high)
+                };
+                (
+                    char::from_u32(code_point).expect("parser validated Unicode scalar"),
+                    end,
+                )
+            }
+            _ => unreachable!("parser validated JSON string escape"),
+        }
+    }
+}
+
+fn utf8_width(first: u8) -> usize {
+    match first {
+        0..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => unreachable!("parser validated string UTF-8"),
+    }
+}
+
+impl Iterator for DecodedScalarIter<'_> {
+    type Item = DecodedScalar;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.end {
+            return None;
+        }
+        let (value, end) = if self.escaped && self.source[self.index] == b'\\' {
+            self.next_escape()
+        } else {
+            self.next_literal()
+        };
+        self.index = end;
+        let decoded_start = self.decoded_offset;
+        self.decoded_offset += value.len_utf8();
+        Some(DecodedScalar {
+            value,
+            start: decoded_start,
+            end: self.decoded_offset,
+        })
     }
 }
 
@@ -101,14 +415,16 @@ pub fn parse_json(input: &[u8]) -> Result<ParsedJson<'_>, ParseError> {
 }
 
 pub fn parse_json_owned(input: Vec<u8>) -> Result<ParsedJson<'static>, ParseError> {
-    let nodes = {
+    let (nodes, checkpoints) = {
         let parsed = parse_json(&input)?;
-        parsed.nodes
+        (parsed.nodes, parsed.checkpoints)
     };
+    let source = String::from_utf8(input).expect("parse_json validated UTF-8");
 
     Ok(ParsedJson {
-        source: Cow::Owned(input),
+        source: Cow::Owned(source),
         nodes,
+        checkpoints,
     })
 }
 
@@ -124,14 +440,16 @@ pub(crate) fn parse_json_prefix(input: &[u8]) -> Result<(ParsedJson<'_>, usize),
             0
         },
         nodes: Vec::new(),
+        checkpoints: Vec::new(),
     };
     let _root = parser.parse_value(None, ChildLocator::Root)?;
     parser.skip_whitespace();
 
     Ok((
         ParsedJson {
-            source: Cow::Borrowed(input),
+            source: Cow::Borrowed(text),
             nodes: parser.nodes,
+            checkpoints: parser.checkpoints,
         },
         parser.index,
     ))
@@ -142,6 +460,7 @@ struct Parser<'a> {
     text: &'a str,
     index: usize,
     nodes: Vec<JsonNode>,
+    checkpoints: Vec<DecodedCheckpoint>,
 }
 
 impl<'a> Parser<'a> {
@@ -191,6 +510,9 @@ impl<'a> Parser<'a> {
                 node.locator = locator;
                 node.children = Vec::new();
                 let id = NodeId(self.nodes.len());
+                if node.kind == JsonKind::String && node.string_has_escape {
+                    self.add_decoded_checkpoints(id.index(), node.span);
+                }
                 self.nodes.push(node);
                 Ok(id)
             }
@@ -211,6 +533,7 @@ impl<'a> Parser<'a> {
             parent,
             children: Vec::new(),
             decoded: None,
+            string_has_escape: false,
         });
         self.index += 1;
         self.skip_whitespace();
@@ -280,6 +603,7 @@ impl<'a> Parser<'a> {
             parent,
             children: Vec::new(),
             decoded: None,
+            string_has_escape: false,
         });
         self.index += 1;
         self.skip_whitespace();
@@ -327,6 +651,7 @@ impl<'a> Parser<'a> {
                 parent: None,
                 children: Vec::new(),
                 decoded: None,
+                string_has_escape: false,
             })
         } else {
             Err(self.error("invalid JSON literal"))
@@ -392,11 +717,13 @@ impl<'a> Parser<'a> {
             parent: None,
             children: Vec::new(),
             decoded: None,
+            string_has_escape: false,
         })
     }
 
     fn parse_string(&mut self, start: usize) -> Result<JsonNode, ParseError> {
         let mut decoded = String::new();
+        let mut string_has_escape = false;
         self.index += 1;
 
         loop {
@@ -417,10 +744,12 @@ impl<'a> Parser<'a> {
                     parent: None,
                     children: Vec::new(),
                     decoded: Some(decoded),
+                    string_has_escape,
                 });
             }
 
             if character == '\\' {
+                string_has_escape = true;
                 self.parse_escape(&mut decoded)?;
             } else if matches!(character, '\u{0}'..='\u{1f}') {
                 return Err(error_at(
@@ -432,6 +761,30 @@ impl<'a> Parser<'a> {
                 decoded.push(character);
                 self.index += character.len_utf8();
             }
+        }
+    }
+
+    fn add_decoded_checkpoints(&mut self, node_id: usize, span: SourceSpan) {
+        let decoded = DecodedString {
+            source: self.input,
+            text: self.text,
+            span,
+            has_escape: true,
+            checkpoints: &[],
+        };
+        let mut iterator = decoded.iter();
+        let mut next_raw = span.start + 1 + DECODED_CHECKPOINT_RAW_STRIDE;
+        while let Some(scalar) = iterator.next() {
+            let source_offset = iterator.source_offset();
+            if source_offset < next_raw {
+                continue;
+            }
+            self.checkpoints.push(DecodedCheckpoint {
+                node_id,
+                source_offset,
+                decoded_offset: scalar.end,
+            });
+            next_raw = next_raw.saturating_add(DECODED_CHECKPOINT_RAW_STRIDE);
         }
     }
 
@@ -911,5 +1264,88 @@ mod tests {
             ChildLocator::ObjectKey { occurrence: 2, .. }
         ));
         assert_eq!(parsed.raw_lexeme(children[1]), b"922337203685477580712345");
+    }
+
+    #[test]
+    fn decoded_string_borrows_literal_payload_without_materializing_it() {
+        let source = "[\"literal 😀\"]".as_bytes();
+        let parsed = parse_json(source).unwrap();
+        let decoded = parsed.decoded_string_at(1).unwrap();
+        let borrowed = decoded.borrowed().unwrap();
+
+        assert_eq!(borrowed, "literal 😀");
+        assert_eq!(borrowed.as_ptr(), source[2..].as_ptr());
+        assert_eq!(decoded.to_cow().as_ref(), "literal 😀");
+    }
+
+    #[test]
+    fn decoded_string_iter_decodes_escape_scalars_and_byte_offsets() {
+        let parsed = parse_json("[\"\\u4f60\\u597d😀\"]".as_bytes()).unwrap();
+        let decoded = parsed.decoded_string_at(1).unwrap();
+        let scalars: Vec<_> = decoded.iter().collect();
+
+        assert_eq!(decoded.to_cow().as_ref(), "你好😀");
+        assert_eq!(
+            scalars,
+            vec![
+                DecodedScalar {
+                    value: '你',
+                    start: 0,
+                    end: 3,
+                },
+                DecodedScalar {
+                    value: '好',
+                    start: 3,
+                    end: 6,
+                },
+                DecodedScalar {
+                    value: '😀',
+                    start: 6,
+                    end: 10,
+                },
+            ]
+        );
+        assert!(decoded.is_char_boundary(6));
+        assert!(!decoded.is_char_boundary(5));
+        assert_eq!(decoded.prefix_chars(2), ("你好".to_owned(), true));
+        assert!(decoded.to_cow_limit(9).is_none());
+        assert_eq!(decoded.to_cow_limit(10).unwrap().as_ref(), "你好😀");
+    }
+
+    #[test]
+    fn escaped_value_sparse_checkpoints_bound_cursor_relocation_and_keep_short_values_free() {
+        let long_value = format!(
+            "{}\\\\u1234{}\\u1234\\ud83d\\ude00",
+            "a".repeat(70_000),
+            "b".repeat(70_000)
+        );
+        let parsed = parse_json_owned(format!(r#"["{long_value}"]"#).into_bytes()).unwrap();
+        let decoded = parsed.decoded_string_at(1).unwrap();
+        assert!(!parsed.checkpoints.is_empty());
+
+        let target = 70_000 + 6 + 70_000 + 'ሴ'.len_utf8();
+        let (iterator, checkpoint_source) = decoded.iter_from_decoded_offset(target).unwrap();
+        assert!(
+            iterator.source_offset().saturating_sub(checkpoint_source)
+                <= DECODED_CHECKPOINT_RAW_STRIDE + 12
+        );
+        assert!(decoded
+            .iter_from_decoded_offset(decoded.decoded_len() + 1)
+            .is_none());
+
+        let key = "k".repeat(DECODED_CHECKPOINT_RAW_STRIDE + 1);
+        let keyed =
+            parse_json_owned(format!(r#"{{"{key}":"{long_value}"}}"#).into_bytes()).unwrap();
+        assert!(!keyed.checkpoints.is_empty());
+        assert!(keyed
+            .checkpoints
+            .iter()
+            .all(|checkpoint| checkpoint.node_id == 1));
+
+        let short = parse_json_owned(br#"["\u1234"]"#.to_vec()).unwrap();
+        let short_decoded = short.decoded_string_at(1).unwrap();
+        assert!(short.checkpoints.is_empty());
+        assert!(short_decoded.iter_from_decoded_offset(3).is_some());
+        assert!(short_decoded.iter_from_decoded_offset(2).is_none());
     }
 }

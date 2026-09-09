@@ -1,7 +1,9 @@
 use std::fmt;
 use std::str;
 
-use crate::json::{ChildLocator, JsonKind, ParsedJson, SourceSpan};
+use crate::json::{
+    ChildLocator, DecodedScalarIter, DecodedString, JsonKind, ParsedJson, SourceSpan,
+};
 
 pub const MAX_QUERY_BYTES: usize = 4096;
 pub const MAX_PAGE_SIZE: usize = 50;
@@ -198,60 +200,22 @@ fn search_decoded(
             continue;
         };
 
-        if offset > candidate.text.len() || !candidate.text.is_char_boundary(offset) {
-            return Err(SearchError::InvalidCursor);
-        }
-        if candidate.text.is_empty() {
-            let Some((next_unit, next_phase)) =
-                next_decoded_position(parsed, end_unit, unit, phase)
-            else {
-                unit = end_unit;
-                break;
-            };
-            unit = next_unit;
-            phase = next_phase;
-            offset = 0;
-            if scanned >= MAX_SCAN_BYTES {
-                break;
-            }
-            continue;
-        }
-        if offset == candidate.text.len() {
-            let Some((next_unit, next_phase)) =
-                next_decoded_position(parsed, end_unit, unit, phase)
-            else {
-                unit = end_unit;
-                break;
-            };
-            unit = next_unit;
-            phase = next_phase;
-            offset = 0;
-            continue;
-        }
-
         let remaining_budget = MAX_SCAN_BYTES.saturating_sub(scanned);
         if remaining_budget == 0 {
             break;
         }
         let start = offset;
-        let scan_end = advance_to_boundary(candidate.text, start, remaining_budget);
-        let lookahead = next_boundary(
-            candidate.text,
-            scan_end
-                .saturating_add(request.query.len().saturating_sub(1))
-                .min(candidate.text.len()),
-        );
-        let haystack = &candidate.text[start..lookahead];
-        let mut progressed = false;
-        for (relative, _) in haystack.match_indices(&request.query) {
-            let match_start = start + relative;
-            if match_start >= scan_end {
-                break;
-            }
-            let match_end = match_start + request.query.len();
-            if match_end > candidate.text.len() {
-                break;
-            }
+        let scan = scan_decoded_text(
+            &candidate.text,
+            start,
+            remaining_budget,
+            &request.query,
+            page_size.saturating_sub(matches.len()),
+        )?;
+        if !scan.exhausted && scan.consumed_end == start {
+            break;
+        }
+        for (match_start, match_end) in scan.matches {
             let (path, path_truncated) = path_for(parsed, unit);
             matches.push(SearchMatch {
                 node_id: Some(unit),
@@ -262,23 +226,15 @@ fn search_decoded(
                 match_start,
                 match_end,
             });
-            offset = match_end;
-            progressed = true;
             if matches.len() >= page_size {
                 break;
             }
         }
 
-        let consumed_end = if matches.len() >= page_size {
-            offset
-        } else if progressed {
-            offset.max(scan_end.min(candidate.text.len()))
-        } else {
-            scan_end
-        };
-        scanned = scanned.saturating_add(consumed_end.saturating_sub(start));
+        let consumed_end = scan.consumed_end;
+        scanned = scanned.saturating_add(scan.work_bytes);
         offset = consumed_end;
-        if offset >= candidate.text.len() {
+        if scan.exhausted {
             let Some((next_unit, next_phase)) =
                 next_decoded_position(parsed, end_unit, unit, phase)
             else {
@@ -313,8 +269,222 @@ fn search_decoded(
 
 struct DecodedCandidate<'a> {
     field: SearchField,
-    text: &'a str,
+    text: DecodedCandidateText<'a>,
     span: SourceSpan,
+}
+
+enum DecodedCandidateText<'a> {
+    Borrowed(&'a str),
+    String(DecodedString<'a>),
+}
+
+struct DecodedScan {
+    matches: Vec<(usize, usize)>,
+    consumed_end: usize,
+    work_bytes: usize,
+    exhausted: bool,
+}
+
+fn scan_decoded_text(
+    text: &DecodedCandidateText<'_>,
+    start: usize,
+    budget: usize,
+    query: &str,
+    limit: usize,
+) -> Result<DecodedScan, SearchError> {
+    match text {
+        DecodedCandidateText::Borrowed(text) => {
+            if start > text.len() || !text.is_char_boundary(start) {
+                return Err(SearchError::InvalidCursor);
+            }
+            let scan = scan_borrowed_text(text, start, budget, query, limit);
+            Ok(scan)
+        }
+        DecodedCandidateText::String(decoded) => {
+            if let Some(text) = decoded.borrowed() {
+                if start > text.len() || !text.is_char_boundary(start) {
+                    return Err(SearchError::InvalidCursor);
+                }
+                return Ok(scan_borrowed_text(text, start, budget, query, limit));
+            }
+            let (mut iterator, checkpoint_source) = decoded
+                .iter_from_decoded_offset(start)
+                .ok_or(SearchError::InvalidCursor)?;
+            let cursor_source = iterator.source_offset();
+            let locator_work = cursor_source.saturating_sub(checkpoint_source);
+            let mut scan = scan_scalar_iter(
+                &mut iterator,
+                start,
+                budget.saturating_sub(locator_work),
+                query,
+                limit,
+            );
+            scan.work_bytes = scan.work_bytes.saturating_add(locator_work);
+            Ok(scan)
+        }
+    }
+}
+
+fn scan_borrowed_text(
+    text: &str,
+    start: usize,
+    budget: usize,
+    query: &str,
+    limit: usize,
+) -> DecodedScan {
+    let query_extra = query.len();
+    let lookahead_budget = query_extra.saturating_add(3);
+    if budget < lookahead_budget && start < text.len() {
+        return DecodedScan {
+            matches: Vec::new(),
+            consumed_end: start,
+            work_bytes: 0,
+            exhausted: false,
+        };
+    }
+    let scan_end = advance_to_boundary(text, start, budget.saturating_sub(lookahead_budget));
+    let lookahead_end = next_boundary(text, scan_end.saturating_add(query_extra).min(text.len()));
+    let haystack = &text[start..lookahead_end];
+    let mut matches = Vec::new();
+    let mut last_match_end = start;
+    for (relative, _) in haystack.match_indices(query) {
+        let match_start = start + relative;
+        let lookahead_reaches_eof = lookahead_end == text.len();
+        if match_start > scan_end || (match_start == scan_end && !lookahead_reaches_eof) {
+            break;
+        }
+        let match_end = match_start + query.len();
+        matches.push((match_start, match_end));
+        last_match_end = match_end;
+        if matches.len() >= limit {
+            return DecodedScan {
+                matches,
+                consumed_end: match_end,
+                work_bytes: match_end.saturating_sub(start),
+                exhausted: match_end == text.len(),
+            };
+        }
+    }
+    let exhausted = scan_end == text.len();
+    let consumed_end = if exhausted {
+        text.len()
+    } else {
+        scan_end.max(last_match_end)
+    };
+    DecodedScan {
+        matches,
+        consumed_end,
+        work_bytes: lookahead_end.saturating_sub(start),
+        exhausted,
+    }
+}
+
+fn scan_scalar_iter(
+    iterator: &mut DecodedScalarIter<'_>,
+    start: usize,
+    budget: usize,
+    query: &str,
+    limit: usize,
+) -> DecodedScan {
+    let query_bytes = query.as_bytes();
+    let prefix = kmp_prefix(query_bytes);
+    let mut matched = 0usize;
+    let raw_start = iterator.source_offset();
+    let mut last_match_end = start;
+    let mut matches = Vec::new();
+
+    loop {
+        let current_source = iterator.source_offset();
+        if current_source == iterator.source_end() {
+            return DecodedScan {
+                matches,
+                consumed_end: iterator.decoded_offset(),
+                work_bytes: current_source.saturating_sub(raw_start),
+                exhausted: true,
+            };
+        }
+        let Some(raw_width) = iterator.next_raw_width() else {
+            return DecodedScan {
+                matches,
+                consumed_end: iterator.decoded_offset(),
+                work_bytes: current_source.saturating_sub(raw_start),
+                exhausted: true,
+            };
+        };
+        if current_source
+            .saturating_sub(raw_start)
+            .saturating_add(raw_width)
+            > budget
+        {
+            let current_decoded = iterator.decoded_offset();
+            let consumed_end = if matched > 0 {
+                current_decoded.saturating_sub(matched).max(last_match_end)
+            } else {
+                current_decoded
+            };
+            return DecodedScan {
+                matches,
+                consumed_end,
+                work_bytes: current_source.saturating_sub(raw_start),
+                exhausted: false,
+            };
+        }
+        let Some(scalar) = iterator.next() else {
+            return DecodedScan {
+                matches,
+                consumed_end: iterator.decoded_offset(),
+                work_bytes: iterator.source_offset().saturating_sub(raw_start),
+                exhausted: true,
+            };
+        };
+
+        let mut encoded = [0u8; 4];
+        let bytes = scalar.value.encode_utf8(&mut encoded).as_bytes();
+        for (byte_index, &byte) in bytes.iter().enumerate() {
+            while matched > 0 && byte != query_bytes[matched] {
+                matched = prefix[matched - 1];
+            }
+            if byte == query_bytes[matched] {
+                matched += 1;
+            }
+            if matched == query_bytes.len() {
+                if byte_index + 1 == bytes.len() {
+                    let match_end = scalar.end;
+                    let match_start = match_end - query_bytes.len();
+                    if match_start >= last_match_end {
+                        matches.push((match_start, match_end));
+                        last_match_end = match_end;
+                        if matches.len() >= limit {
+                            return DecodedScan {
+                                matches,
+                                consumed_end: match_end,
+                                work_bytes: iterator.source_offset().saturating_sub(raw_start),
+                                exhausted: iterator.source_offset() == iterator.source_end(),
+                            };
+                        }
+                    }
+                    matched = 0;
+                } else {
+                    matched = prefix[matched - 1];
+                }
+            }
+        }
+    }
+}
+
+fn kmp_prefix(needle: &[u8]) -> Vec<usize> {
+    let mut prefix = vec![0usize; needle.len()];
+    let mut length = 0usize;
+    for index in 1..needle.len() {
+        while length > 0 && needle[index] != needle[length] {
+            length = prefix[length - 1];
+        }
+        if needle[index] == needle[length] {
+            length += 1;
+        }
+        prefix[index] = length;
+    }
+    prefix
 }
 
 fn decoded_candidate<'a>(
@@ -327,7 +497,7 @@ fn decoded_candidate<'a>(
         SearchPhase::Key => match &node.locator {
             ChildLocator::ObjectKey { key, key_span, .. } => Ok(Some(DecodedCandidate {
                 field: SearchField::Key,
-                text: key,
+                text: DecodedCandidateText::Borrowed(key),
                 span: *key_span,
             })),
             ChildLocator::Root | ChildLocator::ArrayIndex(_) => Err(SearchError::InvalidCursor),
@@ -335,14 +505,20 @@ fn decoded_candidate<'a>(
         SearchPhase::Value => match node.kind {
             JsonKind::String => Ok(Some(DecodedCandidate {
                 field: SearchField::Value,
-                text: node.decoded.as_deref().ok_or(SearchError::InvalidTarget)?,
+                text: DecodedCandidateText::String(
+                    parsed
+                        .decoded_string_at(unit)
+                        .ok_or(SearchError::InvalidTarget)?,
+                ),
                 span: node.span,
             })),
             JsonKind::Number | JsonKind::True | JsonKind::False | JsonKind::Null => {
                 Ok(Some(DecodedCandidate {
                     field: SearchField::Value,
-                    text: str::from_utf8(&parsed.source()[node.span.start..node.span.end])
-                        .map_err(|_| SearchError::InvalidCursor)?,
+                    text: DecodedCandidateText::Borrowed(
+                        str::from_utf8(&parsed.source()[node.span.start..node.span.end])
+                            .map_err(|_| SearchError::InvalidCursor)?,
+                    ),
                     span: node.span,
                 }))
             }
@@ -405,16 +581,12 @@ fn validate_decoded_cursor(
     if phase == SearchPhase::Key && !matches!(node.locator, ChildLocator::ObjectKey { .. }) {
         return Err(SearchError::InvalidCursor);
     }
-    let Some(candidate) = decoded_candidate(parsed, unit, phase)? else {
+    let Some(_candidate) = decoded_candidate(parsed, unit, phase)? else {
         return (phase == SearchPhase::Value && offset == 0)
             .then_some(())
             .ok_or(SearchError::InvalidCursor);
     };
-    if offset <= candidate.text.len() && candidate.text.is_char_boundary(offset) {
-        Ok(())
-    } else {
-        Err(SearchError::InvalidCursor)
-    }
+    Ok(())
 }
 
 fn subtree_end(parsed: &ParsedJson<'_>, target: usize) -> usize {
@@ -638,13 +810,6 @@ fn valid_prefix_len(text: &str, max_bytes: usize) -> usize {
     end
 }
 
-fn next_boundary(text: &str, mut offset: usize) -> usize {
-    while offset < text.len() && !text.is_char_boundary(offset) {
-        offset += 1;
-    }
-    offset
-}
-
 fn advance_to_boundary(text: &str, start: usize, budget: usize) -> usize {
     let mut end = start.saturating_add(budget).min(text.len());
     while end > start && !text.is_char_boundary(end) {
@@ -657,6 +822,13 @@ fn advance_to_boundary(text: &str, start: usize, budget: usize) -> usize {
             .map_or(start, |character| start + character.len_utf8());
     }
     end
+}
+
+fn next_boundary(text: &str, mut offset: usize) -> usize {
+    while offset < text.len() && !text.is_char_boundary(offset) {
+        offset += 1;
+    }
+    offset
 }
 
 fn advance_to_boundary_bytes(source: &[u8], start: usize, budget: usize) -> usize {
@@ -1182,6 +1354,27 @@ mod tests {
             .unwrap_err(),
             SearchError::InvalidCursor
         );
+
+        let escaped =
+            parse_json_owned(format!(r#"["{}\u1234"]"#, "a".repeat(70_000)).into_bytes()).unwrap();
+        for offset in [70_001, usize::MAX] {
+            let cursor = SearchCursor {
+                mode: SearchMode::Decoded,
+                query: "needle".to_owned(),
+                node_id: Some(1),
+                unit: 1,
+                phase: SearchPhase::Value,
+                offset,
+            };
+            assert_eq!(
+                search(
+                    &escaped,
+                    SearchRequest::decoded("needle", Some(1), Some(cursor), 1),
+                )
+                .unwrap_err(),
+                SearchError::InvalidCursor
+            );
+        }
     }
 
     #[test]
@@ -1241,7 +1434,8 @@ mod tests {
         assert!(page.has_more);
         let cursor = page.next_cursor.unwrap();
         assert_eq!(cursor.unit, 1);
-        assert_eq!(cursor.offset, MAX_SCAN_BYTES);
+        assert!(cursor.offset < MAX_SCAN_BYTES);
+        assert!(cursor.offset > MAX_SCAN_BYTES - 32);
 
         let second = search(
             &parsed,
@@ -1260,7 +1454,9 @@ mod tests {
         let page = search(&parsed, SearchRequest::decoded("🦀🦀", Some(1), None, 50)).unwrap();
         assert!(page.matches.is_empty());
         assert!(page.has_more);
-        assert_eq!(page.next_cursor.unwrap().offset, MAX_SCAN_BYTES);
+        let offset = page.next_cursor.unwrap().offset;
+        assert!(offset < MAX_SCAN_BYTES);
+        assert!(offset > MAX_SCAN_BYTES - 32);
     }
 
     #[test]
@@ -1283,6 +1479,107 @@ mod tests {
         assert_eq!(page.matches.len(), 1);
         assert_eq!(page.matches[0].match_start, MAX_SCAN_BYTES - 1);
         assert_eq!(page.matches[0].match_end, MAX_SCAN_BYTES + 1);
+    }
+
+    #[test]
+    fn decoded_search_finds_escaped_match_crossing_scan_window_without_duplicate_next_page() {
+        let mut value = "a".repeat(MAX_SCAN_BYTES + 8);
+        let value_offset = MAX_SCAN_BYTES - 13;
+        value.replace_range(value_offset..value_offset + 2, r#"\u0058\u0059"#);
+        let parsed = parsed(&format!(r#"["{value}"]"#));
+        let first = search(&parsed, SearchRequest::decoded("XY", Some(1), None, 50)).unwrap();
+
+        assert_eq!(first.matches.len(), 1);
+        assert_eq!(first.matches[0].match_start, value_offset);
+        assert_eq!(first.matches[0].match_end, value_offset + 2);
+        assert!(first.has_more);
+
+        let second = search(
+            &parsed,
+            SearchRequest::decoded("XY", Some(1), first.next_cursor, 50),
+        )
+        .unwrap();
+        assert!(second.matches.is_empty());
+        assert!(!second.has_more);
+    }
+
+    #[test]
+    fn borrowed_eof_multibyte_match_survives_scan_boundary() {
+        let value = format!("{}你", "a".repeat(MAX_SCAN_BYTES - 5));
+        let parsed = parsed(&format!(r#"["{value}"]"#));
+        let mut page = search(&parsed, SearchRequest::decoded("你", Some(1), None, 50)).unwrap();
+        let mut matches = Vec::new();
+        for _ in 0..3 {
+            matches.extend(page.matches.clone());
+            if !page.has_more {
+                break;
+            }
+            page = search(
+                &parsed,
+                SearchRequest::decoded("你", Some(1), page.next_cursor, 50),
+            )
+            .unwrap();
+        }
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].match_start, MAX_SCAN_BYTES - 5);
+        assert_eq!(matches[0].match_end, MAX_SCAN_BYTES - 2);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn escaped_locator_and_scan_work_stay_within_raw_budget() {
+        let raw = r#"\u0061"#.repeat(2 * 1024 * 1024);
+        let parsed = parsed(&format!(r#"["{raw}"]"#));
+        let text = DecodedCandidateText::String(parsed.decoded_string_at(1).unwrap());
+        let scan = scan_decoded_text(&text, 100_000, MAX_SCAN_BYTES, "z", 50).unwrap();
+
+        assert!(scan.work_bytes <= MAX_SCAN_BYTES + 12);
+        assert!(scan.consumed_end > 100_000);
+        assert!(!scan.exhausted);
+    }
+
+    #[test]
+    fn escaped_raw_budget_tail_match_is_resumed_at_decoded_boundary() {
+        let raw = format!("{}\\u0062", r#"\u0061"#.repeat(1_398_101));
+        let parsed = parsed(&format!(r#"["{raw}"]"#));
+        let text = DecodedCandidateText::String(parsed.decoded_string_at(1).unwrap());
+        let scan = scan_decoded_text(&text, 0, MAX_SCAN_BYTES, "b", 50).unwrap();
+        assert!(scan.work_bytes <= MAX_SCAN_BYTES + 12);
+        assert!(!scan.exhausted);
+        let first = search(&parsed, SearchRequest::decoded("b", Some(1), None, 50)).unwrap();
+        assert!(first.matches.is_empty());
+        assert!(first.has_more);
+
+        let second = search(
+            &parsed,
+            SearchRequest::decoded("b", Some(1), first.next_cursor, 50),
+        )
+        .unwrap();
+        assert_eq!(second.matches.len(), 1);
+        assert_eq!(second.matches[0].match_start, 1_398_101);
+        assert!(!second.has_more);
+    }
+
+    #[test]
+    fn low_budget_stops_before_a_scalar_or_borrowed_lookahead_without_spinning() {
+        for budget in 0..=6 {
+            let borrowed = scan_borrowed_text("tail", 0, budget, "needle", 50);
+            assert!(borrowed.matches.is_empty());
+            assert_eq!(borrowed.consumed_end, 0);
+            assert_eq!(borrowed.work_bytes, 0);
+            assert!(!borrowed.exhausted);
+        }
+
+        let parsed = parsed(r#"["\u0061"]"#);
+        let text = DecodedCandidateText::String(parsed.decoded_string_at(1).unwrap());
+        for budget in 0..6 {
+            let scan = scan_decoded_text(&text, 0, budget, "b", 50).unwrap();
+            assert!(scan.matches.is_empty());
+            assert_eq!(scan.consumed_end, 0);
+            assert_eq!(scan.work_bytes, 0);
+            assert!(!scan.exhausted);
+        }
     }
 
     #[test]

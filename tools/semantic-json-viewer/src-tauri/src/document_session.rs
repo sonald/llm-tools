@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::{self, ErrorKind};
 use std::path::Path;
 
@@ -147,9 +148,23 @@ impl DocumentSession {
         self.detect_string_with_budget(node_id, NestedBudget::default())
     }
 
-    pub fn decoded_text(&self, node_id: usize) -> io::Result<Option<&str>> {
+    pub fn decoded_text(&self, node_id: usize) -> io::Result<Option<Cow<'_, str>>> {
         self.ensure_current()?;
         Ok(self.tree.decoded_text(node_id))
+    }
+
+    pub fn decoded_text_limited(
+        &self,
+        node_id: usize,
+        max_bytes: usize,
+    ) -> io::Result<Option<Cow<'_, str>>> {
+        self.ensure_current()?;
+        Ok(self.tree.decoded_text_limited(node_id, max_bytes))
+    }
+
+    pub fn decoded_text_len(&self, node_id: usize) -> io::Result<Option<usize>> {
+        self.ensure_current()?;
+        Ok(self.tree.decoded_text_len(node_id))
     }
 
     pub fn string_metrics(&self, node_id: usize) -> io::Result<Option<StringMetrics>> {

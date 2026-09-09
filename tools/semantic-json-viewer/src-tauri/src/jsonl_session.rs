@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::str::from_utf8;
@@ -382,12 +383,32 @@ impl JsonlSession {
         self.detect_string_with_budget(node_id, NestedBudget::default())
     }
 
-    pub fn selected_decoded_text(&self, node_id: usize) -> io::Result<Option<&str>> {
+    pub fn selected_decoded_text(&self, node_id: usize) -> io::Result<Option<Cow<'_, str>>> {
         self.ensure_current()?;
         Ok(self
             .selected
             .as_ref()
             .and_then(|(_, tree)| tree.decoded_text(node_id)))
+    }
+
+    pub fn selected_decoded_text_limited(
+        &self,
+        node_id: usize,
+        max_bytes: usize,
+    ) -> io::Result<Option<Cow<'_, str>>> {
+        self.ensure_current()?;
+        Ok(self
+            .selected
+            .as_ref()
+            .and_then(|(_, tree)| tree.decoded_text_limited(node_id, max_bytes)))
+    }
+
+    pub fn selected_decoded_text_len(&self, node_id: usize) -> io::Result<Option<usize>> {
+        self.ensure_current()?;
+        Ok(self
+            .selected
+            .as_ref()
+            .and_then(|(_, tree)| tree.decoded_text_len(node_id)))
     }
 
     pub fn selected_string_metrics(&self, node_id: usize) -> io::Result<Option<StringMetrics>> {

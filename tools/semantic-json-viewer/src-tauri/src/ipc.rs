@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -1813,7 +1814,7 @@ fn copy_document_node(
             || {
                 session
                     .decoded_text(node_id)
-                    .map(|text| text.map(str::to_owned))
+                    .map(|text| text.map(|value| value.into_owned()))
                     .map_err(session_error)
             },
         ),
@@ -1857,7 +1858,7 @@ fn copy_entry_node(
             || {
                 session
                     .selected_decoded_text(node_id)
-                    .map(|text| text.map(str::to_owned))
+                    .map(|text| text.map(|value| value.into_owned()))
                     .map_err(session_error)
             },
         ),
@@ -1896,7 +1897,7 @@ fn copy_tree_node(
         CopyFormatDto::Decoded => copy_decoded_scalar(
             node.kind,
             || Ok(tree.raw_text(node_id).map(str::to_owned)),
-            || Ok(tree.decoded_text(node_id).map(str::to_owned)),
+            || Ok(tree.decoded_text(node_id).map(|value| value.into_owned())),
         ),
         CopyFormatDto::Path => tree
             .path(node_id)
@@ -2493,6 +2494,15 @@ fn get_html_preview_scoped_inner(
     session_revision: u64,
 ) -> Result<HtmlPreviewDto, IpcError> {
     with_session_scope(state, scope_id, session_revision, |session, scope| {
+        let size_limited = || -> Result<HtmlPreviewDto, IpcError> {
+            if !session.is_current() {
+                return Err(file_changed());
+            }
+            Ok(HtmlPreviewDto {
+                html: None,
+                reason: Some(HtmlPreviewReasonDto::SizeLimit),
+            })
+        };
         let decoded = if let Some(scope) = scope {
             let node = scope
                 .tree
@@ -2501,10 +2511,13 @@ fn get_html_preview_scoped_inner(
             if node.kind != JsonKind::String {
                 return Err(invalid_request("node does not contain decoded HTML"));
             }
-            scope
+            let Some(decoded) = scope
                 .tree
-                .decoded_text(node_id)
-                .ok_or_else(|| invalid_request("node does not contain decoded HTML"))?
+                .decoded_text_limited(node_id, html_sanitizer::MAX_INPUT_BYTES)
+            else {
+                return size_limited();
+            };
+            decoded
         } else {
             match session {
                 OpenSession::Document(session) => {
@@ -2515,10 +2528,13 @@ fn get_html_preview_scoped_inner(
                     if node.kind != JsonKind::String {
                         return Err(invalid_request("node does not contain decoded HTML"));
                     }
-                    session
-                        .decoded_text(node_id)
+                    let Some(decoded) = session
+                        .decoded_text_limited(node_id, html_sanitizer::MAX_INPUT_BYTES)
                         .map_err(session_error)?
-                        .ok_or_else(|| invalid_request("node does not contain decoded HTML"))?
+                    else {
+                        return size_limited();
+                    };
+                    decoded
                 }
                 OpenSession::Entry(session) => {
                     require_selected(session)?;
@@ -2529,10 +2545,13 @@ fn get_html_preview_scoped_inner(
                     if node.kind != JsonKind::String {
                         return Err(invalid_request("node does not contain decoded HTML"));
                     }
-                    session
-                        .selected_decoded_text(node_id)
+                    let Some(decoded) = session
+                        .selected_decoded_text_limited(node_id, html_sanitizer::MAX_INPUT_BYTES)
                         .map_err(session_error)?
-                        .ok_or_else(|| invalid_request("node does not contain decoded HTML"))?
+                    else {
+                        return size_limited();
+                    };
+                    decoded
                 }
                 OpenSession::RawDocument { .. } => {
                     return Err(invalid_request(
@@ -2542,7 +2561,7 @@ fn get_html_preview_scoped_inner(
             }
         };
 
-        let preview = html_sanitizer::sanitize_html(decoded);
+        let preview = html_sanitizer::sanitize_html(decoded.as_ref());
         if !session.is_current() {
             return Err(file_changed());
         }
@@ -2551,6 +2570,36 @@ fn get_html_preview_scoped_inner(
             reason: preview.reason.map(html_preview_reason_dto),
         })
     })
+}
+
+fn materialize_nested_value(
+    decoded: Option<Cow<'_, str>>,
+    decoded_len: Option<usize>,
+    parent_cumulative_bytes: usize,
+) -> Result<(usize, usize, Vec<u8>), IpcError> {
+    let decoded = match decoded {
+        Some(decoded) => decoded.into_owned().into_bytes(),
+        None => {
+            if decoded_len.ok_or_else(|| invalid_request("node does not contain decoded text"))?
+                > MAX_INPUT_BYTES
+            {
+                return Err(invalid_request("nested JSON exceeds the 2 MiB layer limit"));
+            }
+            return Err(invalid_request(
+                "nested JSON exceeds the 8 MiB cumulative limit",
+            ));
+        }
+    };
+    let parsed_bytes = decoded.len();
+    let cumulative_bytes = parent_cumulative_bytes
+        .checked_add(parsed_bytes)
+        .ok_or_else(|| invalid_request("nested JSON exceeds the 8 MiB cumulative limit"))?;
+    if cumulative_bytes > MAX_CUMULATIVE_BYTES {
+        return Err(invalid_request(
+            "nested JSON exceeds the 8 MiB cumulative limit",
+        ));
+    }
+    Ok((parsed_bytes, cumulative_bytes, decoded))
 }
 
 fn open_nested_json_inner(
@@ -2578,13 +2627,32 @@ fn open_nested_json_inner(
         return Err(invalid_request("maxDepth must be between 1 and 10"));
     }
 
-    let (parent_depth, parent_cumulative_bytes, decoded) = match parent_scope_id {
+    let (parent_depth, parent_cumulative_bytes) = match parent_scope_id {
         Some(scope_id) => {
             let scope = guard
                 .nested
                 .find(scope_id)
                 .ok_or_else(|| nested_scope_not_found(scope_id))?;
             max_depth = scope.max_depth;
+            (scope.depth, scope.cumulative_bytes)
+        }
+        None => (0, 0),
+    };
+    let depth = parent_depth
+        .checked_add(1)
+        .ok_or_else(|| internal("nested JSON depth overflow"))?;
+    if depth > max_depth {
+        return Err(invalid_request("nested JSON depth limit reached"));
+    }
+    let materialize_limit =
+        MAX_INPUT_BYTES.min(MAX_CUMULATIVE_BYTES.saturating_sub(parent_cumulative_bytes));
+
+    let (parsed_bytes, cumulative_bytes, decoded) = match parent_scope_id {
+        Some(scope_id) => {
+            let scope = guard
+                .nested
+                .find(scope_id)
+                .ok_or_else(|| nested_scope_not_found(scope_id))?;
             let node = scope
                 .tree
                 .node(node_id)
@@ -2592,11 +2660,11 @@ fn open_nested_json_inner(
             if node.kind != JsonKind::String {
                 return Err(invalid_request("node does not contain decoded text"));
             }
-            let decoded = scope
-                .tree
-                .decoded_text(node_id)
-                .ok_or_else(|| invalid_request("node does not contain decoded text"))?;
-            (scope.depth, scope.cumulative_bytes, decoded)
+            materialize_nested_value(
+                scope.tree.decoded_text_limited(node_id, materialize_limit),
+                scope.tree.decoded_text_len(node_id),
+                parent_cumulative_bytes,
+            )?
         }
         None => match session {
             OpenSession::Document(session) => {
@@ -2607,11 +2675,13 @@ fn open_nested_json_inner(
                 if node.kind != JsonKind::String {
                     return Err(invalid_request("node does not contain decoded text"));
                 }
-                let decoded = session
-                    .decoded_text(node_id)
-                    .map_err(session_error)?
-                    .ok_or_else(|| invalid_request("node does not contain decoded text"))?;
-                (0, 0, decoded)
+                materialize_nested_value(
+                    session
+                        .decoded_text_limited(node_id, materialize_limit)
+                        .map_err(session_error)?,
+                    session.decoded_text_len(node_id).map_err(session_error)?,
+                    parent_cumulative_bytes,
+                )?
             }
             OpenSession::Entry(session) => {
                 require_selected(session)?;
@@ -2622,11 +2692,15 @@ fn open_nested_json_inner(
                 if node.kind != JsonKind::String {
                     return Err(invalid_request("node does not contain decoded text"));
                 }
-                let decoded = session
-                    .selected_decoded_text(node_id)
-                    .map_err(session_error)?
-                    .ok_or_else(|| invalid_request("node does not contain decoded text"))?;
-                (0, 0, decoded)
+                materialize_nested_value(
+                    session
+                        .selected_decoded_text_limited(node_id, materialize_limit)
+                        .map_err(session_error)?,
+                    session
+                        .selected_decoded_text_len(node_id)
+                        .map_err(session_error)?,
+                    parent_cumulative_bytes,
+                )?
             }
             OpenSession::RawDocument { .. } => {
                 return Err(invalid_request(
@@ -2636,25 +2710,7 @@ fn open_nested_json_inner(
         },
     };
 
-    let depth = parent_depth
-        .checked_add(1)
-        .ok_or_else(|| internal("nested JSON depth overflow"))?;
-    if depth > max_depth {
-        return Err(invalid_request("nested JSON depth limit reached"));
-    }
-    let parsed_bytes = decoded.len();
-    if parsed_bytes > MAX_INPUT_BYTES {
-        return Err(invalid_request("nested JSON exceeds the 2 MiB layer limit"));
-    }
-    let cumulative_bytes = parent_cumulative_bytes
-        .checked_add(parsed_bytes)
-        .ok_or_else(|| invalid_request("nested JSON exceeds the 8 MiB cumulative limit"))?;
-    if cumulative_bytes > MAX_CUMULATIVE_BYTES {
-        return Err(invalid_request(
-            "nested JSON exceeds the 8 MiB cumulative limit",
-        ));
-    }
-    let tree = TreeDocument::from_bytes(decoded.as_bytes().to_vec())
+    let tree = TreeDocument::from_bytes(decoded)
         .map_err(|_| invalid_request("node is not parseable nested JSON"))?;
     if !matches!(tree.root().kind, JsonKind::Object | JsonKind::Array) {
         return Err(invalid_request("node is not parseable nested JSON"));

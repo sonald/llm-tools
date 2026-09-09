@@ -1,6 +1,11 @@
+use std::borrow::Cow;
+
 use crate::json::{ChildLocator, JsonKind, JsonNode, ParsedJson, SourceSpan};
 
 const CANDIDATE_FIELDS: [&str; 3] = ["messages", "conversation", "conversations"];
+// Conversation discriminators are fixed protocol tokens; content/message
+// bodies are kept out of this helper and use their own bounded consumers.
+const MAX_DISCRIMINATOR_BYTES: usize = 32;
 
 #[cfg(test)]
 std::thread_local! {
@@ -326,8 +331,8 @@ fn inspect_message(parsed: &ParsedJson<'_>, message: &JsonNode, metrics: &mut Me
         match key {
             "role" | "from" => {
                 role_key = true;
-                if let Some(value) = string_value(child) {
-                    if is_recognized_role(value) {
+                if let Some(value) = string_value(parsed, child) {
+                    if is_recognized_role(&value) {
                         recognized_role = true;
                     }
                 }
@@ -350,7 +355,12 @@ fn inspect_message(parsed: &ParsedJson<'_>, message: &JsonNode, metrics: &mut Me
         let Some(key) = object_key(child) else {
             continue;
         };
-        if key == "role" && matches!(string_value(child), Some("developer" | "tool" | "function")) {
+        if key == "role"
+            && matches!(
+                string_value(parsed, child).as_deref(),
+                Some("developer" | "tool" | "function")
+            )
+        {
             openai_signal = true;
         }
     }
@@ -370,11 +380,11 @@ fn inspect_message(parsed: &ParsedJson<'_>, message: &JsonNode, metrics: &mut Me
             let Some(type_node) = direct_child_by_key(parsed, block, "type") else {
                 continue;
             };
-            let Some(block_type) = string_value(type_node) else {
+            let Some(block_type) = string_value(parsed, type_node) else {
                 continue;
             };
             if matches!(
-                block_type,
+                block_type.as_ref(),
                 "tool_use" | "tool_result" | "thinking" | "redacted_thinking"
             ) {
                 metrics.anthropic_signal = true;
@@ -417,10 +427,10 @@ fn object_key(node: &JsonNode) -> Option<&str> {
     }
 }
 
-fn string_value(node: &JsonNode) -> Option<&str> {
-    (node.kind == JsonKind::String)
-        .then_some(node.decoded.as_deref())
-        .flatten()
+fn string_value<'a>(parsed: &'a ParsedJson<'_>, node: &JsonNode) -> Option<Cow<'a, str>> {
+    parsed
+        .decoded_string_for_node(node)
+        .and_then(|decoded| decoded.to_cow_limit(MAX_DISCRIMINATOR_BYTES))
 }
 
 fn is_recognized_role(value: &str) -> bool {
@@ -650,7 +660,12 @@ fn conversation_page_impl(
             span: parsed.node_at(node_id).expect("role node must exist").span,
         });
         let role = role_source_id
-            .map(|node_id| normalized_role(parsed.node_at(node_id).expect("role node must exist")))
+            .map(|node_id| {
+                normalized_role(
+                    parsed,
+                    parsed.node_at(node_id).expect("role node must exist"),
+                )
+            })
             .unwrap_or(NormalizedRole::Unknown);
 
         match cursor.phase {
@@ -1024,11 +1039,11 @@ fn selected_role_node_cached(
     role_source_id
 }
 
-fn normalized_role(node: &JsonNode) -> NormalizedRole {
-    let Some(value) = string_value(node) else {
+fn normalized_role(parsed: &ParsedJson<'_>, node: &JsonNode) -> NormalizedRole {
+    let Some(value) = string_value(parsed, node) else {
         return NormalizedRole::Unknown;
     };
-    match value {
+    match value.as_ref() {
         "system" => NormalizedRole::System,
         "developer" => NormalizedRole::Developer,
         "user" | "human" => NormalizedRole::User,
@@ -1200,10 +1215,10 @@ fn anthropic_content_block(
     let Some(type_node) = direct_child_by_key(parsed, element, "type") else {
         return (GenericConversationCategory::Unknown, Some(refs));
     };
-    let Some(block_type) = string_value(type_node) else {
+    let Some(block_type) = string_value(parsed, type_node) else {
         return (GenericConversationCategory::Unknown, Some(refs));
     };
-    match block_type {
+    match block_type.as_ref() {
         "text" => {
             let Some(text) = direct_child_by_key(parsed, element, "text") else {
                 return (GenericConversationCategory::Unknown, Some(refs));
@@ -1383,7 +1398,7 @@ fn anthropic_system_element(
     let Some(type_node) = direct_child_by_key(parsed, element, "type") else {
         return unknown();
     };
-    if string_value(type_node) != Some("text") {
+    if string_value(parsed, type_node).as_deref() != Some("text") {
         return unknown();
     }
     let Some(text) = direct_child_by_key(parsed, element, "text") else {
@@ -1422,10 +1437,10 @@ fn openai_content_block(
     let Some(type_node) = direct_child_by_key(parsed, element, "type") else {
         return (GenericConversationCategory::Unknown, Some(refs));
     };
-    let Some(block_type) = string_value(type_node) else {
+    let Some(block_type) = string_value(parsed, type_node) else {
         return (GenericConversationCategory::Unknown, Some(refs));
     };
-    match block_type {
+    match block_type.as_ref() {
         "text" => {
             let Some(text_node) = direct_child_by_key(parsed, element, "text") else {
                 return (GenericConversationCategory::Unknown, Some(refs));
@@ -1504,7 +1519,7 @@ fn openai_tool_call(
         span: node.span,
     });
     let type_valid = direct_child_by_key(parsed, element, "type")
-        .is_none_or(|node| string_value(node) == Some("function"));
+        .is_none_or(|node| string_value(parsed, node).as_deref() == Some("function"));
     let valid = type_valid
         && name.is_some_and(|node| node.kind == JsonKind::String)
         && arguments.is_some_and(|node| matches!(node.kind, JsonKind::String | JsonKind::Object));
@@ -1631,6 +1646,15 @@ mod tests {
             ),
             ConversationKind::OpenAi
         );
+    }
+
+    #[test]
+    fn long_role_discriminator_is_unknown_without_materializing_protocol_body() {
+        let long_role = format!("user{}", "x".repeat(MAX_DISCRIMINATOR_BYTES));
+        let input = format!(
+            r#"{{"messages":[{{"role":"{long_role}","content":"x"}},{{"role":"assistant","content":"y"}}]}}"#
+        );
+        assert_eq!(kind(&input), ConversationKind::Possible);
     }
 
     #[test]
