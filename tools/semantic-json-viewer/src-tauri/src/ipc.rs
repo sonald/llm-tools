@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
-use crate::conversation::ConversationCandidate;
+use crate::conversation::{
+    ConversationCandidate, GenericConversationBlock, GenericConversationBlockKind,
+    GenericConversationCursor, GenericConversationPage, GenericConversationPhase,
+};
 use crate::document_session::DocumentSession;
 use crate::file_route::{
     route_read_limit, route_with_override, FileMode, OpenDecision, OverrideError,
@@ -385,6 +388,72 @@ pub struct ConversationCandidateDto {
     pub session_revision: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GenericConversationCursorKindDto {
+    GenericConversation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GenericConversationPhaseDto {
+    Message,
+    Fields,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GenericConversationCursorDto {
+    pub kind: GenericConversationCursorKindDto,
+    pub scope_root_id: usize,
+    pub candidate_node_id: usize,
+    pub message_index: usize,
+    pub phase: GenericConversationPhaseDto,
+    pub field_index: usize,
+    pub element_index: usize,
+    pub session_revision: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenericConversationBlockDto {
+    pub kind: String,
+    pub message_node_id: usize,
+    pub message_span_start: usize,
+    pub message_span_end: usize,
+    pub source_node_id: Option<usize>,
+    pub source_span_start: Option<usize>,
+    pub source_span_end: Option<usize>,
+    pub field_node_id: Option<usize>,
+    pub field_span_start: Option<usize>,
+    pub field_span_end: Option<usize>,
+    pub category: String,
+    pub role: String,
+    pub role_source_node_id: Option<usize>,
+    pub role_source_span_start: Option<usize>,
+    pub role_source_span_end: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationWrapperRefDto {
+    pub scope_root_id: usize,
+    pub scope_root_span_start: usize,
+    pub scope_root_span_end: usize,
+    pub candidate_node_id: usize,
+    pub candidate_span_start: usize,
+    pub candidate_span_end: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenericConversationPageDto {
+    pub blocks: Vec<GenericConversationBlockDto>,
+    pub has_more: bool,
+    pub next_cursor: Option<GenericConversationCursorDto>,
+    pub wrapper_ref: ConversationWrapperRefDto,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OversizedPreviewDto {
@@ -579,6 +648,28 @@ pub fn get_conversation_candidate(
         candidate_node_id,
         scope_id,
         session_revision,
+    )
+}
+
+#[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
+pub fn get_generic_conversation_blocks(
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    cursor: Option<GenericConversationCursorDto>,
+    limit: usize,
+    session_revision: u64,
+    scope_id: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<GenericConversationPageDto, IpcError> {
+    get_generic_conversation_blocks_inner(
+        &state,
+        scope_root_id,
+        candidate_node_id,
+        cursor,
+        limit,
+        session_revision,
+        scope_id,
     )
 }
 
@@ -938,6 +1029,52 @@ fn get_conversation_candidate_inner(
             scope_root.span,
             session_revision,
         ))
+    })
+}
+
+fn get_generic_conversation_blocks_inner(
+    state: &AppState,
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    cursor: Option<GenericConversationCursorDto>,
+    limit: usize,
+    session_revision: u64,
+    scope_id: Option<u64>,
+) -> Result<GenericConversationPageDto, IpcError> {
+    if limit == 0 {
+        return Err(invalid_request("limit must be greater than zero"));
+    }
+    let cursor = generic_conversation_cursor_from_dto(
+        cursor,
+        scope_root_id,
+        candidate_node_id,
+        session_revision,
+    )?;
+
+    with_session_scope(state, scope_id, session_revision, |session, scope| {
+        if scope.is_some() {
+            return Err(invalid_request(
+                "conversation blocks are unavailable for a nested JSON scope",
+            ));
+        }
+        let page = match session {
+            OpenSession::Document(session) => session
+                .generic_conversation_page(scope_root_id, candidate_node_id, cursor, limit)
+                .map_err(session_error)?,
+            OpenSession::Entry(session) => session
+                .selected_generic_conversation_page(scope_root_id, candidate_node_id, cursor, limit)
+                .map_err(session_error)?,
+            OpenSession::RawDocument { .. } => {
+                return Err(invalid_request(
+                    "command is unavailable for a raw-only document session",
+                ));
+            }
+        }
+        .ok_or_else(|| invalid_request("candidate is not a supported conversation array"))?;
+        if !session.is_current() {
+            return Err(file_changed());
+        }
+        generic_conversation_page_dto(page, scope_root_id, candidate_node_id, session_revision)
     })
 }
 
@@ -2741,6 +2878,143 @@ fn conversation_candidate_dto(
     }
 }
 
+fn generic_conversation_page_dto(
+    page: GenericConversationPage,
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    session_revision: u64,
+) -> Result<GenericConversationPageDto, IpcError> {
+    let next_cursor = page.next_cursor.map(|cursor| {
+        generic_conversation_cursor_dto(cursor, scope_root_id, candidate_node_id, session_revision)
+    });
+    let dto = GenericConversationPageDto {
+        blocks: page
+            .blocks
+            .into_iter()
+            .map(generic_conversation_block_dto)
+            .collect(),
+        has_more: page.has_more,
+        next_cursor,
+        wrapper_ref: conversation_wrapper_ref_dto(page.wrapper_ref),
+    };
+    if dto.has_more != dto.next_cursor.is_some() {
+        return Err(internal("conversation page cursor state is inconsistent"));
+    }
+    Ok(dto)
+}
+
+fn generic_conversation_cursor_dto(
+    cursor: GenericConversationCursor,
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    session_revision: u64,
+) -> GenericConversationCursorDto {
+    GenericConversationCursorDto {
+        kind: GenericConversationCursorKindDto::GenericConversation,
+        scope_root_id,
+        candidate_node_id,
+        message_index: cursor.message_index,
+        phase: match cursor.phase {
+            GenericConversationPhase::Message => GenericConversationPhaseDto::Message,
+            GenericConversationPhase::Fields => GenericConversationPhaseDto::Fields,
+        },
+        field_index: cursor.field_index,
+        element_index: cursor.element_index,
+        session_revision,
+    }
+}
+
+fn generic_conversation_cursor_from_dto(
+    cursor: Option<GenericConversationCursorDto>,
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    session_revision: u64,
+) -> Result<Option<GenericConversationCursor>, IpcError> {
+    cursor
+        .map(|cursor| {
+            if cursor.kind != GenericConversationCursorKindDto::GenericConversation
+                || cursor.scope_root_id != scope_root_id
+                || cursor.candidate_node_id != candidate_node_id
+                || cursor.session_revision != session_revision
+            {
+                return Err(invalid_request(
+                    "conversation cursor does not match the request",
+                ));
+            }
+            Ok(GenericConversationCursor {
+                message_index: cursor.message_index,
+                phase: match cursor.phase {
+                    GenericConversationPhaseDto::Message => GenericConversationPhase::Message,
+                    GenericConversationPhaseDto::Fields => GenericConversationPhase::Fields,
+                },
+                field_index: cursor.field_index,
+                element_index: cursor.element_index,
+            })
+        })
+        .transpose()
+}
+
+fn generic_conversation_block_dto(block: GenericConversationBlock) -> GenericConversationBlockDto {
+    let (source_node_id, source_span_start, source_span_end) =
+        block.source.map_or((None, None, None), |source| {
+            (
+                Some(source.node_id),
+                Some(source.span.start),
+                Some(source.span.end),
+            )
+        });
+    let (field_node_id, field_span_start, field_span_end) =
+        block.field.map_or((None, None, None), |field| {
+            (
+                Some(field.node_id),
+                Some(field.span.start),
+                Some(field.span.end),
+            )
+        });
+    let (role_source_node_id, role_source_span_start, role_source_span_end) =
+        block.role_source.map_or((None, None, None), |role| {
+            (
+                Some(role.node_id),
+                Some(role.span.start),
+                Some(role.span.end),
+            )
+        });
+    GenericConversationBlockDto {
+        kind: match block.kind {
+            GenericConversationBlockKind::Message => "message",
+            GenericConversationBlockKind::Source => "source",
+        }
+        .to_owned(),
+        message_node_id: block.message.node_id,
+        message_span_start: block.message.span.start,
+        message_span_end: block.message.span.end,
+        source_node_id,
+        source_span_start,
+        source_span_end,
+        field_node_id,
+        field_span_start,
+        field_span_end,
+        category: block.category.as_str().to_owned(),
+        role: block.role.as_str().to_owned(),
+        role_source_node_id,
+        role_source_span_start,
+        role_source_span_end,
+    }
+}
+
+fn conversation_wrapper_ref_dto(
+    wrapper: crate::conversation::ConversationWrapperRef,
+) -> ConversationWrapperRefDto {
+    ConversationWrapperRefDto {
+        scope_root_id: wrapper.scope_root.node_id,
+        scope_root_span_start: wrapper.scope_root.span.start,
+        scope_root_span_end: wrapper.scope_root.span.end,
+        candidate_node_id: wrapper.candidate.node_id,
+        candidate_span_start: wrapper.candidate.span.start,
+        candidate_span_end: wrapper.candidate.span.end,
+    }
+}
+
 fn text_chunk_dto(chunk: TextChunk) -> TextChunkDto {
     TextChunkDto {
         start: chunk.start,
@@ -3251,6 +3525,546 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code, "invalid_request");
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn generic_conversation_blocks_ipc_paginates_and_binds_cursor() {
+        let path = temp_path("ipc-generic-conversation-blocks");
+        fs::write(
+            &path,
+            br#"[{"role":"user","role":"assistant","content":["first","second"],"value":null,"tool_calls":{"name":"lookup"},"unknown":true},{"from":"human","content":[],"value":{"answer":42},"extra":"kept"},null]"#,
+        )
+        .unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let page = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            0,
+            None,
+            1,
+            opened.session_revision,
+            None,
+        )
+        .unwrap();
+        assert_eq!(page.blocks.len(), 1);
+        assert_eq!(page.blocks[0].kind, "message");
+        assert_eq!(page.blocks[0].role, "user");
+        assert!(page.blocks[0].role_source_node_id.is_some());
+        assert!(page.has_more);
+        assert_eq!(page.wrapper_ref.scope_root_id, 0);
+        assert_eq!(page.wrapper_ref.candidate_node_id, 0);
+        assert!(serde_json::to_vec(&page).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
+
+        let mut wrong_revision_cursor = page.next_cursor.clone().unwrap();
+        wrong_revision_cursor.session_revision += 1;
+        let wrong_revision = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            0,
+            Some(wrong_revision_cursor),
+            1,
+            opened.session_revision,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(wrong_revision.code, "invalid_request");
+
+        let mut cursor = page.next_cursor;
+        let mut blocks = page.blocks;
+        while let Some(next) = cursor {
+            let page = get_generic_conversation_blocks_inner(
+                &state,
+                0,
+                0,
+                Some(next),
+                100,
+                opened.session_revision,
+                None,
+            )
+            .unwrap();
+            blocks.extend(page.blocks);
+            cursor = page.next_cursor;
+            assert_eq!(page.has_more, cursor.is_some());
+        }
+        assert_eq!(
+            blocks
+                .iter()
+                .map(|block| (block.kind.as_str(), block.category.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("message", "message"),
+                ("source", "role"),
+                ("source", "content"),
+                ("source", "content"),
+                ("source", "value"),
+                ("source", "tool"),
+                ("source", "unknown"),
+                ("message", "message"),
+                ("source", "content"),
+                ("source", "value"),
+                ("source", "unknown"),
+                ("message", "message"),
+            ]
+        );
+
+        let stale_cursor = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            0,
+            None,
+            1,
+            opened.session_revision + 1,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(stale_cursor.code, "stale_session");
+
+        let wrong_candidate = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            1,
+            None,
+            1,
+            opened.session_revision,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(wrong_candidate.code, "invalid_request");
+
+        let malformed = GenericConversationCursorDto {
+            kind: GenericConversationCursorKindDto::GenericConversation,
+            scope_root_id: 0,
+            candidate_node_id: 0,
+            message_index: 0,
+            phase: GenericConversationPhaseDto::Fields,
+            field_index: 0,
+            element_index: 0,
+            session_revision: opened.session_revision,
+        };
+        let malformed_error = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            0,
+            Some(malformed),
+            1,
+            opened.session_revision,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(malformed_error.code, "invalid_request");
+
+        let zero = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            0,
+            None,
+            0,
+            opened.session_revision,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(zero.code, "invalid_request");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn generic_conversation_blocks_ipc_handles_large_message_array_with_bounded_page() {
+        let path = temp_path("ipc-generic-conversation-large");
+        let mut items = String::new();
+        for index in 0..10_000 {
+            if index > 0 {
+                items.push(',');
+            }
+            items.push_str(&format!(r#"{{"role":"user","content":"message-{index}"}}"#));
+        }
+        fs::write(&path, format!("[{items}]")).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let page = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            0,
+            None,
+            usize::MAX,
+            opened.session_revision,
+            None,
+        )
+        .unwrap();
+        assert_eq!(page.blocks.len(), 100);
+        assert!(page.has_more);
+        assert!(serde_json::to_vec(&page).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
+        assert_eq!(page.blocks[0].message_node_id, 1);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn generic_conversation_blocks_ipc_does_not_return_giant_text_or_unknown_fields() {
+        let path = temp_path("ipc-generic-conversation-giant-fields");
+        let giant = "x".repeat(2 * 1024 * 1024);
+        let input = format!(
+            r#"[{{"role":"user","content":"{giant}","unknown":"{giant}"}},{{"role":"assistant","content":"reply"}}]"#
+        );
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let page = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            0,
+            None,
+            100,
+            opened.session_revision,
+            None,
+        )
+        .unwrap();
+        let payload = serde_json::to_vec(&page).unwrap();
+        assert!(payload.len() < MAX_IPC_PAYLOAD_BYTES);
+        assert!(!payload
+            .windows(128)
+            .any(|window| window.iter().all(|byte| *byte == b'x')));
+        assert!(page.blocks.iter().any(|block| block.category == "unknown"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn generic_conversation_blocks_ipc_rejects_cross_item_cursor_and_file_changes() {
+        let path = temp_path("ipc-generic-conversation-collection");
+        fs::write(
+            &path,
+            br#"[{"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"reply"}]},{"messages":[{"role":"user","content":"second"},{"role":"assistant","content":"reply"}]}]"#,
+        )
+        .unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let first_item = child_id(&state, None, 0, "[0]", opened.session_revision);
+        let second_item = child_id(&state, None, 0, "[1]", opened.session_revision);
+        let first_candidate = child_id(
+            &state,
+            None,
+            first_item,
+            "messages",
+            opened.session_revision,
+        );
+        let second_candidate = child_id(
+            &state,
+            None,
+            second_item,
+            "messages",
+            opened.session_revision,
+        );
+        let first = get_generic_conversation_blocks_inner(
+            &state,
+            first_item,
+            first_candidate,
+            None,
+            1,
+            opened.session_revision,
+            None,
+        )
+        .unwrap();
+        let cursor = first.next_cursor.unwrap();
+        let crossed = get_generic_conversation_blocks_inner(
+            &state,
+            second_item,
+            second_candidate,
+            Some(cursor),
+            1,
+            opened.session_revision,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(crossed.code, "invalid_request");
+
+        let stale = get_generic_conversation_blocks_inner(
+            &state,
+            first_item,
+            first_candidate,
+            None,
+            1,
+            opened.session_revision + 1,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(stale.code, "stale_session");
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"\n")
+            .unwrap();
+        let changed = get_generic_conversation_blocks_inner(
+            &state,
+            first_item,
+            first_candidate,
+            None,
+            1,
+            opened.session_revision,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(changed.code, "file_changed");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn generic_conversation_blocks_ipc_requires_a_selected_jsonl_entry() {
+        let path = temp_jsonl_path("ipc-generic-conversation-entry");
+        fs::write(
+            &path,
+            b"{\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"assistant\",\"content\":\"b\"}]}\n",
+        )
+        .unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let unselected = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            0,
+            None,
+            1,
+            opened.session_revision,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(unselected.code, "invalid_request");
+        let selection = select_entry_inner(&state, 0, opened.session_revision).unwrap();
+        let messages = child_id(&state, None, 0, "messages", selection.session_revision);
+        let page = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            messages,
+            None,
+            1,
+            selection.session_revision,
+            None,
+        )
+        .unwrap();
+        assert_eq!(page.blocks[0].kind, "message");
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"\n").unwrap();
+        file.flush().unwrap();
+        let changed = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            messages,
+            None,
+            1,
+            selection.session_revision,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(changed.code, "file_changed");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn generic_conversation_blocks_ipc_consumes_generated_openai_and_anthropic_sources() {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system clock is before Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "semantic-json-viewer-ipc-generic-fixtures-{}-{nanos}",
+            std::process::id()
+        ));
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/generate-semantic-fixtures.mjs");
+        let output = Command::new("node")
+            .arg(script)
+            .arg(&directory)
+            .output()
+            .expect("node must be available to generate conversation fixtures");
+        assert!(
+            output.status.success(),
+            "fixture generation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases = [
+            ("openai-conversation.json", "messages", "tool"),
+            ("anthropic-system-string.json", "messages", "unknown"),
+            ("anthropic-system-blocks.json", "messages", "unknown"),
+        ];
+        let state = AppState::default();
+        for (name, label, expected_category) in cases {
+            let summary = open_file_inner(
+                &state,
+                directory
+                    .join(name)
+                    .to_str()
+                    .expect("fixture path is UTF-8"),
+            )
+            .unwrap();
+            let root_id = summary.root.as_ref().unwrap().id;
+            let candidate_id = child_id(&state, None, root_id, label, summary.session_revision);
+            let page = get_generic_conversation_blocks_inner(
+                &state,
+                root_id,
+                candidate_id,
+                None,
+                100,
+                summary.session_revision,
+                None,
+            )
+            .unwrap();
+            assert!(
+                page.blocks
+                    .iter()
+                    .any(|block| block.category == expected_category),
+                "{name}"
+            );
+            for block in page
+                .blocks
+                .iter()
+                .filter(|block| matches!(block.category.as_str(), "tool" | "unknown"))
+            {
+                assert!(block.source_node_id.is_some(), "{name} source node");
+                assert!(block.field_node_id.is_some(), "{name} field node");
+                assert!(
+                    block.source_span_start.unwrap() >= block.message_span_start
+                        && block.source_span_end.unwrap() <= block.message_span_end,
+                    "{name} source span"
+                );
+            }
+            assert!(serde_json::to_vec(&page).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
+        }
+        fs::remove_dir_all(directory).expect("generated fixture directory should be removable");
+    }
+
+    #[test]
+    fn generic_conversation_blocks_ipc_projects_generated_f05_roles_and_tail_sources() {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system clock is before Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "semantic-json-viewer-ipc-f05-projection-fixtures-{}-{nanos}",
+            std::process::id()
+        ));
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/generate-semantic-fixtures.mjs");
+        let output = Command::new("node")
+            .arg(script)
+            .arg(&directory)
+            .output()
+            .expect("node must be available to generate conversation fixtures");
+        assert!(
+            output.status.success(),
+            "fixture generation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let state = AppState::default();
+        let threshold_path = directory.join("generic-threshold-80.json");
+        let threshold = open_file_inner(
+            &state,
+            threshold_path.to_str().expect("fixture path is UTF-8"),
+        )
+        .unwrap();
+        let threshold_root = threshold.root.as_ref().unwrap().id;
+        let message_nodes = get_children_scoped_inner(
+            &state,
+            threshold_root,
+            0,
+            200,
+            None,
+            threshold.session_revision,
+        )
+        .unwrap()
+        .nodes;
+        assert_eq!(message_nodes.len(), 100);
+        let mut cursor = None;
+        let mut blocks = Vec::new();
+        loop {
+            let page = get_generic_conversation_blocks_inner(
+                &state,
+                threshold_root,
+                threshold_root,
+                cursor,
+                100,
+                threshold.session_revision,
+                None,
+            )
+            .unwrap();
+            blocks.extend(page.blocks);
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        let projected_message_ids: Vec<_> = blocks
+            .iter()
+            .filter(|block| block.kind == "message")
+            .map(|block| block.message_node_id)
+            .collect();
+        let expected_message_ids: Vec<_> = message_nodes.iter().map(|node| node.id).collect();
+        assert_eq!(projected_message_ids, expected_message_ids);
+
+        let tail_ids = &expected_message_ids[80..];
+        let mut expected_tail_source_ids = Vec::new();
+        for message_id in tail_ids {
+            let fields = get_children_scoped_inner(
+                &state,
+                *message_id,
+                0,
+                200,
+                None,
+                threshold.session_revision,
+            )
+            .unwrap()
+            .nodes;
+            expected_tail_source_ids.extend(fields.into_iter().map(|field| field.id));
+        }
+        let actual_tail_sources: Vec<_> = blocks
+            .iter()
+            .filter(|block| block.kind == "source" && tail_ids.contains(&block.message_node_id))
+            .map(|block| {
+                assert_eq!(block.category, "unknown");
+                block.source_node_id.unwrap()
+            })
+            .collect();
+        assert_eq!(actual_tail_sources, expected_tail_source_ids);
+        assert!(serde_json::to_vec(&blocks).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
+
+        let from_path = directory.join("generic-from-value.json");
+        let from_summary =
+            open_file_inner(&state, from_path.to_str().expect("fixture path is UTF-8")).unwrap();
+        let from_root = from_summary.root.as_ref().unwrap().id;
+        let from_candidate = child_id(
+            &state,
+            None,
+            from_root,
+            "conversation",
+            from_summary.session_revision,
+        );
+        let from_page = get_generic_conversation_blocks_inner(
+            &state,
+            from_root,
+            from_candidate,
+            None,
+            100,
+            from_summary.session_revision,
+            None,
+        )
+        .unwrap();
+        let roles: Vec<_> = from_page
+            .blocks
+            .iter()
+            .filter(|block| block.kind == "message")
+            .map(|block| block.role.as_str())
+            .collect();
+        assert_eq!(roles, ["user", "assistant", "user", "assistant"]);
+        assert_eq!(
+            from_page
+                .blocks
+                .iter()
+                .filter(|block| block.category == "value")
+                .count(),
+            4
+        );
+
+        fs::remove_dir_all(directory).expect("generated fixture directory should be removable");
     }
 
     #[test]

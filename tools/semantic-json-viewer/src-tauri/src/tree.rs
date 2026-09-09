@@ -1,6 +1,8 @@
 use std::str;
 
-use crate::conversation::{self, ConversationCandidate};
+use crate::conversation::{
+    self, ConversationCandidate, GenericConversationCursor, GenericConversationPage,
+};
 use crate::json::{
     parse_json_owned, ChildLocator, JsonKind, JsonNode, ParseError, ParsedJson, SourceSpan,
 };
@@ -13,12 +15,14 @@ const MAX_TEXT_CHUNK_BYTES: usize = 128 * 1024;
 
 pub struct TreeDocument {
     parsed: ParsedJson<'static>,
+    role_cache: std::sync::Mutex<Option<crate::conversation::RoleCache>>,
 }
 
 impl TreeDocument {
     pub fn from_bytes(input: Vec<u8>) -> Result<TreeDocument, ParseError> {
         Ok(TreeDocument {
             parsed: parse_json_owned(input)?,
+            role_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -163,6 +167,23 @@ impl TreeDocument {
         candidate_node_id: usize,
     ) -> Option<ConversationCandidate> {
         conversation::detect_candidate(&self.parsed, scope_root_id, candidate_node_id)
+    }
+
+    pub fn generic_conversation_page(
+        &self,
+        scope_root_id: usize,
+        candidate_node_id: usize,
+        cursor: Option<GenericConversationCursor>,
+        limit: usize,
+    ) -> Option<GenericConversationPage> {
+        conversation::generic_conversation_page_with_role_cache(
+            &self.parsed,
+            scope_root_id,
+            candidate_node_id,
+            cursor,
+            limit,
+            &self.role_cache,
+        )
     }
 
     fn projection(&self, id: usize, node: &JsonNode) -> NodeProjection {

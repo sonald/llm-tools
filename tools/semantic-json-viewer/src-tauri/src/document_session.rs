@@ -1,7 +1,9 @@
 use std::io::{self, ErrorKind};
 use std::path::Path;
 
-use crate::conversation::ConversationCandidate;
+use crate::conversation::{
+    ConversationCandidate, GenericConversationCursor, GenericConversationPage,
+};
 use crate::file_source::FileSource;
 use crate::json::ParseError;
 use crate::search::{SearchError, SearchPage, SearchRequest};
@@ -183,6 +185,19 @@ impl DocumentSession {
         Ok(self
             .tree
             .conversation_candidate(scope_root_id, candidate_node_id))
+    }
+
+    pub fn generic_conversation_page(
+        &self,
+        scope_root_id: usize,
+        candidate_node_id: usize,
+        cursor: Option<GenericConversationCursor>,
+        limit: usize,
+    ) -> io::Result<Option<GenericConversationPage>> {
+        self.ensure_current()?;
+        Ok(self
+            .tree
+            .generic_conversation_page(scope_root_id, candidate_node_id, cursor, limit))
     }
 }
 

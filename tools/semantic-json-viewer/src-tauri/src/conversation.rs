@@ -2,6 +2,11 @@ use crate::json::{ChildLocator, JsonKind, JsonNode, ParsedJson, SourceSpan};
 
 const CANDIDATE_FIELDS: [&str; 3] = ["messages", "conversation", "conversations"];
 
+#[cfg(test)]
+std::thread_local! {
+    static ROLE_SCAN_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConversationKind {
     None,
@@ -33,6 +38,108 @@ pub struct ConversationCandidate {
     pub kind: ConversationKind,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenericConversationBlockKind {
+    Message,
+    Source,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenericConversationCategory {
+    Message,
+    Role,
+    Content,
+    Value,
+    Tool,
+    Unknown,
+}
+
+impl GenericConversationCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::Role => "role",
+            Self::Content => "content",
+            Self::Value => "value",
+            Self::Tool => "tool",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NormalizedRole {
+    Unknown,
+    System,
+    Developer,
+    User,
+    Assistant,
+    Tool,
+}
+
+impl NormalizedRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::System => "system",
+            Self::Developer => "developer",
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::Tool => "tool",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConversationSourceRef {
+    pub node_id: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenericConversationBlock {
+    pub kind: GenericConversationBlockKind,
+    pub message: ConversationSourceRef,
+    pub source: Option<ConversationSourceRef>,
+    pub field: Option<ConversationSourceRef>,
+    pub category: GenericConversationCategory,
+    pub role: NormalizedRole,
+    pub role_source: Option<ConversationSourceRef>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenericConversationPhase {
+    Message,
+    Fields,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenericConversationCursor {
+    pub message_index: usize,
+    pub phase: GenericConversationPhase,
+    pub field_index: usize,
+    pub element_index: usize,
+}
+
+pub(crate) struct RoleCache {
+    message_id: usize,
+    role_source_id: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConversationWrapperRef {
+    pub scope_root: ConversationSourceRef,
+    pub candidate: ConversationSourceRef,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenericConversationPage {
+    pub blocks: Vec<GenericConversationBlock>,
+    pub has_more: bool,
+    pub next_cursor: Option<GenericConversationCursor>,
+    pub wrapper_ref: ConversationWrapperRef,
+}
+
 /// Detect one explicitly selected candidate.
 ///
 /// `scope_root_id` is the document/entry root or a direct item of a root
@@ -45,13 +152,31 @@ pub fn detect_candidate(
     scope_root_id: usize,
     candidate_node_id: usize,
 ) -> Option<ConversationCandidate> {
+    let candidate = candidate_array(parsed, scope_root_id, candidate_node_id)?;
+    let kind = classify_array(parsed, candidate);
+    Some(ConversationCandidate {
+        node_id: candidate_node_id,
+        span: candidate.span,
+        message_count: candidate.children.len(),
+        kind,
+    })
+}
+
+/// Return the selected candidate array without classifying its contents.
+/// Paging uses this shape-only check so every page does not rescan the full
+/// message array.
+pub fn candidate_array<'a>(
+    parsed: &'a ParsedJson<'_>,
+    scope_root_id: usize,
+    candidate_node_id: usize,
+) -> Option<&'a JsonNode> {
     let scope_root = parsed.node_at(scope_root_id)?;
     if scope_root_id != parsed.root().index() && !is_direct_collection_item(parsed, scope_root_id) {
         return None;
     }
 
     if scope_root_id == candidate_node_id && scope_root.kind == JsonKind::Array {
-        return Some(candidate_for_array(parsed, candidate_node_id));
+        return Some(scope_root);
     }
     if scope_root.kind != JsonKind::Object {
         return None;
@@ -65,7 +190,7 @@ pub fn detect_candidate(
             ChildLocator::ObjectKey { key, .. } => CANDIDATE_FIELDS.contains(&key.as_str()),
             ChildLocator::Root | ChildLocator::ArrayIndex(_) => false,
         };
-    is_direct_named_array.then(|| candidate_for_array(parsed, candidate_node_id))
+    is_direct_named_array.then_some(candidate)
 }
 
 fn is_direct_collection_item(parsed: &ParsedJson<'_>, node_id: usize) -> bool {
@@ -76,19 +201,6 @@ fn is_direct_collection_item(parsed: &ParsedJson<'_>, node_id: usize) -> bool {
         return false;
     };
     parent.index() == parsed.root().index() && parsed.node(parent).kind == JsonKind::Array
-}
-
-fn candidate_for_array(parsed: &ParsedJson<'_>, node_id: usize) -> ConversationCandidate {
-    let node = parsed
-        .node_at(node_id)
-        .expect("candidate array node must exist");
-    let kind = classify_array(parsed, node);
-    ConversationCandidate {
-        node_id,
-        span: node.span,
-        message_count: node.children.len(),
-        kind,
-    }
 }
 
 #[derive(Default)]
@@ -136,9 +248,11 @@ fn classify_array(parsed: &ParsedJson<'_>, array: &JsonNode) -> ConversationKind
     }
 
     let possible = metrics.possible_signal;
-    possible
-        .then_some(ConversationKind::Possible)
-        .unwrap_or(ConversationKind::None)
+    if possible {
+        ConversationKind::Possible
+    } else {
+        ConversationKind::None
+    }
 }
 
 fn required_ratio(count: usize) -> usize {
@@ -252,7 +366,7 @@ fn object_key(node: &JsonNode) -> Option<&str> {
 
 fn string_value(node: &JsonNode) -> Option<&str> {
     (node.kind == JsonKind::String)
-        .then(|| node.decoded.as_deref())
+        .then_some(node.decoded.as_deref())
         .flatten()
 }
 
@@ -270,6 +384,353 @@ fn is_recognized_role(value: &str) -> bool {
             | "bot"
             | "model"
     )
+}
+
+const MAX_GENERIC_BLOCKS: usize = 100;
+
+/// Page a selected message array without materializing message bodies or the
+/// complete block list. The caller must bind cursor identity (revision,
+/// scope root, and candidate) at the IPC boundary.
+pub fn generic_conversation_page(
+    parsed: &ParsedJson<'_>,
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    cursor: Option<GenericConversationCursor>,
+    limit: usize,
+) -> Option<GenericConversationPage> {
+    generic_conversation_page_impl(
+        parsed,
+        scope_root_id,
+        candidate_node_id,
+        cursor,
+        limit,
+        None,
+    )
+}
+
+pub(crate) fn generic_conversation_page_with_role_cache(
+    parsed: &ParsedJson<'_>,
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    cursor: Option<GenericConversationCursor>,
+    limit: usize,
+    role_cache: &std::sync::Mutex<Option<RoleCache>>,
+) -> Option<GenericConversationPage> {
+    generic_conversation_page_impl(
+        parsed,
+        scope_root_id,
+        candidate_node_id,
+        cursor,
+        limit,
+        Some(role_cache),
+    )
+}
+
+fn generic_conversation_page_impl(
+    parsed: &ParsedJson<'_>,
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    cursor: Option<GenericConversationCursor>,
+    limit: usize,
+    role_cache: Option<&std::sync::Mutex<Option<RoleCache>>>,
+) -> Option<GenericConversationPage> {
+    if limit == 0 {
+        return None;
+    }
+    let candidate = candidate_array(parsed, scope_root_id, candidate_node_id)?;
+    let scope_root = parsed.node_at(scope_root_id)?;
+    let mut cursor = cursor.unwrap_or(GenericConversationCursor {
+        message_index: 0,
+        phase: GenericConversationPhase::Message,
+        field_index: 0,
+        element_index: 0,
+    });
+    if !cursor_position_is_valid(parsed, candidate, cursor, role_cache) {
+        return None;
+    }
+
+    let mut blocks = Vec::with_capacity(limit.min(MAX_GENERIC_BLOCKS));
+    let page_limit = limit.min(MAX_GENERIC_BLOCKS);
+    while blocks.len() < page_limit {
+        normalize_cursor(parsed, candidate, &mut cursor, role_cache);
+        if cursor.message_index >= candidate.children.len() {
+            break;
+        }
+
+        let message_id = candidate.children[cursor.message_index].index();
+        let message = parsed.node(candidate.children[cursor.message_index]);
+        let message_ref = ConversationSourceRef {
+            node_id: message_id,
+            span: message.span,
+        };
+        let role_source_id = selected_role_node_cached(parsed, message_id, message, role_cache);
+        let role_source = role_source_id.map(|node_id| ConversationSourceRef {
+            node_id,
+            span: parsed.node_at(node_id).expect("role node must exist").span,
+        });
+        let role = role_source_id
+            .map(|node_id| normalized_role(parsed.node_at(node_id).expect("role node must exist")))
+            .unwrap_or(NormalizedRole::Unknown);
+
+        match cursor.phase {
+            GenericConversationPhase::Message => {
+                blocks.push(GenericConversationBlock {
+                    kind: GenericConversationBlockKind::Message,
+                    message: message_ref,
+                    source: None,
+                    field: None,
+                    category: GenericConversationCategory::Message,
+                    role,
+                    role_source,
+                });
+                cursor.phase = if message.kind == JsonKind::Object {
+                    GenericConversationPhase::Fields
+                } else {
+                    advance_message(&mut cursor);
+                    GenericConversationPhase::Message
+                };
+            }
+            GenericConversationPhase::Fields => {
+                let field_id = message.children[cursor.field_index].index();
+                let field = parsed.node(message.children[cursor.field_index]);
+                let field_ref = ConversationSourceRef {
+                    node_id: field_id,
+                    span: field.span,
+                };
+                let category = field_category(field);
+                let array_elements = content_or_value_array(field);
+                if let Some(elements) = array_elements {
+                    let element_id = elements[cursor.element_index].index();
+                    let element = parsed.node(elements[cursor.element_index]);
+                    blocks.push(GenericConversationBlock {
+                        kind: GenericConversationBlockKind::Source,
+                        message: message_ref,
+                        source: Some(ConversationSourceRef {
+                            node_id: element_id,
+                            span: element.span,
+                        }),
+                        field: Some(field_ref),
+                        category,
+                        role,
+                        role_source,
+                    });
+                    cursor.element_index += 1;
+                } else {
+                    blocks.push(GenericConversationBlock {
+                        kind: GenericConversationBlockKind::Source,
+                        message: message_ref,
+                        source: Some(field_ref),
+                        field: Some(field_ref),
+                        category,
+                        role,
+                        role_source,
+                    });
+                    cursor.field_index += 1;
+                }
+            }
+        }
+    }
+
+    normalize_cursor(parsed, candidate, &mut cursor, role_cache);
+    let has_more = cursor.message_index < candidate.children.len();
+    Some(GenericConversationPage {
+        blocks,
+        has_more,
+        next_cursor: has_more.then_some(cursor),
+        wrapper_ref: ConversationWrapperRef {
+            scope_root: ConversationSourceRef {
+                node_id: scope_root_id,
+                span: scope_root.span,
+            },
+            candidate: ConversationSourceRef {
+                node_id: candidate_node_id,
+                span: candidate.span,
+            },
+        },
+    })
+}
+
+fn cursor_position_is_valid(
+    parsed: &ParsedJson<'_>,
+    candidate: &JsonNode,
+    cursor: GenericConversationCursor,
+    role_cache: Option<&std::sync::Mutex<Option<RoleCache>>>,
+) -> bool {
+    if cursor.message_index > candidate.children.len() {
+        return false;
+    }
+    if cursor.message_index == candidate.children.len() {
+        return matches!(cursor.phase, GenericConversationPhase::Message)
+            && cursor.field_index == 0
+            && cursor.element_index == 0;
+    }
+
+    let message = parsed.node(candidate.children[cursor.message_index]);
+    match cursor.phase {
+        GenericConversationPhase::Message => cursor.field_index == 0 && cursor.element_index == 0,
+        GenericConversationPhase::Fields => {
+            if message.kind != JsonKind::Object || cursor.field_index >= message.children.len() {
+                return false;
+            }
+            let field = parsed.node(message.children[cursor.field_index]);
+            if selected_role_node_cached(
+                parsed,
+                candidate.children[cursor.message_index].index(),
+                message,
+                role_cache,
+            ) == Some(message.children[cursor.field_index].index())
+            {
+                return false;
+            }
+            match content_or_value_array(field) {
+                Some(elements) => cursor.element_index < elements.len(),
+                None => cursor.element_index == 0,
+            }
+        }
+    }
+}
+
+fn normalize_cursor(
+    parsed: &ParsedJson<'_>,
+    candidate: &JsonNode,
+    cursor: &mut GenericConversationCursor,
+    role_cache: Option<&std::sync::Mutex<Option<RoleCache>>>,
+) {
+    loop {
+        if cursor.message_index >= candidate.children.len() {
+            cursor.message_index = candidate.children.len();
+            cursor.phase = GenericConversationPhase::Message;
+            cursor.field_index = 0;
+            cursor.element_index = 0;
+            return;
+        }
+        if cursor.phase == GenericConversationPhase::Message {
+            return;
+        }
+
+        let message = parsed.node(candidate.children[cursor.message_index]);
+        if message.kind != JsonKind::Object || cursor.field_index >= message.children.len() {
+            advance_message(cursor);
+            continue;
+        }
+        let field = parsed.node(message.children[cursor.field_index]);
+        if selected_role_node_cached(
+            parsed,
+            candidate.children[cursor.message_index].index(),
+            message,
+            role_cache,
+        ) == Some(message.children[cursor.field_index].index())
+        {
+            cursor.field_index += 1;
+            cursor.element_index = 0;
+            continue;
+        }
+        if let Some(elements) = content_or_value_array(field) {
+            if cursor.element_index >= elements.len() {
+                cursor.field_index += 1;
+                cursor.element_index = 0;
+                continue;
+            }
+        } else {
+            cursor.element_index = 0;
+        }
+        return;
+    }
+}
+
+fn advance_message(cursor: &mut GenericConversationCursor) {
+    cursor.message_index += 1;
+    cursor.phase = GenericConversationPhase::Message;
+    cursor.field_index = 0;
+    cursor.element_index = 0;
+}
+
+fn selected_role_node(parsed: &ParsedJson<'_>, message: &JsonNode) -> Option<usize> {
+    #[cfg(test)]
+    ROLE_SCAN_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    message
+        .children
+        .iter()
+        .copied()
+        .find(|id| object_key(parsed.node(*id)) == Some("role"))
+        .or_else(|| {
+            message
+                .children
+                .iter()
+                .copied()
+                .find(|id| object_key(parsed.node(*id)) == Some("from"))
+        })
+        .map(|id| id.index())
+}
+
+#[cfg(test)]
+fn reset_role_scan_count() {
+    ROLE_SCAN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn role_scan_count() -> usize {
+    ROLE_SCAN_COUNT.with(std::cell::Cell::get)
+}
+
+fn selected_role_node_cached(
+    parsed: &ParsedJson<'_>,
+    message_id: usize,
+    message: &JsonNode,
+    role_cache: Option<&std::sync::Mutex<Option<RoleCache>>>,
+) -> Option<usize> {
+    let Some(role_cache) = role_cache else {
+        return selected_role_node(parsed, message);
+    };
+    let Ok(mut cache) = role_cache.lock() else {
+        return selected_role_node(parsed, message);
+    };
+    if let Some(entry) = cache.as_ref() {
+        if entry.message_id == message_id {
+            return entry.role_source_id;
+        }
+    }
+    let role_source_id = selected_role_node(parsed, message);
+    *cache = Some(RoleCache {
+        message_id,
+        role_source_id,
+    });
+    role_source_id
+}
+
+fn normalized_role(node: &JsonNode) -> NormalizedRole {
+    let Some(value) = string_value(node) else {
+        return NormalizedRole::Unknown;
+    };
+    match value {
+        "system" => NormalizedRole::System,
+        "developer" => NormalizedRole::Developer,
+        "user" | "human" => NormalizedRole::User,
+        "assistant" | "gpt" | "bot" | "model" => NormalizedRole::Assistant,
+        "tool" | "function" => NormalizedRole::Tool,
+        _ => NormalizedRole::Unknown,
+    }
+}
+
+fn field_category(node: &JsonNode) -> GenericConversationCategory {
+    match object_key(node) {
+        Some("role" | "from") => GenericConversationCategory::Role,
+        Some("content") => GenericConversationCategory::Content,
+        Some("value") => GenericConversationCategory::Value,
+        Some("tool_calls" | "function_call" | "tool_call_id") => GenericConversationCategory::Tool,
+        _ => GenericConversationCategory::Unknown,
+    }
+}
+
+fn content_or_value_array(node: &JsonNode) -> Option<&[crate::json::NodeId]> {
+    if !matches!(object_key(node), Some("content" | "value")) || node.kind != JsonKind::Array {
+        return None;
+    }
+    if node.children.is_empty() {
+        None
+    } else {
+        Some(node.children.as_slice())
+    }
 }
 
 #[cfg(test)]
@@ -556,5 +1017,251 @@ mod tests {
             );
         }
         fs::remove_dir_all(directory).expect("generated fixture directory should be removable");
+    }
+
+    #[test]
+    fn generic_projection_preserves_message_and_source_order() {
+        let input = r#"[{"role":"user","role":"assistant","content":["first","second"],"value":null,"tool_calls":{"name":"lookup"},"unknown":true},null,{"from":"human","content":[],"value":{"answer":42},"extra":"kept"}]"#;
+        let parsed = parse_json(input.as_bytes()).unwrap();
+        let root = parsed.root().index();
+        let mut cursor = None;
+        let mut blocks = Vec::new();
+        loop {
+            let page = generic_conversation_page(&parsed, root, root, cursor, 1).unwrap();
+            blocks.extend(page.blocks);
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+
+        assert_eq!(blocks[0].kind, GenericConversationBlockKind::Message);
+        assert_eq!(blocks[0].role, NormalizedRole::User);
+        assert!(blocks[0].role_source.is_some());
+        assert_eq!(
+            blocks
+                .iter()
+                .map(|block| (block.kind, block.category))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    GenericConversationBlockKind::Message,
+                    GenericConversationCategory::Message
+                ),
+                (
+                    GenericConversationBlockKind::Source,
+                    GenericConversationCategory::Role
+                ),
+                (
+                    GenericConversationBlockKind::Source,
+                    GenericConversationCategory::Content
+                ),
+                (
+                    GenericConversationBlockKind::Source,
+                    GenericConversationCategory::Content
+                ),
+                (
+                    GenericConversationBlockKind::Source,
+                    GenericConversationCategory::Value
+                ),
+                (
+                    GenericConversationBlockKind::Source,
+                    GenericConversationCategory::Tool
+                ),
+                (
+                    GenericConversationBlockKind::Source,
+                    GenericConversationCategory::Unknown
+                ),
+                (
+                    GenericConversationBlockKind::Message,
+                    GenericConversationCategory::Message
+                ),
+                (
+                    GenericConversationBlockKind::Message,
+                    GenericConversationCategory::Message
+                ),
+                (
+                    GenericConversationBlockKind::Source,
+                    GenericConversationCategory::Content
+                ),
+                (
+                    GenericConversationBlockKind::Source,
+                    GenericConversationCategory::Value
+                ),
+                (
+                    GenericConversationBlockKind::Source,
+                    GenericConversationCategory::Unknown
+                ),
+            ]
+        );
+        assert_eq!(blocks[8].role, NormalizedRole::User);
+        assert_eq!(
+            blocks[9].source.unwrap().node_id,
+            blocks[9].field.unwrap().node_id
+        );
+        assert!(blocks
+            .windows(2)
+            .all(|pair| pair[0].message.span.start <= pair[1].message.span.start));
+    }
+
+    #[test]
+    fn generic_projection_pages_long_content_without_duplicates_or_leaks() {
+        let mut elements = String::new();
+        for index in 0..205 {
+            if index > 0 {
+                elements.push(',');
+            }
+            elements.push_str(&format!("\"element-{index}\""));
+        }
+        let input = format!(r#"{{"messages":[{{"role":"user","content":[{elements}]}}]}}"#);
+        let parsed = parse_json(input.as_bytes()).unwrap();
+        let root = parsed.root().index();
+        let candidate = parsed.node(parsed.root()).children[0].index();
+        let mut cursor = None;
+        let mut sources = Vec::new();
+        let mut page_count = 0;
+        loop {
+            let page = generic_conversation_page(&parsed, root, candidate, cursor, 1).unwrap();
+            page_count += 1;
+            for block in page.blocks {
+                if block.kind == GenericConversationBlockKind::Source {
+                    sources.push(block.source.unwrap().node_id);
+                }
+            }
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        assert_eq!(page_count, 206);
+        assert_eq!(sources.len(), 205);
+        let mut sorted = sources.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), sources.len());
+        assert!(generic_conversation_page(&parsed, root, candidate, None, 0).is_none());
+        let page = generic_conversation_page(&parsed, root, candidate, None, 101).unwrap();
+        assert_eq!(page.blocks.len(), 100);
+        assert!(page.has_more);
+    }
+
+    #[test]
+    fn generic_projection_traverses_all_101_messages_across_pages() {
+        let mut items = String::new();
+        for index in 0..101 {
+            if index > 0 {
+                items.push(',');
+            }
+            items.push_str(&format!(r#"{{"role":"user","content":"message-{index}"}}"#));
+        }
+        let tree =
+            crate::tree::TreeDocument::from_bytes(format!("[{items}]").into_bytes()).unwrap();
+        let root = tree.root().id;
+        let mut cursor = None;
+        let mut message_ids = Vec::new();
+        loop {
+            let page = tree
+                .generic_conversation_page(root, root, cursor, 100)
+                .unwrap();
+            message_ids.extend(
+                page.blocks
+                    .iter()
+                    .filter(|block| block.kind == GenericConversationBlockKind::Message)
+                    .map(|block| block.message.node_id),
+            );
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        assert_eq!(message_ids.len(), 101);
+        let mut unique = message_ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), message_ids.len());
+    }
+
+    #[test]
+    fn generic_projection_rejects_forged_positions_and_keeps_wrapper_refs() {
+        let parsed = parse_json(br#"{"messages":[{"role":"user","content":["a","b"]}]}"#).unwrap();
+        let root = parsed.root().index();
+        let candidate = parsed.node(parsed.root()).children[0].index();
+        let page = generic_conversation_page(&parsed, root, candidate, None, 1).unwrap();
+        assert_eq!(page.wrapper_ref.scope_root.node_id, root);
+        assert_eq!(page.wrapper_ref.candidate.node_id, candidate);
+        assert_eq!(page.blocks.len(), 1);
+        assert!(generic_conversation_page(
+            &parsed,
+            root,
+            candidate,
+            Some(GenericConversationCursor {
+                message_index: 0,
+                phase: GenericConversationPhase::Fields,
+                field_index: 0,
+                element_index: 0,
+            }),
+            1,
+        )
+        .is_none());
+        assert!(generic_conversation_page(
+            &parsed,
+            root,
+            candidate,
+            Some(GenericConversationCursor {
+                message_index: 9,
+                phase: GenericConversationPhase::Message,
+                field_index: 0,
+                element_index: 0,
+            }),
+            1,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn cached_role_selection_handles_tail_role_and_roleless_messages() {
+        let mut tail_fields = String::new();
+        let mut roleless_fields = String::new();
+        for index in 0..300 {
+            if index > 0 {
+                tail_fields.push(',');
+                roleless_fields.push(',');
+            }
+            tail_fields.push_str(&format!(r#""tail-{index}":true"#));
+            roleless_fields.push_str(&format!(r#""plain-{index}":true"#));
+        }
+        tail_fields.push_str(r#", "role":"assistant", "content":"tail""#);
+        let input = format!(r#"[{{{tail_fields}}},{{{roleless_fields}}}]"#);
+        reset_role_scan_count();
+        let tree = crate::tree::TreeDocument::from_bytes(input.into_bytes()).unwrap();
+        let root = tree.root().id;
+        let mut cursor = None;
+        let mut first_roles = Vec::new();
+        let mut second_roles = Vec::new();
+        loop {
+            let page = tree
+                .generic_conversation_page(root, root, cursor, 1)
+                .unwrap();
+            for block in page.blocks {
+                if block.message.node_id == 1 {
+                    first_roles.push(block.role);
+                } else {
+                    second_roles.push(block.role);
+                }
+            }
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        assert!(!first_roles.is_empty());
+        assert!(first_roles
+            .iter()
+            .all(|role| *role == NormalizedRole::Assistant));
+        assert!(!second_roles.is_empty());
+        assert!(second_roles
+            .iter()
+            .all(|role| *role == NormalizedRole::Unknown));
+        assert_eq!(role_scan_count(), 2);
     }
 }
