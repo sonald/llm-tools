@@ -654,9 +654,17 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .content-viewer-toolbar .secondary-button { min-height: 29px; padding: 0 9px; font-size: 10px; }
 
+.content-viewer-wrap-controls { display: inline-flex; flex: 0 0 auto; gap: 4px; }
+
+.content-viewer-wrap-controls .secondary-button[aria-pressed="true"] { border-color: var(--blue); color: var(--blue); background: var(--blue-soft); }
+
+.content-viewer-wrap-controls .secondary-button:disabled { opacity: .55; }
+
 .content-viewer-body { min-width: 0; min-height: 0; overflow: auto; padding: 14px 16px 24px; background: var(--surface); }
 
 .content-viewer-content { min-width: 0; min-height: 100%; margin: 0; color: var(--text); font: 10px/1.6 "SFMono-Regular", Consolas, monospace; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.content-viewer-content.is-no-wrap:not(.is-markdown) { width: max-content; min-width: 100%; white-space: pre; overflow-wrap: normal; }
 
 .content-viewer-content:focus-visible { outline: 2px solid #4987ff; outline-offset: 2px; }
 
@@ -677,9 +685,21 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .sjv-code-source { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
+.content-viewer-content.is-no-wrap .sjv-code-source,
+.content-viewer-content.is-markdown.is-no-wrap pre,
+.content-viewer-content.is-markdown.is-no-wrap pre code { white-space: pre; overflow-wrap: normal; }
+
 .sjv-code-gutter { padding-right: 12px; color: var(--faint); user-select: none; text-align: right; white-space: pre; }
 
+.sjv-code-gutter.is-aligned { position: relative; white-space: normal; }
+
+.sjv-code-gutter.is-aligned > span { position: absolute; top: 0; right: 12px; white-space: pre; }
+
+.sjv-code-line-marker { display: inline-block; width: 0; height: 1.6em; margin: 0; padding: 0; border: 0; vertical-align: top; }
+
 .sjv-code-plain .sjv-code-source { white-space: pre; overflow-wrap: normal; }
+
+.content-viewer-content[data-wrap-mode="wrap"] .sjv-code-plain .sjv-code-source { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .sjv-token-comment { color: #708090; }
 .sjv-token-string, .sjv-token-char { color: #a03b68; }

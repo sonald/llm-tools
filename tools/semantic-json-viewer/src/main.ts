@@ -189,6 +189,8 @@ const contentViewerCopyParsed = required<HTMLButtonElement>("content-viewer-copy
 const contentViewerCopyStatus = required<HTMLElement>("content-viewer-copy-status");
 const contentViewerRenderAs = required<HTMLSelectElement>("content-viewer-render-as");
 const contentViewerMarkdownAnyway = required<HTMLButtonElement>("content-viewer-markdown-anyway");
+const contentViewerWrap = required<HTMLButtonElement>("content-viewer-wrap");
+const contentViewerNoWrap = required<HTMLButtonElement>("content-viewer-no-wrap");
 const contentViewerPrevious = required<HTMLButtonElement>("content-viewer-previous");
 const contentViewerNext = required<HTMLButtonElement>("content-viewer-next");
 const nestedNavigation = required<HTMLElement>("content-viewer-nested-navigation");
@@ -269,6 +271,7 @@ const contentViewer = new ContentViewer({
     },
     renderAs: contentViewerRenderAs,
     markdownAnyway: contentViewerMarkdownAnyway,
+    wrap: { wrap: contentViewerWrap, noWrap: contentViewerNoWrap },
     previous: contentViewerPrevious,
     next: contentViewerNext,
     nested: {

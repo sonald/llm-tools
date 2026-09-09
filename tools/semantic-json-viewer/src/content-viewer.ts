@@ -50,6 +50,10 @@ export type ContentViewerElements = {
   };
   renderAs?: HTMLSelectElement;
   markdownAnyway?: HTMLButtonElement;
+  wrap?: {
+    wrap: HTMLButtonElement;
+    noWrap: HTMLButtonElement;
+  };
   previous: HTMLButtonElement;
   next: HTMLButtonElement;
   nested?: NestedViewerElements;
@@ -251,6 +255,8 @@ type StringMetrics = {
   lineCount: number;
 };
 
+type WrapMode = "wrap" | "noWrap";
+
 const TEXT_CHUNK_BYTES = 128 * 1024;
 const TEXT_PAGE_CACHE_BYTES = 32 * 1024 * 1024;
 const MARKDOWN_AUTO_RENDER_LIMIT_BYTES = 2 * 1024 * 1024;
@@ -298,6 +304,7 @@ export class ContentViewer {
   private readonly stringMetricsElements: StringMetricsElements | null;
   private readonly renderAs: HTMLSelectElement | null;
   private readonly markdownAnyway: HTMLButtonElement | null;
+  private readonly wrapElements: ContentViewerElements["wrap"];
   private readonly copyRaw: HTMLButtonElement;
   private readonly copyDecoded: HTMLButtonElement;
   private readonly copyMarkdown: HTMLButtonElement;
@@ -341,6 +348,11 @@ export class ContentViewer {
   private metricsEpoch = 0;
   private metricsState: "hidden" | "loading" | "ready" | "unavailable" = "hidden";
   private metrics: StringMetrics | null = null;
+  private wrapMode: WrapMode = "wrap";
+  private codeGutterAlignmentEpoch = 0;
+  private readonly contentResizeObserver: ResizeObserver | null;
+  private readonly contentResizeTarget: HTMLElement;
+  private lastContentWidth: number | null = null;
 
   constructor(options: ContentViewerOptions) {
     this.elements = options.elements;
@@ -352,6 +364,17 @@ export class ContentViewer {
     this.stringElements = options.elements.string ?? null;
     this.renderAs = options.elements.renderAs ?? null;
     this.markdownAnyway = options.elements.markdownAnyway ?? null;
+    this.wrapElements = options.elements.wrap;
+    this.contentResizeTarget = this.elements.content.parentElement ?? this.elements.content;
+    this.contentResizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(([entry]) => {
+        const width = entry?.contentRect.width ?? 0;
+        if (this.lastContentWidth === width) return;
+        this.lastContentWidth = width;
+        this.scheduleCodeGutterAlignment();
+      });
+    this.contentResizeObserver?.observe(this.contentResizeTarget);
     const copy = options.elements.copy ?? createCopyElements();
     this.copyRaw = copy.raw;
     this.copyDecoded = copy.decoded;
@@ -401,6 +424,8 @@ export class ContentViewer {
       : null;
     this.elements.close.addEventListener("click", () => this.close());
     this.elements.dialog.addEventListener("keydown", (event) => this.handleDialogKeydown(event));
+    this.wrapElements?.wrap.addEventListener("click", () => this.setWrapMode("wrap"));
+    this.wrapElements?.noWrap.addEventListener("click", () => this.setWrapMode("noWrap"));
     this.copyRaw.addEventListener("click", () => void this.copyTarget("raw", "Copied Raw Lexeme"));
     this.copyDecoded.addEventListener("click", () => void this.copyTarget("decoded", "Copied Decoded Value"));
     this.copyMarkdown.addEventListener("click", () => void this.copyTarget("decoded", "Copied Markdown Source"));
@@ -460,7 +485,10 @@ export class ContentViewer {
     this.invalidateCopy();
     const generation = this.generation;
     this.restoreFocusOnClose = null;
+    this.wrapMode = "wrap";
+    this.applyWrapMode();
     this.target = cloneTarget(target);
+    this.contentResizeObserver?.observe(this.contentResizeTarget);
     this.renderOverride = this.overrides.get(renderOverrideKey(target)) ?? "auto";
     this.detection = null;
     this.opener = opener;
@@ -529,6 +557,8 @@ export class ContentViewer {
     this.releaseNestedScopes();
     this.clearHtmlPreviewFrame();
     this.restoreFocusOnClose = restoreFocus;
+    this.wrapMode = "wrap";
+    this.applyWrapMode();
     this.generation += 1;
     this.sourceRevealEpoch += 1;
     this.clearParsedSearchPeek();
@@ -1323,6 +1353,7 @@ export class ContentViewer {
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
     this.renderPaging();
+    this.scheduleCodeGutterAlignment();
   }
 
   private async openNestedRoot(target: ContentTarget, generation: number, propagateFailure = false): Promise<boolean> {
@@ -2488,6 +2519,7 @@ export class ContentViewer {
     this.elements.content.removeAttribute("aria-busy");
     this.renderMetadata();
     this.renderPaging();
+    this.scheduleCodeGutterAlignment();
   }
 
   private isRevealCurrent(generation: number, target: ContentTarget, revealEpoch: number, searchEpoch: number, query: string, representation: "decoded" | "raw"): boolean {
@@ -2772,6 +2804,8 @@ export class ContentViewer {
   private finishClose(): void {
     this.releaseNestedScopes();
     this.clearHtmlPreviewFrame();
+    this.contentResizeObserver?.unobserve(this.contentResizeTarget);
+    this.lastContentWidth = null;
     const opener = this.opener;
     const restoreFocus = this.restoreFocusOnClose ?? true;
     const wasOpen = this.elements.dialog.open;
@@ -2985,6 +3019,7 @@ export class ContentViewer {
   private renderPaging(): void {
     this.renderCopyControls();
     this.syncRenderAsSelect();
+    this.syncWrapControls();
     if (this.nestedRepresentation === "parsed") {
       this.elements.previous.disabled = true;
       this.elements.next.disabled = true;
@@ -3020,6 +3055,7 @@ export class ContentViewer {
     this.elements.dialog.setAttribute("aria-busy", "false");
     this.elements.content.setAttribute("aria-busy", "false");
     this.elements.alert.hidden = true;
+    this.applyWrapMode();
     this.setNestedVisible(false);
     this.setHtmlVisible(false);
     this.renderMetadata();
@@ -3033,6 +3069,67 @@ export class ContentViewer {
   private clearContent(): void {
     this.elements.content.textContent = "";
     this.elements.content.classList.remove("is-markdown");
+  }
+
+  private setWrapMode(mode: WrapMode): void {
+    this.wrapMode = mode;
+    this.applyWrapMode();
+    this.syncWrapControls();
+    this.scheduleCodeGutterAlignment();
+  }
+
+  private applyWrapMode(): void {
+    this.elements.content.classList.toggle("is-no-wrap", this.wrapMode === "noWrap");
+    this.elements.content.dataset.wrapMode = this.wrapMode;
+  }
+
+  private syncWrapControls(): void {
+    const controls = this.wrapElements;
+    if (!controls) return;
+    const textRepresentation = this.nestedRepresentation === "decoded" || this.nestedRepresentation === "raw"
+      || this.htmlRepresentation === "source" || this.htmlRepresentation === "raw"
+      || this.nestedRepresentation === null && this.renderMode !== "html" && this.ordinaryRepresentation !== null;
+    const disabled = !textRepresentation || this.busy || this.nestedBusy;
+    for (const [button, mode] of [[controls.wrap, "wrap"], [controls.noWrap, "noWrap"]] as const) {
+      button.disabled = disabled;
+      button.setAttribute("aria-pressed", String(this.wrapMode === mode));
+    }
+  }
+
+  private scheduleCodeGutterAlignment(): void {
+    const epoch = ++this.codeGutterAlignmentEpoch;
+    queueMicrotask(() => {
+      if (epoch !== this.codeGutterAlignmentEpoch) return;
+      this.alignCodeGutters();
+    });
+  }
+
+  private alignCodeGutters(): void {
+    for (const pre of this.elements.content.querySelectorAll<HTMLPreElement>("pre.sjv-code")) {
+      const gutter = pre.querySelector<HTMLElement>(".sjv-code-gutter");
+      const source = pre.querySelector<HTMLElement>(".sjv-code-source");
+      if (!gutter || !source) continue;
+      const labels = gutter.classList.contains("is-aligned") && gutter.children.length > 0
+        ? Array.from(gutter.children, (line) => (line.textContent ?? "").replace(/\n$/, ""))
+        : (gutter.textContent ?? "").split("\n");
+      const sourceText = source.textContent ?? "";
+      const gutterWidth = gutter.getBoundingClientRect().width;
+      gutter.classList.add("is-aligned");
+      gutter.style.width = `${gutterWidth}px`;
+      const starts = codeLineStarts(sourceText);
+      const markers = ensureCodeLineMarkers(source, starts);
+      renderGutterLines(gutter, labels);
+      const gutterTop = gutter.getBoundingClientRect().top;
+      const markerTops = new Array<number>(markers.length);
+      for (let index = 0; index < markers.length; index += 1) {
+        markerTops[index] = markers[index].getBoundingClientRect().top;
+      }
+      for (let index = 0; index < markers.length; index += 1) {
+        const line = gutter.children[index];
+        if (!(line instanceof HTMLElement)) continue;
+        line.style.top = `${Math.max(0, markerTops[index] - gutterTop)}px`;
+      }
+    }
   }
 
   private isCurrent(generation: number, target: ContentTarget): boolean {
@@ -3276,6 +3373,89 @@ function safeOffset(value: unknown): number | undefined {
 
 function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
+}
+
+function ensureCodeLineMarkers(source: HTMLElement, starts: number[]): HTMLElement[] {
+  const existing = Array.from(source.querySelectorAll<HTMLElement>(".sjv-code-line-marker"));
+  if (existing.length === starts.length) return existing;
+  for (const marker of source.querySelectorAll<HTMLElement>(".sjv-code-line-marker")) marker.remove();
+  source.normalize();
+  const walker = document.createTreeWalker(source, NodeFilter.SHOW_TEXT);
+  const nodes: { node: Text; start: number; end: number }[] = [];
+  let cursor = 0;
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    const length = node.nodeValue?.length ?? 0;
+    if (length > 0) nodes.push({ node, start: cursor, end: cursor + length });
+    cursor += length;
+  }
+  if (nodes.length === 0) return [];
+  const markers = new Array<HTMLElement>(starts.length);
+  const offsetsByNode = new Map<Text, { offset: number; index: number }[]>();
+  let nodeIndex = nodes.length - 1;
+  for (let startIndex = starts.length - 1; startIndex >= 0; startIndex -= 1) {
+    const start = starts[startIndex];
+    while (nodeIndex > 0 && start <= nodes[nodeIndex - 1].end) nodeIndex -= 1;
+    if (start === nodes[nodeIndex].end && nodeIndex < nodes.length - 1) nodeIndex += 1;
+    const entry = nodes[nodeIndex];
+    const offset = Math.max(0, Math.min(entry.end - entry.start, start - entry.start));
+    const offsets = offsetsByNode.get(entry.node) ?? [];
+    offsets.push({ offset, index: startIndex });
+    offsetsByNode.set(entry.node, offsets);
+  }
+  for (const entry of nodes) {
+    const offsets = offsetsByNode.get(entry.node);
+    if (!offsets || offsets.length === 0) continue;
+    offsets.reverse();
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    for (const item of offsets) {
+      const offset = item.offset;
+      if (offset > cursor) fragment.append(document.createTextNode(entry.node.data.slice(cursor, offset)));
+      const marker = document.createElement("span");
+      marker.className = "sjv-code-line-marker";
+      marker.setAttribute("aria-hidden", "true");
+      fragment.append(marker);
+      markers[item.index] = marker;
+      cursor = offset;
+    }
+    if (cursor < entry.node.data.length) fragment.append(document.createTextNode(entry.node.data.slice(cursor)));
+    entry.node.replaceWith(fragment);
+  }
+  return markers;
+}
+
+function renderGutterLines(gutter: HTMLElement, labels: string[]): void {
+  if (gutter.classList.contains("is-aligned") && gutter.children.length === labels.length) {
+    let unchanged = true;
+    for (let index = 0; index < labels.length; index += 1) {
+      if ((gutter.children[index].textContent ?? "").replace(/\n$/, "") !== labels[index]) {
+        unchanged = false;
+        break;
+      }
+    }
+    if (unchanged) return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (let index = 0; index < labels.length; index += 1) {
+    const line = document.createElement("span");
+    line.textContent = index < labels.length - 1 ? `${labels[index]}\n` : labels[index];
+    fragment.append(line);
+  }
+  gutter.replaceChildren(fragment);
+}
+
+function codeLineStarts(source: string): number[] {
+  const starts = [0];
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === "\r") {
+      if (source[index + 1] === "\n") index += 1;
+      starts.push(index + 1);
+    } else if (source[index] === "\n") {
+      starts.push(index + 1);
+    }
+  }
+  return starts;
 }
 
 function utf8ByteOffsetToUtf16(value: string, byteOffset: number): number {
