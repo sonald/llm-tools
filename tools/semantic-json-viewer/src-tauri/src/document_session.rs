@@ -2,7 +2,7 @@ use std::io::{self, ErrorKind};
 use std::path::Path;
 
 use crate::conversation::{
-    ConversationCandidate, GenericConversationCursor, GenericConversationPage,
+    ConversationCandidate, ConversationStyle, GenericConversationCursor, GenericConversationPage,
 };
 use crate::file_source::FileSource;
 use crate::json::ParseError;
@@ -195,9 +195,27 @@ impl DocumentSession {
         limit: usize,
     ) -> io::Result<Option<GenericConversationPage>> {
         self.ensure_current()?;
+        self.conversation_page(
+            scope_root_id,
+            candidate_node_id,
+            cursor,
+            limit,
+            ConversationStyle::Generic,
+        )
+    }
+
+    pub fn conversation_page(
+        &self,
+        scope_root_id: usize,
+        candidate_node_id: usize,
+        cursor: Option<GenericConversationCursor>,
+        limit: usize,
+        style: ConversationStyle,
+    ) -> io::Result<Option<GenericConversationPage>> {
+        self.ensure_current()?;
         Ok(self
             .tree
-            .generic_conversation_page(scope_root_id, candidate_node_id, cursor, limit))
+            .conversation_page(scope_root_id, candidate_node_id, cursor, limit, style))
     }
 }
 

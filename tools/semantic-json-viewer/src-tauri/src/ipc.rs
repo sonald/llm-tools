@@ -7,8 +7,9 @@ use tauri::State;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::conversation::{
-    ConversationCandidate, GenericConversationBlock, GenericConversationBlockKind,
-    GenericConversationCursor, GenericConversationPage, GenericConversationPhase,
+    ConversationCandidate, ConversationOpenAiRefs, ConversationStyle, GenericConversationBlock,
+    GenericConversationBlockKind, GenericConversationCursor, GenericConversationPage,
+    GenericConversationPhase,
 };
 use crate::document_session::DocumentSession;
 use crate::file_route::{
@@ -396,6 +397,14 @@ pub enum GenericConversationCursorKindDto {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub enum ConversationStyleDto {
+    Generic,
+    #[serde(rename = "openai")]
+    OpenAi,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum GenericConversationPhaseDto {
     Message,
     Fields,
@@ -405,6 +414,7 @@ pub enum GenericConversationPhaseDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GenericConversationCursorDto {
     pub kind: GenericConversationCursorKindDto,
+    pub style: ConversationStyleDto,
     pub scope_root_id: usize,
     pub candidate_node_id: usize,
     pub message_index: usize,
@@ -432,6 +442,28 @@ pub struct GenericConversationBlockDto {
     pub role_source_node_id: Option<usize>,
     pub role_source_span_start: Option<usize>,
     pub role_source_span_end: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_refs: Option<ConversationOpenAiRefsDto>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationOpenAiRefsDto {
+    pub block: Option<ConversationSourceRefDto>,
+    pub text: Option<ConversationSourceRefDto>,
+    pub image: Option<ConversationSourceRefDto>,
+    pub call_id: Option<ConversationSourceRefDto>,
+    pub function: Option<ConversationSourceRefDto>,
+    pub name: Option<ConversationSourceRefDto>,
+    pub arguments: Option<ConversationSourceRefDto>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSourceRefDto {
+    pub node_id: usize,
+    pub span_start: usize,
+    pub span_end: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -662,7 +694,7 @@ pub fn get_generic_conversation_blocks(
     scope_id: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<GenericConversationPageDto, IpcError> {
-    get_generic_conversation_blocks_inner(
+    get_conversation_blocks_inner(
         &state,
         scope_root_id,
         candidate_node_id,
@@ -670,6 +702,31 @@ pub fn get_generic_conversation_blocks(
         limit,
         session_revision,
         scope_id,
+        ConversationStyle::Generic,
+    )
+}
+
+#[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
+pub fn get_conversation_blocks(
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    style: ConversationStyleDto,
+    cursor: Option<GenericConversationCursorDto>,
+    limit: usize,
+    session_revision: u64,
+    scope_id: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<GenericConversationPageDto, IpcError> {
+    get_conversation_blocks_inner(
+        &state,
+        scope_root_id,
+        candidate_node_id,
+        cursor,
+        limit,
+        session_revision,
+        scope_id,
+        conversation_style_from_dto(style),
     )
 }
 
@@ -1032,7 +1089,8 @@ fn get_conversation_candidate_inner(
     })
 }
 
-fn get_generic_conversation_blocks_inner(
+#[allow(clippy::too_many_arguments)]
+fn get_conversation_blocks_inner(
     state: &AppState,
     scope_root_id: usize,
     candidate_node_id: usize,
@@ -1040,6 +1098,7 @@ fn get_generic_conversation_blocks_inner(
     limit: usize,
     session_revision: u64,
     scope_id: Option<u64>,
+    style: ConversationStyle,
 ) -> Result<GenericConversationPageDto, IpcError> {
     if limit == 0 {
         return Err(invalid_request("limit must be greater than zero"));
@@ -1049,6 +1108,7 @@ fn get_generic_conversation_blocks_inner(
         scope_root_id,
         candidate_node_id,
         session_revision,
+        style,
     )?;
 
     with_session_scope(state, scope_id, session_revision, |session, scope| {
@@ -1059,10 +1119,10 @@ fn get_generic_conversation_blocks_inner(
         }
         let page = match session {
             OpenSession::Document(session) => session
-                .generic_conversation_page(scope_root_id, candidate_node_id, cursor, limit)
+                .conversation_page(scope_root_id, candidate_node_id, cursor, limit, style)
                 .map_err(session_error)?,
             OpenSession::Entry(session) => session
-                .selected_generic_conversation_page(scope_root_id, candidate_node_id, cursor, limit)
+                .selected_conversation_page(scope_root_id, candidate_node_id, cursor, limit, style)
                 .map_err(session_error)?,
             OpenSession::RawDocument { .. } => {
                 return Err(invalid_request(
@@ -1074,8 +1134,36 @@ fn get_generic_conversation_blocks_inner(
         if !session.is_current() {
             return Err(file_changed());
         }
-        generic_conversation_page_dto(page, scope_root_id, candidate_node_id, session_revision)
+        generic_conversation_page_dto(
+            page,
+            scope_root_id,
+            candidate_node_id,
+            session_revision,
+            style,
+        )
     })
+}
+
+#[cfg(test)]
+fn get_generic_conversation_blocks_inner(
+    state: &AppState,
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    cursor: Option<GenericConversationCursorDto>,
+    limit: usize,
+    session_revision: u64,
+    scope_id: Option<u64>,
+) -> Result<GenericConversationPageDto, IpcError> {
+    get_conversation_blocks_inner(
+        state,
+        scope_root_id,
+        candidate_node_id,
+        cursor,
+        limit,
+        session_revision,
+        scope_id,
+        ConversationStyle::Generic,
+    )
 }
 
 #[cfg(test)]
@@ -2883,9 +2971,16 @@ fn generic_conversation_page_dto(
     scope_root_id: usize,
     candidate_node_id: usize,
     session_revision: u64,
+    style: ConversationStyle,
 ) -> Result<GenericConversationPageDto, IpcError> {
     let next_cursor = page.next_cursor.map(|cursor| {
-        generic_conversation_cursor_dto(cursor, scope_root_id, candidate_node_id, session_revision)
+        generic_conversation_cursor_dto(
+            cursor,
+            scope_root_id,
+            candidate_node_id,
+            session_revision,
+            style,
+        )
     });
     let dto = GenericConversationPageDto {
         blocks: page
@@ -2903,14 +2998,30 @@ fn generic_conversation_page_dto(
     Ok(dto)
 }
 
+fn conversation_style_from_dto(style: ConversationStyleDto) -> ConversationStyle {
+    match style {
+        ConversationStyleDto::Generic => ConversationStyle::Generic,
+        ConversationStyleDto::OpenAi => ConversationStyle::OpenAi,
+    }
+}
+
+fn conversation_style_dto(style: ConversationStyle) -> ConversationStyleDto {
+    match style {
+        ConversationStyle::Generic => ConversationStyleDto::Generic,
+        ConversationStyle::OpenAi => ConversationStyleDto::OpenAi,
+    }
+}
+
 fn generic_conversation_cursor_dto(
     cursor: GenericConversationCursor,
     scope_root_id: usize,
     candidate_node_id: usize,
     session_revision: u64,
+    style: ConversationStyle,
 ) -> GenericConversationCursorDto {
     GenericConversationCursorDto {
         kind: GenericConversationCursorKindDto::GenericConversation,
+        style: conversation_style_dto(style),
         scope_root_id,
         candidate_node_id,
         message_index: cursor.message_index,
@@ -2929,6 +3040,7 @@ fn generic_conversation_cursor_from_dto(
     scope_root_id: usize,
     candidate_node_id: usize,
     session_revision: u64,
+    style: ConversationStyle,
 ) -> Result<Option<GenericConversationCursor>, IpcError> {
     cursor
         .map(|cursor| {
@@ -2936,6 +3048,7 @@ fn generic_conversation_cursor_from_dto(
                 || cursor.scope_root_id != scope_root_id
                 || cursor.candidate_node_id != candidate_node_id
                 || cursor.session_revision != session_revision
+                || cursor.style != conversation_style_dto(style)
             {
                 return Err(invalid_request(
                     "conversation cursor does not match the request",
@@ -2999,6 +3112,29 @@ fn generic_conversation_block_dto(block: GenericConversationBlock) -> GenericCon
         role_source_node_id,
         role_source_span_start,
         role_source_span_end,
+        openai_refs: block.openai_refs.map(conversation_openai_refs_dto),
+    }
+}
+
+fn conversation_openai_refs_dto(refs: ConversationOpenAiRefs) -> ConversationOpenAiRefsDto {
+    ConversationOpenAiRefsDto {
+        block: refs.block.map(conversation_source_ref_dto),
+        text: refs.text.map(conversation_source_ref_dto),
+        image: refs.image.map(conversation_source_ref_dto),
+        call_id: refs.call_id.map(conversation_source_ref_dto),
+        function: refs.function.map(conversation_source_ref_dto),
+        name: refs.name.map(conversation_source_ref_dto),
+        arguments: refs.arguments.map(conversation_source_ref_dto),
+    }
+}
+
+fn conversation_source_ref_dto(
+    source: crate::conversation::ConversationSourceRef,
+) -> ConversationSourceRefDto {
+    ConversationSourceRefDto {
+        node_id: source.node_id,
+        span_start: source.span.start,
+        span_end: source.span.end,
     }
 }
 
@@ -3634,6 +3770,7 @@ mod tests {
 
         let malformed = GenericConversationCursorDto {
             kind: GenericConversationCursorKindDto::GenericConversation,
+            style: ConversationStyleDto::Generic,
             scope_root_id: 0,
             candidate_node_id: 0,
             message_index: 0,
@@ -3930,6 +4067,389 @@ mod tests {
             assert!(serde_json::to_vec(&page).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
         }
         fs::remove_dir_all(directory).expect("generated fixture directory should be removable");
+    }
+
+    #[test]
+    fn conversation_blocks_ipc_explicit_openai_projects_f03_refs_without_body_text() {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system clock is before Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "semantic-json-viewer-ipc-openai-fixture-{}-{nanos}",
+            std::process::id()
+        ));
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/generate-semantic-fixtures.mjs");
+        let output = Command::new("node")
+            .arg(script)
+            .arg(&directory)
+            .output()
+            .expect("node must be available to generate conversation fixtures");
+        assert!(
+            output.status.success(),
+            "fixture generation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let state = AppState::default();
+        let path = directory.join("openai-conversation.json");
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let root_id = summary.root.as_ref().unwrap().id;
+        let candidate_id = child_id(&state, None, root_id, "messages", summary.session_revision);
+        let first = get_conversation_blocks_inner(
+            &state,
+            root_id,
+            candidate_id,
+            None,
+            1,
+            summary.session_revision,
+            None,
+            ConversationStyle::OpenAi,
+        )
+        .unwrap();
+        let first_cursor = first.next_cursor.clone().unwrap();
+        let wrong_style = get_conversation_blocks_inner(
+            &state,
+            root_id,
+            candidate_id,
+            Some(first_cursor.clone()),
+            1,
+            summary.session_revision,
+            None,
+            ConversationStyle::Generic,
+        )
+        .unwrap_err();
+        assert_eq!(wrong_style.code, "invalid_request");
+        let mut cursor = first.next_cursor;
+        let mut blocks = first.blocks;
+        loop {
+            let page = get_conversation_blocks_inner(
+                &state,
+                root_id,
+                candidate_id,
+                cursor,
+                100,
+                summary.session_revision,
+                None,
+                ConversationStyle::OpenAi,
+            )
+            .unwrap();
+            blocks.extend(page.blocks);
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        let roles: Vec<_> = blocks
+            .iter()
+            .filter(|block| block.kind == "message")
+            .map(|block| block.role.as_str())
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                "system",
+                "developer",
+                "user",
+                "assistant",
+                "tool",
+                "assistant"
+            ]
+        );
+        assert!(blocks.iter().any(|block| block.category == "text"));
+        assert!(blocks.iter().any(|block| block.category == "image"));
+        assert!(blocks.iter().any(|block| block.category == "toolResult"));
+        assert!(blocks.iter().any(|block| block.category == "unknown"));
+        let tool_calls: Vec<_> = blocks
+            .iter()
+            .filter(|block| block.category == "toolCall")
+            .collect();
+        assert_eq!(tool_calls.len(), 3);
+        for block in tool_calls {
+            let refs = block.openai_refs.as_ref().unwrap();
+            assert!(refs.function.is_some());
+            assert!(refs.name.is_some());
+            assert!(refs.arguments.is_some());
+        }
+        let text_block = blocks
+            .iter()
+            .find(|block| block.category == "text" && block.openai_refs.is_some())
+            .unwrap();
+        assert!(text_block.openai_refs.as_ref().unwrap().text.is_some());
+        let image_block = blocks
+            .iter()
+            .find(|block| block.category == "image")
+            .unwrap();
+        assert!(image_block.openai_refs.as_ref().unwrap().image.is_some());
+        let payload = serde_json::to_vec(&blocks).unwrap();
+        assert!(payload.len() < MAX_IPC_PAYLOAD_BYTES);
+        assert!(!String::from_utf8_lossy(&payload).contains("OPENAI_CONTENT_UNKNOWN_SENTINEL"));
+        fs::remove_dir_all(directory).expect("generated fixture directory should be removable");
+    }
+
+    #[test]
+    fn conversation_blocks_ipc_pages_205_openai_tool_calls_without_duplicates() {
+        let path = temp_path("ipc-openai-tool-calls-205");
+        let mut calls = String::new();
+        for index in 0..205 {
+            if index > 0 {
+                calls.push(',');
+            }
+            calls.push_str(&format!(
+                r#"{{"id":"call-{index}","type":"function","function":{{"name":"fn-{index}","arguments":"{{}}"}}}}"#
+            ));
+        }
+        let input = format!(r#"[{{"role":"assistant","tool_calls":[{calls}]}}]"#);
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let mut cursor = None;
+        let mut blocks = Vec::new();
+        loop {
+            let page = get_conversation_blocks_inner(
+                &state,
+                0,
+                0,
+                cursor,
+                100,
+                summary.session_revision,
+                None,
+                ConversationStyle::OpenAi,
+            )
+            .unwrap();
+            assert!(serde_json::to_vec(&page).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
+            blocks.extend(page.blocks);
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|block| block.kind == "message")
+                .count(),
+            1
+        );
+        let calls: Vec<_> = blocks
+            .iter()
+            .filter(|block| block.category == "toolCall")
+            .map(|block| {
+                let refs = block.openai_refs.as_ref().unwrap();
+                assert!(refs.call_id.is_some());
+                assert!(refs.function.is_some());
+                assert!(refs.name.is_some());
+                assert!(refs.arguments.is_some());
+                block.source_node_id.unwrap()
+            })
+            .collect();
+        assert_eq!(calls.len(), 205);
+        let mut unique = calls.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), calls.len());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn conversation_blocks_ipc_openai_omits_giant_arguments_from_dto() {
+        let path = temp_path("ipc-openai-giant-arguments");
+        let giant = "a".repeat(2 * 1024 * 1024);
+        let input = format!(
+            r#"[{{"role":"assistant","tool_calls":[{{"type":"function","function":{{"name":"big","arguments":"{giant}"}}}}]}},{{"role":"user","content":"done"}}]"#
+        );
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let page = get_conversation_blocks_inner(
+            &state,
+            0,
+            0,
+            None,
+            100,
+            summary.session_revision,
+            None,
+            ConversationStyle::OpenAi,
+        )
+        .unwrap();
+        let payload = serde_json::to_vec(&page).unwrap();
+        assert!(payload.len() < MAX_IPC_PAYLOAD_BYTES);
+        assert!(!payload
+            .windows(128)
+            .any(|window| window.iter().all(|byte| *byte == b'a')));
+        assert!(page
+            .blocks
+            .iter()
+            .any(|block| block.category == "toolCall" && block.openai_refs.is_some()));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn conversation_blocks_ipc_mixed_candidate_keeps_generic_stable_and_openai_refs_source_faithful(
+    ) {
+        let path = temp_path("ipc-mixed-style-conversation");
+        let mut content_blocks = String::new();
+        for index in 0..205 {
+            if index > 0 {
+                content_blocks.push(',');
+            }
+            content_blocks.push_str(&format!(
+                r#"{{"type":"tool_use","id":"toolu-{index}","name":"lookup-{index}","input":{{"index":{index}}}}}"#
+            ));
+        }
+        let input = format!(
+            r#"{{"messages":[{{"role":"assistant","content":[{content_blocks}],"tool_calls":[{{"id":"call-1","type":"function","function":{{"name":"lookup","arguments":"{{\"q\":1}}"}}}}]}},{{"role":"user","content":"done"}}]}}"#
+        );
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let candidate = child_id(&state, None, 0, "messages", summary.session_revision);
+        let detected =
+            get_conversation_candidate_inner(&state, 0, candidate, None, summary.session_revision)
+                .unwrap();
+        assert_eq!(detected.kind, "mixed");
+
+        let mut generic_cursor = None;
+        let mut generic_before = Vec::new();
+        loop {
+            let page = get_conversation_blocks_inner(
+                &state,
+                0,
+                candidate,
+                generic_cursor,
+                100,
+                summary.session_revision,
+                None,
+                ConversationStyle::Generic,
+            )
+            .unwrap();
+            assert!(page.blocks.iter().all(|block| block.openai_refs.is_none()));
+            generic_cursor = page.next_cursor.clone();
+            generic_before.push(serde_json::to_vec(&page).unwrap());
+            if !page.has_more {
+                break;
+            }
+        }
+        let generic_cursor_for_cross_style = {
+            let page = get_conversation_blocks_inner(
+                &state,
+                0,
+                candidate,
+                None,
+                100,
+                summary.session_revision,
+                None,
+                ConversationStyle::Generic,
+            )
+            .unwrap();
+            page.next_cursor.unwrap()
+        };
+        let openai_from_generic = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            Some(generic_cursor_for_cross_style),
+            100,
+            summary.session_revision,
+            None,
+            ConversationStyle::OpenAi,
+        )
+        .unwrap_err();
+        assert_eq!(openai_from_generic.code, "invalid_request");
+
+        let mut openai_cursor = None;
+        let mut openai_blocks = Vec::new();
+        loop {
+            let page = get_conversation_blocks_inner(
+                &state,
+                0,
+                candidate,
+                openai_cursor,
+                100,
+                summary.session_revision,
+                None,
+                ConversationStyle::OpenAi,
+            )
+            .unwrap();
+            openai_cursor = page.next_cursor.clone();
+            openai_blocks.extend(page.blocks);
+            if !page.has_more {
+                break;
+            }
+        }
+        let openai_from_openai = {
+            let page = get_conversation_blocks_inner(
+                &state,
+                0,
+                candidate,
+                None,
+                100,
+                summary.session_revision,
+                None,
+                ConversationStyle::OpenAi,
+            )
+            .unwrap();
+            page.next_cursor.unwrap()
+        };
+        let generic_from_openai = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            Some(openai_from_openai),
+            100,
+            summary.session_revision,
+            None,
+            ConversationStyle::Generic,
+        )
+        .unwrap_err();
+        assert_eq!(generic_from_openai.code, "invalid_request");
+
+        let mut generic_cursor = None;
+        let mut generic_after = Vec::new();
+        loop {
+            let page = get_conversation_blocks_inner(
+                &state,
+                0,
+                candidate,
+                generic_cursor,
+                100,
+                summary.session_revision,
+                None,
+                ConversationStyle::Generic,
+            )
+            .unwrap();
+            generic_cursor = page.next_cursor.clone();
+            generic_after.push(serde_json::to_vec(&page).unwrap());
+            if !page.has_more {
+                break;
+            }
+        }
+        assert_eq!(generic_before, generic_after);
+
+        let tool_call = openai_blocks
+            .iter()
+            .find(|block| block.category == "toolCall")
+            .unwrap();
+        let refs = tool_call.openai_refs.as_ref().unwrap();
+        let name = refs.name.as_ref().unwrap();
+        let arguments = refs.arguments.as_ref().unwrap();
+        let name_source = read_raw_slice_inner(
+            &state,
+            name.span_start,
+            name.span_end - name.span_start,
+            summary.session_revision,
+        )
+        .unwrap();
+        let arguments_source = read_raw_slice_inner(
+            &state,
+            arguments.span_start,
+            arguments.span_end - arguments.span_start,
+            summary.session_revision,
+        )
+        .unwrap();
+        assert_eq!(name_source.text, "\"lookup\"");
+        assert_eq!(arguments_source.text, "\"{\\\"q\\\":1}\"");
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

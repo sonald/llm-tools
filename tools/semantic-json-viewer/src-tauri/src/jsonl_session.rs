@@ -3,7 +3,7 @@ use std::path::Path;
 use std::str::from_utf8;
 
 use crate::conversation::{
-    ConversationCandidate, GenericConversationCursor, GenericConversationPage,
+    ConversationCandidate, ConversationStyle, GenericConversationCursor, GenericConversationPage,
 };
 use crate::file_source::{FileIdentity, FileSource, ReadChunk};
 use crate::jsonl_entry::{inspect_entry, EntryStatus, MAX_ENTRY_BYTES, PREVIEW_BYTES};
@@ -449,7 +449,28 @@ impl JsonlSession {
         let Some((_, tree)) = self.selected.as_ref() else {
             return Ok(None);
         };
-        Ok(tree.generic_conversation_page(scope_root_id, candidate_node_id, cursor, limit))
+        Ok(tree.conversation_page(
+            scope_root_id,
+            candidate_node_id,
+            cursor,
+            limit,
+            ConversationStyle::Generic,
+        ))
+    }
+
+    pub fn selected_conversation_page(
+        &self,
+        scope_root_id: usize,
+        candidate_node_id: usize,
+        cursor: Option<GenericConversationCursor>,
+        limit: usize,
+        style: ConversationStyle,
+    ) -> io::Result<Option<GenericConversationPage>> {
+        self.ensure_current()?;
+        let Some((_, tree)) = self.selected.as_ref() else {
+            return Ok(None);
+        };
+        Ok(tree.conversation_page(scope_root_id, candidate_node_id, cursor, limit, style))
     }
 
     pub fn selected_raw_range(&self) -> io::Result<Option<(u64, u64)>> {

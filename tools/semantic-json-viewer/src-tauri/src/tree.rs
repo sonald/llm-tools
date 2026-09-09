@@ -1,7 +1,8 @@
 use std::str;
 
 use crate::conversation::{
-    self, ConversationCandidate, GenericConversationCursor, GenericConversationPage,
+    self, ConversationCandidate, ConversationStyle, GenericConversationCursor,
+    GenericConversationPage,
 };
 use crate::json::{
     parse_json_owned, ChildLocator, JsonKind, JsonNode, ParseError, ParsedJson, SourceSpan,
@@ -176,12 +177,30 @@ impl TreeDocument {
         cursor: Option<GenericConversationCursor>,
         limit: usize,
     ) -> Option<GenericConversationPage> {
-        conversation::generic_conversation_page_with_role_cache(
+        self.conversation_page(
+            scope_root_id,
+            candidate_node_id,
+            cursor,
+            limit,
+            ConversationStyle::Generic,
+        )
+    }
+
+    pub fn conversation_page(
+        &self,
+        scope_root_id: usize,
+        candidate_node_id: usize,
+        cursor: Option<GenericConversationCursor>,
+        limit: usize,
+        style: ConversationStyle,
+    ) -> Option<GenericConversationPage> {
+        conversation::conversation_page_with_role_cache(
             &self.parsed,
             scope_root_id,
             candidate_node_id,
             cursor,
             limit,
+            style,
             &self.role_cache,
         )
     }
