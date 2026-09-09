@@ -23,7 +23,16 @@ export type LocalDirectorySnapshot = {
   localFiles: ReadonlyMap<string, File>
 }
 
-export type RepositorySnapshot = HuggingFaceSnapshot | LocalDirectorySnapshot
+export type HttpsSnapshot = {
+  source: 'https'
+  name: string
+  revision: 'live'
+  selectionId: string
+  files: RepositoryFile[]
+  urls: ReadonlyMap<string, string>
+}
+
+export type RepositorySnapshot = HuggingFaceSnapshot | LocalDirectorySnapshot | HttpsSnapshot
 
 export type FileCategory =
   | 'configuration'
@@ -192,6 +201,75 @@ export function loadLocalDirectory(selection: Iterable<File>): LocalDirectorySna
   }
 }
 
+// HTTPS sources are session-local: URLs may contain expiring signed query parameters.
+export async function loadHttpsSource(
+  input: string,
+  mode: 'file' | 'manifest',
+  signal?: AbortSignal,
+): Promise<HttpsSnapshot> {
+  const url = httpsUrl(input.trim())
+  const urls = new Map<string, string>()
+  let files: RepositoryFile[]
+  if (mode === 'file') {
+    const path = safeRepositoryPath(decodeURIComponent(new URL(url).pathname.split('/').at(-1) ?? ''))
+    const response = await fetchHttps(url, { ...requestOptions(signal), method: 'HEAD' })
+    const length = response.headers.get('Content-Length')
+    if (!response.ok || length === null || !/^\d+$/.test(length) || !Number.isSafeInteger(Number(length))) {
+      throw new Error(t('httpsHeadSizeRequired'))
+    }
+    urls.set(path, url)
+    files = [{ path, size: Number(length), hash: null, category: classifyFile(path) }]
+  } else {
+    if (!new URL(url).pathname.toLowerCase().endsWith('.json')) throw new Error(t('httpsManifestJsonRequired'))
+    const response = await fetchHttps(url, requestOptions(signal))
+    if (!response.ok) {
+      await response.body?.cancel()
+      throw new Error(t('fileRequestFailed', { status: response.status }))
+    }
+    const data = await readBounded(response, 1024 * 1024)
+    const payload: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(data))
+    if (typeof payload !== 'object' || payload === null || !('files' in payload)
+      || !Array.isArray(payload.files) || payload.files.length === 0 || payload.files.length > 10_000) {
+      throw new Error(t('httpsManifestInvalid'))
+    }
+    files = payload.files.map((entry: unknown): RepositoryFile => {
+      if (typeof entry !== 'object' || entry === null || !('path' in entry)
+        || !('url' in entry) || typeof entry.url !== 'string' || entry.url.trim() === '' || !('size' in entry)
+        || typeof entry.size !== 'number' || !Number.isSafeInteger(entry.size) || entry.size < 0) {
+        throw new Error(t('httpsManifestInvalid'))
+      }
+      const path = safeRepositoryPath(entry.path)
+      if (new TextEncoder().encode(path).byteLength > 4096) throw new Error(t('localFilePathTooLarge', { limit: '4 KiB' }))
+      if (urls.has(path)) throw new Error(t('duplicateRepositoryPath', { path }))
+      urls.set(path, httpsUrl(entry.url, response.url || url))
+      return { path, size: entry.size, hash: null, category: classifyFile(path) }
+    })
+  }
+  signal?.throwIfAborted()
+  return { source: 'https', name: new URL(url).host, revision: 'live', selectionId: crypto.randomUUID(),
+    files: files.toSorted(compareFiles), urls }
+}
+
+function httpsUrl(input: string, base?: string): string {
+  let url: URL
+  try { url = new URL(input, base) } catch { throw new Error(t('httpsUrlRequired')) }
+  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '') throw new Error(t('httpsUrlRequired'))
+  url.hash = ''
+  return url.href
+}
+
+async function fetchHttps(url: string, options: RequestInit): Promise<Response> {
+  try {
+    const response = await fetch(url, options)
+    if (response.url !== '') httpsUrl(response.url)
+    return response
+  } catch (error) {
+    options.signal?.throwIfAborted()
+    if (error instanceof TypeError) throw new Error(t('httpsFetchFailed'))
+    throw error
+  }
+}
+
 const wholeFileCache = new WeakMap<RepositorySnapshot, Map<string, ArrayBuffer>>()
 
 export async function readWholeFile(
@@ -233,8 +311,11 @@ async function readUncachedWholeFile(
     if (data.byteLength !== file.size) throw new Error(t('changedLocalFile'))
     return data
   }
-  const response = await fetch(contentUrl(snapshot, file), requestOptions(signal))
-  if (!response.ok) throw new Error(t('fileRequestFailed', { status: response.status }))
+  const response = await (snapshot.source === 'https' ? fetchHttps : fetch)(contentUrl(snapshot, file), requestOptions(signal))
+  if (!response.ok) {
+    await response.body?.cancel()
+    throw new Error(t('fileRequestFailed', { status: response.status }))
+  }
   return await readBounded(response, maximumBytes)
 }
 
@@ -259,17 +340,19 @@ export async function readExactRange(
     if (data.byteLength !== expected) throw new Error(t('rangeShortRead', { actual: data.byteLength, expected }))
     return data
   }
-  const response = await fetch(contentUrl(snapshot, file), {
+  const response = await (snapshot.source === 'https' ? fetchHttps : fetch)(contentUrl(snapshot, file), {
     headers: { Range: `bytes=${start}-${end}` },
     credentials: 'omit',
     referrerPolicy: 'no-referrer',
     signal,
   })
   if (response.status !== 206) {
+    await response.body?.cancel()
     throw new Error(t('rangeNotConfirmed', { status: response.status }))
   }
   const contentRange = response.headers.get('Content-Range')
   if (contentRange !== `bytes ${start}-${end}/${file.size}`) {
+    await response.body?.cancel()
     throw new Error(t('contentRangeInvalid', { contentRange: contentRange ?? t('statusMissing') }))
   }
   const data = await readBounded(response, expected)
@@ -277,7 +360,12 @@ export async function readExactRange(
   return data
 }
 
-export function contentUrl(snapshot: HuggingFaceSnapshot, file: RepositoryFile): string {
+export function contentUrl(snapshot: HuggingFaceSnapshot | HttpsSnapshot, file: RepositoryFile): string {
+  if (snapshot.source === 'https') {
+    const url = snapshot.urls.get(file.path)
+    if (url === undefined) throw new Error(t('invalidRepositoryPath'))
+    return httpsUrl(url)
+  }
   const modelId = normalizeModelId(snapshot.modelId)
   if (!revisionPattern.test(snapshot.revision)) throw new Error(t('repositoryRevisionInvalid'))
   return `https://huggingface.co/${encodePath(modelId)}/resolve/${snapshot.revision}/${encodePath(safeRepositoryPath(file.path))}`
@@ -319,6 +407,7 @@ function localFile(snapshot: LocalDirectorySnapshot, file: RepositoryFile): File
 async function readBounded(response: Response, maximumBytes: number): Promise<ArrayBuffer> {
   const declared = response.headers.get('Content-Length')
   if (declared !== null && Number(declared) > maximumBytes) {
+    await response.body?.cancel()
     throw new Error(t('responseOverLimit', { limit: formatBytes(maximumBytes) }))
   }
   if (response.body === null) {

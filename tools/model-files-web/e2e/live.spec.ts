@@ -69,7 +69,7 @@ test('Chat: Qwen config, README, SafeTensors, Tokenizer Raw, Chat and cross-repo
 
   const comparisonManifest = page.waitForResponse(response => response.url()
     .includes('/api/models/google-t5/t5-small'))
-  await page.getByText('另一公开 Hugging Face…').click()
+  await page.getByText('另一公开来源…').click()
   await page.getByLabel('对照 Hugging Face 仓库').fill('google-t5/t5-small')
   await page.getByRole('button', { name: '加载对照' }).click()
   const comparisonIdentity = await (await comparisonManifest).json() as { sha: string }
@@ -180,6 +180,24 @@ test('GGUF public path reads only the 24-byte basic prefix', async ({ page }, te
   expect(errors).toEqual([])
   await attachEvidence(testInfo, 'gguf-live.json', { revision: identity.sha, requests })
   console.log(`LIVE GGUF revision=${identity.sha} ranges=${JSON.stringify(requests.filter(request => request.range !== null))}`)
+})
+
+test('HTTPS direct file reads a public config without the Hub manifest API', async ({ page }) => {
+  test.setTimeout(60_000)
+  const errors = collectErrors(page)
+  const requests: string[] = []
+  page.on('request', request => requests.push(request.url()))
+  await page.goto('/')
+  await page.getByRole('combobox', { name: '加载方式' }).selectOption('file')
+  await page.getByRole('textbox', { name: 'HTTPS 地址' }).fill(
+    'https://huggingface.co/Qwen/Qwen3-0.6B/resolve/main/config.json',
+  )
+  await page.getByRole('button', { name: '打开', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Model Config' })).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText('模型类型').locator('..')).toContainText('qwen3')
+  expect(requests.some(url => url.includes('/api/models/'))).toBe(false)
+  expect(new URL(page.url()).search).toBe('')
+  expect(errors).toEqual([])
 })
 
 type RequestEvidence = { modelId: string; revision: string; path: string; range: string | null }

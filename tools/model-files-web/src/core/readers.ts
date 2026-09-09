@@ -158,6 +158,12 @@ export function repositoryMarkdownUrl(
       return null
     }
     if (snapshot.source === 'local') return null
+    if (snapshot.source === 'https') {
+      const sourceUrl = snapshot.urls.get(filePath)
+      if (sourceUrl === undefined) return null
+      const resolved = new URL(value, sourceUrl)
+      return resolved.protocol === 'https:' ? resolved.href : null
+    }
     const resolved = new URL(value, `https://relative.invalid/${encodePath(filePath)}`)
     const path = resolved.pathname.split('/').filter(Boolean).map(segment => encodeURIComponent(decodeURIComponent(segment))).join('/')
     const action = attribute === 'src' ? 'resolve' : 'blob'
