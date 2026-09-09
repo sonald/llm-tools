@@ -112,6 +112,7 @@ export class TreeView {
   private selectedId: number | null = null;
   private focusKey: FocusKey = null;
   private readonly records = new Map<number, NodeRecord>();
+  private narrowRestoreSnapshot: TreeViewSnapshot | null = null;
   private copyGeneration = 0;
   private copyBusy = false;
 
@@ -140,6 +141,7 @@ export class TreeView {
     this.copyGeneration += 1;
     this.copyBusy = false;
     if (this.copy) this.copy.status.textContent = "";
+    this.narrowRestoreSnapshot = null;
     this.session = session;
     const root = seededRoot === undefined || seededRoot === null
       ? null
@@ -187,6 +189,7 @@ export class TreeView {
 
   restore(snapshot: TreeViewSnapshot | null): void {
     if (!snapshot) return;
+    this.narrowRestoreSnapshot = null;
     this.generation += 1;
     this.copyGeneration += 1;
     this.copyBusy = false;
@@ -226,6 +229,7 @@ export class TreeView {
     this.generation += 1;
     this.copyGeneration += 1;
     this.copyBusy = false;
+    this.narrowRestoreSnapshot = null;
     if (this.copy) this.copy.status.textContent = "";
     this.session = null;
     this.rootId = null;
@@ -258,6 +262,68 @@ export class TreeView {
       return;
     }
     void this.loadRoot();
+  }
+
+  /**
+   * Open a source-referenced node as a narrow, real Tree root when its
+   * ancestors are not loaded in the lazy outline yet. The session and scope
+   * identity stay unchanged; expanding this root still uses the normal
+   * bounded get_children path.
+   */
+  async focusNode(nodeId: number, expectedSpanStart?: number, expectedSpanEnd?: number): Promise<boolean> {
+    const session = this.session;
+    if (!session || !Number.isSafeInteger(nodeId) || nodeId < 0) return false;
+    if (!this.narrowRestoreSnapshot) this.narrowRestoreSnapshot = this.snapshot();
+    const generation = ++this.generation;
+    this.rootLoading = true;
+    this.rootError = null;
+    this.selectedId = null;
+    this.focusKey = null;
+    this.records.clear();
+    this.renderLoading();
+    try {
+      const value = await this.invokeRequest<unknown>("get_node_summary", {
+        nodeId,
+        sessionRevision: session.sessionRevision,
+        scopeId: session.scopeId
+      });
+      if (!this.isCurrent(generation, session)) return false;
+      const node = validateNodeDto(value, session.sourceSize);
+      if (!node || node.id !== nodeId
+        || expectedSpanStart !== undefined && node.spanStart !== expectedSpanStart
+        || expectedSpanEnd !== undefined && node.spanEnd !== expectedSpanEnd) {
+        this.rootLoading = false;
+        this.rootError = "The requested Tree node response was invalid.";
+        this.renderRootError();
+        return false;
+      }
+      this.rootLoading = false;
+      this.rootId = node.id;
+      this.focusKey = node.id;
+      const record = this.newRecord(node, null);
+      this.records.set(node.id, record);
+      this.select(record);
+      return true;
+    } catch (error) {
+      if (!this.isCurrent(generation, session)) return false;
+      this.rootLoading = false;
+      if (this.isGlobalError(error)) {
+        this.clear();
+        this.onError(error);
+        return false;
+      }
+      this.rootError = errorMessage(error);
+      this.renderRootError();
+      return false;
+    }
+  }
+
+  private restoreNarrowScope(): void {
+    const snapshot = this.narrowRestoreSnapshot;
+    if (!snapshot) return;
+    this.narrowRestoreSnapshot = null;
+    this.restore(snapshot);
+    if (snapshot.rootId === null && this.session) this.activate();
   }
 
   private async loadRoot(): Promise<void> {
@@ -366,6 +432,10 @@ export class TreeView {
   private handleClick(event: Event): void {
     const target = event.target;
     if (!(target instanceof Element)) return;
+    if (target.closest("[data-return-scope-tree]")) {
+      this.restoreNarrowScope();
+      return;
+    }
     const loadMore = target.closest<HTMLElement>("[data-load-parent]");
     if (loadMore) {
       const parentId = Number(loadMore.dataset.loadParent);
@@ -510,6 +580,16 @@ export class TreeView {
 
   private renderTree(): void {
     const shouldRestoreFocus = this.panel.contains(document.activeElement);
+    const shell = document.createElement("div");
+    shell.className = "tree-scope-shell";
+    if (this.narrowRestoreSnapshot) {
+      const back = document.createElement("button");
+      back.className = "secondary-button tree-return-scope";
+      back.type = "button";
+      back.dataset.returnScopeTree = "true";
+      back.textContent = "Return to scope Tree";
+      shell.append(back);
+    }
     const root = document.createElement("div");
     root.className = "tree-root";
     root.setAttribute("role", "tree");
@@ -521,7 +601,8 @@ export class TreeView {
       const record = this.records.get(this.rootId);
       if (record) this.appendRecord(root, record, 1);
     }
-    this.panel.replaceChildren(root);
+    shell.append(root);
+    this.panel.replaceChildren(shell);
     this.panel.setAttribute("aria-busy", String(this.rootLoading));
     this.renderInspector(this.selectedId === null ? null : this.records.get(this.selectedId)?.node ?? null);
     if (shouldRestoreFocus) this.restoreFocus();
@@ -772,7 +853,7 @@ export class TreeView {
     if (!session) throw new Error("Cannot build a Content Viewer target without a Tree session.");
     const pathSegments: string[] = [];
     let current: NodeRecord | undefined = record;
-    let pathTruncated = false;
+    let pathTruncated = this.narrowRestoreSnapshot !== null;
     while (current) {
       pathSegments.unshift(current.node.label);
       pathTruncated ||= current.node.labelHasMore;

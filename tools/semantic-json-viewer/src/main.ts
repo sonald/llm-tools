@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ContentViewer, type ContentTarget } from "./content-viewer";
 import { CollectionList } from "./collection-list";
+import { ConversationView, type ConversationContext } from "./conversation-view";
 import { EntryList, type EntrySelectionDto } from "./entry-list";
 import { MAX_ENTRY_BYTES, RawView } from "./raw-view";
 import { SearchView, type SearchMatch, type SearchScope } from "./search-view";
@@ -44,6 +45,7 @@ type IpcErrorPayload = {
 type AppState = {
   summary: FileSummary | null;
   selectedEntry: EntrySelectionDto["entry"] | null;
+  selectedEntryRoot: NodeDto | null;
   selectedItem: { node: NodeDto; ordinal: number } | null;
   selectionBusy: boolean;
   error: IpcErrorPayload | null;
@@ -62,6 +64,7 @@ type AppState = {
 const state: AppState = {
   summary: null,
   selectedEntry: null,
+  selectedEntryRoot: null,
   selectedItem: null,
   selectionBusy: false,
   error: null,
@@ -125,6 +128,7 @@ const semanticTab = required<HTMLButtonElement>("semantic-tab");
 const treeTab = required<HTMLButtonElement>("tree-tab");
 const rawTab = required<HTMLButtonElement>("raw-tab");
 const semanticPanel = required<HTMLElement>("semantic-panel");
+const conversationPanel = required<HTMLElement>("conversation-view");
 const treePanel = required<HTMLElement>("tree-panel");
 const rawPanel = required<HTMLElement>("raw-panel");
 const searchPanel = required<HTMLElement>("scope-search-panel");
@@ -398,6 +402,15 @@ const collectionList = new CollectionList({
   onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
 });
 
+const conversationView = new ConversationView({
+  panel: conversationPanel,
+  invoke,
+  onError: (error) => handleCurrentSessionAsyncError(ipcError(error)),
+  onRaw: handleConversationRaw,
+  onTree: handleConversationTree,
+  onContent: handleConversationContent
+});
+
 function required<T extends Element>(id: string): T {
   const node = document.getElementById(id);
   if (!node) {
@@ -518,6 +531,52 @@ function handleTreeSelection(node: NodeDto): void {
   rawView.setScope(node);
 }
 
+function handleConversationRaw(target: { ref: { nodeId: number; spanStart: number; spanEnd: number }; label: string }): void {
+  if (rawTab.disabled) return;
+  rawView.revealRange(target.ref.spanStart, target.ref.spanEnd, `${target.label} · Node ${target.ref.nodeId}`);
+  setActiveView("raw");
+}
+
+async function handleConversationTree(target: { ref: { nodeId: number; spanStart: number; spanEnd: number }; label: string }): Promise<void> {
+  if (treeTab.disabled) return;
+  const requestGeneration = state.generation;
+  const requestRevision = state.summary?.sessionRevision ?? null;
+  const requestInvalidatedRevision = state.invalidatedRevision;
+  const requestMode = state.summary?.mode ?? null;
+  const requestScopeNodeId = requestMode === "collection"
+    ? state.selectedItem?.node.id ?? null
+    : requestMode === "entry"
+      ? state.selectedEntryRoot?.id ?? null
+      : state.summary?.root?.id ?? null;
+  setActiveView("tree");
+  const item = treePanel.querySelector<HTMLElement>(`[data-node-id="${target.ref.nodeId}"]`);
+  if (item) {
+    item.scrollIntoView({ block: "center" });
+    item.click();
+    item.focus();
+    return;
+  }
+  const focused = await treeView.focusNode(target.ref.nodeId, target.ref.spanStart, target.ref.spanEnd);
+  const sameScope = state.generation === requestGeneration
+    && state.summary?.sessionRevision === requestRevision
+    && state.invalidatedRevision === requestInvalidatedRevision
+    && state.summary?.mode === requestMode
+    && (requestMode === "collection"
+      ? state.selectedItem?.node.id ?? null
+      : requestMode === "entry"
+        ? state.selectedEntryRoot?.id ?? null
+        : state.summary?.root?.id ?? null) === requestScopeNodeId;
+  if (!sameScope) return;
+  if (!focused) {
+    setText(statusReady, `Tree Node ${target.ref.nodeId} could not be loaded in the current scope.`);
+    setActiveView("tree");
+  }
+}
+
+function handleConversationContent(target: ContentTarget, opener: HTMLElement): void {
+  void contentViewer.open(target, opener);
+}
+
 function handleSearchReveal(match: SearchMatch): void {
   if (rawTab.disabled) return;
   const revealStart = match.field === "rawSource" ? match.matchStart : match.sourceSpanStart;
@@ -541,6 +600,7 @@ function handleCollectionSelection(node: NodeDto, ordinal: number): void {
   state.generation += 1;
   state.selectedItem = { node, ordinal };
   state.selectedEntry = null;
+  state.selectedEntryRoot = null;
   state.error = null;
   state.invalidatedRevision = null;
   searchView.clear();
@@ -580,6 +640,7 @@ function handleCurrentSessionAsyncError(parsed: IpcErrorPayload, stopEntryIndex 
     if (summary?.mode === "entry") {
       state.scanStoppedRevision = summary.sessionRevision;
       state.selectedEntry = null;
+      state.selectedEntryRoot = null;
       entryList.clear();
       setActiveView("semantic");
     } else if (summary?.mode === "collection") {
@@ -609,6 +670,7 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
   state.generation += 1;
   state.summary = { ...summary, sessionRevision: selection.sessionRevision };
   state.selectedEntry = selection.entry;
+  state.selectedEntryRoot = selection.root;
   state.selectedItem = null;
   state.error = null;
   state.invalidatedRevision = null;
@@ -684,6 +746,7 @@ function handleEntryRevisionUnknown(value: unknown): void {
   contentViewer.clear(false);
   state.summary = next;
   state.selectedEntry = null;
+  state.selectedEntryRoot = null;
   state.error = null;
   state.invalidatedRevision = null;
   state.scanQueued = null;
@@ -798,6 +861,38 @@ function setText(node: HTMLElement, value: string): void {
   node.textContent = value;
 }
 
+function currentConversationContext(): ConversationContext | null {
+  const summary = state.summary;
+  if (!summary || summary.documentError !== null || summaryIsInvalidated(summary)) return null;
+  if (summary.mode === "document") {
+    return summary.root ? {
+      mode: summary.mode,
+      sessionRevision: summary.sessionRevision,
+      sourceSize: summary.size,
+      scopeRoot: summary.root,
+      scopeLabel: "Document root"
+    } : null;
+  }
+  if (summary.mode === "collection") {
+    const item = state.selectedItem;
+    return item ? {
+      mode: summary.mode,
+      sessionRevision: summary.sessionRevision,
+      sourceSize: summary.size,
+      scopeRoot: item.node,
+      scopeLabel: `Item ${item.ordinal}`
+    } : null;
+  }
+  if (!state.selectedEntry || state.selectedEntry.status !== "valid" || !state.selectedEntryRoot) return null;
+  return {
+    mode: summary.mode,
+    sessionRevision: summary.sessionRevision,
+    sourceSize: entrySourceSize(state.selectedEntry),
+    scopeRoot: state.selectedEntryRoot,
+    scopeLabel: entryScopeLabel(state.selectedEntry.location.entryOrdinal)
+  };
+}
+
 function renderError(): void {
   const error = state.error;
   errorRegion.hidden = error === null;
@@ -829,6 +924,8 @@ function renderError(): void {
 function renderSummary(): void {
   const summary = state.summary;
   if (!summary) {
+    conversationView.setContext(null);
+    readerState.hidden = false;
     setText(fileName, "No file open");
     setText(filePath, "—");
     setText(fileMode, "—");
@@ -882,6 +979,9 @@ function renderSummary(): void {
   setText(statusProgress, invalidated ? "File changed · Raw unavailable" : rawOnly ? "Raw bytes available" : statusProgressLabel(summary));
   statusWarning.hidden = !summary.manyInvalidUtf8Warning;
   setText(statusReady, invalidated ? "Unavailable" : state.opening ? "Opening…" : stopped ? "Indexing stopped" : summary.progress && !summary.progress.complete ? "Indexing…" : "Ready");
+  const conversationContext = currentConversationContext();
+  conversationView.setContext(conversationContext);
+  readerState.hidden = conversationContext !== null;
 }
 
 function navigationCopy(summary: FileSummary): string {
@@ -1155,6 +1255,7 @@ function failClosedSummary(generation: number): void {
   state.generation += 1;
   state.summary = null;
   state.selectedEntry = null;
+  state.selectedEntryRoot = null;
   state.selectedItem = null;
   state.error = { code: "internal", message: "The file summary returned by the backend was invalid." };
   state.invalidatedRevision = null;
@@ -1194,9 +1295,11 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
     state.opening = false;
     entryList.setOpening(false);
     state.selectedEntry = null;
+    state.selectedEntryRoot = null;
     state.selectedItem = null;
     if (summary.documentError) {
       state.selectedEntry = null;
+      state.selectedEntryRoot = null;
       entryList.setSession(null);
       collectionList.setSession(null);
       treeView.clear();
