@@ -9,6 +9,7 @@
     "test:safe-markdown": "node scripts/test-safe-markdown.mjs",
     "test:search-ui": "node scripts/test-search-ui.mjs",
     "test:parsed-search-ui": "node scripts/test-parsed-search-ui.mjs",
+    "test:rendered-search-ui": "node scripts/test-rendered-search-ui.mjs",
     "test:copy-ui": "node scripts/test-copy-ui.mjs",
     "tauri": "tauri"
   },

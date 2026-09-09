@@ -10,6 +10,7 @@ import {
 import { renderSafeMarkdown } from "./markdown-renderer";
 import { TreeView, type NodeDto, type TreeCopyElements, type TreeViewSnapshot } from "./tree-view";
 import { SearchView, type SearchMatch, type SearchViewElements } from "./search-view";
+import { RenderedSearch, type RenderedMatch, type RenderedSearchTarget } from "./rendered-search";
 
 export type ContentTarget = {
   revision: number;
@@ -252,6 +253,7 @@ export class ContentViewer {
   private readonly htmlElements: HtmlViewerElements | null;
   private readonly stringElements: StringViewerElements | null;
   private readonly sourceSearch: SearchView | null;
+  private readonly renderedSearch: RenderedSearch | null;
   private readonly parsedSearchPeekElements: ParsedSearchPeekElements | null;
   private readonly renderAs: HTMLSelectElement | null;
   private readonly markdownAnyway: HTMLButtonElement | null;
@@ -320,6 +322,19 @@ export class ContentViewer {
       })
       : null;
     this.parsedSearchPeekElements = this.nestedElements?.parsedSearchPeek ?? null;
+    this.renderedSearch = options.elements.search
+      ? new RenderedSearch({
+        ...options.elements.search,
+        invoke: this.invokeRequest,
+        onReveal: (match) => void this.revealRenderedMatch(match),
+        onIntentChange: () => this.cancelContentRead(),
+        onError: (error) => this.handleSearchError(error),
+        onProjectionUnavailable: () => {
+          this.sourceSearch?.refresh();
+          this.setStatus("Rendered search is unavailable for this page; switch to Decoded Source.");
+        }
+      })
+      : null;
     const nestedCopy = this.nestedElements ? createNestedCopyElements() : null;
     nestedCopy?.container && this.nestedElements?.parsedPanel.prepend(nestedCopy.container);
     this.nestedTree = this.nestedElements
@@ -1085,6 +1100,7 @@ export class ContentViewer {
 
   private prepareRendererLoad(keepNestedNavigation = false): void {
     this.clearParsedSearchPeek();
+    this.renderedSearch?.invalidate();
     this.contentReadBusy = false;
     this.busy = true;
     this.offsets = [0];
@@ -1211,6 +1227,7 @@ export class ContentViewer {
         this.elements.content.replaceChildren(fragment);
         this.elements.content.classList.add("is-markdown");
         this.representation = "rendered";
+        this.ordinaryRepresentation = "rendered";
       } else {
         sourceChunk = sourceFallback ?? chunk;
         cacheChunk = sourceChunk;
@@ -1950,6 +1967,7 @@ export class ContentViewer {
     const target = this.searchTarget();
     if (!target || !this.detection) {
       search.clear();
+      this.renderedSearch?.clear();
       return;
     }
     const frame = this.nestedFrames.at(-1);
@@ -1975,6 +1993,7 @@ export class ContentViewer {
       targetNodeId
     });
     search.setRepresentation(parsed ? "decoded" : representation === "rawSource" ? "rawSource" : "decoded");
+    this.syncRenderedSearch();
   }
 
   private searchTarget(): ContentTarget | null {
@@ -1993,6 +2012,27 @@ export class ContentViewer {
     if (this.nestedRepresentation === "raw" || this.ordinaryRepresentation === "raw") return "rawSource";
     if (this.nestedRepresentation === "decoded" || this.ordinaryRepresentation === "decoded") return "decoded";
     return null;
+  }
+
+  private syncRenderedSearch(): void {
+    const rendered = this.renderedSearch;
+    const target = this.target;
+    if (!rendered || !target || !this.detection || this.nestedRepresentation !== null || this.renderMode === "html"
+      || this.ordinaryRepresentation !== "rendered") {
+      rendered?.clear();
+      this.sourceSearch?.refresh();
+      return;
+    }
+    const backend = this.renderMode === "plainText" || this.renderMode === "code" && this.semanticLimit === "code";
+    const renderedTarget: RenderedSearchTarget = {
+      nodeId: target.nodeId,
+      scopeId: target.scopeId,
+      sessionRevision: target.revision,
+      scopeStart: target.spanStart,
+      scopeEnd: target.spanEnd
+    };
+    if (backend) rendered.activate("backend", renderedTarget, null, "Search the visible rendered text.");
+    else rendered.activateDom(renderedTarget, this.elements.content, "Search the visible rendered text.");
   }
 
   private activateContentSearchRepresentation(representation: "decoded" | "rawSource"): void {
@@ -2014,10 +2054,11 @@ export class ContentViewer {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f" && this.sourceSearch) {
       event.preventDefault();
       event.stopPropagation();
-      this.sourceSearch.focusQuery();
+      if (this.renderedSearch?.active) this.renderedSearch.focusQuery();
+      else this.sourceSearch.focusQuery();
       return;
     }
-    if (event.key === "Escape" && this.sourceSearch?.handleEscape(event)) return;
+    if (event.key === "Escape" && (this.sourceSearch?.handleEscape(event) || this.renderedSearch?.handleEscape(event))) return;
   }
 
   private async revealSearchMatch(match: SearchMatch): Promise<void> {
@@ -2083,6 +2124,115 @@ export class ContentViewer {
         this.renderPaging();
       }
     }
+  }
+
+  private async revealRenderedMatch(match: RenderedMatch): Promise<void> {
+    if (match.kind !== "backend" || !match.backend || !this.target) return;
+    const target = this.target;
+    const backend = match.backend;
+    const query = this.renderedSearch?.query ?? "";
+    const intent = ++this.sourceRevealEpoch;
+    const generation = this.generation;
+    this.contentReadBusy = true;
+    this.busy = true;
+    this.elements.dialog.setAttribute("aria-busy", "true");
+    this.elements.content.setAttribute("aria-busy", "true");
+    this.setStatus("Loading rendered search match…");
+    this.renderMetadata();
+    this.renderPaging();
+    try {
+      const offset = backend.matchStart;
+      const value = await this.invokeRequest<unknown>("read_decoded_text", {
+        nodeId: target.nodeId,
+        offset,
+        length: TEXT_CHUNK_BYTES,
+        sessionRevision: target.revision,
+        scopeId: target.scopeId
+      });
+      if (!this.isCurrent(generation, target) || this.sourceRevealEpoch !== intent) return;
+      const lineState = this.renderMode === "code" && this.semanticLimit === "code"
+        ? await this.codeLineStateAt(target, offset, generation, intent)
+        : this.codeLineCheckpoints.get(offset) ?? { line: 1, previousWasCR: false };
+      if (!lineState) return;
+      const chunk = validateChunk(value, offset, rawSpanLength(target), undefined, false, lineState);
+      if (!chunk) throw new Error("The rendered search source response was invalid.");
+      this.offsets = [chunk.start];
+      this.offsetIndex = 0;
+      this.nextOffset = chunk.nextOffset;
+      this.cacheDecodedPage(chunk);
+      if (this.renderMode === "code" && this.semanticLimit === "code") {
+        const result = renderPlainCodePage(chunk.text, this.codeLanguageHint, this.codeLimitReason ?? "sizeLimit", chunk.lineState);
+        this.elements.content.replaceChildren(result.fragment);
+        this.codeRenderReason = result.reason;
+      } else {
+        this.elements.content.textContent = chunk.text;
+      }
+      this.representation = "rendered";
+      this.ordinaryRepresentation = "rendered";
+      this.rememberCodeChunk(chunk);
+      this.elements.range.textContent = `[${chunk.start}, ${chunk.start + utf8ByteLength(chunk.text)})`;
+      this.contentReadBusy = false;
+      this.busy = false;
+      this.elements.dialog.removeAttribute("aria-busy");
+      this.elements.content.removeAttribute("aria-busy");
+      this.setStatus("Rendered search match ready");
+      this.elements.alert.hidden = true;
+      this.renderMetadata();
+      this.renderPaging();
+      await this.renderedSearch?.reprojectDom(this.elements.content);
+      if (!this.isCurrent(generation, target) || this.sourceRevealEpoch !== intent) return;
+      const relative = backend.matchStart - chunk.start;
+      this.renderedSearch?.highlightSourceRange(
+        utf8ByteOffsetToUtf16(chunk.text, relative),
+        utf8ByteOffsetToUtf16(chunk.text, relative + utf8ByteLength(query))
+      );
+    } catch (error) {
+      if (!this.isCurrent(generation, target) || this.sourceRevealEpoch !== intent) return;
+      if (isGlobalError(error)) this.handleFailure(error);
+      else {
+        this.contentReadBusy = false;
+        this.busy = false;
+        this.elements.dialog.removeAttribute("aria-busy");
+        this.elements.content.removeAttribute("aria-busy");
+        this.elements.alert.hidden = false;
+        this.elements.alert.textContent = `Rendered search match could not be loaded: ${errorMessage(error)}`;
+        this.setStatus("Unable to load rendered search match");
+        this.renderMetadata();
+        this.renderPaging();
+      }
+    }
+  }
+
+  private async codeLineStateAt(target: ContentTarget, offset: number, generation: number, intent: number): Promise<CodeLineState | null> {
+    let checkpointOffset = 0;
+    let lineState: CodeLineState = { line: 1, previousWasCR: false };
+    for (const [candidateOffset, candidateState] of this.codeLineCheckpoints) {
+      if (candidateOffset <= offset && candidateOffset >= checkpointOffset) {
+        checkpointOffset = candidateOffset;
+        lineState = candidateState;
+      }
+    }
+    let cursor = checkpointOffset;
+    while (cursor < offset) {
+      if (!this.isCurrent(generation, target) || this.sourceRevealEpoch !== intent) return null;
+      const length = Math.min(TEXT_CHUNK_BYTES, offset - cursor);
+      const value = await this.invokeRequest<unknown>("read_decoded_text", {
+        nodeId: target.nodeId,
+        offset: cursor,
+        length,
+        sessionRevision: target.revision,
+        scopeId: target.scopeId
+      });
+      if (!this.isCurrent(generation, target) || this.sourceRevealEpoch !== intent) return null;
+      const chunk = validateChunk(value, cursor, rawSpanLength(target), undefined, false, lineState);
+      if (!chunk || utf8ByteLength(chunk.text) > length) throw new Error("The code line checkpoint response was invalid.");
+      const next = chunk.nextOffset;
+      if (next === null || next <= cursor || next > offset) throw new Error("The code line checkpoint response was invalid.");
+      lineState = scanCodeLines(chunk.text, lineState);
+      cursor = next;
+      this.codeLineCheckpoints.set(cursor, lineState);
+    }
+    return cursor === offset ? lineState : null;
   }
 
   private async revealNestedSearch(frame: NestedFrame, match: SearchMatch, query: string, representation: "decoded" | "raw", revealEpoch: number, searchEpoch: number, generation: number): Promise<void> {

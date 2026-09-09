@@ -106,19 +106,21 @@ export class SearchView {
     this.onRepresentationChange = options.onRepresentationChange;
     this.elements.form.addEventListener("submit", (event) => {
       event.preventDefault();
-      void this.submit();
+      if (this.isOwner()) void this.submit();
     });
-    this.elements.previous.addEventListener("click", () => this.showPrevious());
-    this.elements.next.addEventListener("click", () => void this.showNext());
-    this.elements.query.addEventListener("input", () => this.criteriaChanged());
-    this.elements.decoded.addEventListener("change", () => this.representationChanged());
-    this.elements.rawSource.addEventListener("change", () => this.representationChanged());
+    this.elements.previous.addEventListener("click", () => { if (this.isOwner()) this.showPrevious(); });
+    this.elements.next.addEventListener("click", () => { if (this.isOwner()) void this.showNext(); });
+    this.elements.query.addEventListener("input", () => { if (this.isOwner()) this.criteriaChanged(); });
+    this.elements.decoded.addEventListener("change", () => { if (this.isOwner()) this.representationChanged(); });
+    this.elements.rawSource.addEventListener("change", () => { if (this.isOwner()) this.representationChanged(); });
     this.clear();
   }
 
   setScope(scope: SearchScope | null): void {
     const changed = scopeKey(this.scope) !== scopeKey(scope);
     this.scope = scope;
+    if (scope?.enabled && this.owner() !== "rendered") this.setOwner("source");
+    else if (!scope?.enabled && this.owner() === "source") this.setOwner(null);
     if (changed) this.resetResults(true, true);
     else this.render();
   }
@@ -135,6 +137,7 @@ export class SearchView {
   }
 
   focusQuery(): void {
+    if (this.owner() === "rendered") return;
     this.elements.query.focus();
     this.elements.query.select();
   }
@@ -148,6 +151,7 @@ export class SearchView {
   }
 
   setRepresentation(representation: SearchRepresentation): void {
+    if (this.owner() === "rendered") return;
     this.elements.decoded.checked = representation === "decoded";
     this.elements.rawSource.checked = representation === "rawSource";
     this.render();
@@ -155,6 +159,7 @@ export class SearchView {
 
   setRawEnabled(enabled: boolean): void {
     this.rawEnabled = enabled;
+    if (this.owner() === "rendered") return;
     if (!enabled) {
       this.elements.rawSource.checked = false;
       this.elements.decoded.checked = true;
@@ -162,7 +167,15 @@ export class SearchView {
     this.render();
   }
 
+  refresh(): void {
+    if (this.owner() !== "rendered") {
+      if (this.scope) this.setOwner("source");
+      this.render();
+    }
+  }
+
   handleEscape(event: KeyboardEvent): boolean {
+    if (!this.isOwner()) return false;
     if (this.elements.resultsPanel.hidden) return false;
     event.preventDefault();
     event.stopPropagation();
@@ -185,20 +198,24 @@ export class SearchView {
   }
 
   private resetResults(clearQuery: boolean, notify: boolean): void {
+    const ownsForm = this.owner() !== "rendered";
     this.epoch += 1;
     this.request = null;
     this.history = [];
     this.currentIndex = -1;
     this.busy = false;
-    if (clearQuery) this.elements.query.value = "";
-    this.setStatus("");
-    this.elements.results.replaceChildren();
-    this.elements.resultsPanel.hidden = true;
-    this.render();
-    if (notify) this.onIntentChange();
+    if (ownsForm) {
+      if (clearQuery) this.elements.query.value = "";
+      this.setStatus("");
+      this.elements.results.replaceChildren();
+      this.elements.resultsPanel.hidden = true;
+      this.render();
+    }
+    if (notify && ownsForm) this.onIntentChange();
   }
 
   private async submit(): Promise<void> {
+    if (!this.isOwner()) return;
     const scope = this.scope;
     if (!scope?.enabled || this.busy) return;
     const query = this.elements.query.value;
@@ -230,7 +247,7 @@ export class SearchView {
         sessionRevision: scope.sessionRevision
       });
       if (!this.isCurrent(token)) return;
-      const page = searchPageValue(value, representation, query, scope);
+      const page = parseSearchPageValue(value, representation, query, scope);
       this.history = [{ requestCursor, page }];
       this.currentIndex = 0;
       this.setStatus(pageStatus(page, representation));
@@ -252,6 +269,7 @@ export class SearchView {
   }
 
   private async showNext(): Promise<void> {
+    if (!this.isOwner()) return;
     const current = this.history[this.currentIndex];
     const scope = this.scope;
     if (!scope || this.busy || !current || !current.page.hasMore) return;
@@ -284,7 +302,7 @@ export class SearchView {
         sessionRevision: scope.sessionRevision
       });
       if (!this.isCurrent(token)) return;
-      const page = searchPageValue(value, representation, query, scope, cursor);
+      const page = parseSearchPageValue(value, representation, query, scope, cursor);
       this.history.push({ requestCursor: cursor, page });
       this.currentIndex += 1;
       this.setStatus(pageStatus(page, representation));
@@ -303,7 +321,7 @@ export class SearchView {
   }
 
   private showPrevious(): void {
-    if (this.busy || this.currentIndex <= 0) return;
+    if (!this.isOwner() || this.busy || this.currentIndex <= 0) return;
     this.currentIndex -= 1;
     const scope = this.scope;
     if (scope) this.elements.status.textContent = pageStatus(this.history[this.currentIndex].page, this.selectedRepresentation(scope));
@@ -327,7 +345,7 @@ export class SearchView {
       button.title = resultLabel(match);
       const resultEpoch = this.epoch;
       button.addEventListener("click", () => {
-        if (this.epoch === resultEpoch && this.history[this.currentIndex]?.page.matches[index] === match) this.onReveal(match);
+        if (this.isOwner() && this.epoch === resultEpoch && this.history[this.currentIndex]?.page.matches[index] === match) this.onReveal(match);
       });
       fragment.append(button);
     });
@@ -340,6 +358,7 @@ export class SearchView {
     this.epoch += 1;
     this.request = null;
     this.busy = false;
+    if (this.owner() === "rendered") return;
     this.elements.resultsPanel.hidden = false;
     this.setStatus(message, true);
     this.elements.results.replaceChildren();
@@ -355,6 +374,7 @@ export class SearchView {
   }
 
   private render(): void {
+    if (this.owner() === "rendered") return;
     const scope = this.scope;
     const enabled = Boolean(scope?.enabled) && !this.busy;
     this.elements.panel.hidden = scope === null;
@@ -375,11 +395,25 @@ export class SearchView {
   }
 
   private isCurrent(token: SearchRequestToken): boolean {
-    return this.request === token && token.epoch === this.epoch;
+    return this.owner() === "source" && this.request === token && token.epoch === this.epoch;
+  }
+
+  private owner(): "source" | "rendered" | null {
+    const owner = this.elements.form.dataset.searchOwner;
+    return owner === "source" || owner === "rendered" ? owner : null;
+  }
+
+  private setOwner(owner: "source" | "rendered" | null): void {
+    if (owner === null) delete this.elements.form.dataset.searchOwner;
+    else this.elements.form.dataset.searchOwner = owner;
+  }
+
+  private isOwner(): boolean {
+    return this.owner() === "source";
   }
 }
 
-function searchPageValue(
+export function parseSearchPageValue(
   value: unknown,
   representation: SearchRepresentation,
   query: string,

@@ -54,11 +54,16 @@ async function waitForPort(port, vite) {
 }
 
 async function browser(args) {
-  const result = await execFileAsync("agent-browser", ["--session", session, ...args], {
-    cwd: root,
-    maxBuffer: 8 * 1024 * 1024
-  });
-  return result.stdout.trim();
+  try {
+    const result = await execFileAsync("agent-browser", ["--session", session, ...args], {
+      cwd: root,
+      maxBuffer: 8 * 1024 * 1024
+    });
+    return result.stdout.trim();
+  } catch (error) {
+    const detail = [error?.stderr, error?.stdout].filter((value) => typeof value === "string" && value.trim()).join("\n").trim();
+    throw new Error(`agent-browser ${args[0] ?? "command"} failed${detail ? `: ${detail.slice(-4000)}` : ""}`);
+  }
 }
 
 function parseBrowserValue(output) {
