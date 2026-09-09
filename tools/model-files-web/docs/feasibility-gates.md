@@ -78,3 +78,10 @@ node --test src/core/template.test.ts
 - 本地目录只保留当前会话的 `File` 对象，不持久化目录权限或路径。
 - Jinja 只渲染已读取的字符串；不支持 include，不执行仓库代码，不发模板网络请求。
 - 完整 GGUF 仍为 `NO-GO`，只保留固定 24-byte 基础摘要。
+
+## 2026-09-09 静态网页来源扩展复核
+
+- 同一 ModelScope 清单地址，携带 `Origin: http://127.0.0.1:4173`，直连 HTTPS 返回 HTTP 200，仍没有 `Access-Control-Allow-Origin`。
+- 运行现有 `scripts/verify-browser-feasibility.mjs`，真实 Chromium 清单 fetch 仍报 `TypeError: Failed to fetch`。因此后续固定 revision、内容与 Range 门未执行，不能声称已通过。
+- ModelScope 保持 NO-GO；FTP/FTPS、SSH/SFTP 仍不接入。没有新增后端、代理或桥接。
+- 增加显式 HTTPS 文件/JSON 清单入口，以服务器允许 CORS 和严格 Range 为条件；HTTPS 来源是 live，不宣称固定 revision。使用方式和边界见 README 的“HTTPS 加载”。

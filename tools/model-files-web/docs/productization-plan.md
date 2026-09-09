@@ -4,13 +4,15 @@
 
 日期：2026-08-10
 
-更新日期：2026-08-30
+更新日期：2026-09-09
 
 历史本地功能基线：`edb0f56c89d7e5f2edcd17f1a4c6eadd7e1532da`；功能/性能提交到 `81b8eb9`；Tensor hierarchy 提交到 `5e08c4a`；六份文档由本文件所在提交收口
 
 当前里程碑：T21–T38 原生功能追平完成（不发布、不打 tag、不要求远端 CI）
 
 历史证据：[v0.1 纵向验收记录](v0.1-acceptance.md)
+
+2026-09-09 增量：保持纯静态网页，增加 HTTPS 文件/JSON 清单加载和对照入口；HTTPS 为会话内 live 来源，不套用 Hugging Face 固定 revision 的承诺。来源合同见 [README](../README.md#https-加载)，ModelScope 复测见 [可行性记录](feasibility-gates.md)。以下 T11–T38 保留为历史阶段计划。
 
 ## 1. 结论
 

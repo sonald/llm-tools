@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   classifyFile,
   loadLocalDirectory,
+  loadHttpsSource,
   loadRepository,
   normalizeModelId,
   readExactRange,
@@ -304,3 +305,94 @@ function localFile(relativePath: string, content: string): File {
   Object.defineProperty(file, 'webkitRelativePath', { value: relativePath })
   return file
 }
+
+
+test('HTTPS file discovery uses HEAD only and shares exact range checks', async () => {
+  const calls: string[] = []
+  await withFetch(async (input, init) => {
+    assert.equal(String(input), 'https://files.example/model.safetensors?version=1')
+    assert.equal(init?.credentials, 'omit')
+    calls.push(init?.method ?? 'GET')
+    if (init?.method === 'HEAD') return new Response(null, { headers: { 'Content-Length': '100' } })
+    assert.equal(new Headers(init?.headers).get('Range'), 'bytes=0-7')
+    return new Response(new Uint8Array(8), { status: 206, headers: { 'Content-Range': 'bytes 0-7/100' } })
+  }, async () => {
+    const result = await loadHttpsSource('https://files.example/model.safetensors?version=1', 'file')
+    assert.deepEqual(calls, ['HEAD'])
+    assert.equal(result.source, 'https')
+    assert.equal(result.files[0].path, 'model.safetensors')
+    assert.equal((await readExactRange(result, result.files[0], 0, 7)).byteLength, 8)
+  })
+})
+
+test('HTTPS manifest resolves file URLs and reads related files without a Hub request', async () => {
+  await withFetch(async (input) => {
+    const url = String(input)
+    if (url === 'https://files.example/model/files.json') return Response.json({ files: [
+      { path: 'config.json', url: './config.json', size: 2 },
+      { path: 'tokenizer.json', url: 'https://cdn.example/tokenizer.json', size: 2 },
+    ] })
+    assert.equal(url, 'https://files.example/model/config.json')
+    return new Response('{}')
+  }, async () => {
+    const result = await loadHttpsSource('https://files.example/model/files.json', 'manifest')
+    assert.equal(result.files.length, 2)
+    assert.equal(new TextDecoder().decode(await readWholeFile(result, result.files[0])), '{}')
+  })
+})
+
+test('HTTPS rejects unsafe URLs, unknown HEAD sizes, and malformed manifests', async () => {
+  await withFetch(async () => { assert.fail('must reject before fetching') }, async () => {
+    for (const url of ['ftp://files.example/a', 'ssh://files.example/a', 'http://files.example/a', 'https://user:pass@files.example/a']) {
+      await assert.rejects(loadHttpsSource(url, 'file'))
+    }
+    await assert.rejects(loadHttpsSource('https://files.example/model.safetensors', 'manifest'))
+  })
+  for (const length of [null, '', '-1', 'wat', '1.5', '9007199254740992']) {
+    await withFetch(async () => new Response(null, { headers: length === null ? {} : { 'Content-Length': length } }), async () => {
+      await assert.rejects(loadHttpsSource('https://files.example/a.json', 'file'), /HEAD/)
+    })
+  }
+  for (const payload of [null, {}, { files: [] }, { files: [{ path: '../a', url: './a', size: 1 }] },
+    { files: [{ path: 'a', url: 'http://files.example/a', size: 1 }] },
+    { files: [{ path: 'a', url: './a', size: null }] },
+    { files: [{ path: 'a', url: './a', size: 1 }, { path: 'a', url: './b', size: 1 }] },
+  ]) {
+    await withFetch(async () => Response.json(payload), async () => {
+      await assert.rejects(loadHttpsSource('https://files.example/files.json', 'manifest'))
+    })
+  }
+})
+
+
+test('HTTPS manifest is bounded, resolves redirects, and honors cancellation', async () => {
+  await withFetch(async () => new Response(new Uint8Array(1024 * 1024 + 1)), async () => {
+    await assert.rejects(loadHttpsSource('https://files.example/files.json', 'manifest'), /响应超过/)
+  })
+  await withFetch(async () => {
+    const response = Response.json({ files: [{ path: 'config.json', size: 2, url: './config.json' }] })
+    Object.defineProperty(response, 'url', { value: 'https://cdn.example/model/files.json' })
+    return response
+  }, async () => {
+    const result = await loadHttpsSource('https://files.example/files.json', 'manifest')
+    assert.equal(result.urls.get('config.json'), 'https://cdn.example/model/config.json')
+  })
+  const controller = new AbortController()
+  await withFetch(async (_url, init) => {
+    assert.equal(init?.signal, controller.signal)
+    controller.abort()
+    return new Response(null, { headers: { 'Content-Length': '2' } })
+  }, async () => {
+    await assert.rejects(loadHttpsSource('https://files.example/config.json', 'file', controller.signal), /abort/i)
+  })
+})
+
+test('range refusal cancels the response stream without consuming whole weights', async () => {
+  let cancelled = false
+  await withFetch(async () => new Response(new ReadableStream({
+    cancel() { cancelled = true },
+  }), { status: 200 }), async () => {
+    await assert.rejects(readExactRange(snapshot, file, 0, 7), /未确认 Range/)
+    assert.equal(cancelled, true)
+  })
+})

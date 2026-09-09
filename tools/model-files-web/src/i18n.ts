@@ -1,6 +1,62 @@
 export type Locale = 'zh-Hans' | 'en'
 
 export const messageCatalog = {
+  appHttpsFileHint: {
+    'zh-Hans': '文件模式需要 HEAD 返回 Content-Length；不会自动寻找相邻配置或词表。',
+    en: 'File mode needs HEAD with Content-Length; adjacent configs and vocabularies are not discovered automatically.',
+  },
+  appHttpsManifestHint: {
+    'zh-Hans': '清单不超过 1 MiB；size 是文件实际字节数，url 可相对于清单地址。仅访问清单列出的文件，不扫描目录。',
+    en: 'Manifest limit: 1 MiB. size is the exact byte count; url can be relative to the manifest URL. Only listed files are accessed; directories are not scanned.',
+  },
+  appHttpsHint: {
+    'zh-Hans': '直接打开一个文件，或用 JSON 清单打开多个关联文件。服务器必须允许跨域读取；权重检查还需要精确 Range。地址仅保留在当前会话，刷新后需重新打开。',
+    en: 'Open one file directly, or related files with a JSON manifest. The server must allow cross-origin reads; weight inspection also requires exact ranges. URLs stay in this session; reopen after refreshing.',
+  },
+  appHttpsHelp: {
+    'zh-Hans': '使用说明',
+    en: 'Loading help',
+  },
+  appHttpsStatus: {
+    'zh-Hans': 'HTTPS · live · {count} 个文件',
+    en: 'HTTPS · live · {count} files',
+  },
+  appHttpsUrlLabel: {
+    'zh-Hans': 'HTTPS 地址',
+    en: 'HTTPS URL',
+  },
+  appHttpsManifest: {
+    'zh-Hans': 'HTTPS 清单',
+    en: 'HTTPS manifest',
+  },
+  appHttpsFile: {
+    'zh-Hans': 'HTTPS 文件',
+    en: 'HTTPS file',
+  },
+  appSourceLabel: {
+    'zh-Hans': '加载方式',
+    en: 'Source',
+  },
+  httpsFetchFailed: {
+    'zh-Hans': 'HTTPS 请求失败：请检查地址、网络和服务端 CORS 许可；本页不会使用代理。',
+    en: 'HTTPS request failed. Check the URL, network and server CORS permissions; this page does not use a proxy.',
+  },
+  httpsManifestInvalid: {
+    'zh-Hans': '清单必须包含 1–10,000 个 files 条目，每项包含 path、url 和非负整数 size（字节）。',
+    en: 'A manifest needs 1–10,000 files, each with path, url and a non-negative integer size in bytes.',
+  },
+  httpsManifestJsonRequired: {
+    'zh-Hans': '清单地址必须指向 .json 文件。模型文件请使用“HTTPS 文件”模式。',
+    en: 'The manifest URL must point to a .json file. Use HTTPS file mode for model files.',
+  },
+  httpsHeadSizeRequired: {
+    'zh-Hans': '无法通过 HEAD 获取有效的 Content-Length。请使用提供文件字节大小的 HTTPS 清单。',
+    en: 'HEAD did not return a valid Content-Length. Use an HTTPS manifest with file sizes in bytes.',
+  },
+  httpsUrlRequired: {
+    'zh-Hans': '请输入不含用户名和密码的 HTTPS 地址。',
+    en: 'Enter an HTTPS URL without a username or password.',
+  },
   greeting: {
     'zh-Hans': '你好，{name}',
     en: 'Hello, {name}',
@@ -1222,8 +1278,8 @@ export const messageCatalog = {
     en: 'Select a file',
   },
   appOpenModelRepositoryMessage: {
-    'zh-Hans': '输入公开 Hugging Face 仓库，验证清单、Range 与 tokenizer 的纯 Web 数据链路。',
-    en: 'Enter a public Hugging Face repository to verify the browser-only manifest, Range, and tokenizer data path.',
+    'zh-Hans': '打开 Hugging Face 仓库、HTTPS 文件或清单，也可以选择本地模型目录。',
+    en: 'Open a Hugging Face repository, an HTTPS file or manifest, or a local model directory.',
   },
   appSelectFileMessage: {
     'zh-Hans': '从左侧选择当前 revision 中的文件。',
@@ -1602,8 +1658,8 @@ export const messageCatalog = {
     en: 'Comparison Tokenizer',
   },
   comparisonOtherPublicRepositoryAction: {
-    'zh-Hans': '另一公开 Hugging Face…',
-    en: 'Another public Hugging Face…',
+    'zh-Hans': '另一公开来源…',
+    en: 'Another public source…',
   },
   comparisonRepositoryLabel: {
     'zh-Hans': '对照 Hugging Face 仓库',

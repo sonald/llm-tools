@@ -39,7 +39,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 .topbar {
   display: grid;
-  grid-template-columns: 220px minmax(360px, 620px) minmax(220px, 1fr);
+  grid-template-columns: 150px minmax(400px, 1fr) minmax(180px, auto);
   align-items: center;
   gap: 16px;
   padding: 0 16px;
@@ -50,7 +50,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .brand { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; }
 .web-label { color: var(--muted); font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: .08em; }
 .app-mark { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
-.repository-form { display: flex; gap: 8px; }
+.repository-form { display: flex; gap: 8px; min-width: 0; }
+.repository-form > input { min-width: 80px; flex: 1; }
+.source-select { max-width: 140px; min-width: 0; height: 32px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel); color: inherit; font: inherit; font-size: 11px; }
+.source-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.https-help { margin-bottom: 12px; font-size: 11px; line-height: 1.5; color: var(--muted); }
+.https-help summary { cursor: pointer; color: var(--accent); }
+.https-help pre { overflow: auto; font: 10px/1.5 var(--mono); }
 .repository-form input {
   width: 100%; height: 32px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 7px; background: #fff;
   font: 12px var(--mono);
@@ -338,7 +344,7 @@ tr:last-child td { border-bottom: 0; }
 .tokenizer-layout.comparison-open {
   grid-template-columns: minmax(250px, .68fr) minmax(320px, 1fr) minmax(360px, 1.12fr);
 }
-.comparison-side { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) minmax(240px, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.comparison-side { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(140px, 1fr) minmax(240px, 1fr); overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
 .comparison-side > header { min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--line); }
 .comparison-side > header h2 { margin: 0; font-size: 12px; }
 .comparison-side > header select { max-width: 220px; margin-left: auto; height: 28px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
@@ -536,4 +542,11 @@ tr:last-child td { border-bottom: 0; }
   .token-pieces button:nth-child(5n + 3) { background: #71ba86; }
   .token-pieces button:nth-child(5n + 4) { background: #9e8bd1; }
   .token-pieces button:nth-child(5n + 5) { background: #d98c99; }
+}
+
+@media (max-width: 700px) {
+  .app-shell { grid-template-rows: auto minmax(0, 1fr); }
+  .topbar { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 10px; }
+  .repository-form { flex-wrap: wrap; }
+  .repository-form > input { flex-basis: calc(100% - 160px); }
 }

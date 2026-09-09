@@ -666,7 +666,7 @@ test('loads an isolated public Hugging Face comparison repository', async ({ pag
   }
   const mainUrlCount = (path: string) => mainUrls.filter(url => url.endsWith(`/${path}`)).length
 
-  await page.getByText('另一公开 Hugging Face…').click()
+  await page.getByText('另一公开来源…').click()
   await page.getByLabel('对照 Hugging Face 仓库').fill(crossRepositoryModelId)
   await page.getByRole('button', { name: '加载对照' }).click()
   const source = page.locator('.comparison-source')
@@ -769,7 +769,7 @@ test('keeps the latest explicit comparison repository after a delayed manifest',
   await page.getByRole('button', { name: '打开' }).click()
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
 
-  await page.getByText('另一公开 Hugging Face…').click()
+  await page.getByText('另一公开来源…').click()
   await page.getByLabel('对照 Hugging Face 仓库').fill('fixture/slow-cross')
   await page.getByRole('button', { name: '加载对照' }).click()
   await page.getByLabel('对照 Hugging Face 仓库').fill(crossRepositoryModelId)
@@ -814,7 +814,7 @@ test('loads a second local comparison directory without external requests', asyn
     consistencyLabel: await badge.innerText(),
   }
 
-  await page.getByText('另一公开 Hugging Face…').click()
+  await page.getByText('另一公开来源…').click()
   await page.getByLabel('对照 Hugging Face 仓库').fill(crossRepositoryModelId)
   await page.getByRole('button', { name: '加载对照' }).click()
   await expect(page.locator('.comparison-source')).toHaveText(
@@ -918,7 +918,7 @@ test('keeps a valid local comparison after a delayed remote manifest', async ({ 
   })
   await openFixture(page, 18)
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
-  await page.getByText('另一公开 Hugging Face…').click()
+  await page.getByText('另一公开来源…').click()
   await page.getByLabel('对照 Hugging Face 仓库').fill('fixture/slow-cross')
   await page.getByRole('button', { name: '加载对照' }).click()
   await expect(page.getByText('正在读取对照仓库清单…')).toBeVisible()
@@ -966,7 +966,7 @@ test('keeps comparison controls reachable without overflow at product viewports'
     await diff.scrollIntoViewIfNeeded()
     await expect(page.getByRole('table', { name: '主 Tokenizer Tokens' })).toBeVisible()
     await expect(page.getByRole('table', { name: '对照 Tokenizer Tokens' })).toBeVisible()
-    await page.getByText('另一公开 Hugging Face…').click()
+    await page.getByText('另一公开来源…').click()
     const comparisonInput = page.getByLabel('对照 Hugging Face 仓库')
     const comparisonLoadButton = page.getByRole('button', { name: '加载对照' })
     await expect(comparisonInput).toBeVisible()
@@ -2031,6 +2031,8 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
   }
 
   await page.goto('/')
+  await page.keyboard.press('Tab')
+  await expect(page.getByRole('combobox', { name: '加载方式' })).toBeFocused()
   await page.keyboard.press('Tab')
   const repository = page.getByRole('combobox', { name: 'Hugging Face 仓库' })
   await expect(repository).toBeFocused()

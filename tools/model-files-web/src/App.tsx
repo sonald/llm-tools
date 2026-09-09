@@ -3,6 +3,8 @@ import {
   formatBytes,
   isImatrixPath,
   loadLocalDirectory,
+  loadHttpsSource,
+  contentUrl,
   loadRepository,
   readExactRange,
   readWholeFile,
@@ -101,10 +103,13 @@ type Inspection =
     config: { content: string; parsed: unknown; bytesRead: number } | null
   }
 
+type SourceMode = 'huggingface' | 'file' | 'manifest'
+
 type RepositoryError = { message: string; retryable: boolean }
 const comparisonDiffScopes: VocabularyDiffScope[] = ['leftOnly', 'rightOnly', 'shared']
 
 export default function App() {
+  const [sourceMode, setSourceMode] = useState<SourceMode>('huggingface')
   const [repositoryInput, setRepositoryInput] = useState('Qwen/Qwen3-0.6B')
   const [repositoryHistory, setRepositoryHistory] = useState(readRepositoryHistory)
   const [snapshot, setSnapshot] = useState<RepositorySnapshot | null>(null)
@@ -141,6 +146,7 @@ export default function App() {
       if (route.repo === null) {
         clearRepository()
       } else {
+        setSourceMode('huggingface')
         setRepositoryInput(route.repo)
         void loadRoute(route.repo, route.file, false)
       }
@@ -151,6 +157,7 @@ export default function App() {
         initialRouteApplied.current = true
         const route = readRoute()
         if (route.repo !== null) {
+          setSourceMode('huggingface')
           setRepositoryInput(route.repo)
           void loadRoute(route.repo, route.file, true)
         }
@@ -169,8 +176,9 @@ export default function App() {
 
   async function openRepository(event: React.FormEvent) {
     event.preventDefault()
-    writeRoute(repositoryInput, null, 'push')
-    await loadRoute(repositoryInput, null, true)
+    if (sourceMode === 'huggingface') writeRoute(repositoryInput, null, 'push')
+    else clearRoute('push')
+    await loadRoute(repositoryInput, null, true, sourceMode)
   }
 
   function openLocalDirectory(event: React.ChangeEvent<HTMLInputElement>) {
@@ -208,7 +216,7 @@ export default function App() {
     }
   }
 
-  async function loadRoute(input: string, requestedPath: string | null, replaceRoute: boolean) {
+  async function loadRoute(input: string, requestedPath: string | null, replaceRoute: boolean, mode: SourceMode = 'huggingface') {
     repositoryAbort.current?.abort()
     inspectionAbort.current?.abort()
     resetConsistency()
@@ -222,22 +230,26 @@ export default function App() {
     inspectionCache.current.clear()
     inspectionGeneration.current += 1
     try {
-      const next = await loadRepository(input, controller.signal)
+      const next = mode === 'huggingface'
+        ? await loadRepository(input, controller.signal)
+        : await loadHttpsSource(input, mode, controller.signal)
       if (controller.signal.aborted || repositoryAbort.current !== controller) return
       consistencySnapshotIdentity.current = snapshotIdentity(next)
       setSnapshot(next)
-      setRepositoryInput(next.modelId)
-      setRepositoryHistory(current => {
-        const updated = addRepositoryHistory(current, next.modelId)
-        saveRepositoryHistory(updated)
-        return updated
-      })
+      if (next.source === 'huggingface') {
+        setRepositoryInput(next.modelId)
+        setRepositoryHistory(current => {
+          const updated = addRepositoryHistory(current, next.modelId)
+          saveRepositoryHistory(updated)
+          return updated
+        })
+      }
       const preferred = requestedPath === null
         ? next.files.find(file => file.path === 'config.json') ?? next.files.find(file => !isBlocked(file))
         : next.files.find(file => file.path === requestedPath)
       if (requestedPath !== null && preferred === undefined) {
         setRepositoryError({ message: t('appDeepLinkFileMissing', { path: requestedPath }), retryable: false })
-        if (replaceRoute) writeRoute(next.modelId, requestedPath, 'replace')
+        if (replaceRoute && next.source === 'huggingface') writeRoute(next.modelId, requestedPath, 'replace')
         startConsistency(next)
         return
       }
@@ -246,7 +258,7 @@ export default function App() {
         await inspectFile(next, preferred)
         if (consistencySnapshotIdentity.current !== snapshotIdentity(next)) return
         startConsistency(next)
-        if (replaceRoute) writeRoute(next.modelId, preferred.path, 'replace')
+        if (replaceRoute && next.source === 'huggingface') writeRoute(next.modelId, preferred.path, 'replace')
       } else {
         startConsistency(next)
       }
@@ -522,10 +534,17 @@ export default function App() {
           <span className="web-label">Web</span>
         </div>
         <form className="repository-form" onSubmit={openRepository}>
-          <label className="sr-only" htmlFor="repository">{t('appHuggingFaceRepositoryLabel')}</label>
+          <SourceSelect value={sourceMode} onChange={mode => {
+            clearRepository()
+            clearRoute('push')
+            setSourceMode(mode)
+            setRepositoryInput('')
+          }} />
+          <label className="sr-only" htmlFor="repository">{t(sourceMode === 'huggingface' ? 'appHuggingFaceRepositoryLabel' : 'appHttpsUrlLabel')}</label>
           <input
             id="repository"
-            list="repository-examples"
+            list={sourceMode === 'huggingface' ? 'repository-examples' : undefined}
+            autoComplete="off"
             value={repositoryInput}
             onChange={event => setRepositoryInput(event.target.value)}
             onKeyDown={event => {
@@ -534,7 +553,7 @@ export default function App() {
                 event.currentTarget.form?.requestSubmit()
               }
             }}
-            placeholder={t('appRepositoryPlaceholder')}
+            placeholder={sourceMode === 'huggingface' ? t('appRepositoryPlaceholder') : 'https://…'}
             spellCheck={false}
           />
           <datalist id="repository-examples">
@@ -573,6 +592,8 @@ export default function App() {
                 revision: snapshot.revision.slice(0, 7),
                 count: formatNumber(snapshot.files.length),
               })}</>
+              : snapshot.source === 'https'
+                ? <><i />{t('appHttpsStatus', { count: formatNumber(snapshot.files.length) })}</>
               : <><i />{t('appLocalDirectoryStatus', { count: formatNumber(snapshot.files.length) })}</>
           ) : isLoadingRepository ? t('appLoadingManifestStatus') : t('appBrowserReadonlyStatus')}
         </div>
@@ -580,6 +601,12 @@ export default function App() {
 
       <div className="workspace">
         <aside className="sidebar">
+          {sourceMode !== 'huggingface' ? <details className="https-help" open>
+            <summary>{t('appHttpsHelp')}</summary>
+            <p>{t('appHttpsHint')}</p>
+            <p>{t(sourceMode === 'file' ? 'appHttpsFileHint' : 'appHttpsManifestHint')}</p>
+            {sourceMode === 'manifest' ? <pre>{JSON.stringify({ files: [{ path: 'config.json', url: './config.json', size: 2 }] }, null, 2)}</pre> : null}
+          </details> : null}
           <label className="search-field">
             <SearchIcon />
             <span className="sr-only">{t('appFilterFilesLabel')}</span>
@@ -589,7 +616,7 @@ export default function App() {
             <div className="repository-error">
               <InlineError>{repositoryError.message}</InlineError>
               {repositoryError.retryable
-                ? <button type="button" onClick={() => void loadRoute(repositoryInput, readRoute().file, true)}>{t('appRetryAction')}</button>
+                ? <button type="button" onClick={() => void loadRoute(repositoryInput, readRoute().file, true, sourceMode)}>{t('appRetryAction')}</button>
                 : null}
             </div>
           ) : null}
@@ -635,6 +662,15 @@ export default function App() {
       </div>
     </main>
   )
+}
+
+function SourceSelect({ value, onChange }: { value: SourceMode; onChange(value: SourceMode): void }) {
+  return <select className="source-select" aria-label={t('appSourceLabel')} value={value}
+    onChange={event => onChange(event.target.value as SourceMode)}>
+    <option value="huggingface">Hugging Face</option>
+    <option value="file">{t('appHttpsFile')}</option>
+    <option value="manifest">{t('appHttpsManifest')}</option>
+  </select>
 }
 
 function Detail({
@@ -701,10 +737,10 @@ function Detail({
         }}>{copyLabel}</button>
         <a
           className="source-link"
-          href={snapshot?.source === 'huggingface' ? `https://huggingface.co/${snapshot.modelId}/blob/${snapshot.revision}/${file.path}` : undefined}
+          href={snapshot?.source === 'huggingface' ? `https://huggingface.co/${snapshot.modelId}/blob/${snapshot.revision}/${file.path}` : snapshot?.source === 'https' ? contentUrl(snapshot, file) : undefined}
           target="_blank"
           rel="noreferrer"
-          hidden={snapshot?.source !== 'huggingface'}
+          hidden={snapshot === null || snapshot.source === 'local'}
         >{t('appSourceLinkAction')}</a>
         <ConsistencyBadge ref={badgeRef} report={report} open={reportOpen} onToggle={onToggleConsistency} />
       </header>
@@ -1178,6 +1214,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
   const [showWhitespace, setShowWhitespace] = useState(true)
   const [inputCopyLabel, setInputCopyLabel] = useState(() => t('appCopyInputAction'))
+  const [comparisonSourceMode, setComparisonSourceMode] = useState<SourceMode>('huggingface')
   const [comparisonRepositoryInput, setComparisonRepositoryInput] = useState('')
   const [comparisonExternalSnapshot, setComparisonExternalSnapshot] = useState<RepositorySnapshot | null>(null)
   const [comparisonManifestLoading, setComparisonManifestLoading] = useState(false)
@@ -1250,6 +1287,8 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     ? t('appComparisonCurrentRepositorySource', { path: selectedComparisonTarget.file.path })
     : comparisonExternalSnapshot.source === 'huggingface'
       ? `${comparisonExternalSnapshot.modelId} · SHA ${comparisonExternalSnapshot.revision.slice(0, 7)} · ${selectedComparisonTarget.file.path}`
+      : comparisonExternalSnapshot.source === 'https'
+        ? `HTTPS · ${comparisonExternalSnapshot.name} · live · ${selectedComparisonTarget.file.path}`
       : t('appComparisonLocalDirectorySource', {
         revision: comparisonExternalSnapshot.revision,
         name: comparisonExternalSnapshot.name,
@@ -1519,7 +1558,9 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setComparisonOpen(true)
     setComparisonTargetPath(null)
     try {
-      const next = await loadRepository(input, manifestController.signal)
+      const next = comparisonSourceMode === 'huggingface'
+        ? await loadRepository(input, manifestController.signal)
+        : await loadHttpsSource(input, comparisonSourceMode, manifestController.signal)
       if (manifestController.signal.aborted || comparisonManifestController.current !== manifestController) return
       const targets = selectTokenizerComparisonTargets(next)
       if (targets.length === 0) throw new Error(t('appComparisonRepositoryNoTokenizer'))
@@ -1964,11 +2005,16 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
         <details className="comparison-repository">
           <summary>{t('comparisonOtherPublicRepositoryAction')}</summary>
           <form onSubmit={loadComparisonRepository}>
+            <SourceSelect value={comparisonSourceMode} onChange={mode => {
+              closeExternalSource()
+              setComparisonSourceMode(mode)
+            }} />
             <label>
-              <span>{t('comparisonRepositoryLabel')}</span>
+              <span>{t(comparisonSourceMode === 'huggingface' ? 'comparisonRepositoryLabel' : 'appHttpsUrlLabel')}</span>
               <input
                 value={comparisonRepositoryInput}
-                placeholder={t('appRepositoryPlaceholder')}
+                placeholder={comparisonSourceMode === 'huggingface' ? t('appRepositoryPlaceholder') : 'https://…'}
+                autoComplete="off"
                 onChange={event => setComparisonRepositoryInput(event.target.value)}
               />
             </label>
@@ -2614,7 +2660,7 @@ function clearRoute(mode: 'push' | 'replace'): void {
 function snapshotIdentity(snapshot: RepositorySnapshot): string {
   return snapshot.source === 'huggingface'
     ? `huggingface:${snapshot.modelId}@${snapshot.revision}`
-    : `local:${snapshot.selectionId}`
+    : `${snapshot.source}:${snapshot.selectionId}`
 }
 
 function readRepositoryHistory(): string[] {
