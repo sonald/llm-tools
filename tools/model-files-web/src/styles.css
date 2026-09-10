@@ -120,19 +120,20 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .consistency-dialog > header { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
 .consistency-dialog h2 { margin: 0 auto 0 0; font-size: 13px; }
 .consistency-dialog > header button { height: 26px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--panel); cursor: pointer; }
-.consistency-dialog p, .consistency-dialog article { margin: 12px 14px; }
-.consistency-dialog article { padding-bottom: 10px; border-bottom: 1px solid var(--line); }
-.consistency-dialog h3 { margin: 0 0 4px; font-size: 12px; }
-.consistency-dialog article p { margin: 0 0 8px; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
-.consistency-identity, .consistency-dialog article dl { display: grid; gap: 4px; margin: 0 14px; }
-.consistency-dialog article dl { margin: 0; }
-.consistency-identity div, .consistency-dialog article dl div { display: flex; gap: 7px; min-width: 0; }
-.consistency-identity dt, .consistency-dialog article dt { flex: none; max-width: 55%; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.consistency-identity dd, .consistency-dialog article dd { margin: 0; overflow-wrap: anywhere; font: 10.5px var(--mono); }
-.consistency-dialog .table-scroll { max-width: 100%; margin: 12px 14px 0; border: 1px solid var(--line); }
-.consistency-embedded { max-height: min(44vh, 360px); margin: 0; overflow: auto; }
-.detail-reader-stack { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
-.detail-reader-stack > .reader-canvas { height: auto; }
+:is(.consistency-dialog, .consistency-embedded) p, :is(.consistency-dialog, .consistency-embedded) article { margin: 12px 14px; }
+:is(.consistency-dialog, .consistency-embedded) article { padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+:is(.consistency-dialog, .consistency-embedded) h3 { margin: 0 0 4px; font-size: 12px; }
+:is(.consistency-dialog, .consistency-embedded) article p { margin: 0 0 8px; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
+.consistency-identity, :is(.consistency-dialog, .consistency-embedded) article dl { display: grid; gap: 4px; margin: 0 14px; }
+:is(.consistency-dialog, .consistency-embedded) article dl { margin: 0; }
+.consistency-identity div, :is(.consistency-dialog, .consistency-embedded) article dl div { display: flex; gap: 7px; min-width: 0; }
+.consistency-identity dt, :is(.consistency-dialog, .consistency-embedded) article dt { flex: none; max-width: 55%; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.consistency-identity dd, :is(.consistency-dialog, .consistency-embedded) article dd { margin: 0; overflow-wrap: anywhere; font: 10.5px var(--mono); }
+:is(.consistency-dialog, .consistency-embedded) .table-scroll { max-width: 100%; margin: 12px 14px 0; border: 1px solid var(--line); }
+/* Keep the report and config in one bounded scroll area. */
+.consistency-embedded { margin: 0; padding-bottom: 18px; }
+.detail-reader-stack { height: 100%; min-height: 0; overflow: auto; }
+.detail-reader-stack > .reader-canvas { height: auto; overflow: visible; }
 .detail-body { min-height: 0; overflow: hidden; }
 
 .empty-state, .loading-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; }

@@ -1599,6 +1599,35 @@ test('Jinja source find preserves query while editing and resets on file switch'
   expect(errors).toEqual([])
 })
 
+test('config report and complete source share one reachable scroll area', async ({ page }) => {
+  const errors = collectErrors(page)
+  await installFixtureRoutes(page)
+  const content = ('{'+ '\n'.repeat(100) + '"last_field":"END_OF_CONFIG"}').padEnd(144)
+  await page.route('**/resolve/**/config.json', route => route.fulfill({
+    contentType: 'application/json', body: content,
+  }))
+  await openFixture(page)
+  const stack = page.locator('.detail-reader-stack')
+  await expect(stack).toBeVisible()
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport)
+    await page.getByRole('button', { name: '原文', exact: true }).click()
+    const source = page.locator('.source-reader')
+    await expect(source).toContainText('END_OF_CONFIG')
+    await stack.hover()
+    await page.mouse.wheel(0, 10000)
+    await expect(async () => {
+      await page.mouse.wheel(0, 10000)
+      expect(await stack.evaluate(el => el.scrollTop + el.clientHeight >= el.scrollHeight - 2)).toBe(true)
+    }).toPass()
+    const bounds = await source.boundingBox()
+    const container = await stack.boundingBox()
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(container!.y + container!.height)
+    expect(await page.locator('.consistency-embedded').evaluate(el => el.scrollHeight <= el.clientHeight)).toBe(true)
+  }
+  expect(errors).toEqual([])
+})
+
 test('reads semantic JSON, progressive text, and safe Markdown views', async ({ page }) => {
   const errors = collectErrors(page)
   const thirdPartyRequests: string[] = []
