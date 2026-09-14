@@ -744,6 +744,48 @@ return {pass:true,assertions};
 })()`;
 }
 
+function browserLocaleTest() {
+  return `(async () => {
+Object.defineProperty(globalThis,"navigator",{configurable:true,value:{language:"zh-CN"}});
+const {SearchView}=await import("/src/search-view.ts");
+const {RenderedSearch}=await import("/src/rendered-search.ts");
+let assertions=0;
+const check=(condition,message)=>{assertions+=1;if(!condition)throw new Error(message);};
+const settle=async()=>{await Promise.resolve();await Promise.resolve();await new Promise((resolve)=>setTimeout(resolve,0));};
+const waitFor=async(predicate,message)=>{for(let attempt=0;attempt<80;attempt+=1){await settle();if(predicate())return;await new Promise((resolve)=>setTimeout(resolve,25));}throw new Error(message);};
+const makeHost=()=>{
+  const host=document.createElement("div");
+  host.innerHTML='<section id="panel"><form id="form" role="search"><label>Query <input id="query" name="query" type="search"></label><input id="decoded" type="radio" name="representation" value="decoded" checked><input id="raw" type="radio" name="representation" value="rawSource"><button id="submit" type="submit">Search</button><p id="description"></p></form><div id="results-panel"><div id="status"></div><div id="results"></div><button id="previous" type="button">Previous page</button><button id="next" type="button">Next page</button></div></section>';
+  document.body.append(host);
+  return {host,el:{form:host.querySelector("#form"),query:host.querySelector("#query"),decoded:host.querySelector("#decoded"),rawSource:host.querySelector("#raw"),submit:host.querySelector("#submit"),description:host.querySelector("#description"),panel:host.querySelector("#panel"),resultsPanel:host.querySelector("#results-panel"),status:host.querySelector("#status"),results:host.querySelector("#results"),previous:host.querySelector("#previous"),next:host.querySelector("#next")}};
+};
+const scope={label:"Document root",description:"Current scope: Document root.",enabled:true,decodedEnabled:true,scopeStart:0,scopeEnd:1000,sessionRevision:7,scopeId:null,targetNodeId:null};
+const match={nodeId:4,field:"value",pathSegments:["$","用户","value"],pathTruncated:false,sourceSpanStart:20,sourceSpanEnd:42,matchStart:0,matchEnd:6};
+const search=makeHost();
+const searchView=new SearchView({...search.el,invoke:async()=>({matches:[match],hasMore:false,nextCursor:null}),onReveal:()=>{},onError:()=>{}});
+searchView.setScope(scope);
+search.el.query.value="needle";search.el.form.requestSubmit();await settle();
+check(document.documentElement.lang==="zh-CN","Chinese fixture did not set html.lang");
+check(search.el.status.textContent==="解码后文本 · 1 个匹配","Chinese Search status was not rendered");
+check(search.el.results.querySelector("button")?.textContent.includes("用户")&&search.el.results.querySelector("button")?.textContent.includes("[20, 42)"),"Chinese Search result did not preserve the user path and source range");
+check(search.el.query.value==="needle","Chinese Search changed the user query");
+search.el.query.value="";search.el.form.requestSubmit();await settle();
+check(search.el.status.textContent==="请输入搜索查询。"&&search.el.status.getAttribute("role")==="alert","Chinese Search query error was not rendered");
+searchView.clear();
+check(search.el.description.textContent==="打开文件以搜索当前范围。","Chinese Search fallback prompt was not rendered");
+const rendered=makeHost();
+const renderedRoot=document.createElement("div");renderedRoot.append(document.createTextNode("needle"));rendered.host.append(renderedRoot);
+const renderedSearch=new RenderedSearch({...rendered.el,onIntentChange:()=>{},onError:()=>{},onProjectionUnavailable:()=>{},invoke:async()=>({matches:[],hasMore:false,nextCursor:null})});
+renderedSearch.activateDom({nodeId:4,scopeId:null,sessionRevision:7,scopeStart:0,scopeEnd:1000},renderedRoot,"渲染范围");
+await waitFor(()=>rendered.el.query.disabled===false&&rendered.el.form.dataset.searchOwner==="rendered","Chinese Rendered Search did not finish preparing");
+rendered.el.query.value="needle";rendered.el.form.requestSubmit();await settle();
+check(rendered.el.status.textContent==="渲染文本 · 1 个匹配","Chinese Rendered Search status was not rendered");
+check(rendered.el.results.querySelector("button")?.textContent==="渲染文本 · 可见范围 [0, 6)","Chinese Rendered Search result label was not rendered");
+rendered.host.remove();search.host.remove();
+return {pass:true,assertions};
+})()`;
+}
+
 const port = await freePort();
 const vite = spawn(process.execPath, [viteBin, "--host", "127.0.0.1", "--port", String(port)], {
   cwd: root,
@@ -760,6 +802,11 @@ try {
   const result = parseBrowserValue(output);
   if (!result.pass) throw new Error("Search UI browser test did not pass.");
   console.log(`search-ui PASS (${result.assertions} assertions)`);
+  await browser(["open", `http://127.0.0.1:${port}/scripts/test-app-fixture.html?lang=zh-CN`]);
+  const localeOutput = await browser(["eval", "-b", Buffer.from(browserLocaleTest()).toString("base64")]);
+  const localeResult = parseBrowserValue(localeOutput);
+  if (!localeResult.pass) throw new Error("Search UI locale browser test did not pass.");
+  console.log(`search-locale-ui PASS (${localeResult.assertions} assertions; Chinese headless rendering)`);
 } catch (error) {
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${viteOutput.slice(-4000)}`);
 } finally {

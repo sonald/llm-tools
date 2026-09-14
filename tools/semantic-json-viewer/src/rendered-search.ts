@@ -5,6 +5,7 @@ import {
   type SearchScope,
   type SearchViewElements
 } from "./search-view";
+import { t } from "./i18n";
 
 export type RenderedSearchTarget = {
   nodeId: number;
@@ -91,7 +92,7 @@ export async function projectRenderedText(root: HTMLElement, options: RenderedPr
   let lastYieldSourceLength = 0;
 
   const checkCancelled = (): void => {
-    if (options.signal?.aborted) throw new DOMException("Rendered projection cancelled.", "AbortError");
+    if (options.signal?.aborted) throw new DOMException(t("search.renderedProjectionCancelled"), "AbortError");
   };
 
   const yieldProjection = async (): Promise<void> => {
@@ -105,7 +106,7 @@ export async function projectRenderedText(root: HTMLElement, options: RenderedPr
   const appendBoundary = (): void => {
     trimTrailingCollapsedSpace();
     if ((text.length > 0 || pendingTextLength > 0) && !lastWasBoundary) {
-      if (textLength + 1 > MAX_PROJECTION_BYTES) throw new Error("Rendered text exceeds the 32 MiB search projection budget.");
+      if (textLength + 1 > MAX_PROJECTION_BYTES) throw new Error(t("search.renderedProjectionBudget"));
       flushText();
       text.push("\n");
       textLength += 1;
@@ -123,7 +124,7 @@ export async function projectRenderedText(root: HTMLElement, options: RenderedPr
 
   const appendSegment = (node: Text, nodeStart: number, nodeEnd: number, sourceStart: number, value: string, collapsedSpace = false): void => {
     if (!value) return;
-    if (textLength + value.length > MAX_PROJECTION_BYTES) throw new Error("Rendered text exceeds the 32 MiB search projection budget.");
+    if (textLength + value.length > MAX_PROJECTION_BYTES) throw new Error(t("search.renderedProjectionBudget"));
     const textStart = textLength;
     pendingText.push(value);
     pendingTextLength += value.length;
@@ -136,14 +137,14 @@ export async function projectRenderedText(root: HTMLElement, options: RenderedPr
       && previous.sourceEnd - previous.sourceStart === previous.textEnd - previous.textStart;
     if (previousIsLinear && sourceEnd - sourceStart === value.length) {
       if ((textLength * 2) + (segments.length * PROJECTION_SEGMENT_BYTES) > MAX_PROJECTION_BYTES) {
-        throw new Error("Rendered text exceeds the 32 MiB search projection budget.");
+        throw new Error(t("search.renderedProjectionBudget"));
       }
       previous.textEnd = textLength;
       previous.sourceEnd = sourceEnd;
       previous.nodeEnd = nodeEnd;
     } else {
       if ((textLength * 2) + ((segments.length + 1) * PROJECTION_SEGMENT_BYTES) > MAX_PROJECTION_BYTES) {
-        throw new Error("Rendered text exceeds the 32 MiB search projection budget.");
+        throw new Error(t("search.renderedProjectionBudget"));
       }
       segments.push({ textStart, textEnd: textLength, sourceStart, sourceEnd, node, nodeStart, nodeEnd });
     }
@@ -354,7 +355,7 @@ export class RenderedSearch {
       this.elements.description.textContent = description;
       this.elements.panel.hidden = false;
       this.setOwner("rendered");
-      this.setStatus("Preparing rendered search…");
+      this.setStatus(t("search.preparingRendered"));
       this.render();
     }
     this.domRoot = root;
@@ -362,7 +363,7 @@ export class RenderedSearch {
     this.projection = null;
     this.projectionPending = true;
     this.busy = true;
-    this.setStatus("Preparing rendered search…");
+    this.setStatus(t("search.preparingRendered"));
     this.render();
     const epoch = ++this.projectionEpoch;
     const controller = new AbortController();
@@ -429,7 +430,7 @@ export class RenderedSearch {
 
   highlightRange(start: number, end: number): void {
     if (!this.isOwner() || !this.projection) return;
-    this.highlight({ kind: "dom", start, end, label: `Rendered · visible [${start}, ${end})` });
+    this.highlight({ kind: "dom", start, end, label: t("search.renderedVisible", { start, end }) });
   }
 
   highlightSourceRange(start: number, end: number): void {
@@ -452,7 +453,7 @@ export class RenderedSearch {
       projectedEnd = projectedEnd === null ? rangeEnd : Math.max(projectedEnd, rangeEnd);
     }
     if (projectedStart !== null && projectedEnd !== null) {
-      this.highlight({ kind: "dom", start: projectedStart, end: projectedEnd, label: `Rendered · visible [${projectedStart}, ${projectedEnd})` });
+      this.highlight({ kind: "dom", start: projectedStart, end: projectedEnd, label: t("search.renderedVisible", { start: projectedStart, end: projectedEnd }) });
     }
   }
 
@@ -559,7 +560,7 @@ export class RenderedSearch {
     const query = this.elements.query.value;
     const queryBytes = new TextEncoder().encode(query).byteLength;
     if (query.length === 0 || queryBytes > MAX_QUERY_BYTES) {
-      this.showLocalError(query.length === 0 ? "Enter a search query." : "Search query exceeds the 4096-byte limit.");
+      this.showLocalError(query.length === 0 ? t("search.emptyQuery") : t("search.queryTooLong"));
       return;
     }
     this.requestEpoch += 1;
@@ -569,7 +570,7 @@ export class RenderedSearch {
     this.currentIndex = -1;
     this.busy = true;
     this.elements.resultsPanel.hidden = false;
-    this.setStatus("Searching rendered text…");
+    this.setStatus(t("search.searchingRendered"));
     this.render();
     try {
       const page = this.mode === "dom"
@@ -582,7 +583,7 @@ export class RenderedSearch {
       this.renderPage();
     } catch (error) {
       if (epoch !== this.requestEpoch) return;
-      this.setStatus(error instanceof Error ? error.message : "Rendered search failed.", true);
+      this.setStatus(error instanceof Error ? error.message : t("search.renderedFailed"), true);
       this.elements.results.replaceChildren();
       if (isGlobalError(error)) this.onError(error);
     } finally {
@@ -615,7 +616,7 @@ export class RenderedSearch {
     const epoch = ++this.requestEpoch;
     this.onIntentChange();
     this.busy = true;
-    this.setStatus("Searching rendered text…");
+    this.setStatus(t("search.searchingRendered"));
     this.render();
     try {
       const next = await this.searchBackend(query, page.nextCursor);
@@ -626,7 +627,7 @@ export class RenderedSearch {
       this.renderPage();
     } catch (error) {
       if (epoch !== this.requestEpoch) return;
-      this.setStatus(error instanceof Error ? error.message : "Rendered search failed.", true);
+      this.setStatus(error instanceof Error ? error.message : t("search.renderedFailed"), true);
       if (isGlobalError(error)) this.onError(error);
     } finally {
       if (epoch === this.requestEpoch) { this.busy = false; this.render(); }
@@ -642,7 +643,7 @@ export class RenderedSearch {
 
   private async searchBackend(query: string, cursor: unknown | null): Promise<Page> {
     const target = this.target;
-    if (!target) throw new Error("Rendered search target is unavailable.");
+    if (!target) throw new Error(t("search.renderedTargetUnavailable"));
     const value = await this.invoke<unknown>("search_current", {
       query,
       representation: "decoded",
@@ -653,8 +654,8 @@ export class RenderedSearch {
       sessionRevision: target.sessionRevision
     });
     const scope: SearchScope = {
-      label: "Rendered",
-      description: "Search visible rendered text.",
+      label: t("search.representationRendered"),
+      description: t("search.renderedDescription"),
       enabled: true,
       decodedEnabled: true,
       scopeStart: target.scopeStart,
@@ -665,7 +666,7 @@ export class RenderedSearch {
     };
     const parsed = parseSearchPageValue(value, "decoded", query, scope, cursor as SearchPage["nextCursor"]);
     if (parsed.matches.some((match) => match.field !== "value")) {
-      throw new Error("The rendered search response contained a non-value match.");
+      throw new Error(t("search.renderedResponseNonValue"));
     }
     const valueMatches = parsed.matches.filter((match): match is SearchMatch & { field: "value" } => match.field === "value");
     return {
@@ -683,7 +684,11 @@ export class RenderedSearch {
           matchStart: match.matchStart,
           matchEnd: match.matchEnd
         },
-        label: `Rendered · Value · ${match.pathSegments.join(".")} · source [${match.sourceSpanStart}, ${match.sourceSpanEnd})`
+        label: t("search.renderedValue", {
+          path: match.pathSegments.join(".") || "$",
+          sourceStart: match.sourceSpanStart,
+          sourceEnd: match.sourceSpanEnd
+        })
       })),
       hasMore: parsed.hasMore,
       nextCursor: parsed.nextCursor
@@ -822,14 +827,17 @@ function findDomPage(projection: RenderedProjection | null, query: string, curso
       nextCursor = start;
       break;
     }
-    matches.push({ kind: "dom", start, end, label: `Rendered · visible [${start}, ${end})` });
+    matches.push({ kind: "dom", start, end, label: t("search.renderedVisible", { start, end }) });
     from = Math.max(end, start + 1);
   }
   return { matches, hasMore: nextCursor !== null, nextCursor };
 }
 
 function pageStatus(page: Page): string {
-  return `Rendered · ${page.matches.length} match${page.matches.length === 1 ? "" : "es"}${page.hasMore ? " · more results available" : ""}`;
+  const representation = t("search.representationRendered");
+  const suffix = page.hasMore ? t("search.moreResults") : "";
+  if (page.matches.length === 1) return t("search.oneMatch", { representation, suffix });
+  return t("search.manyMatches", { representation, count: page.matches.length, suffix });
 }
 
 function isGlobalError(error: unknown): boolean {

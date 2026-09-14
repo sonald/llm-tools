@@ -7,7 +7,8 @@
   </head>
   <body>
     <script type="module">
-      Object.defineProperty(globalThis, "navigator", { configurable: true, value: { language: "en-US" } });
+      const language = new URL(location.href).searchParams.get("lang") ?? "en-US";
+      Object.defineProperty(globalThis, "navigator", { configurable: true, value: { language } });
       const source = await (await fetch("/index.html")).text();
       const parsed = new DOMParser().parseFromString(source, "text/html");
       document.body.append(...Array.from(parsed.body.childNodes).filter((node) => !(node instanceof HTMLScriptElement)));
