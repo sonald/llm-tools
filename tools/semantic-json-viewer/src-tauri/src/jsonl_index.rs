@@ -17,6 +17,13 @@ pub struct EntryLocation {
     pub byte_end: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JsonlIndexRetainedCapacity {
+    pub checkpoints_capacity_bytes: usize,
+    pub oversized_locations_capacity_bytes: usize,
+    pub total_capacity_bytes: usize,
+}
+
 const ENTRY_CHECKPOINT_LIMIT: u64 = 4_000_000;
 const CHECKPOINT_MEMORY_LIMIT_BYTES: u64 = 128 * 1024 * 1024;
 const MEMORY_CHECKPOINT_LIMIT: u64 = CHECKPOINT_MEMORY_LIMIT_BYTES / size_of::<Checkpoint>() as u64;
@@ -73,6 +80,13 @@ impl JsonlIndexer {
 
     pub fn stride(&self) -> u64 {
         self.stride
+    }
+
+    pub fn retained_capacity(&self) -> JsonlIndexRetainedCapacity {
+        index_retained_capacity(
+            self.checkpoints.capacity(),
+            self.oversized_locations.capacity(),
+        )
     }
 
     pub fn nearest_checkpoint(&self, ordinal: u64) -> Option<Checkpoint> {
@@ -226,6 +240,13 @@ pub struct JsonlIndex {
 }
 
 impl JsonlIndex {
+    pub fn retained_capacity(&self) -> JsonlIndexRetainedCapacity {
+        index_retained_capacity(
+            self.checkpoints.capacity(),
+            self.oversized_locations.capacity(),
+        )
+    }
+
     pub fn nearest_checkpoint(&self, ordinal: u64) -> Option<Checkpoint> {
         match self
             .checkpoints
@@ -318,6 +339,21 @@ impl JsonlIndex {
         }
 
         None
+    }
+}
+
+fn index_retained_capacity(
+    checkpoints_capacity: usize,
+    oversized_locations_capacity: usize,
+) -> JsonlIndexRetainedCapacity {
+    let checkpoints_capacity_bytes = checkpoints_capacity.saturating_mul(size_of::<Checkpoint>());
+    let oversized_locations_capacity_bytes =
+        oversized_locations_capacity.saturating_mul(size_of::<EntryLocation>());
+    JsonlIndexRetainedCapacity {
+        checkpoints_capacity_bytes,
+        oversized_locations_capacity_bytes,
+        total_capacity_bytes: checkpoints_capacity_bytes
+            .saturating_add(oversized_locations_capacity_bytes),
     }
 }
 
@@ -455,6 +491,47 @@ mod tests {
             CHECKPOINT_MEMORY_LIMIT_BYTES / size_of::<Checkpoint>() as u64
         );
         assert_eq!(CHECKPOINT_COUNT_LIMIT, 4_000_000);
+    }
+
+    #[test]
+    fn retained_capacity_uses_capacity_and_finish_moves_buffers_once() {
+        let mut checkpoints = Vec::with_capacity(8);
+        checkpoints.extend((0..4).map(|entry_ordinal| Checkpoint {
+            entry_ordinal,
+            source_line: entry_ordinal + 1,
+            byte_offset: entry_ordinal * 2,
+        }));
+        let mut oversized_locations = Vec::with_capacity(4);
+        oversized_locations.push(EntryLocation {
+            entry_ordinal: 0,
+            source_line: 1,
+            byte_start: 0,
+            byte_end: 1,
+        });
+        let mut indexer = JsonlIndexer {
+            checkpoints,
+            oversized_locations,
+            ..JsonlIndexer::default()
+        };
+
+        let before = indexer.retained_capacity();
+        assert!(
+            before.checkpoints_capacity_bytes > indexer.checkpoints.len() * size_of::<Checkpoint>()
+        );
+        assert!(
+            before.oversized_locations_capacity_bytes
+                > indexer.oversized_locations.len() * size_of::<EntryLocation>()
+        );
+
+        indexer.downsample_checkpoints();
+        let after_downsample = indexer.retained_capacity();
+        assert_eq!(
+            after_downsample.checkpoints_capacity_bytes,
+            before.checkpoints_capacity_bytes
+        );
+
+        let index = indexer.finish();
+        assert_eq!(index.retained_capacity(), after_downsample);
     }
 
     #[test]

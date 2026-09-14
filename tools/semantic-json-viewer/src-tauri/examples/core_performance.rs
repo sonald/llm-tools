@@ -5,7 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use semantic_json_viewer::document_session::DocumentSession;
-use semantic_json_viewer::jsonl_session::JsonlSession;
+use semantic_json_viewer::json::ParsedJsonRetainedCapacity;
+use semantic_json_viewer::jsonl_session::{JsonlRetainedCapacity, JsonlSession};
 use serde_json::{json, Value};
 
 const RAW_FIRST_SLICE: usize = 128 * 1024;
@@ -175,24 +176,37 @@ fn run_jsonl(config: &Config, cache: Value) -> Result<Value, Box<dyn std::error:
     }
     let scan_next_only_us = micros(scan_start.elapsed());
     let open_to_scan_complete_us = micros(start.elapsed());
+    let retained_after_index = session.retained_capacity()?;
     if config.idle_seconds > 0 {
         thread::sleep(Duration::from_secs(config.idle_seconds));
     }
+    let retained_after_idle = session.retained_capacity()?;
     let total_entries = progress.total_entries.unwrap_or(progress.indexed_entries);
     let ordinals = sample_ordinals(total_entries, 100);
     let mut samples = Vec::with_capacity(ordinals.len());
+    let mut selected_tree_max: Option<ParsedJsonRetainedCapacity> = None;
     for ordinal in ordinals {
         let sample_start = Instant::now();
         let selection = session
             .select_entry(ordinal)?
             .ok_or_else(|| format!("entry {ordinal} was unavailable after complete indexing"))?;
+        let elapsed_us = micros(sample_start.elapsed());
+        let retained_capacity = session.retained_capacity()?;
+        if let Some(selected_tree) = retained_capacity.selected_tree {
+            if selected_tree_max.is_none_or(|current| {
+                selected_tree.total_capacity_bytes > current.total_capacity_bytes
+            }) {
+                selected_tree_max = Some(selected_tree);
+            }
+        }
         samples.push(json!({
             "ordinal": ordinal,
-            "elapsedUs": micros(sample_start.elapsed()),
+            "elapsedUs": elapsed_us,
             "status": format!("{:?}", selection.summary.status),
             "byteStart": selection.summary.location.byte_start,
             "byteEnd": selection.summary.location.byte_end,
             "rootNodeId": selection.root.as_ref().map(|root| root.id),
+            "retainedCapacity": jsonl_capacity_value(&retained_capacity),
         }));
     }
     let sample_times = samples
@@ -218,9 +232,32 @@ fn run_jsonl(config: &Config, cache: Value) -> Result<Value, Box<dyn std::error:
         "timingsUs": {"openToFirst20": open_to_first20_us, "openToScanComplete": open_to_scan_complete_us, "scanNextOnly": scan_next_only_us},
         "index": {"indexedEntries": progress.indexed_entries, "totalEntries": total_entries, "complete": progress.complete, "indexedThroughSourceLines": progress.indexed_source_lines},
         "select": {"sampleCount": samples.len(), "medianUs": median(&sample_times), "p95Us": percentile(&sample_times, 0.95), "samples": samples},
-        "memory": {"measured": false, "applicationOwnedMiB": null, "inputResidentWindowMiB": null, "reason": "benchmark runner does not claim full application private memory or smaps without a platform harness"},
+        "memory": {"measured": false, "coreRetainedBufferCapacity": {"scope": "JSONL Core retained buffer capacity: index buffers plus active selected ParsedJson tree only; no historical parsed/decoded cache is retained; excludes FileSource, temporary read slices, parser frames, and RSS/live/peak/private memory", "afterIndex": jsonl_capacity_value(&retained_after_index), "afterIdle": jsonl_capacity_value(&retained_after_idle), "selectedTreeMax": parsed_capacity_value(selected_tree_max)}, "applicationOwnedMiB": null, "inputResidentWindowMiB": null, "reason": "benchmark runner does not claim full application private memory or smaps without a platform harness"},
         "errors": [],
     }))
+}
+
+fn parsed_capacity_value(capacity: Option<ParsedJsonRetainedCapacity>) -> Value {
+    capacity.map_or(Value::Null, |capacity| {
+        json!({
+            "sourceCapacityBytes": capacity.source_capacity_bytes,
+            "nodesCapacityBytes": capacity.nodes_capacity_bytes,
+            "childrenCapacityBytes": capacity.children_capacity_bytes,
+            "objectKeyCapacityBytes": capacity.object_key_capacity_bytes,
+            "decodedCheckpointsCapacityBytes": capacity.decoded_checkpoints_capacity_bytes,
+            "totalCapacityBytes": capacity.total_capacity_bytes,
+        })
+    })
+}
+
+fn jsonl_capacity_value(capacity: &JsonlRetainedCapacity) -> Value {
+    json!({
+        "indexCheckpointsCapacityBytes": capacity.index.checkpoints_capacity_bytes,
+        "indexOversizedLocationsCapacityBytes": capacity.index.oversized_locations_capacity_bytes,
+        "indexTotalCapacityBytes": capacity.index.total_capacity_bytes,
+        "selectedTree": parsed_capacity_value(capacity.selected_tree),
+        "totalCapacityBytes": capacity.total_capacity_bytes,
+    })
 }
 
 fn run_document(config: &Config, cache: Value) -> Result<Value, Box<dyn std::error::Error>> {

@@ -7,8 +7,11 @@ use crate::conversation::{
     ConversationCandidate, ConversationStyle, GenericConversationCursor, GenericConversationPage,
 };
 use crate::file_source::{FileIdentity, FileSource, ReadChunk};
+use crate::json::ParsedJsonRetainedCapacity;
 use crate::jsonl_entry::{inspect_entry, EntryStatus, MAX_ENTRY_BYTES, PREVIEW_BYTES};
-use crate::jsonl_index::{Checkpoint, EntryLocation, JsonlIndex, JsonlIndexer};
+use crate::jsonl_index::{
+    Checkpoint, EntryLocation, JsonlIndex, JsonlIndexRetainedCapacity, JsonlIndexer,
+};
 use crate::search::{SearchError, SearchPage, SearchRequest};
 use crate::semantic_detection::{Detection, NestedBudget};
 use crate::tree::{NodePage, NodeProjection, StringMetrics, TextChunk, TreeDocument};
@@ -54,6 +57,13 @@ pub struct OversizedPreview {
 pub struct EntrySelection {
     pub summary: EntrySummary,
     pub root: Option<NodeProjection>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JsonlRetainedCapacity {
+    pub index: JsonlIndexRetainedCapacity,
+    pub selected_tree: Option<ParsedJsonRetainedCapacity>,
+    pub total_capacity_bytes: usize,
 }
 
 struct LoadedEntry {
@@ -108,6 +118,28 @@ impl JsonlSession {
 
     pub fn is_current(&self) -> bool {
         self.source.is_current()
+    }
+
+    pub fn retained_capacity(&self) -> io::Result<JsonlRetainedCapacity> {
+        self.ensure_current()?;
+        let index = self
+            .index
+            .as_ref()
+            .map(JsonlIndex::retained_capacity)
+            .or_else(|| self.indexer.as_ref().map(JsonlIndexer::retained_capacity))
+            .unwrap_or_default();
+        let selected_tree = self
+            .selected
+            .as_ref()
+            .map(|(_, tree)| tree.retained_capacity());
+        let total_capacity_bytes = index
+            .total_capacity_bytes
+            .saturating_add(selected_tree.map_or(0, |capacity| capacity.total_capacity_bytes));
+        Ok(JsonlRetainedCapacity {
+            index,
+            selected_tree,
+            total_capacity_bytes,
+        })
     }
 
     pub fn set_many_invalid_utf8_warning(&mut self, warning: bool) {
@@ -1390,6 +1422,44 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(decoded.text, "Ada");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn retained_capacity_tracks_only_the_active_selected_tree() {
+        let first = format!(r#"{{"text":"{}"}}"#, "x".repeat(100_000));
+        let bytes = format!("{first}\n{{\"ok\":true}}\n");
+        let (path, mut session) = session("jsonl-session-retained-capacity", bytes.as_bytes());
+        finish(&mut session);
+
+        assert_eq!(
+            session.select_entry(0).unwrap().unwrap().summary.status,
+            EntryStatus::Valid
+        );
+        let first_capacity = session.retained_capacity().unwrap();
+        let first_tree = first_capacity
+            .selected_tree
+            .expect("valid first entry retains a tree");
+
+        assert_eq!(
+            session.select_entry(1).unwrap().unwrap().summary.status,
+            EntryStatus::Valid
+        );
+        let second_capacity = session.retained_capacity().unwrap();
+        let second_tree = second_capacity
+            .selected_tree
+            .expect("valid second entry retains a tree");
+        assert_eq!(first_capacity.index, second_capacity.index);
+        assert!(second_tree.source_capacity_bytes < first_tree.source_capacity_bytes);
+        assert!(second_capacity.total_capacity_bytes < first_capacity.total_capacity_bytes);
+        assert_eq!(
+            second_capacity.total_capacity_bytes,
+            second_capacity
+                .index
+                .total_capacity_bytes
+                .saturating_add(second_tree.total_capacity_bytes)
+        );
+
         fs::remove_file(path).unwrap();
     }
 
