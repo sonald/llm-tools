@@ -375,7 +375,17 @@ fn inspect_message(parsed: &ParsedJson<'_>, message: &JsonNode, metrics: &mut Me
             "content" | "value" => {
                 content_or_tool = true;
             }
-            "tool_calls" | "function_call" | "tool_call_id" => {
+            "tool_calls" => {
+                content_or_tool = true;
+                openai_signal |= openai_tool_calls_have_signal(parsed, child);
+            }
+            "function_call" => {
+                content_or_tool = true;
+                let (_, _, ambiguous_duplicate_field) =
+                    openai_legacy_function_call(parsed, child_id.index(), child);
+                openai_signal |= !ambiguous_duplicate_field;
+            }
+            "tool_call_id" => {
                 content_or_tool = true;
                 openai_signal = true;
             }
@@ -412,6 +422,9 @@ fn inspect_message(parsed: &ParsedJson<'_>, message: &JsonNode, metrics: &mut Me
             if block.kind != JsonKind::Object {
                 continue;
             }
+            if has_duplicate_key(parsed, block, "type") {
+                continue;
+            }
             let Some(type_node) = direct_child_by_key(parsed, block, "type") else {
                 continue;
             };
@@ -421,7 +434,8 @@ fn inspect_message(parsed: &ParsedJson<'_>, message: &JsonNode, metrics: &mut Me
             if matches!(
                 block_type.as_ref(),
                 "tool_use" | "tool_result" | "thinking" | "redacted_thinking"
-            ) {
+            ) && !anthropic_block_has_ambiguous_dependency(parsed, block, block_type.as_ref())
+            {
                 metrics.anthropic_signal = true;
                 content_or_tool = true;
             }
@@ -496,10 +510,55 @@ fn message_has_duplicate_dependency(
     ) && ["tool_calls", "function_call", "tool_call_id"]
         .iter()
         .any(|key| has_duplicate_key(parsed, message, key));
+    let openai_tool_result_error = style == ConversationStyle::OpenAi
+        && direct_child_by_key(parsed, message, "role")
+            .is_some_and(|role| normalized_role(parsed, role) == NormalizedRole::Tool)
+        && has_duplicate_key(parsed, message, "is_error");
     match style {
         ConversationStyle::Generic => role_or_fallback || content || value || tool,
-        ConversationStyle::OpenAi => role_or_fallback || content || tool,
+        ConversationStyle::OpenAi => {
+            role_or_fallback || content || tool || openai_tool_result_error
+        }
         ConversationStyle::Anthropic => role_or_fallback || content,
+    }
+}
+
+fn openai_tool_calls_have_signal(parsed: &ParsedJson<'_>, field: &JsonNode) -> bool {
+    if field.kind != JsonKind::Array || field.children.is_empty() {
+        return true;
+    }
+    field.children.iter().any(|child_id| {
+        let child = parsed.node(*child_id);
+        let (_, _, ambiguous_duplicate_field) = openai_tool_call(parsed, child_id.index(), child);
+        !ambiguous_duplicate_field
+    })
+}
+
+fn anthropic_block_has_ambiguous_dependency(
+    parsed: &ParsedJson<'_>,
+    block: &JsonNode,
+    block_type: &str,
+) -> bool {
+    if has_duplicate_key(parsed, block, "type") {
+        return true;
+    }
+    match block_type {
+        "thinking" => has_duplicate_key(parsed, block, "thinking"),
+        "redacted_thinking" => has_duplicate_key(parsed, block, "data"),
+        "tool_use" => ["id", "name", "input"]
+            .iter()
+            .any(|key| has_duplicate_key(parsed, block, key)),
+        "tool_result" => {
+            if ["tool_use_id", "content", "is_error"]
+                .iter()
+                .any(|key| has_duplicate_key(parsed, block, key))
+            {
+                return true;
+            }
+            direct_child_by_key(parsed, block, "content")
+                .is_some_and(|content| content_children_have_duplicate_ui_fields(parsed, content))
+        }
+        _ => false,
     }
 }
 
@@ -815,11 +874,12 @@ fn conversation_page_impl(
                 node_id: field_id,
                 span: field.span,
             };
-            let (source, category, refs) =
+            let (source, category, refs, ambiguous_duplicate_field) =
                 if field.kind == JsonKind::Array && !field.children.is_empty() {
                     let element_id = field.children[cursor.element_index].index();
                     let element = parsed.node(field.children[cursor.element_index]);
-                    let (category, refs) = anthropic_system_element(parsed, element_id, element);
+                    let (category, refs, ambiguous_duplicate_field) =
+                        anthropic_system_element(parsed, element_id, element);
                     (
                         ConversationSourceRef {
                             node_id: element_id,
@@ -827,10 +887,11 @@ fn conversation_page_impl(
                         },
                         category,
                         refs,
+                        ambiguous_duplicate_field,
                     )
                 } else {
                     let (category, refs) = anthropic_system_scalar(field_id, field);
-                    (field_ref, category, refs)
+                    (field_ref, category, refs, false)
                 };
             blocks.push(GenericConversationBlock {
                 kind: GenericConversationBlockKind::Source,
@@ -842,7 +903,7 @@ fn conversation_page_impl(
                 role_source: None,
                 openai_refs: None,
                 anthropic_refs: refs,
-                ambiguous_duplicate_field: false,
+                ambiguous_duplicate_field,
             });
             if field.kind == JsonKind::Array && !field.children.is_empty() {
                 cursor.element_index += 1;
@@ -948,7 +1009,7 @@ fn conversation_page_impl(
                         role_source,
                         openai_refs: classification.openai_refs,
                         anthropic_refs: classification.anthropic_refs,
-                        ambiguous_duplicate_field: false,
+                        ambiguous_duplicate_field: classification.ambiguous_duplicate_field,
                     });
                     cursor.element_index += 1;
                 } else {
@@ -962,7 +1023,7 @@ fn conversation_page_impl(
                         role_source,
                         openai_refs: classification.openai_refs,
                         anthropic_refs: classification.anthropic_refs,
-                        ambiguous_duplicate_field: false,
+                        ambiguous_duplicate_field: classification.ambiguous_duplicate_field,
                     });
                     cursor.field_index += 1;
                 }
@@ -1367,6 +1428,7 @@ struct SourceClassification {
     category: GenericConversationCategory,
     openai_refs: Option<ConversationOpenAiRefs>,
     anthropic_refs: Option<ConversationAnthropicRefs>,
+    ambiguous_duplicate_field: bool,
 }
 
 fn generic_classification(category: GenericConversationCategory) -> SourceClassification {
@@ -1374,6 +1436,7 @@ fn generic_classification(category: GenericConversationCategory) -> SourceClassi
         category,
         openai_refs: None,
         anthropic_refs: None,
+        ambiguous_duplicate_field: false,
     }
 }
 
@@ -1390,12 +1453,13 @@ fn source_classification(
         return generic_classification(field_category(field));
     }
     if style == ConversationStyle::Anthropic {
-        let (category, refs) =
+        let (category, refs, ambiguous_duplicate_field) =
             anthropic_source_classification(parsed, field_id, field, element_id, element);
         return SourceClassification {
             category,
             openai_refs: None,
             anthropic_refs: refs,
+            ambiguous_duplicate_field,
         };
     }
     let field_ref = ConversationSourceRef {
@@ -1405,14 +1469,26 @@ fn source_classification(
     match object_key(field) {
         Some("content") => {
             if let (Some(element_id), Some(element)) = (element_id, element) {
-                let (category, refs) = openai_content_block(parsed, element_id, element, role);
+                let (category, refs, ambiguous_duplicate_field) =
+                    openai_content_block(parsed, element_id, element, role);
                 return SourceClassification {
                     category,
                     openai_refs: refs,
                     anthropic_refs: None,
+                    ambiguous_duplicate_field,
                 };
             }
             if role == NormalizedRole::Tool {
+                if field.kind == JsonKind::Object
+                    && content_children_have_duplicate_ui_fields(parsed, field)
+                {
+                    return SourceClassification {
+                        category: GenericConversationCategory::Unknown,
+                        openai_refs: None,
+                        anthropic_refs: None,
+                        ambiguous_duplicate_field: true,
+                    };
+                }
                 return generic_classification(GenericConversationCategory::ToolResult);
             }
             if field.kind == JsonKind::String {
@@ -1423,6 +1499,7 @@ fn source_classification(
                         ..ConversationOpenAiRefs::default()
                     }),
                     anthropic_refs: None,
+                    ambiguous_duplicate_field: false,
                 };
             }
             generic_classification(GenericConversationCategory::Content)
@@ -1430,11 +1507,13 @@ fn source_classification(
         Some("value") => generic_classification(GenericConversationCategory::Value),
         Some("tool_calls") => {
             if let (Some(element_id), Some(element)) = (element_id, element) {
-                let (category, refs) = openai_tool_call(parsed, element_id, element);
+                let (category, refs, ambiguous_duplicate_field) =
+                    openai_tool_call(parsed, element_id, element);
                 SourceClassification {
                     category,
                     openai_refs: refs,
                     anthropic_refs: None,
+                    ambiguous_duplicate_field,
                 }
             } else if field.kind == JsonKind::Array {
                 generic_classification(GenericConversationCategory::Tool)
@@ -1443,16 +1522,21 @@ fn source_classification(
             }
         }
         Some("function_call") => {
-            let (category, refs) = openai_legacy_function_call(parsed, field_id, field);
+            let (category, refs, ambiguous_duplicate_field) =
+                openai_legacy_function_call(parsed, field_id, field);
             SourceClassification {
                 category,
                 openai_refs: refs,
                 anthropic_refs: None,
+                ambiguous_duplicate_field,
             }
         }
-        Some("tool_call_id") if role == NormalizedRole::Tool => {
-            generic_classification(GenericConversationCategory::ToolResult)
-        }
+        Some("tool_call_id") if role == NormalizedRole::Tool => SourceClassification {
+            category: GenericConversationCategory::ToolResult,
+            openai_refs: None,
+            anthropic_refs: None,
+            ambiguous_duplicate_field: false,
+        },
         Some("tool_call_id") => generic_classification(GenericConversationCategory::Tool),
         _ => generic_classification(field_category(field)),
     }
@@ -1467,9 +1551,10 @@ fn anthropic_source_classification(
 ) -> (
     GenericConversationCategory,
     Option<ConversationAnthropicRefs>,
+    bool,
 ) {
     if object_key(field) != Some("content") {
-        return (field_category(field), None);
+        return (field_category(field), None, false);
     }
     if let (Some(element_id), Some(element)) = (element_id, element) {
         return anthropic_content_block(parsed, element_id, element);
@@ -1484,12 +1569,13 @@ fn anthropic_source_classification(
                 }),
                 ..ConversationAnthropicRefs::default()
             }),
+            false,
         );
     }
     if field.kind == JsonKind::Array {
-        (GenericConversationCategory::Content, None)
+        (GenericConversationCategory::Content, None, false)
     } else {
-        (GenericConversationCategory::Unknown, None)
+        (GenericConversationCategory::Unknown, None, false)
     }
 }
 
@@ -1500,6 +1586,7 @@ fn anthropic_content_block(
 ) -> (
     GenericConversationCategory,
     Option<ConversationAnthropicRefs>,
+    bool,
 ) {
     let element_ref = ConversationSourceRef {
         node_id: element_id,
@@ -1510,69 +1597,91 @@ fn anthropic_content_block(
         ..ConversationAnthropicRefs::default()
     };
     if element.kind != JsonKind::Object {
-        return (GenericConversationCategory::Unknown, Some(refs));
+        return (GenericConversationCategory::Unknown, Some(refs), false);
+    }
+    if has_duplicate_key(parsed, element, "type") {
+        return (GenericConversationCategory::Unknown, None, true);
     }
     let Some(type_node) = direct_child_by_key(parsed, element, "type") else {
-        return (GenericConversationCategory::Unknown, Some(refs));
+        return (GenericConversationCategory::Unknown, Some(refs), false);
     };
     let Some(block_type) = string_value(parsed, type_node) else {
-        return (GenericConversationCategory::Unknown, Some(refs));
+        return (GenericConversationCategory::Unknown, Some(refs), false);
     };
     match block_type.as_ref() {
         "text" => {
+            if has_duplicate_key(parsed, element, "text") {
+                return (GenericConversationCategory::Unknown, None, true);
+            }
             let Some(text) = direct_child_by_key(parsed, element, "text") else {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             };
             if text.kind != JsonKind::String {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             }
             refs.text = Some(ConversationSourceRef {
                 node_id: node_id_from_child(parsed, element, text),
                 span: text.span,
             });
-            (GenericConversationCategory::Text, Some(refs))
+            (GenericConversationCategory::Text, Some(refs), false)
         }
         "thinking" => {
+            if has_duplicate_key(parsed, element, "thinking") {
+                return (GenericConversationCategory::Unknown, None, true);
+            }
             let Some(thinking) = direct_child_by_key(parsed, element, "thinking") else {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             };
             if thinking.kind != JsonKind::String {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             }
             refs.thinking = Some(ConversationSourceRef {
                 node_id: node_id_from_child(parsed, element, thinking),
                 span: thinking.span,
             });
-            (GenericConversationCategory::Thinking, Some(refs))
+            (GenericConversationCategory::Thinking, Some(refs), false)
         }
         "redacted_thinking" => {
+            if has_duplicate_key(parsed, element, "data") {
+                return (GenericConversationCategory::Unknown, None, true);
+            }
             let Some(data) = direct_child_by_key(parsed, element, "data") else {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             };
             if data.kind != JsonKind::String {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             }
             refs.data = Some(ConversationSourceRef {
                 node_id: node_id_from_child(parsed, element, data),
                 span: data.span,
             });
-            (GenericConversationCategory::RedactedThinking, Some(refs))
+            (
+                GenericConversationCategory::RedactedThinking,
+                Some(refs),
+                false,
+            )
         }
         "tool_use" => {
+            if ["id", "name", "input"]
+                .iter()
+                .any(|key| has_duplicate_key(parsed, element, key))
+            {
+                return (GenericConversationCategory::Unknown, None, true);
+            }
             let Some(id) = direct_child_by_key(parsed, element, "id") else {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             };
             let Some(name) = direct_child_by_key(parsed, element, "name") else {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             };
             let Some(input) = direct_child_by_key(parsed, element, "input") else {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             };
             if id.kind != JsonKind::String
                 || name.kind != JsonKind::String
                 || input.kind != JsonKind::Object
             {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             }
             refs.id = Some(ConversationSourceRef {
                 node_id: node_id_from_child(parsed, element, id),
@@ -1586,19 +1695,28 @@ fn anthropic_content_block(
                 node_id: node_id_from_child(parsed, element, input),
                 span: input.span,
             });
-            (GenericConversationCategory::ToolUse, Some(refs))
+            (GenericConversationCategory::ToolUse, Some(refs), false)
         }
         "tool_result" => {
+            if ["tool_use_id", "content", "is_error"]
+                .iter()
+                .any(|key| has_duplicate_key(parsed, element, key))
+            {
+                return (GenericConversationCategory::Unknown, None, true);
+            }
             let Some(tool_use_id) = direct_child_by_key(parsed, element, "tool_use_id") else {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             };
             let Some(content) = direct_child_by_key(parsed, element, "content") else {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             };
             if tool_use_id.kind != JsonKind::String
                 || !matches!(content.kind, JsonKind::String | JsonKind::Array)
             {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
+            }
+            if content_children_have_duplicate_ui_fields(parsed, content) {
+                return (GenericConversationCategory::Unknown, None, true);
             }
             refs.tool_use_id = Some(ConversationSourceRef {
                 node_id: node_id_from_child(parsed, element, tool_use_id),
@@ -1608,10 +1726,26 @@ fn anthropic_content_block(
                 node_id: node_id_from_child(parsed, element, content),
                 span: content.span,
             });
-            (GenericConversationCategory::ToolResult, Some(refs))
+            (GenericConversationCategory::ToolResult, Some(refs), false)
         }
-        _ => (GenericConversationCategory::Unknown, Some(refs)),
+        _ => (GenericConversationCategory::Unknown, Some(refs), false),
     }
+}
+
+fn content_children_have_duplicate_ui_fields(parsed: &ParsedJson<'_>, content: &JsonNode) -> bool {
+    content.children.iter().any(|child_id| {
+        let child = parsed.node(*child_id);
+        if child.kind != JsonKind::Object {
+            return false;
+        }
+        if has_duplicate_key(parsed, child, "type") {
+            return true;
+        }
+        direct_child_by_key(parsed, child, "type").is_some_and(|type_node| {
+            string_value(parsed, type_node).as_deref() == Some("text")
+                && has_duplicate_key(parsed, child, "text")
+        })
+    })
 }
 
 fn anthropic_system_refs(field_id: usize, field: &JsonNode) -> Option<ConversationAnthropicRefs> {
@@ -1666,6 +1800,7 @@ fn anthropic_system_element(
 ) -> (
     GenericConversationCategory,
     Option<ConversationAnthropicRefs>,
+    bool,
 ) {
     if element.kind == JsonKind::String {
         return (
@@ -1677,6 +1812,7 @@ fn anthropic_system_element(
                 }),
                 ..ConversationAnthropicRefs::default()
             }),
+            false,
         );
     }
     let element_ref = ConversationSourceRef {
@@ -1690,16 +1826,23 @@ fn anthropic_system_element(
                 block: Some(element_ref),
                 ..ConversationAnthropicRefs::default()
             }),
+            false,
         )
     };
     if element.kind != JsonKind::Object {
         return unknown();
+    }
+    if has_duplicate_key(parsed, element, "type") {
+        return (GenericConversationCategory::Unknown, None, true);
     }
     let Some(type_node) = direct_child_by_key(parsed, element, "type") else {
         return unknown();
     };
     if string_value(parsed, type_node).as_deref() != Some("text") {
         return unknown();
+    }
+    if has_duplicate_key(parsed, element, "text") {
+        return (GenericConversationCategory::Unknown, None, true);
     }
     let Some(text) = direct_child_by_key(parsed, element, "text") else {
         return unknown();
@@ -1717,6 +1860,7 @@ fn anthropic_system_element(
             }),
             ..ConversationAnthropicRefs::default()
         }),
+        false,
     )
 }
 
@@ -1725,7 +1869,11 @@ fn openai_content_block(
     element_id: usize,
     element: &JsonNode,
     role: NormalizedRole,
-) -> (GenericConversationCategory, Option<ConversationOpenAiRefs>) {
+) -> (
+    GenericConversationCategory,
+    Option<ConversationOpenAiRefs>,
+    bool,
+) {
     let element_ref = ConversationSourceRef {
         node_id: element_id,
         span: element.span,
@@ -1734,50 +1882,62 @@ fn openai_content_block(
         block: Some(element_ref),
         ..ConversationOpenAiRefs::default()
     };
+    if element.kind == JsonKind::Object && has_duplicate_key(parsed, element, "type") {
+        return (GenericConversationCategory::Unknown, None, true);
+    }
     let Some(type_node) = direct_child_by_key(parsed, element, "type") else {
-        return (GenericConversationCategory::Unknown, Some(refs));
+        return (GenericConversationCategory::Unknown, Some(refs), false);
     };
     let Some(block_type) = string_value(parsed, type_node) else {
-        return (GenericConversationCategory::Unknown, Some(refs));
+        return (GenericConversationCategory::Unknown, Some(refs), false);
     };
     match block_type.as_ref() {
         "text" => {
+            if has_duplicate_key(parsed, element, "text") {
+                return (GenericConversationCategory::Unknown, None, true);
+            }
             let Some(text_node) = direct_child_by_key(parsed, element, "text") else {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             };
             if text_node.kind != JsonKind::String {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             }
             refs.text = Some(ConversationSourceRef {
                 node_id: node_id_from_child(parsed, element, text_node),
                 span: text_node.span,
             });
             if role == NormalizedRole::Tool {
-                (GenericConversationCategory::ToolResult, Some(refs))
+                (GenericConversationCategory::ToolResult, Some(refs), false)
             } else {
-                (GenericConversationCategory::Text, Some(refs))
+                (GenericConversationCategory::Text, Some(refs), false)
             }
         }
         "image_url" => {
+            if has_duplicate_key(parsed, element, "image_url") {
+                return (GenericConversationCategory::Unknown, None, true);
+            }
             let Some(image) = direct_child_by_key(parsed, element, "image_url") else {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             };
             if image.kind != JsonKind::Object {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
+            }
+            if has_duplicate_key(parsed, image, "url") {
+                return (GenericConversationCategory::Unknown, None, true);
             }
             let Some(url) = direct_child_by_key(parsed, image, "url") else {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             };
             if url.kind != JsonKind::String {
-                return (GenericConversationCategory::Unknown, Some(refs));
+                return (GenericConversationCategory::Unknown, Some(refs), false);
             }
             refs.image = Some(ConversationSourceRef {
                 node_id: node_id_from_child(parsed, element, image),
                 span: image.span,
             });
-            (GenericConversationCategory::Image, Some(refs))
+            (GenericConversationCategory::Image, Some(refs), false)
         }
-        _ => (GenericConversationCategory::Unknown, Some(refs)),
+        _ => (GenericConversationCategory::Unknown, Some(refs), false),
     }
 }
 
@@ -1785,24 +1945,48 @@ fn openai_tool_call(
     parsed: &ParsedJson<'_>,
     element_id: usize,
     element: &JsonNode,
-) -> (GenericConversationCategory, Option<ConversationOpenAiRefs>) {
+) -> (
+    GenericConversationCategory,
+    Option<ConversationOpenAiRefs>,
+    bool,
+) {
     let element_ref = ConversationSourceRef {
         node_id: element_id,
         span: element.span,
     };
     let mut refs = ConversationOpenAiRefs {
         block: Some(element_ref),
-        call_id: direct_child_by_key(parsed, element, "id").map(|node| ConversationSourceRef {
-            node_id: node_id_from_child(parsed, element, node),
-            span: node.span,
-        }),
         ..ConversationOpenAiRefs::default()
     };
+    if has_duplicate_key(parsed, element, "type") {
+        return (GenericConversationCategory::Unknown, None, true);
+    }
+    if direct_child_by_key(parsed, element, "type")
+        .is_some_and(|type_node| string_value(parsed, type_node).as_deref() != Some("function"))
+    {
+        return (GenericConversationCategory::Unknown, Some(refs), false);
+    }
+    if ["id", "function"]
+        .iter()
+        .any(|key| has_duplicate_key(parsed, element, key))
+    {
+        return (GenericConversationCategory::Unknown, None, true);
+    }
+    refs.call_id = direct_child_by_key(parsed, element, "id").map(|node| ConversationSourceRef {
+        node_id: node_id_from_child(parsed, element, node),
+        span: node.span,
+    });
     let Some(function) = direct_child_by_key(parsed, element, "function") else {
-        return (GenericConversationCategory::Unknown, Some(refs));
+        return (GenericConversationCategory::Unknown, Some(refs), false);
     };
     if function.kind != JsonKind::Object {
-        return (GenericConversationCategory::Unknown, Some(refs));
+        return (GenericConversationCategory::Unknown, Some(refs), false);
+    }
+    if ["name", "arguments"]
+        .iter()
+        .any(|key| has_duplicate_key(parsed, function, key))
+    {
+        return (GenericConversationCategory::Unknown, None, true);
     }
     refs.function = Some(ConversationSourceRef {
         node_id: node_id_from_child(parsed, element, function),
@@ -1818,15 +2002,12 @@ fn openai_tool_call(
         node_id: node_id_from_child(parsed, function, node),
         span: node.span,
     });
-    let type_valid = direct_child_by_key(parsed, element, "type")
-        .is_none_or(|node| string_value(parsed, node).as_deref() == Some("function"));
-    let valid = type_valid
-        && name.is_some_and(|node| node.kind == JsonKind::String)
+    let valid = name.is_some_and(|node| node.kind == JsonKind::String)
         && arguments.is_some_and(|node| matches!(node.kind, JsonKind::String | JsonKind::Object));
     if valid {
-        (GenericConversationCategory::ToolCall, Some(refs))
+        (GenericConversationCategory::ToolCall, Some(refs), false)
     } else {
-        (GenericConversationCategory::Unknown, Some(refs))
+        (GenericConversationCategory::Unknown, Some(refs), false)
     }
 }
 
@@ -1834,9 +2015,19 @@ fn openai_legacy_function_call(
     parsed: &ParsedJson<'_>,
     field_id: usize,
     field: &JsonNode,
-) -> (GenericConversationCategory, Option<ConversationOpenAiRefs>) {
+) -> (
+    GenericConversationCategory,
+    Option<ConversationOpenAiRefs>,
+    bool,
+) {
     if field.kind != JsonKind::Object {
-        return (GenericConversationCategory::Unknown, None);
+        return (GenericConversationCategory::Unknown, None, false);
+    }
+    if ["name", "arguments"]
+        .iter()
+        .any(|key| has_duplicate_key(parsed, field, key))
+    {
+        return (GenericConversationCategory::Unknown, None, true);
     }
     let mut refs = ConversationOpenAiRefs {
         function: Some(ConversationSourceRef {
@@ -1858,9 +2049,9 @@ fn openai_legacy_function_call(
     let valid = name.is_some_and(|node| node.kind == JsonKind::String)
         && arguments.is_some_and(|node| matches!(node.kind, JsonKind::String | JsonKind::Object));
     if valid {
-        (GenericConversationCategory::ToolCall, Some(refs))
+        (GenericConversationCategory::ToolCall, Some(refs), false)
     } else {
-        (GenericConversationCategory::Unknown, Some(refs))
+        (GenericConversationCategory::Unknown, Some(refs), false)
     }
 }
 
@@ -2609,6 +2800,37 @@ mod tests {
     }
 
     #[test]
+    fn cached_openai_tool_message_scans_wide_content_once_across_pages() {
+        let elements = (0..128)
+            .map(|index| format!(r#"{{"type":"text","text":"item-{index}"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let padding = (0..220)
+            .map(|index| format!(r#""padding-{index}":true"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let input =
+            format!(r#"[{{"role":"tool","content":[{elements}],"is_error":false,{padding}}}]"#);
+        reset_role_scan_count();
+        let tree = crate::tree::TreeDocument::from_bytes(input.into_bytes()).unwrap();
+        let root = tree.root().id;
+        let mut cursor = None;
+        let mut block_count = 0;
+        loop {
+            let page = tree
+                .conversation_page(root, root, cursor, 1, ConversationStyle::OpenAi)
+                .unwrap();
+            block_count += page.blocks.len();
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        assert_eq!(block_count, 1 + 128 + 1 + 220);
+        assert_eq!(role_scan_count(), 1);
+    }
+
+    #[test]
     fn tree_document_caches_wrapper_scan_across_pages_and_rechecks_new_keys() {
         let messages = (0..128)
             .map(|index| format!(r#"{{"role":"user","content":"message-{index}"}}"#))
@@ -2749,6 +2971,371 @@ mod tests {
                 1,
             )
             .is_none());
+    }
+
+    #[test]
+    fn openai_child_duplicates_clear_refs_but_keep_sibling_sources_and_signal() {
+        let parsed = parse_json(
+            br#"[{"role":"assistant","content":[{"type":"text","text":"ok"},{"type":"text","text":"first","text":"second"},{"type":"image_url","image_url":{"url":"one","url":"two"}},{"type":"image_url","image_url":{"url":"good"}}],"tool_calls":[{"type":"function","id":"ok","function":{"name":"lookup","arguments":"{}"}},{"type":"function","id":"bad","id":"bad2","function":{"name":"lookup","arguments":"{}"}},{"type":"function","function":{"name":"first","name":"second","arguments":"{}"}}],"function_call":{"name":"legacy","name":"duplicate","arguments":"{}"}}]"#,
+        )
+        .unwrap();
+        let root = parsed.root().index();
+        let message = parsed.node(parsed.node(parsed.root()).children[0]);
+        let keyed_child = |object: &JsonNode, key: &str| {
+            object
+                .children
+                .iter()
+                .copied()
+                .find(|id| object_key(parsed.node(*id)) == Some(key))
+                .expect("test object has requested child")
+        };
+        let content = parsed.node(keyed_child(message, "content"));
+        let (category, refs, ambiguous) = openai_content_block(
+            &parsed,
+            content.children[0].index(),
+            parsed.node(content.children[0]),
+            NormalizedRole::Assistant,
+        );
+        assert_eq!(category, GenericConversationCategory::Text);
+        assert!(!ambiguous);
+        assert!(refs.unwrap().text.is_some());
+        let (category, refs, ambiguous) = openai_content_block(
+            &parsed,
+            content.children[1].index(),
+            parsed.node(content.children[1]),
+            NormalizedRole::Assistant,
+        );
+        assert_eq!(category, GenericConversationCategory::Unknown);
+        assert!(ambiguous);
+        assert!(refs.is_none());
+        let image_with_duplicate_url = parsed.node(content.children[2]);
+        let (category, refs, ambiguous) = openai_content_block(
+            &parsed,
+            content.children[2].index(),
+            image_with_duplicate_url,
+            NormalizedRole::Assistant,
+        );
+        assert_eq!(category, GenericConversationCategory::Unknown);
+        assert!(ambiguous);
+        assert!(refs.is_none());
+        let (category, refs, ambiguous) = openai_content_block(
+            &parsed,
+            content.children[3].index(),
+            parsed.node(content.children[3]),
+            NormalizedRole::Assistant,
+        );
+        assert_eq!(category, GenericConversationCategory::Image);
+        assert!(!ambiguous);
+        assert!(refs.unwrap().image.is_some());
+
+        let tool_calls = parsed.node(keyed_child(message, "tool_calls"));
+        let (category, refs, ambiguous) = openai_tool_call(
+            &parsed,
+            tool_calls.children[0].index(),
+            parsed.node(tool_calls.children[0]),
+        );
+        assert_eq!(category, GenericConversationCategory::ToolCall);
+        assert!(!ambiguous);
+        assert!(refs.unwrap().name.is_some());
+        let (category, refs, ambiguous) = openai_tool_call(
+            &parsed,
+            tool_calls.children[1].index(),
+            parsed.node(tool_calls.children[1]),
+        );
+        assert_eq!(category, GenericConversationCategory::Unknown);
+        assert!(ambiguous);
+        assert!(refs.is_none());
+        let (category, refs, ambiguous) = openai_tool_call(
+            &parsed,
+            tool_calls.children[2].index(),
+            parsed.node(tool_calls.children[2]),
+        );
+        assert_eq!(category, GenericConversationCategory::Unknown);
+        assert!(ambiguous);
+        assert!(refs.is_none());
+        let function_call_id = keyed_child(message, "function_call");
+        let function_call = parsed.node(function_call_id);
+        let (category, refs, ambiguous) =
+            openai_legacy_function_call(&parsed, function_call_id.index(), function_call);
+        assert_eq!(category, GenericConversationCategory::Unknown);
+        assert!(ambiguous);
+        assert!(refs.is_none());
+
+        let candidate = detect_candidate(&parsed, root, root).unwrap();
+        assert_eq!(candidate.kind, ConversationKind::OpenAi);
+        let mut cursor = None;
+        let mut blocks = Vec::new();
+        loop {
+            let page = conversation_page(&parsed, root, root, cursor, 1, ConversationStyle::OpenAi)
+                .unwrap();
+            blocks.extend(page.blocks);
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        assert!(blocks.iter().any(|block| {
+            block.category == GenericConversationCategory::Text
+                && block.openai_refs.is_some()
+                && !block.ambiguous_duplicate_field
+        }));
+        assert!(blocks.iter().any(|block| {
+            block.category == GenericConversationCategory::Image
+                && block.openai_refs.is_some()
+                && !block.ambiguous_duplicate_field
+        }));
+        assert!(
+            blocks
+                .iter()
+                .filter(|block| block.ambiguous_duplicate_field)
+                .count()
+                >= 4
+        );
+    }
+
+    #[test]
+    fn openai_tool_call_checks_nested_dependencies_only_for_function_type() {
+        let parsed = parse_json(
+            br#"[{"type":"custom","function":{"name":"first","name":"second","arguments":"{}"}},{"type":"function","function":{"name":"lookup","arguments":"{}"}},{"function":{"name":"first","name":"second","arguments":"{}"}}]"#,
+        )
+        .unwrap();
+        let result = |index: usize| {
+            openai_tool_call(
+                &parsed,
+                parsed.node(parsed.root()).children[index].index(),
+                parsed.node(parsed.node(parsed.root()).children[index]),
+            )
+        };
+
+        let (category, refs, ambiguous) = result(0);
+        assert_eq!(category, GenericConversationCategory::Unknown);
+        assert!(!ambiguous);
+        assert!(refs.unwrap().function.is_none());
+
+        let (category, refs, ambiguous) = result(1);
+        assert_eq!(category, GenericConversationCategory::ToolCall);
+        assert!(!ambiguous);
+        assert!(refs.unwrap().name.is_some());
+
+        let (category, refs, ambiguous) = result(2);
+        assert_eq!(category, GenericConversationCategory::Unknown);
+        assert!(ambiguous);
+        assert!(refs.is_none());
+
+        let message_parsed = parse_json(
+            br#"[{"role":"assistant","tool_calls":[{"type":"custom","function":{"name":"first","name":"second","arguments":"{}"}},{"type":"function","function":{"name":"lookup","arguments":"{}"}},{"function":{"name":"first","name":"second","arguments":"{}"}}]},{"role":"user","content":"next"}]"#,
+        )
+        .unwrap();
+        let root = message_parsed.root().index();
+        let mut cursor = None;
+        let mut blocks = Vec::new();
+        loop {
+            let page = conversation_page(
+                &message_parsed,
+                root,
+                root,
+                cursor,
+                1,
+                ConversationStyle::OpenAi,
+            )
+            .unwrap();
+            blocks.extend(page.blocks);
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        let custom = blocks
+            .iter()
+            .find(|block| {
+                block.category == GenericConversationCategory::Unknown
+                    && !block.ambiguous_duplicate_field
+            })
+            .unwrap();
+        assert!(!custom.ambiguous_duplicate_field);
+        assert!(custom.openai_refs.as_ref().unwrap().function.is_none());
+        assert!(blocks.iter().any(|block| {
+            block.category == GenericConversationCategory::ToolCall
+                && !block.ambiguous_duplicate_field
+                && block.openai_refs.as_ref().unwrap().name.is_some()
+        }));
+        assert!(blocks.iter().any(|block| block.ambiguous_duplicate_field));
+    }
+
+    #[test]
+    fn openai_tool_result_object_checks_only_direct_ui_children() {
+        let parsed = parse_json(
+            br#"[{"role":"tool","content":{"part":{"type":"text","text":"first","text":"second"}}},{"role":"tool","content":{"part":{"meta":{"type":"text","text":"first","text":"second"}}}},{"role":"assistant","content":"next"}]"#,
+        )
+        .unwrap();
+        let root = parsed.root().index();
+        let first_message = parsed.node(parsed.node(parsed.root()).children[0]);
+        let first_content = first_message
+            .children
+            .iter()
+            .map(|id| parsed.node(*id))
+            .find(|node| object_key(node) == Some("content"))
+            .unwrap();
+        let mut cursor = None;
+        let mut blocks = Vec::new();
+        loop {
+            let page = conversation_page(&parsed, root, root, cursor, 1, ConversationStyle::OpenAi)
+                .unwrap();
+            blocks.extend(page.blocks);
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        let ambiguous = blocks
+            .iter()
+            .filter(|block| block.ambiguous_duplicate_field)
+            .collect::<Vec<_>>();
+        assert_eq!(ambiguous.len(), 1);
+        assert_eq!(ambiguous[0].category, GenericConversationCategory::Unknown);
+        assert!(ambiguous[0].openai_refs.is_none());
+        assert_eq!(ambiguous[0].source.unwrap().span, first_content.span);
+        assert!(blocks.iter().any(|block| {
+            block.category == GenericConversationCategory::ToolResult
+                && !block.ambiguous_duplicate_field
+        }));
+    }
+
+    #[test]
+    fn ambiguous_specialized_children_do_not_supply_strong_schema_signals() {
+        assert_eq!(
+            kind(
+                r#"[{"role":"assistant","tool_calls":[{"type":"function","function":{"name":"first","name":"second","arguments":"{}"}}]},{"role":"user","content":"next"}]"#
+            ),
+            ConversationKind::Generic
+        );
+        assert_eq!(
+            kind(
+                r#"[{"role":"assistant","content":[{"type":"thinking","thinking":"first","thinking":"second"}]},{"role":"user","content":"next"}]"#
+            ),
+            ConversationKind::Generic
+        );
+    }
+
+    #[test]
+    fn anthropic_child_duplicates_cover_each_type_and_ui_second_reads() {
+        let parsed = parse_json(
+            br#"[{"role":"assistant","content":[{"type":"text","text":"ok"},{"type":"text","text":"first","text":"second"},{"type":"thinking","thinking":"ok"},{"type":"thinking","thinking":"first","thinking":"second"},{"type":"redacted_thinking","data":"one","data":"two"},{"type":"tool_use","id":"id","name":"lookup","input":{}},{"type":"tool_use","id":"id","name":"one","name":"two","input":{}},{"type":"tool_result","tool_use_id":"id","content":"done","is_error":false},{"type":"tool_result","tool_use_id":"id","content":"done","is_error":false,"is_error":true},{"type":"tool_result","tool_use_id":"id","content":[{"type":"text","text":"first","text":"second"}]},{"type":"tool_result","tool_use_id":"id","content":[{"type":"image","text":"first","text":"second"}]}]}]"#,
+        )
+        .unwrap();
+        let root = parsed.root().index();
+        let message = parsed.node(parsed.node(parsed.root()).children[0]);
+        let content = parsed.node(message.children[1]);
+        let result = |index: usize| {
+            anthropic_content_block(
+                &parsed,
+                content.children[index].index(),
+                parsed.node(content.children[index]),
+            )
+        };
+        assert_eq!(result(0).0, GenericConversationCategory::Text);
+        assert!(!result(0).2);
+        assert!(result(0).1.unwrap().text.is_some());
+        assert_eq!(result(1).0, GenericConversationCategory::Unknown);
+        assert!(result(1).2);
+        assert!(result(1).1.is_none());
+        assert_eq!(result(2).0, GenericConversationCategory::Thinking);
+        assert!(!result(2).2);
+        assert!(result(2).1.unwrap().thinking.is_some());
+        assert_eq!(result(3).0, GenericConversationCategory::Unknown);
+        assert!(result(3).2);
+        assert!(result(3).1.is_none());
+        assert_eq!(result(4).0, GenericConversationCategory::Unknown);
+        assert!(result(4).2);
+        assert!(result(4).1.is_none());
+        assert_eq!(result(5).0, GenericConversationCategory::ToolUse);
+        assert!(!result(5).2);
+        assert!(result(5).1.unwrap().input.is_some());
+        assert_eq!(result(6).0, GenericConversationCategory::Unknown);
+        assert!(result(6).2);
+        assert!(result(6).1.is_none());
+        assert_eq!(result(7).0, GenericConversationCategory::ToolResult);
+        assert!(!result(7).2);
+        assert!(result(7).1.unwrap().content.is_some());
+        assert_eq!(result(8).0, GenericConversationCategory::Unknown);
+        assert!(result(8).2);
+        assert!(result(8).1.is_none());
+        assert_eq!(result(9).0, GenericConversationCategory::Unknown);
+        assert!(result(9).2);
+        assert!(result(9).1.is_none());
+        assert_eq!(result(10).0, GenericConversationCategory::ToolResult);
+        assert!(!result(10).2);
+
+        let system_parsed = parse_json(
+            br#"{"system":[{"type":"text","text":"first","text":"second"},{"type":"text","type":"other","text":"third"},{"type":"text","text":"ok"}],"messages":[]}"#,
+        )
+        .unwrap();
+        let system = system_parsed.node(system_parsed.node(system_parsed.root()).children[0]);
+        let (category, refs, ambiguous) = anthropic_system_element(
+            &system_parsed,
+            system.children[0].index(),
+            system_parsed.node(system.children[0]),
+        );
+        assert_eq!(category, GenericConversationCategory::Unknown);
+        assert!(ambiguous);
+        assert!(refs.is_none());
+        let (category, refs, ambiguous) = anthropic_system_element(
+            &system_parsed,
+            system.children[1].index(),
+            system_parsed.node(system.children[1]),
+        );
+        assert_eq!(category, GenericConversationCategory::Unknown);
+        assert!(ambiguous);
+        assert!(refs.is_none());
+        let (category, refs, ambiguous) = anthropic_system_element(
+            &system_parsed,
+            system.children[2].index(),
+            system_parsed.node(system.children[2]),
+        );
+        assert_eq!(category, GenericConversationCategory::Text);
+        assert!(!ambiguous);
+        assert!(refs.unwrap().text.is_some());
+        let candidate = detect_candidate(&parsed, root, root).unwrap();
+        assert_eq!(candidate.kind, ConversationKind::Anthropic);
+    }
+
+    #[test]
+    fn openai_tool_result_is_error_duplicate_falls_back_to_each_whole_message() {
+        let parsed = parse_json(
+            br#"[{"role":"tool","content":"result","is_error":false,"is_error":true},{"role":"tool","content":[{"type":"text","text":"result"}],"is_error":false,"is_error":true},{"role":"assistant","content":"next"}]"#,
+        )
+        .unwrap();
+        let root = parsed.root().index();
+        let mut cursor = None;
+        let mut blocks = Vec::new();
+        loop {
+            let page = conversation_page(&parsed, root, root, cursor, 1, ConversationStyle::OpenAi)
+                .unwrap();
+            blocks.extend(page.blocks);
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        let ambiguous = blocks
+            .iter()
+            .filter(|block| block.ambiguous_duplicate_field)
+            .collect::<Vec<_>>();
+        assert_eq!(ambiguous.len(), 2);
+        for block in ambiguous {
+            assert_eq!(block.kind, GenericConversationBlockKind::Source);
+            assert_eq!(block.category, GenericConversationCategory::Unknown);
+            assert_eq!(block.role, NormalizedRole::Unknown);
+            assert!(block.role_source.is_none());
+            assert!(block.openai_refs.is_none());
+            assert!(block.anthropic_refs.is_none());
+            assert_eq!(block.message.unwrap().span, block.source.unwrap().span);
+        }
+        assert!(blocks.iter().any(|block| {
+            block.kind == GenericConversationBlockKind::Message
+                && block.role == NormalizedRole::Assistant
+                && !block.ambiguous_duplicate_field
+        }));
     }
 
     #[test]

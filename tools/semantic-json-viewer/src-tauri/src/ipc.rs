@@ -4204,6 +4204,71 @@ mod tests {
     }
 
     #[test]
+    fn conversation_child_duplicate_refs_round_trip_ipc_with_full_source_spans() {
+        let path = temp_path("ipc-conversation-duplicate-children");
+        fs::write(
+            &path,
+            br#"[{"role":"assistant","content":[{"type":"text","text":"ok"},{"type":"text","text":"first","text":"second"},{"type":"image_url","image_url":{"url":"one","url":"two"}},{"type":"image_url","image_url":{"url":"good"}}],"tool_calls":[{"type":"function","id":"ok","function":{"name":"lookup","arguments":"{}"}},{"type":"function","id":"bad","id":"bad2","function":{"name":"lookup","arguments":"{}"}}],"function_call":{"name":"legacy","name":"duplicate","arguments":"{}"}}]"#,
+        )
+        .unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let candidate =
+            get_conversation_candidate_inner(&state, 0, 0, None, opened.session_revision).unwrap();
+        assert_eq!(candidate.kind, "openai");
+        assert!(!candidate.ambiguous_duplicate_field);
+
+        let mut cursor = None;
+        let mut blocks = Vec::new();
+        loop {
+            let page = get_conversation_blocks_inner(
+                &state,
+                0,
+                0,
+                cursor,
+                1,
+                opened.session_revision,
+                None,
+                ConversationStyle::OpenAi,
+            )
+            .unwrap();
+            blocks.extend(page.blocks);
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        let text = blocks
+            .iter()
+            .find(|block| block.category == "text")
+            .expect("valid text block");
+        assert!(!text.ambiguous_duplicate_field);
+        assert!(text.openai_refs.as_ref().unwrap().text.is_some());
+        let image = blocks
+            .iter()
+            .find(|block| block.category == "image")
+            .expect("valid image block");
+        assert!(!image.ambiguous_duplicate_field);
+        assert!(image.openai_refs.as_ref().unwrap().image.is_some());
+        let ambiguous = blocks
+            .iter()
+            .filter(|block| block.ambiguous_duplicate_field)
+            .collect::<Vec<_>>();
+        assert_eq!(ambiguous.len(), 4);
+        for block in ambiguous {
+            assert_eq!(block.category, "unknown");
+            assert!(block.openai_refs.is_none());
+            assert!(block.source_node_id.is_some());
+            assert!(block.source_span_start.is_some());
+            assert!(block.source_span_end.is_some());
+            assert!(block.source_span_start.unwrap() < block.source_span_end.unwrap());
+        }
+        let encoded = serde_json::to_string(&blocks).unwrap();
+        assert!(encoded.contains("ambiguousDuplicateField"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn conversation_candidate_ipc_binds_jsonl_selection_revision_and_file_state() {
         let path = temp_jsonl_path("ipc-conversation-entry");
         let line = br#"{"messages":[{"role":"user","content":"a"},{"role":"assistant","tool_calls":[{"function":{"name":"lookup","arguments":"{}"}}]}]}"#;
