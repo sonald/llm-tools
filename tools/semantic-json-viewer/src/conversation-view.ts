@@ -3,6 +3,7 @@ import { renderCode } from "./code-renderer";
 import type { ContentTarget } from "./content-viewer";
 import { renderSafeMarkdown } from "./markdown-renderer";
 import type { NodeDto } from "./tree-view";
+import { t } from "./i18n";
 
 export type ConversationStyle = "generic" | "openai" | "anthropic";
 export type ConversationFileMode = "document" | "collection" | "entry";
@@ -21,6 +22,7 @@ type Candidate = {
   node: NodeDto;
   kind: ConversationCandidateKind;
   messageCount: number;
+  ambiguousDuplicateField: boolean;
 };
 
 type SourceRef = {
@@ -61,6 +63,7 @@ type ConversationBlock = {
   roleSource: SourceRef | null;
   openaiRefs: OpenAiRefs | null;
   anthropicRefs: AnthropicRefs | null;
+  ambiguousDuplicateField: boolean;
 };
 
 type Cursor = {
@@ -82,6 +85,7 @@ type WrapperRef = {
   candidateNodeId: number;
   candidateSpanStart: number;
   candidateSpanEnd: number;
+  ambiguousDuplicateField: boolean;
 };
 
 type Page = {
@@ -329,7 +333,7 @@ export class ConversationView {
       for (const node of scan.nodes) {
         if (candidates.some((candidate) => candidate.node.id === node.id)) continue;
         const candidate = await this.readCandidate(context, node, generation);
-        if (candidate && candidate.kind !== "none") candidates.push(candidate);
+        if (candidate && (candidate.kind !== "none" || candidate.ambiguousDuplicateField)) candidates.push(candidate);
       }
       if (!this.isCurrent(context, generation)) return;
       this.loading = false;
@@ -427,7 +431,8 @@ export class ConversationView {
   private async loadPage(cursor: Cursor | null, direction: "initial" | "next" | "previous"): Promise<void> {
     const context = this.context;
     const candidate = this.selectedCandidate;
-    if (!context || !candidate || candidate.kind === "none" || candidate.kind === "possible" && !this.possibleConfirmed || this.loading) return;
+    if (!context || !candidate || candidate.kind === "none" && !candidate.ambiguousDuplicateField
+      || candidate.kind === "possible" && !this.possibleConfirmed || this.loading) return;
     const requestGeneration = ++this.requestGeneration;
     const generation = this.generation;
     this.loading = true;
@@ -801,7 +806,9 @@ export class ConversationView {
       button.dataset.conversationCandidate = String(candidate.node.id);
       button.setAttribute("aria-label", `Render ${candidate.node.label} as Conversation`);
       const label = element("strong", "conversation-candidate-label", candidate.node.label);
-      const meta = element("span", "conversation-candidate-meta", `${candidate.kind} · ${candidate.messageCount.toLocaleString()} messages · Node ${candidate.node.id}`);
+      const kind = candidate.kind === "none" && candidate.ambiguousDuplicateField ? "generic" : candidate.kind;
+      const ambiguity = candidate.ambiguousDuplicateField ? ` · ${t("conversation.ambiguousDuplicateField")}` : "";
+      const meta = element("span", "conversation-candidate-meta", `${kind}${ambiguity} · ${candidate.messageCount.toLocaleString()} messages · Node ${candidate.node.id}`);
       button.append(label, meta);
       list.append(button);
     }
@@ -818,7 +825,13 @@ export class ConversationView {
     if (candidate) {
       const selected = element("div", "conversation-selected-candidate");
       selected.append(element("strong", "", candidate.node.label));
-      selected.append(element("span", "", `${candidate.kind} · ${candidate.messageCount.toLocaleString()} messages`));
+      const selectedKind = candidate.kind === "none" && candidate.ambiguousDuplicateField ? "generic" : candidate.kind;
+      selected.append(element("span", "", `${selectedKind} · ${candidate.messageCount.toLocaleString()} messages`));
+      if (candidate.ambiguousDuplicateField) {
+        const warning = element("span", "conversation-ambiguity", t("conversation.ambiguousDuplicateField"));
+        warning.title = t("conversation.ambiguousDuplicateFieldSource");
+        selected.append(warning);
+      }
       controls.append(selected);
       if (this.candidates.length > 1) controls.append(this.actionButton("Change candidate", "choose-candidate"));
       if (this.candidateScanCursor !== null) {
@@ -1093,6 +1106,11 @@ export class ConversationView {
     }
     if (block.role) heading.append(element("span", "conversation-role", block.role));
     heading.append(element("span", "conversation-category", block.category));
+    if (block.ambiguousDuplicateField) {
+      const warning = element("span", "conversation-block-ambiguity", t("conversation.ambiguousDuplicateField"));
+      warning.title = t("conversation.ambiguousDuplicateFieldSource");
+      heading.append(warning);
+    }
     item.append(heading);
     const inlineSource = isToolBlock(block) ? null : this.inlineSourceFor(block);
     if (isToolBlock(block)) {
@@ -1113,7 +1131,7 @@ export class ConversationView {
         ? this.blockSummary(block)
         : "Summary loads when this block enters the viewport.");
       item.append(summary);
-      if (shouldInline) this.loadBlockSummary(block, index);
+      if (shouldInline && !block.ambiguousDuplicateField) this.loadBlockSummary(block, index);
     }
     if (isToolBlock(block)) {
       const card = element("section", "conversation-tool-card");
@@ -1533,6 +1551,7 @@ export class ConversationView {
   }
 
   private blockSummary(block: ConversationBlock): string {
+    if (block.ambiguousDuplicateField) return t("conversation.ambiguousDuplicateFieldSource");
     const source = this.sourceFor(block, "raw");
     const preview = source ? this.blockSummaries.get(source.nodeId) : undefined;
     if (preview) return `Source preview: ${preview}`;
@@ -1548,6 +1567,7 @@ export class ConversationView {
   }
 
   private inlineSourceFor(block: ConversationBlock): SourceRef | null {
+    if (block.ambiguousDuplicateField) return null;
     const anthropic = block.anthropicRefs;
     const openai = block.openaiRefs;
     if (block.kind === "system") return anthropic?.text ?? block.source;
@@ -1758,6 +1778,7 @@ export class ConversationView {
   }
 
   private loadBlockSummary(block: ConversationBlock, index: number): void {
+    if (block.ambiguousDuplicateField) return;
     const context = this.context;
     const source = this.sourceFor(block, "raw");
     const viewport = this.blockViewport;
@@ -2006,11 +2027,13 @@ function validateCandidate(value: unknown, node: NodeDto, context: ConversationC
   const scopeRootId = safeNumber(object.scopeRootId);
   const sessionRevision = safeNumber(object.sessionRevision);
   const kind = stringValue(object.kind);
+  const ambiguousDuplicateField = object.ambiguousDuplicateField;
   if (nodeId !== node.id || spanStart !== node.spanStart || spanEnd !== node.spanEnd || messageCount === null
     || scopeRootId !== context.scopeRoot.id || sessionRevision !== context.sessionRevision
     || spanStart < context.scopeRoot.spanStart || spanEnd > context.scopeRoot.spanEnd
+    || typeof ambiguousDuplicateField !== "boolean"
     || (kind !== "none" && kind !== "possible" && kind !== "generic" && kind !== "openai" && kind !== "anthropic" && kind !== "mixed")) return null;
-  return { node, kind: kind as ConversationCandidateKind, messageCount };
+  return { node, kind: kind as ConversationCandidateKind, messageCount, ambiguousDuplicateField };
 }
 
 function validateCursor(value: unknown, context: ConversationContext, candidate: Candidate, style: ConversationStyle): Cursor | null {
@@ -2053,19 +2076,28 @@ function validatePage(value: unknown, context: ConversationContext, candidate: C
   const candidateNodeId = safeNumber(wrapper.candidateNodeId);
   const candidateSpanStart = safeNumber(wrapper.candidateSpanStart);
   const candidateSpanEnd = safeNumber(wrapper.candidateSpanEnd);
+  const ambiguousDuplicateField = wrapper.ambiguousDuplicateField;
   if (scopeRootId !== context.scopeRoot.id || scopeRootSpanStart !== context.scopeRoot.spanStart || scopeRootSpanEnd !== context.scopeRoot.spanEnd
-    || candidateNodeId !== candidate.node.id || candidateSpanStart !== candidate.node.spanStart || candidateSpanEnd !== candidate.node.spanEnd) return null;
+    || candidateNodeId !== candidate.node.id || candidateSpanStart !== candidate.node.spanStart || candidateSpanEnd !== candidate.node.spanEnd
+    || typeof ambiguousDuplicateField !== "boolean") return null;
   const blocks = object.blocks.map((value) => validateBlock(value, context.sourceSize, context.scopeRoot, candidate, style));
   if (blocks.some((block): block is null => block === null)) return null;
   const nextCursor = object.nextCursor === null ? null : validateCursor(object.nextCursor, context, candidate, style);
   if (object.nextCursor !== null && nextCursor === null) return null;
   if (object.hasMore !== (nextCursor !== null)) return null;
   if (nextCursor && cursorKey(nextCursor) === cursorKey(requestCursor)) return null;
+  if (ambiguousDuplicateField) {
+    const block = blocks.length === 1 ? blocks[0] : null;
+    if (!block?.ambiguousDuplicateField || block.kind !== "source" || block.message !== null
+      || block.source === null || !sameRef(block.source, nodeRef(context.scopeRoot)) || block.field !== null
+      || block.category !== "unknown" || block.role !== "unknown" || block.roleSource !== null
+      || block.openaiRefs !== null || block.anthropicRefs !== null || object.hasMore || object.nextCursor !== null) return null;
+  }
   return {
     blocks: blocks as ConversationBlock[],
     hasMore: object.hasMore,
     nextCursor,
-    wrapperRef: { scopeRootId, scopeRootSpanStart, scopeRootSpanEnd, candidateNodeId, candidateSpanStart, candidateSpanEnd },
+    wrapperRef: { scopeRootId, scopeRootSpanStart, scopeRootSpanEnd, candidateNodeId, candidateSpanStart, candidateSpanEnd, ambiguousDuplicateField },
     pageStart: requestCursor
   };
 }
@@ -2080,9 +2112,11 @@ function validateBlock(value: unknown, sourceSize: number, scopeRoot: NodeDto, c
   const source = tripleRef(object, "source", sourceSize);
   const field = tripleRef(object, "field", sourceSize);
   const roleSource = tripleRef(object, "roleSource", sourceSize);
+  const ambiguousDuplicateField = object.ambiguousDuplicateField;
   const openaiRefs = refsValue(object.openaiRefs, sourceSize, ["block", "text", "image", "callId", "function", "name", "arguments"]) as OpenAiRefs | null | undefined;
   const anthropicRefs = refsValue(object.anthropicRefs, sourceSize, ["block", "text", "thinking", "data", "id", "name", "input", "toolUseId", "content"]) as AnthropicRefs | null | undefined;
   if (category === null || role === null || message === undefined || source === undefined || field === undefined || roleSource === undefined
+    || typeof ambiguousDuplicateField !== "boolean"
     || openaiRefs === undefined || anthropicRefs === undefined) return null;
   const refs: Array<SourceRef | null> = [message, source, field, roleSource];
   if (openaiRefs) refs.push(...Object.values(openaiRefs));
@@ -2094,7 +2128,27 @@ function validateBlock(value: unknown, sourceSize: number, scopeRoot: NodeDto, c
   if (kind === "source" && source === null && field === null) return null;
   if (message && !refWithin(message, candidate.node.spanStart, candidate.node.spanEnd)) return null;
   if (style === "openai" && anthropicRefs !== null || style === "anthropic" && openaiRefs !== null) return null;
-  return { kind, message, source, field, category, role, roleSource, openaiRefs, anthropicRefs };
+  if (ambiguousDuplicateField) {
+    if (kind !== "source" || category !== "unknown" || source === null || openaiRefs !== null || anthropicRefs !== null) return null;
+    if (message && sameRef(message, source)) {
+      if (role !== "unknown" || roleSource !== null || field !== null) return null;
+    } else if (message) {
+      if (!refWithin(source, message.spanStart, message.spanEnd)
+        || field !== null && !refWithin(field, message.spanStart, message.spanEnd)
+        || roleSource !== null && !refWithin(roleSource, message.spanStart, message.spanEnd)) return null;
+    } else if (role === "unknown") {
+      if (field !== null || roleSource !== null || !sameRef(source, nodeRef(scopeRoot))) return null;
+    } else if (role === "system") {
+      if (field === null || !refWithin(source, scopeRoot.spanStart, scopeRoot.spanEnd)) return null;
+    } else {
+      return null;
+    }
+  }
+  return { kind, message, source, field, category, role, roleSource, openaiRefs, anthropicRefs, ambiguousDuplicateField };
+}
+
+function sameRef(left: SourceRef, right: SourceRef): boolean {
+  return left.nodeId === right.nodeId && left.spanStart === right.spanStart && left.spanEnd === right.spanEnd;
 }
 
 function refWithin(ref: SourceRef, start: number, end: number): boolean {

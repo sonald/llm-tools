@@ -2,6 +2,8 @@ export const en = {
   "shell.appTitle": "Semantic JSON Viewer",
   "contentViewer.nestedDepth": "Nested depth",
   "contentViewer.nestedDepthHelp": "Changing this returns to the nested root.",
+  "conversation.ambiguousDuplicateField": "Ambiguous duplicate field",
+  "conversation.ambiguousDuplicateFieldSource": "Schema-specific mapping is ambiguous; the complete source object remains available through Raw and Tree.",
   "shell.openFile": "Open File",
   "shell.currentFile": "Current file",
   "shell.navigation": "Navigation",

@@ -4,6 +4,8 @@ export const zhCN: MessageCatalog = {
   "shell.appTitle": "Semantic JSON Viewer",
   "contentViewer.nestedDepth": "嵌套深度",
   "contentViewer.nestedDepthHelp": "更改此值会返回嵌套根节点。",
+  "conversation.ambiguousDuplicateField": "存在重复字段歧义",
+  "conversation.ambiguousDuplicateFieldSource": "Schema 映射存在歧义；完整源对象仍可通过原始视图和树视图查看。",
   "shell.openFile": "打开文件",
   "shell.currentFile": "当前文件",
   "shell.navigation": "导航",
