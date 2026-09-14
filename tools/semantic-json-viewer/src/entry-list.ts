@@ -117,7 +117,17 @@ type FailedPageRequest = {
   action: PendingAction | null;
 };
 
-const PAGE_SIZE = 50;
+type EntryRenderReason = "state" | "scroll" | "focus" | "resize" | "page";
+
+type EntryViewportAnchor = {
+  ordinal: number;
+  offsetWithinRow: number;
+};
+
+const PAGE_SIZE = 200;
+const OVERSCAN_ROWS = 5;
+const DEFAULT_ROW_HEIGHT = 53;
+const DEFAULT_VIEWPORT_HEIGHT = 320;
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 
 export class EntryList {
@@ -128,6 +138,7 @@ export class EntryList {
   private readonly onRevisionUnknown: (summary: unknown) => void;
   private readonly onProgress: (progress: JsonlProgressDto) => void;
   private readonly summaryModeSelect: HTMLSelectElement;
+  private readonly rowResizeObserver: ResizeObserver | null;
   private session: EntryListSession | null = null;
   private entries: EntryDto[] = [];
   private selectedEntry: EntryDto | null = null;
@@ -145,6 +156,22 @@ export class EntryList {
   private epoch = 0;
   private opening = false;
   private summaryMode: EntrySummaryMode = "auto";
+  private readonly rowHeights = new Map<number, number>();
+  private rowOffsets: number[] = [0];
+  private windowFirst = -1;
+  private windowLast = -1;
+  private windowTopSpacer: HTMLElement | null = null;
+  private windowList: HTMLElement | null = null;
+  private windowBottomSpacer: HTMLElement | null = null;
+  private pendingAnchor: EntryViewportAnchor | null = null;
+  private pendingFocusOrdinal: number | null = null;
+  private focusVisibility: { ordinal: number; generation: number } | null = null;
+  private programmaticScrollTop: number | null = null;
+  private virtualGeneration = 0;
+  private layoutVersion = 0;
+  private renderedLayoutVersion = -1;
+  private lastViewportWidth: number | null = null;
+  private lastViewportHeight: number | null = null;
 
   constructor(options: EntryListOptions) {
     this.elements = options;
@@ -173,7 +200,10 @@ export class EntryList {
     this.summaryModeSelect.addEventListener("change", () => {
       const mode = this.summaryModeSelect.value;
       if (!isEntrySummaryMode(mode)) return;
+      const anchor = this.captureViewportAnchor();
+      this.clearFocusVisibility();
       this.summaryMode = mode;
+      this.invalidateVirtualLayout(anchor);
       this.render();
     });
     summaryModeControl.append(summaryModeLabel, this.summaryModeSelect);
@@ -196,10 +226,17 @@ export class EntryList {
       }
     });
     this.elements.list.addEventListener("click", (event) => this.handleListClick(event));
+    this.elements.list.addEventListener("focusin", (event) => this.handleListFocus(event));
     this.elements.list.addEventListener("keydown", (event) => this.handleListKeydown(event));
+    this.elements.list.addEventListener("scroll", () => this.handleListScroll(), { passive: true });
     this.elements.previous.addEventListener("click", () => this.changeWindow(-1));
     this.elements.next.addEventListener("click", () => this.changeWindow(1));
     this.elements.retry.addEventListener("click", () => this.retryWindow());
+    if (this.elements.list.tabIndex < 0) this.elements.list.tabIndex = 0;
+    this.rowResizeObserver = typeof ResizeObserver === "function"
+      ? new ResizeObserver((entries) => this.handleResize(entries))
+      : null;
+    this.rowResizeObserver?.observe(this.elements.list);
     this.clear();
   }
 
@@ -210,6 +247,7 @@ export class EntryList {
       this.onError(new Error(t("entryList.progressResponseInvalid")));
       return;
     }
+    this.resetVirtualization(true);
     this.epoch += 1;
     this.pageRequest = null;
     this.failedPageRequest = null;
@@ -234,6 +272,7 @@ export class EntryList {
   }
 
   clear(): void {
+    this.resetVirtualization(true);
     this.epoch += 1;
     this.session = null;
     this.progress = null;
@@ -273,8 +312,10 @@ export class EntryList {
       return;
     }
     const previousIndexed = this.progress?.indexedEntries ?? 0;
+    const previousHint = this.progress?.eventStreamHint ?? null;
     const atTail = this.entries.length === 0 || this.windowStart + this.entries.length >= previousIndexed;
     this.mergeProgressAndNotify(next);
+    if (this.progress?.eventStreamHint !== previousHint) this.invalidateVirtualLayout();
     const indexed = this.progress?.indexedEntries ?? previousIndexed;
     if (indexed > previousIndexed && atTail && this.needsTailRefresh()) {
       this.tailRefreshPending = true;
@@ -287,6 +328,7 @@ export class EntryList {
 
   adoptSelection(selection: EntrySelectionDto, revision: number): void {
     if (!this.session) return;
+    const anchor = this.captureViewportAnchor();
     this.epoch += 1;
     this.pageRequest = null;
     this.pendingAction = null;
@@ -298,6 +340,7 @@ export class EntryList {
     this.entries = this.entries.map((entry) => (
       entry.location.entryOrdinal === selection.entry.location.entryOrdinal ? selection.entry : entry
     ));
+    this.invalidateVirtualLayout(anchor);
     this.goError = null;
     this.render();
     this.flushTailRefresh();
@@ -312,6 +355,7 @@ export class EntryList {
       this.onError(new Error(this.listError));
       return;
     }
+    this.resetVirtualization(true);
     this.epoch += 1;
     this.pageRequest = null;
     this.failedPageRequest = null;
@@ -331,6 +375,7 @@ export class EntryList {
   }
 
   focusGoTo(): void {
+    this.clearFocusVisibility();
     this.elements.goInput.focus();
     this.elements.goInput.select();
   }
@@ -366,12 +411,18 @@ export class EntryList {
       });
       if (!this.isCurrentPageRequest(request)) return;
       const page = entryPageValue(value);
+      const samePage = request.start === this.windowStart && this.entries.length > 0;
+      const anchor = samePage ? this.captureViewportAnchor() : null;
       if (!page) throw new Error(t("entryList.pageResponseInvalid"));
+      if (!samePage) this.resetVirtualization(true);
       this.pageRequest = null;
       this.windowStart = request.start;
       this.entries = page.entries.slice(0, PAGE_SIZE);
       this.pageHasMore = page.hasMore;
+      const previousHint = this.progress?.eventStreamHint ?? null;
       this.mergeProgressAndNotify(page.progress);
+      if (samePage) this.pendingAnchor = anchor;
+      if (this.progress?.eventStreamHint !== previousHint) this.invalidateVirtualLayout(anchor);
       this.listError = null;
       const action = this.pendingAction;
       this.pendingAction = null;
@@ -380,7 +431,7 @@ export class EntryList {
       if (action && this.entries.some((entry) => entry.location.entryOrdinal === action.ordinal)) {
         this.focusedOrdinal = action.ordinal;
       }
-      this.render();
+      this.render("page");
       if (action) this.applyAction(action);
       this.flushTailRefresh();
     } catch (error) {
@@ -439,15 +490,46 @@ export class EntryList {
     void this.selectOrdinal(ordinal);
   }
 
+  private handleListScroll(): void {
+    const expectedScrollTop = this.programmaticScrollTop;
+    const programmatic = expectedScrollTop !== null && Math.abs(this.elements.list.scrollTop - expectedScrollTop) < 1;
+    this.programmaticScrollTop = null;
+    if (!programmatic) {
+      this.clearFocusVisibility();
+      this.pendingAnchor = null;
+    }
+    this.render("scroll");
+  }
+
+  private handleListFocus(event: FocusEvent): void {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const option = target.closest<HTMLElement>("[role=option]");
+    if (!option || !this.elements.list.contains(option)) return;
+    const ordinal = nonNegativeInteger(Number(option.dataset.entryOrdinal));
+    if (ordinal !== null && ordinal !== undefined) {
+      this.focusedOrdinal = ordinal;
+      if (this.focusVisibility?.ordinal !== ordinal) this.clearFocusVisibility();
+    }
+  }
+
   private handleListKeydown(event: KeyboardEvent): void {
     if (this.opening || this.pageRequest || this.selectionRequest) return;
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
     const option = target.closest<HTMLElement>("[role=option]");
-    if (!option) return;
-    const ordinal = Number(option.dataset.entryOrdinal);
-    const index = this.entries.findIndex((entry) => entry.location.entryOrdinal === ordinal);
+    let ordinal = option
+      ? Number(option.dataset.entryOrdinal)
+      : target === this.elements.list ? this.focusedOrdinal ?? this.visibleOrdinal() : NaN;
+    if (ordinal === null || !Number.isSafeInteger(ordinal)) return;
+    let index = this.entries.findIndex((entry) => entry.location.entryOrdinal === ordinal);
+    if (index < 0 && !option && target === this.elements.list) {
+      ordinal = this.visibleOrdinal();
+      if (ordinal === null) return;
+      index = this.entries.findIndex((entry) => entry.location.entryOrdinal === ordinal);
+    }
     if (index < 0) return;
+    if (!option) this.focusedOrdinal = ordinal;
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
@@ -620,11 +702,40 @@ export class EntryList {
   }
 
   private focusOrdinal(ordinal: number): void {
-    const item = this.elements.list.querySelector<HTMLElement>(`[data-entry-ordinal="${ordinal}"]`);
-    if (!item) return;
     this.focusedOrdinal = ordinal;
-    for (const option of this.optionElements()) option.tabIndex = option === item ? 0 : -1;
-    item.focus();
+    const index = this.entries.findIndex((entry) => entry.location.entryOrdinal === ordinal);
+    if (index < 0) return;
+    this.rebuildRowOffsets();
+    this.retainFocusVisibility(ordinal);
+    const viewportTop = Math.max(0, this.elements.list.scrollTop);
+    const viewportHeight = this.viewportHeight();
+    const targetTop = this.prefixHeight(index);
+    const targetBottom = this.prefixHeight(index + 1);
+    const targetScrollTop = targetTop < viewportTop
+      ? targetTop
+      : targetBottom > viewportTop + viewportHeight
+        ? targetBottom - viewportHeight
+        : viewportTop;
+    const maxScrollTop = Math.max(0, this.totalHeight() - viewportHeight);
+    const nextScrollTop = Math.min(maxScrollTop, Math.max(0, targetScrollTop));
+    const item = this.elements.list.querySelector<HTMLElement>(`[data-entry-ordinal="${ordinal}"]`);
+    if (!item || nextScrollTop !== viewportTop) {
+      this.pendingFocusOrdinal = ordinal;
+      this.programmaticScrollTop = nextScrollTop;
+      this.elements.list.scrollTop = nextScrollTop;
+      this.render("focus");
+      return;
+    }
+    this.focusMountedOrdinal(ordinal, item);
+  }
+
+  private focusMountedOrdinal(ordinal: number, item?: HTMLElement): boolean {
+    const target = item ?? this.elements.list.querySelector<HTMLElement>(`[data-entry-ordinal="${ordinal}"]`);
+    if (!target) return false;
+    this.focusedOrdinal = ordinal;
+    for (const option of this.optionElements()) option.tabIndex = option === target ? 0 : -1;
+    target.focus({ preventScroll: true });
+    return true;
   }
 
   private finishSelectionRequest(): void {
@@ -633,9 +744,7 @@ export class EntryList {
     this.onSelectionBusy(false);
   }
 
-  private render(): void {
-    const shouldRestoreFocus = this.elements.list.contains(document.activeElement);
-    const focusedBefore = this.focusedOrdinal ?? this.entries[0]?.location.entryOrdinal ?? null;
+  private render(reason: EntryRenderReason = "state"): void {
     const busy = this.opening || this.pageRequest !== null || this.selectionRequest !== null;
     this.elements.navigation.hidden = this.session === null;
     this.elements.navigationState.hidden = this.session !== null;
@@ -645,23 +754,268 @@ export class EntryList {
     this.elements.next.disabled = busy || this.pageRequest !== null || !this.hasNext();
     this.elements.list.setAttribute("aria-busy", String(this.pageRequest !== null || busy));
     this.elements.retry.disabled = busy || this.pageRequest !== null;
-    this.elements.list.replaceChildren();
-    if (this.entries.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "entry-list-empty";
-      empty.textContent = this.listError ?? (this.progress?.complete ? t("entryList.noEntries") : t("entryList.indexingEntries"));
-      this.elements.list.append(empty);
-    } else {
-      for (const entry of this.entries) this.elements.list.append(this.optionElement(entry, busy));
-    }
     this.elements.retry.hidden = this.listError === null;
     this.elements.goError.textContent = this.goError ?? "";
     this.elements.status.textContent = this.listStatus();
     this.summaryModeSelect.value = this.summaryMode;
+    this.renderEntryViewport(reason, busy);
     this.renderInspector();
-    if (shouldRestoreFocus && focusedBefore !== null) {
-      queueMicrotask(() => this.focusOrdinal(focusedBefore));
+  }
+
+  private renderEntryViewport(reason: EntryRenderReason, busy: boolean): void {
+    if (this.entries.length === 0) {
+      this.resetVirtualization(false);
+      const empty = document.createElement("div");
+      empty.className = "entry-list-empty";
+      empty.textContent = this.listError ?? (this.progress?.complete ? t("entryList.noEntries") : t("entryList.indexingEntries"));
+      this.elements.list.replaceChildren(empty);
+      return;
     }
+
+    this.rebuildRowOffsets();
+    const scrollTop = Math.max(0, this.elements.list.scrollTop);
+    const viewportHeight = this.viewportHeight();
+    const focusScrollTop = reason === "resize" ? this.focusVisibilityScrollTop() : null;
+    const layoutScrollTop = focusScrollTop ?? scrollTop;
+    const visibleFirst = this.indexAtOffset(layoutScrollTop);
+    const visibleLast = Math.min(this.entries.length, this.indexAtOffset(layoutScrollTop + viewportHeight) + 1);
+    const first = Math.max(0, visibleFirst - OVERSCAN_ROWS);
+    const last = Math.min(this.entries.length, visibleLast + OVERSCAN_ROWS);
+    const sameWindow = this.windowFirst === first && this.windowLast === last
+      && this.windowTopSpacer !== null && this.windowList !== null && this.windowBottomSpacer !== null;
+    const active = document.activeElement instanceof HTMLElement
+      ? document.activeElement.closest<HTMLElement>("[role=option]")
+      : null;
+    const activeOrdinal = active && this.elements.list.contains(active)
+      ? nonNegativeInteger(Number(active.dataset.entryOrdinal)) ?? null
+      : null;
+    if (activeOrdinal !== null) this.focusedOrdinal = activeOrdinal;
+    const listFocused = document.activeElement === this.elements.list;
+    const needsRender = reason !== "scroll" || !sameWindow || this.renderedLayoutVersion !== this.layoutVersion
+      || this.pendingAnchor !== null || this.pendingFocusOrdinal !== null;
+    if (!needsRender) return;
+
+    const anchor = this.pendingAnchor;
+    if (this.windowTopSpacer === null || this.windowList === null || this.windowBottomSpacer === null) {
+      this.windowTopSpacer = document.createElement("div");
+      this.windowList = document.createElement("div");
+      this.windowList.className = "entry-list-window";
+      this.windowBottomSpacer = document.createElement("div");
+      for (const spacer of [this.windowTopSpacer, this.windowBottomSpacer]) {
+        spacer.className = "entry-list-spacer";
+        spacer.setAttribute("aria-hidden", "true");
+      }
+      this.elements.list.replaceChildren(this.windowTopSpacer, this.windowList, this.windowBottomSpacer);
+    }
+
+    this.windowFirst = first;
+    this.windowLast = last;
+    this.windowTopSpacer.style.height = `${this.prefixHeight(first)}px`;
+    this.windowBottomSpacer.style.height = `${Math.max(0, this.totalHeight() - this.prefixHeight(last))}px`;
+    if (this.rowResizeObserver) {
+      for (const row of Array.from(this.windowList.children)) this.rowResizeObserver.unobserve(row);
+    }
+    const fragment = document.createDocumentFragment();
+    for (let index = first; index < last; index += 1) {
+      const row = this.optionElement(this.entries[index], busy);
+      row.dataset.entryIndex = String(index);
+      fragment.append(row);
+    }
+    this.windowList.replaceChildren(fragment);
+    if (this.rowResizeObserver) {
+      for (const row of Array.from(this.windowList.children)) this.rowResizeObserver.observe(row);
+    }
+    this.ensureTabStop();
+    this.renderedLayoutVersion = this.layoutVersion;
+    this.pendingAnchor = null;
+    const maxScrollTop = Math.max(0, this.totalHeight() - viewportHeight);
+    const anchoredScrollTop = anchor ? this.restoreAnchor(anchor) : null;
+    const nextScrollTop = focusScrollTop ?? anchoredScrollTop ?? Math.min(scrollTop, maxScrollTop);
+    if (focusScrollTop !== null && nextScrollTop !== this.elements.list.scrollTop) {
+      this.programmaticScrollTop = nextScrollTop;
+    }
+    this.elements.list.scrollTop = nextScrollTop;
+    const pendingFocusOrdinal = this.pendingFocusOrdinal;
+    this.pendingFocusOrdinal = null;
+    if (pendingFocusOrdinal !== null) {
+      if (!this.focusMountedOrdinal(pendingFocusOrdinal)) this.elements.list.focus({ preventScroll: true });
+    } else if (activeOrdinal !== null) {
+      const target = this.elements.list.querySelector<HTMLElement>(`[data-entry-ordinal="${activeOrdinal}"]`);
+      if (target) this.focusMountedOrdinal(activeOrdinal, target);
+      else if (reason === "scroll" || reason === "resize") this.elements.list.focus({ preventScroll: true });
+    } else if (listFocused) {
+      this.elements.list.focus({ preventScroll: true });
+    }
+  }
+
+  private ensureTabStop(): void {
+    const options = this.optionElements();
+    if (options.length > 0 && !options.some((option) => option.tabIndex === 0)) options[0].tabIndex = 0;
+  }
+
+  private resetVirtualization(resetScroll: boolean): void {
+    if (this.windowList && this.rowResizeObserver) {
+      for (const row of Array.from(this.windowList.children)) this.rowResizeObserver.unobserve(row);
+    }
+    this.virtualGeneration += 1;
+    this.layoutVersion += 1;
+    this.renderedLayoutVersion = -1;
+    this.rowHeights.clear();
+    this.rowOffsets = [0];
+    this.windowFirst = -1;
+    this.windowLast = -1;
+    this.windowTopSpacer = null;
+    this.windowList = null;
+    this.windowBottomSpacer = null;
+    this.pendingAnchor = null;
+    this.pendingFocusOrdinal = null;
+    this.clearFocusVisibility();
+    this.lastViewportWidth = null;
+    this.lastViewportHeight = null;
+    if (resetScroll) this.elements.list.scrollTop = 0;
+  }
+
+  private invalidateVirtualLayout(anchor: EntryViewportAnchor | null = this.captureViewportAnchor()): void {
+    this.rowHeights.clear();
+    this.rebuildRowOffsets();
+    this.layoutVersion += 1;
+    this.pendingAnchor = anchor;
+  }
+
+  private rebuildRowOffsets(): void {
+    const offsets = [0];
+    for (let index = 0; index < this.entries.length; index += 1) {
+      offsets.push(offsets[index] + this.rowHeight(index));
+    }
+    this.rowOffsets = offsets;
+  }
+
+  private rowHeight(index: number): number {
+    return this.rowHeights.get(index) ?? DEFAULT_ROW_HEIGHT;
+  }
+
+  private prefixHeight(count: number): number {
+    return this.rowOffsets[Math.max(0, Math.min(this.entries.length, count))] ?? 0;
+  }
+
+  private totalHeight(): number {
+    return this.prefixHeight(this.entries.length);
+  }
+
+  private viewportHeight(): number {
+    return this.elements.list.clientHeight || DEFAULT_VIEWPORT_HEIGHT;
+  }
+
+  private indexAtOffset(offset: number): number {
+    if (this.entries.length <= 1) return 0;
+    const target = Math.max(0, Math.min(offset, Math.max(0, this.totalHeight() - 1)));
+    let low = 0;
+    let high = this.entries.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (this.rowOffsets[middle + 1] <= target) low = middle + 1;
+      else high = middle;
+    }
+    return Math.min(this.entries.length - 1, low);
+  }
+
+  private captureViewportAnchor(): EntryViewportAnchor | null {
+    if (this.entries.length === 0) return null;
+    this.rebuildRowOffsets();
+    const index = this.indexAtOffset(this.elements.list.scrollTop);
+    const entry = this.entries[index];
+    if (!entry) return null;
+    return {
+      ordinal: entry.location.entryOrdinal,
+      offsetWithinRow: Math.max(0, this.elements.list.scrollTop - this.prefixHeight(index))
+    };
+  }
+
+  private restoreAnchor(anchor: EntryViewportAnchor): number | null {
+    const index = this.entries.findIndex((entry) => entry.location.entryOrdinal === anchor.ordinal);
+    if (index < 0) return null;
+    const maxScrollTop = Math.max(0, this.totalHeight() - this.viewportHeight());
+    return Math.min(maxScrollTop, Math.max(0, this.prefixHeight(index) + anchor.offsetWithinRow));
+  }
+
+  private visibleOrdinal(): number | null {
+    if (this.entries.length === 0) return null;
+    this.rebuildRowOffsets();
+    const index = this.indexAtOffset(this.elements.list.scrollTop);
+    return this.entries[index]?.location.entryOrdinal ?? this.entries[0]?.location.entryOrdinal ?? null;
+  }
+
+  private retainFocusVisibility(ordinal: number): void {
+    this.focusVisibility = { ordinal, generation: this.virtualGeneration };
+  }
+
+  private clearFocusVisibility(): void {
+    this.focusVisibility = null;
+    this.programmaticScrollTop = null;
+  }
+
+  private focusVisibilityScrollTop(): number | null {
+    const focus = this.focusVisibility;
+    if (!focus || focus.generation !== this.virtualGeneration) return null;
+    const active = document.activeElement;
+    const activeOption = active instanceof HTMLElement
+      ? active.closest<HTMLElement>("[role=option]")
+      : null;
+    const activeOrdinal = activeOption && this.elements.list.contains(activeOption)
+      ? nonNegativeInteger(Number(activeOption.dataset.entryOrdinal))
+      : null;
+    if (active !== this.elements.list && activeOrdinal !== focus.ordinal) {
+      this.clearFocusVisibility();
+      this.pendingAnchor = null;
+      return null;
+    }
+    const index = this.entries.findIndex((entry) => entry.location.entryOrdinal === focus.ordinal);
+    if (index < 0) return null;
+    const viewportTop = Math.max(0, this.elements.list.scrollTop);
+    const viewportHeight = this.viewportHeight();
+    const targetTop = this.prefixHeight(index);
+    const targetBottom = this.prefixHeight(index + 1);
+    const targetScrollTop = targetTop < viewportTop
+      ? targetTop
+      : targetBottom > viewportTop + viewportHeight
+        ? targetBottom - viewportHeight
+        : viewportTop;
+    const maxScrollTop = Math.max(0, this.totalHeight() - viewportHeight);
+    return Math.min(maxScrollTop, Math.max(0, targetScrollTop));
+  }
+
+  private handleResize(entries: ResizeObserverEntry[]): void {
+    if (!this.session || this.entries.length === 0 || entries.length === 0) return;
+    const viewportEntry = entries.find((entry) => entry.target === this.elements.list);
+    const width = viewportEntry?.contentRect.width ?? null;
+    const height = viewportEntry?.contentRect.height ?? null;
+    const widthChanged = width !== null && width !== this.lastViewportWidth;
+    const heightChanged = height !== null && height !== this.lastViewportHeight;
+    if (width !== null) this.lastViewportWidth = width;
+    if (height !== null) this.lastViewportHeight = height;
+    const rowEntries = entries.filter((entry) => this.windowList?.contains(entry.target));
+    if (!widthChanged && !heightChanged && rowEntries.length === 0) return;
+    const anchor = this.captureViewportAnchor();
+    if (widthChanged) this.rowHeights.clear();
+    let changed = widthChanged || heightChanged;
+    for (const entry of rowEntries) {
+      const row = entry.target.closest<HTMLElement>("[data-entry-index]");
+      const index = row ? nonNegativeInteger(Number(row.dataset.entryIndex)) : null;
+      if (index === null || index === undefined) continue;
+      const measured = measuredBorderBoxHeight(entry);
+      if (measured !== null && this.rowHeights.get(index) !== measured) {
+        this.rowHeights.set(index, measured);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    this.rebuildRowOffsets();
+    this.layoutVersion += 1;
+    this.pendingAnchor = anchor;
+    const generation = this.virtualGeneration;
+    queueMicrotask(() => {
+      if (generation === this.virtualGeneration && this.session && this.entries.length > 0) this.render("resize");
+    });
   }
 
   private optionElement(entry: EntryDto, busy: boolean): HTMLButtonElement {
@@ -674,6 +1028,12 @@ export class EntryList {
     item.tabIndex = this.focusedOrdinal === entry.location.entryOrdinal || this.focusedOrdinal === null && this.entries[0] === entry ? 0 : -1;
     item.setAttribute("aria-disabled", String(busy));
     item.setAttribute("aria-selected", String(this.selectedEntry?.location.entryOrdinal === entry.location.entryOrdinal));
+    item.setAttribute("aria-posinset", String(entry.location.entryOrdinal + 1));
+    if (this.progress?.complete && this.progress.totalEntries !== null) {
+      item.setAttribute("aria-setsize", String(this.progress.totalEntries));
+    } else {
+      item.setAttribute("aria-setsize", "-1");
+    }
     const eventSummary = this.eventSummaryText(entry);
     item.setAttribute(
       "aria-label",
@@ -789,6 +1149,16 @@ export class EntryList {
   private isCurrentSelectionRequest(request: SelectionRequest): boolean {
     return this.selectionRequest === request && this.session?.revision === request.revision && this.epoch === request.epoch;
   }
+}
+
+function measuredBorderBoxHeight(entry: ResizeObserverEntry): number | null {
+  const borderBoxSize = entry.borderBoxSize as ResizeObserverSize | readonly ResizeObserverSize[] | undefined;
+  const borderBoxHeight = Array.isArray(borderBoxSize)
+    ? borderBoxSize[0]?.blockSize
+    : borderBoxSize && "blockSize" in borderBoxSize ? borderBoxSize.blockSize : undefined;
+  const rectHeight = entry.target.getBoundingClientRect().height;
+  const height = borderBoxHeight ?? (rectHeight > 0 ? rectHeight : entry.contentRect.height);
+  return Number.isFinite(height) && height > 0 ? Math.ceil(height) : null;
 }
 
 function mergeProgress(previous: JsonlProgressDto | null, next: JsonlProgressDto): JsonlProgressDto {

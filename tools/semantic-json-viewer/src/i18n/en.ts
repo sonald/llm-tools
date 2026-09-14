@@ -8,7 +8,7 @@ export const en = {
   "shell.noFileOpen": "No file is open.",
   "shell.openLocalFile": "Open a local JSON or JSONL file to begin.",
   "shell.entries": "Entries",
-  "shell.entriesPerPage": "50 per page",
+  "shell.entriesPerPage": "200 per page",
   "shell.goToEntry": "Go to Entry",
   "shell.go": "Go",
   "shell.jsonlEntries": "JSONL entries",

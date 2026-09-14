@@ -169,7 +169,7 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .entry-go-error { min-height: 14px; color: var(--danger); font-size: 9px; line-height: 1.45; }
 
-.entry-list { min-height: 90px; flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.entry-list { min-height: 90px; flex: 1; overflow: auto; overflow-anchor: none; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
 .collection-list { --collection-row-height: 24px; position: relative; min-height: 90px; flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
 .collection-list-spacer { position: relative; width: 100%; }
 .collection-list-window { position: absolute; right: 0; left: 0; }
@@ -183,8 +183,6 @@ h3 { font-size: 16px; font-weight: 700; }
 .collection-list-empty { display: flex; min-height: 120px; align-items: center; justify-content: center; padding: 18px; color: var(--faint); font-size: 10px; text-align: center; }
 
 .entry-option { display: grid; width: 100%; min-height: 53px; grid-template-columns: 6px minmax(0, 1fr); gap: 8px; padding: 8px 9px; border: 0; border-bottom: 1px solid #edf0f4; color: var(--text); background: transparent; text-align: left; }
-
-.entry-option:last-child { border-bottom: 0; }
 
 .entry-option:hover { background: var(--surface-muted); }
 
