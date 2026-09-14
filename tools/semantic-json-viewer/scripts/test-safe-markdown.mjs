@@ -1214,7 +1214,7 @@ await settle();
 check(businessCommands(nestedCalls)==="get_string_detection→open_nested_json","Nested initial business calls were not detection→open without a read");
 check(nestedCalls.filter((call)=>call.command==="get_string_metrics").length===1&&nestedCalls.find((call)=>call.command==="get_string_metrics")?.args.nodeId===7&&nestedCalls.find((call)=>call.command==="get_string_metrics")?.args.scopeId===null&&nestedCalls.find((call)=>call.command==="get_string_metrics")?.args.sessionRevision===9,"Nested initial metrics request did not bind the current string identity");
 const nestedRootCall=nestedCalls.find((call)=>call.command==="open_nested_json");
-check(nestedRootCall?.args.parentScopeId===null&&nestedRootCall.args.maxDepth===null,"Nested root call did not carry null parent/maxDepth");
+check(nestedRootCall?.args.parentScopeId===null&&nestedRootCall.args.maxDepth===5,"Nested root call did not carry the default root maxDepth");
 check(nestedParts.elements.close===document.activeElement,"Nested initial focus did not remain on Close");
 check(nestedParts.elements.nested.back.hidden,"Nested root Back should be hidden");
 check(nestedParts.elements.nested.parsedTab.getAttribute("aria-selected")==="true","Nested root did not default to Parsed");

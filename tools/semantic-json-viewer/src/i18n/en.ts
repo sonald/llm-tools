@@ -1,5 +1,7 @@
 export const en = {
   "shell.appTitle": "Semantic JSON Viewer",
+  "contentViewer.nestedDepth": "Nested depth",
+  "contentViewer.nestedDepthHelp": "Changing this returns to the nested root.",
   "shell.openFile": "Open File",
   "shell.currentFile": "Current file",
   "shell.navigation": "Navigation",

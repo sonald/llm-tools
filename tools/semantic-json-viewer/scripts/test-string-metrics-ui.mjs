@@ -85,7 +85,7 @@ const nested=makeNestedViewer(async(command,args)=>{
   if(command==="get_string_detection") return args.nodeId===77
     ? {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"}
     : {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
-  if(command==="open_nested_json") return {scopeId:44,parentScopeId:null,sourceNodeId:20,depth:1,maxDepth:10,parsedBytes:100,cumulativeBytes:100,sessionRevision:9,root:{id:20,kind:"object",spanStart:0,spanEnd:100,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:1}};
+  if(command==="open_nested_json") return {scopeId:44,parentScopeId:null,sourceNodeId:20,depth:1,maxDepth:5,parsedBytes:100,cumulativeBytes:100,sessionRevision:9,root:{id:20,kind:"object",spanStart:0,spanEnd:100,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:1}};
   if(command==="get_children") return {nodes:[{id:77,kind:"string",spanStart:10,spanEnd:20,label:"nested",labelHasMore:false,valuePreview:"nested",valueHasMore:false,childCount:0}],hasMore:false,nextCursor:null};
   if(command==="get_string_metrics") return {decodedBytes:12,characterCount:7,lineCount:2};
   if(command==="read_decoded_text") return {start:0,text:"nested",hasMore:false,nextOffset:null};

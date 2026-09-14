@@ -2,6 +2,8 @@ import type { MessageCatalog } from "./en.js";
 
 export const zhCN: MessageCatalog = {
   "shell.appTitle": "Semantic JSON Viewer",
+  "contentViewer.nestedDepth": "嵌套深度",
+  "contentViewer.nestedDepthHelp": "更改此值会返回嵌套根节点。",
   "shell.openFile": "打开文件",
   "shell.currentFile": "当前文件",
   "shell.navigation": "导航",

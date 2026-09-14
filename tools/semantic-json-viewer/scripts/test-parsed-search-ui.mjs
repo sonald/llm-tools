@@ -70,7 +70,7 @@ const elements={dialog:q("dialog"),close:q("close"),title:q("title"),scope:q("sc
 const calls=[];
 const pendingPeek=new Map();
 const target={revision:9,nodeId:20,spanStart:37,spanEnd:300500,scopeId:null,scopeLabel:"Parent string",pathSegments:["$","payload"],pathTruncated:false};
-const scope={scopeId:7,parentScopeId:null,sourceNodeId:20,depth:1,maxDepth:1,parsedBytes:300000,cumulativeBytes:300000,sessionRevision:9,root:{id:20,kind:"object",spanStart:0,spanEnd:300000,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:4}};
+const scope={scopeId:7,parentScopeId:null,sourceNodeId:20,depth:1,maxDepth:5,parsedBytes:300000,cumulativeBytes:300000,sessionRevision:9,root:{id:20,kind:"object",spanStart:0,spanEnd:300000,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:4}};
 const invoke=async(command,args)=>{
   calls.push({command,args});
   if(command==="get_string_detection") return {semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};

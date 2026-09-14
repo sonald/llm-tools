@@ -575,11 +575,11 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .content-viewer-header .secondary-button { flex: 0 0 auto; }
 
-.content-viewer-render-as { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; font-weight: 650; }
+.content-viewer-render-as, .content-viewer-nested-depth { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; font-weight: 650; }
 
-.content-viewer-render-as select { min-height: 29px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--text); background: var(--surface); font: 10px/1.2 inherit; }
+.content-viewer-render-as select, .content-viewer-nested-depth select { min-height: 29px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--text); background: var(--surface); font: 10px/1.2 inherit; }
 
-.content-viewer-render-as select:focus-visible { outline: 2px solid #4987ff; outline-offset: 2px; }
+.content-viewer-render-as select:focus-visible, .content-viewer-nested-depth select:focus-visible { outline: 2px solid #4987ff; outline-offset: 2px; }
 
 .content-viewer-meta { grid-row: 2; min-width: 0; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--surface-muted); }
 

@@ -11,6 +11,7 @@ import { TreeView, type NodeDto, type TreeCopyElements, type TreeViewSnapshot } 
 import { SearchView, type SearchMatch, type SearchViewElements } from "./search-view";
 import { RenderedSearch, type RenderedMatch, type RenderedSearchTarget } from "./rendered-search";
 import { TextLineView, type TextLineHighlight } from "./text-line-view";
+import { t } from "./i18n";
 
 export type ContentTarget = {
   revision: number;
@@ -166,6 +167,32 @@ function createStringMetricsElements(anchor: HTMLElement): StringMetricsElements
   return { container, bytes, characters, lines };
 }
 
+function createNestedDepthElements(renderAs: HTMLSelectElement | null): { control: HTMLElement; select: HTMLSelectElement } | null {
+  const anchor = renderAs?.parentElement;
+  if (!anchor) return null;
+  const control = document.createElement("label");
+  control.className = "content-viewer-nested-depth";
+  control.hidden = true;
+  control.title = t("contentViewer.nestedDepthHelp");
+  const label = document.createElement("span");
+  label.textContent = t("contentViewer.nestedDepth");
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", t("contentViewer.nestedDepth"));
+  select.title = t("contentViewer.nestedDepthHelp");
+  for (let depth = 1; depth <= 10; depth += 1) {
+    const option = document.createElement("option");
+    option.value = String(depth);
+    option.textContent = String(depth);
+    select.append(option);
+  }
+  select.value = "5";
+  select.disabled = true;
+  control.append(label, select);
+  const insertionAnchor = anchor instanceof HTMLLabelElement ? anchor : renderAs;
+  insertionAnchor.insertAdjacentElement("afterend", control);
+  return { control, select };
+}
+
 type StringDetection = {
   semanticType: "plainText" | "markdown" | "nestedJson" | "code" | "html";
   detectionSource: "contentDetected";
@@ -265,6 +292,7 @@ const CODE_AUTO_RENDER_LIMIT_BYTES = 1 * 1024 * 1024;
 const CODE_AUTO_RENDER_LIMIT_LINES = 20_000;
 const HTML_INPUT_LIMIT_BYTES = 512 * 1024;
 const HTML_OUTPUT_LIMIT_BYTES = 1024 * 1024;
+const DEFAULT_NESTED_MAX_DEPTH = 5;
 const MARKDOWN_OVER_LIMIT_NOTE = "Markdown rendering skipped because content exceeds 2 MiB.";
 const MARKDOWN_OVER_LIMIT_STATUS = "Markdown source exceeds 2 MiB; showing decoded source.";
 const MARKDOWN_HARD_LIMIT_NOTE = "Markdown rendering skipped because content exceeds 32 MiB.";
@@ -303,6 +331,8 @@ export class ContentViewer {
   private readonly parsedSearchPeekElements: ParsedSearchPeekElements | null;
   private readonly stringMetricsElements: StringMetricsElements | null;
   private readonly renderAs: HTMLSelectElement | null;
+  private readonly nestedDepthControl: HTMLElement | null;
+  private readonly nestedDepthSelect: HTMLSelectElement | null;
   private readonly markdownAnyway: HTMLButtonElement | null;
   private readonly wrapElements: ContentViewerElements["wrap"];
   private readonly copyRaw: HTMLButtonElement;
@@ -341,6 +371,7 @@ export class ContentViewer {
   private readonly closingScopes = new Map<string, Promise<void>>();
   private readonly rootCloseAttempts = new Map<string, number>();
   private nestedBusy = false;
+  private nestedMaxDepth = DEFAULT_NESTED_MAX_DEPTH;
   private copyEpoch = 0;
   private copyBusy = false;
   private parsedSearchPeek: ParsedSearchPeek | null = null;
@@ -365,6 +396,9 @@ export class ContentViewer {
     this.htmlElements = options.elements.html ?? null;
     this.stringElements = options.elements.string ?? null;
     this.renderAs = options.elements.renderAs ?? null;
+    const nestedDepth = createNestedDepthElements(this.renderAs);
+    this.nestedDepthControl = nestedDepth?.control ?? null;
+    this.nestedDepthSelect = nestedDepth?.select ?? null;
     this.markdownAnyway = options.elements.markdownAnyway ?? null;
     this.wrapElements = options.elements.wrap;
     this.contentResizeTarget = this.elements.content.parentElement ?? this.elements.content;
@@ -433,6 +467,7 @@ export class ContentViewer {
     this.copyMarkdown.addEventListener("click", () => void this.copyTarget("decoded", "Copied Markdown Source"));
     this.copyParsed.addEventListener("click", () => void this.copyParsedJson());
     this.renderAs?.addEventListener("change", () => void this.changeRenderAs());
+    this.nestedDepthSelect?.addEventListener("change", () => void this.changeNestedDepth());
     this.markdownAnyway?.addEventListener("click", () => void this.renderMarkdownAnyway());
     this.elements.previous.addEventListener("click", () => void this.readPrevious());
     this.elements.next.addEventListener("click", () => void this.readNext());
@@ -1132,6 +1167,37 @@ export class ContentViewer {
     }
   }
 
+  private async changeNestedDepth(): Promise<void> {
+    const select = this.nestedDepthSelect;
+    const root = this.nestedFrames[0];
+    if (!select || !root || this.busy || this.nestedBusy) {
+      this.syncRenderAsSelect();
+      return;
+    }
+    const requested = Number(select.value);
+    if (!Number.isSafeInteger(requested) || requested < 1 || requested > 10) {
+      this.syncRenderAsSelect();
+      return;
+    }
+    if (requested === this.nestedMaxDepth) {
+      this.syncRenderAsSelect();
+      return;
+    }
+    const source = cloneTarget(root.source);
+    const opener = this.opener;
+    this.nestedMaxDepth = requested;
+    this.busy = true;
+    this.syncRenderAsSelect();
+    try {
+      await this.open(source, opener);
+    } catch (error) {
+      this.busy = false;
+      this.handleFailure(error);
+    } finally {
+      this.syncRenderAsSelect();
+    }
+  }
+
   private async renderMarkdownAnyway(): Promise<void> {
     const target = this.target;
     if (!target || this.busy || this.renderMode !== "markdown" || this.semanticLimitBytes !== MARKDOWN_AUTO_RENDER_LIMIT_BYTES) return;
@@ -1225,7 +1291,18 @@ export class ContentViewer {
     if (!select) return;
     select.value = renderAsOption(this.renderOverride);
     select.disabled = this.target === null || this.detection === null || this.busy || this.nestedBusy;
+    this.syncNestedDepthControl();
     this.renderMarkdownAnywayButton();
+  }
+
+  private syncNestedDepthControl(): void {
+    const control = this.nestedDepthControl;
+    const select = this.nestedDepthSelect;
+    if (!control || !select) return;
+    const visible = this.nestedFrames.length > 0;
+    control.hidden = !visible;
+    select.value = String(this.nestedMaxDepth);
+    select.disabled = !visible || this.busy || this.nestedBusy;
   }
 
   private renderMarkdownAnywayButton(): void {
@@ -1376,6 +1453,7 @@ export class ContentViewer {
       this.installChunk(chunk, true);
       return true;
     }
+    const requestedMaxDepth = this.nestedMaxDepth;
     this.nestedBusy = true;
     this.syncRenderAsSelect();
     this.setStatus("Loading parsed nested JSON…");
@@ -1384,7 +1462,7 @@ export class ContentViewer {
       const value = await this.invokeRequest<unknown>("open_nested_json", {
         parentScopeId: target.scopeId,
         nodeId: target.nodeId,
-        maxDepth: null,
+        maxDepth: requestedMaxDepth,
         sessionRevision: target.revision
       });
       if (!this.isCurrent(generation, target)) {
@@ -1392,9 +1470,11 @@ export class ContentViewer {
         return false;
       }
       const scope = validateNestedScope(value, target, null);
-      if (!scope) {
+      if (!scope || scope.maxDepth !== requestedMaxDepth) {
         this.bestEffortCloseScope(value, target.revision);
-        throw new Error("The nested JSON scope response was invalid.");
+        throw new Error(scope
+          ? `The nested JSON scope used maximum depth ${scope.maxDepth}; requested ${requestedMaxDepth}.`
+          : "The nested JSON scope response was invalid.");
       }
       this.disposeTextLineView();
       this.cleanupParsedPresentation();
@@ -2568,6 +2648,7 @@ export class ContentViewer {
     }
     this.setSharedTextPanelSemantics();
     this.renderNestedRange();
+    this.syncNestedDepthControl();
   }
 
   private renderNestedBreadcrumb(): void {
@@ -2771,6 +2852,8 @@ export class ContentViewer {
     this.disposeTextLineView();
     this.clearParsedSearchPeek();
     const root = this.nestedFrames[0];
+    const rootOverrideKey = root ? renderOverrideKey(root.source) : null;
+    const rootOverride = rootOverrideKey ? this.overrides.get(rootOverrideKey) : undefined;
     if (root) {
       const revision = root.scope.sessionRevision;
       const key = scopeKey(revision, root.scope.scopeId);
@@ -2779,7 +2862,11 @@ export class ContentViewer {
         void this.closeRootScope(root.scope.scopeId, revision, key);
       }
     }
-    for (const frame of this.nestedFrames) this.discardNestedFrame(frame);
+    for (const frame of this.nestedFrames) {
+      this.deleteOverridesForScope(frame.scope.sessionRevision, frame.scope.scopeId);
+      this.discardNestedFrame(frame);
+    }
+    if (rootOverrideKey && rootOverride !== undefined) this.overrides.set(rootOverrideKey, rootOverride);
     this.nestedFrames = [];
     this.nestedTree?.clear();
     this.nestedRepresentation = null;
