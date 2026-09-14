@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { locale, t } from "./i18n";
+import { parseErrorMessage } from "./parse-error-message";
 import type { NodeDto } from "./tree-view";
 
 export type ParseErrorDto = {
+  code?: string;
   message: string;
   byteOffset: number;
   line: number;
@@ -739,7 +741,7 @@ export class EntryList {
       ? `[${entry.location.byteStart}, ${entry.location.byteEnd})`
       : "—";
     const parse = entry?.parseError ?? null;
-    this.elements.inspectorParseMessage.textContent = parse?.message ?? "—";
+    this.elements.inspectorParseMessage.textContent = parse ? parseErrorMessage(parse) : "—";
     this.elements.inspectorParseByteOffset.textContent = parse ? String(parse.byteOffset) : "—";
     this.elements.inspectorParseLine.textContent = parse ? String(parse.line) : "—";
     this.elements.inspectorParseColumn.textContent = parse ? String(parse.column) : "—";
@@ -865,9 +867,24 @@ function entrySelectionValue(value: unknown): EntrySelectionDto | undefined {
 
 function entryValue(value: unknown): EntryDto | undefined {
   if (Array.isArray(value) || !isRecord(value)) return undefined;
+  const parseError = parseErrorValue(value.parseError);
   const eventSummary = eventSummaryValue(value.eventSummary);
-  if (eventSummary === undefined) return undefined;
-  return { ...value, eventSummary } as EntryDto;
+  if (parseError === undefined || eventSummary === undefined) return undefined;
+  return { ...value, parseError, eventSummary } as EntryDto;
+}
+
+function parseErrorValue(value: unknown): ParseErrorDto | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (Array.isArray(value) || !isRecord(value)) return undefined;
+  const hasCode = Object.prototype.hasOwnProperty.call(value, "code");
+  const code = hasCode ? typeof value.code === "string" ? value.code : undefined : undefined;
+  const message = typeof value.message === "string" ? value.message : undefined;
+  const byteOffset = nonNegativeInteger(value.byteOffset);
+  const line = nonNegativeInteger(value.line);
+  const column = nonNegativeInteger(value.column);
+  if ((hasCode && code === undefined) || message === undefined || byteOffset === undefined || line === undefined || column === undefined
+    || line < 1 || column < 1) return undefined;
+  return { code, message, byteOffset, line, column };
 }
 
 function eventSummaryValue(value: unknown): EntryEventSummaryDto | null | undefined {

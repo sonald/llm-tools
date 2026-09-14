@@ -8,12 +8,14 @@ import { MAX_ENTRY_BYTES, RawView } from "./raw-view";
 import { SearchView, type SearchMatch, type SearchScope } from "./search-view";
 import { TreeView, type NodeDto } from "./tree-view";
 import { applyStaticTranslations, locale, t } from "./i18n";
+import { parseErrorMessage } from "./parse-error-message";
 
 applyStaticTranslations();
 
 type FileMode = "document" | "collection" | "entry";
 
 type ParseErrorDto = {
+  code?: string;
   message: string;
   byteOffset: number;
   line: number;
@@ -463,15 +465,17 @@ function parseErrorValue(value: unknown, maxByteOffset?: number): ParseErrorDto 
   if (!isRecord(value)) {
     return undefined;
   }
+  const hasCode = Object.prototype.hasOwnProperty.call(value, "code");
+  const code = hasCode ? typeof value.code === "string" ? value.code : undefined : undefined;
   const message = typeof value.message === "string" ? value.message : undefined;
   const byteOffset = numberValue(value.byteOffset);
   const line = numberValue(value.line);
   const column = numberValue(value.column);
-  if (message === undefined || byteOffset === undefined || line === undefined || column === undefined
+  if ((hasCode && code === undefined) || message === undefined || byteOffset === undefined || line === undefined || column === undefined
     || line < 1 || column < 1 || maxByteOffset !== undefined && byteOffset > maxByteOffset) {
     return undefined;
   }
-  return { message, byteOffset, line, column };
+  return { code, message, byteOffset, line, column };
 }
 
 function nodeDtoValue(value: unknown, size: number): NodeDto | undefined {
@@ -943,7 +947,7 @@ function renderError(): void {
       line: parse.line,
       column: parse.column,
       byteOffset: parse.byteOffset,
-      message: parse.message
+      message: parseErrorMessage(parse)
     }));
   } else {
     setText(errorDetails, "");
