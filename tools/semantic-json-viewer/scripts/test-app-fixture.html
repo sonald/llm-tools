@@ -10,8 +10,9 @@
       Object.defineProperty(globalThis, "navigator", { configurable: true, value: { language: "en-US" } });
       const source = await (await fetch("/index.html")).text();
       const parsed = new DOMParser().parseFromString(source, "text/html");
-      document.body.replaceChildren(...Array.from(parsed.body.childNodes).filter((node) => !(node instanceof HTMLScriptElement)));
+      document.body.append(...Array.from(parsed.body.childNodes).filter((node) => !(node instanceof HTMLScriptElement)));
       await import("/src/main.ts");
+      document.documentElement.dataset.testAppReady = "true";
     </script>
   </body>
 </html>

@@ -26,6 +26,7 @@ type JsonlProgressDto = {
   complete: boolean;
   stride: number;
   totalEntries: number | null;
+  eventStreamHint: boolean | null;
 };
 
 type FileSummary = {
@@ -523,7 +524,14 @@ function ipcError(value: unknown): IpcErrorPayload {
 function handleEntryProgress(progress: JsonlProgressDto): void {
   const summary = state.summary;
   if (!summary || summary.mode !== "entry") return;
-  state.summary = { ...summary, progress };
+  const validated = jsonlProgressValue(progress);
+  if (!validated) {
+    state.error = { code: "internal", message: t("main.invalidJsonlProgress") };
+    state.scanStoppedRevision = summary.sessionRevision;
+    render();
+    return;
+  }
+  state.summary = { ...summary, progress: validated };
   render();
 }
 
@@ -822,11 +830,15 @@ function jsonlProgressValue(value: unknown): JsonlProgressDto | undefined {
   const indexedSourceLines = numberValue(value.indexedSourceLines);
   const stride = numberValue(value.stride);
   const complete = typeof value.complete === "boolean" ? value.complete : undefined;
-  const totalEntries = value.totalEntries === null ? null : numberValue(value.totalEntries);
-  if (indexedEntries === undefined || indexedSourceLines === undefined || stride === undefined || complete === undefined || totalEntries === undefined) {
+  const totalEntries = value.totalEntries === null || value.totalEntries === undefined ? null : numberValue(value.totalEntries);
+  const eventStreamHint = value.eventStreamHint === null || value.eventStreamHint === undefined
+    ? null
+    : typeof value.eventStreamHint === "boolean" ? value.eventStreamHint : undefined;
+  if (indexedEntries === undefined || indexedSourceLines === undefined || stride === undefined || complete === undefined
+    || totalEntries === undefined || eventStreamHint === undefined) {
     return undefined;
   }
-  return { indexedEntries, indexedSourceLines, complete, stride, totalEntries };
+  return { indexedEntries, indexedSourceLines, complete, stride, totalEntries, eventStreamHint };
 }
 
 function modeLabel(mode: FileMode): string {
@@ -1426,9 +1438,16 @@ async function scanEntries(generation: number, sessionRevision: number): Promise
   try {
     while (generation === state.generation && state.summary?.sessionRevision === sessionRevision) {
       try {
-        const progress = await invoke<JsonlProgressDto>("scan_entries", { sessionRevision });
+        const value = await invoke<unknown>("scan_entries", { sessionRevision });
         if (generation !== state.generation || state.summary?.sessionRevision !== sessionRevision) return;
         state.scanStoppedRevision = null;
+        const progress = jsonlProgressValue(value);
+        if (!progress) {
+          state.error = { code: "internal", message: t("main.invalidJsonlProgress") };
+          state.scanStoppedRevision = sessionRevision;
+          render();
+          return;
+        }
         entryList.updateProgress(progress, sessionRevision);
         if (progress.complete) return;
       } catch (error) {

@@ -15,6 +15,18 @@ export type JsonlProgressDto = {
   complete: boolean;
   stride: number;
   totalEntries: number | null;
+  eventStreamHint: boolean | null;
+};
+
+export type EntryEventValueDto = {
+  value: string;
+  hasMore: boolean;
+};
+
+export type EntryEventSummaryDto = {
+  eventType: EntryEventValueDto | null;
+  timestamp: EntryEventValueDto | null;
+  grouping: EntryEventValueDto | null;
 };
 
 export type EntryLocationDto = {
@@ -28,6 +40,7 @@ export type EntryDto = {
   location: EntryLocationDto;
   status: string;
   parseError?: ParseErrorDto | null;
+  eventSummary?: EntryEventSummaryDto | null;
 };
 
 export type EntryPageDto = {
@@ -47,6 +60,8 @@ export type EntryListSession = {
   revision: number;
   progress: JsonlProgressDto;
 };
+
+export type EntrySummaryMode = "auto" | "generic" | "event";
 
 type EntryListElements = {
   navigation: HTMLElement;
@@ -110,6 +125,7 @@ export class EntryList {
   private readonly onError: (error: unknown) => void;
   private readonly onRevisionUnknown: (summary: unknown) => void;
   private readonly onProgress: (progress: JsonlProgressDto) => void;
+  private readonly summaryModeSelect: HTMLSelectElement;
   private session: EntryListSession | null = null;
   private entries: EntryDto[] = [];
   private selectedEntry: EntryDto | null = null;
@@ -126,6 +142,7 @@ export class EntryList {
   private goError: string | null = null;
   private epoch = 0;
   private opening = false;
+  private summaryMode: EntrySummaryMode = "auto";
 
   constructor(options: EntryListOptions) {
     this.elements = options;
@@ -134,6 +151,33 @@ export class EntryList {
     this.onError = options.onError;
     this.onRevisionUnknown = options.onRevisionUnknown;
     this.onProgress = options.onProgress;
+    const summaryModeControl = document.createElement("label");
+    summaryModeControl.className = "conversation-style-control";
+    const summaryModeLabel = document.createElement("span");
+    summaryModeLabel.textContent = t("entryList.summaryMode");
+    this.summaryModeSelect = document.createElement("select");
+    this.summaryModeSelect.dataset.entrySummaryMode = "true";
+    this.summaryModeSelect.setAttribute("aria-label", t("entryList.summaryMode"));
+    for (const [value, label] of [
+      ["auto", t("entryList.summaryAuto")],
+      ["generic", t("entryList.summaryGeneric")],
+      ["event", t("entryList.summaryEvent")]
+    ] as const) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      this.summaryModeSelect.append(option);
+    }
+    this.summaryModeSelect.addEventListener("change", () => {
+      const mode = this.summaryModeSelect.value;
+      if (!isEntrySummaryMode(mode)) return;
+      this.summaryMode = mode;
+      this.render();
+    });
+    summaryModeControl.append(summaryModeLabel, this.summaryModeSelect);
+    const go = this.elements.navigation.querySelector<HTMLElement>(".entry-go");
+    if (go) this.elements.navigation.insertBefore(summaryModeControl, go);
+    else this.elements.navigation.prepend(summaryModeControl);
     this.elements.goButton.addEventListener("click", () => this.goToEntry());
     this.elements.goInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -158,14 +202,22 @@ export class EntryList {
   }
 
   setSession(session: EntryListSession | null): void {
+    const progress = session ? progressValue(session.progress) : null;
+    if (session && !progress) {
+      this.clear();
+      this.onError(new Error(t("entryList.progressResponseInvalid")));
+      return;
+    }
     this.epoch += 1;
     this.pageRequest = null;
     this.failedPageRequest = null;
     this.finishSelectionRequest();
     this.pendingAction = null;
     this.tailRefreshPending = false;
-    this.session = session;
-    this.progress = session?.progress ?? null;
+    this.summaryMode = "auto";
+    this.summaryModeSelect.value = this.summaryMode;
+    this.session = session && progress ? { ...session, progress } : null;
+    this.progress = session && progress ? progress : null;
     this.entries = [];
     this.selectedEntry = null;
     this.focusedOrdinal = null;
@@ -183,6 +235,8 @@ export class EntryList {
     this.epoch += 1;
     this.session = null;
     this.progress = null;
+    this.summaryMode = "auto";
+    this.summaryModeSelect.value = this.summaryMode;
     this.pageRequest = null;
     this.failedPageRequest = null;
     this.finishSelectionRequest();
@@ -209,9 +263,16 @@ export class EntryList {
 
   updateProgress(progress: JsonlProgressDto, revision: number): void {
     if (!this.session || this.session.revision !== revision) return;
+    const next = progressValue(progress);
+    if (!next) {
+      this.listError = t("entryList.progressResponseInvalid");
+      this.render();
+      this.onError(new Error(this.listError));
+      return;
+    }
     const previousIndexed = this.progress?.indexedEntries ?? 0;
     const atTail = this.entries.length === 0 || this.windowStart + this.entries.length >= previousIndexed;
-    this.mergeProgressAndNotify(progress);
+    this.mergeProgressAndNotify(next);
     const indexed = this.progress?.indexedEntries ?? previousIndexed;
     if (indexed > previousIndexed && atTail && this.needsTailRefresh()) {
       this.tailRefreshPending = true;
@@ -242,14 +303,21 @@ export class EntryList {
 
   resync(revision: number, progress: JsonlProgressDto): void {
     if (!this.session) return;
+    const next = progressValue(progress);
+    if (!next) {
+      this.listError = t("entryList.progressResponseInvalid");
+      this.render();
+      this.onError(new Error(this.listError));
+      return;
+    }
     this.epoch += 1;
     this.pageRequest = null;
     this.failedPageRequest = null;
     this.finishSelectionRequest();
     this.pendingAction = null;
     this.tailRefreshPending = false;
-    this.session = { revision, progress };
-    this.progress = progress;
+    this.session = { revision, progress: next };
+    this.progress = next;
     this.entries = [];
     this.selectedEntry = null;
     this.focusedOrdinal = null;
@@ -289,12 +357,14 @@ export class EntryList {
 
   private async loadWindow(request: PageRequest): Promise<void> {
     try {
-      const page = await invoke<EntryPageDto>("list_entries", {
+      const value = await invoke<unknown>("list_entries", {
         start: request.start,
         limit: PAGE_SIZE,
         sessionRevision: request.revision
       });
       if (!this.isCurrentPageRequest(request)) return;
+      const page = entryPageValue(value);
+      if (!page) throw new Error(t("entryList.pageResponseInvalid"));
       this.pageRequest = null;
       this.windowStart = request.start;
       this.entries = page.entries.slice(0, PAGE_SIZE);
@@ -450,11 +520,13 @@ export class EntryList {
     this.goError = null;
     this.render();
     try {
-      const selection = await invoke<EntrySelectionDto>("select_entry", {
+      const value = await invoke<unknown>("select_entry", {
         ordinal,
         sessionRevision: request.revision
       });
       if (!this.isCurrentSelectionRequest(request)) return;
+      const selection = entrySelectionValue(value);
+      if (!selection) throw new Error(t("entryList.selectionResponseInvalid"));
       this.finishSelectionRequest();
       this.onSelection(selection);
       this.flushTailRefresh();
@@ -583,6 +655,7 @@ export class EntryList {
     this.elements.retry.hidden = this.listError === null;
     this.elements.goError.textContent = this.goError ?? "";
     this.elements.status.textContent = this.listStatus();
+    this.summaryModeSelect.value = this.summaryMode;
     this.renderInspector();
     if (shouldRestoreFocus && focusedBefore !== null) {
       queueMicrotask(() => this.focusOrdinal(focusedBefore));
@@ -599,6 +672,7 @@ export class EntryList {
     item.tabIndex = this.focusedOrdinal === entry.location.entryOrdinal || this.focusedOrdinal === null && this.entries[0] === entry ? 0 : -1;
     item.setAttribute("aria-disabled", String(busy));
     item.setAttribute("aria-selected", String(this.selectedEntry?.location.entryOrdinal === entry.location.entryOrdinal));
+    const eventSummary = this.eventSummaryText(entry);
     item.setAttribute(
       "aria-label",
       t("entryList.entryAria", {
@@ -606,7 +680,8 @@ export class EntryList {
         line: entry.location.sourceLine.toLocaleString(locale),
         status: statusLabel(entry.status),
         start: entry.location.byteStart,
-        end: entry.location.byteEnd
+        end: entry.location.byteEnd,
+        summary: eventSummary ? ` · ${eventSummary}` : ""
       })
     );
 
@@ -629,8 +704,26 @@ export class EntryList {
       end: entry.location.byteEnd
     });
     body.append(title, meta);
+    if (eventSummary !== null) {
+      const summary = document.createElement("span");
+      summary.className = "entry-option-meta";
+      summary.textContent = eventSummary;
+      body.append(summary);
+    }
     item.append(marker, body);
     return item;
+  }
+
+  private eventSummaryText(entry: EntryDto): string | null {
+    if (this.summaryMode === "generic") return null;
+    if (this.summaryMode === "auto" && this.progress?.eventStreamHint !== true) return null;
+    const summary = entry.eventSummary;
+    if (!summary) return null;
+    const fields: string[] = [];
+    if (summary.timestamp) fields.push(eventField("entryList.eventTimestamp", summary.timestamp));
+    if (summary.eventType) fields.push(eventField("entryList.eventType", summary.eventType));
+    if (summary.grouping) fields.push(eventField("entryList.eventGrouping", summary.grouping));
+    return fields.length > 0 ? t("entryList.eventSummary", { summary: fields.join(" · ") }) : null;
   }
 
   private renderInspector(): void {
@@ -703,7 +796,8 @@ function mergeProgress(previous: JsonlProgressDto | null, next: JsonlProgressDto
     indexedSourceLines: Math.max(previous.indexedSourceLines, next.indexedSourceLines),
     complete: previous.complete || next.complete,
     stride: Math.max(previous.stride, next.stride),
-    totalEntries: next.complete ? next.totalEntries : previous.totalEntries
+    totalEntries: next.complete ? next.totalEntries : previous.totalEntries,
+    eventStreamHint: next.eventStreamHint ?? previous.eventStreamHint
   };
 }
 
@@ -713,7 +807,92 @@ function progressEqual(left: JsonlProgressDto | null, right: JsonlProgressDto): 
     left.indexedSourceLines === right.indexedSourceLines &&
     left.complete === right.complete &&
     left.stride === right.stride &&
-    left.totalEntries === right.totalEntries;
+    left.totalEntries === right.totalEntries &&
+    left.eventStreamHint === right.eventStreamHint;
+}
+
+function isEntrySummaryMode(value: string): value is EntrySummaryMode {
+  return value === "auto" || value === "generic" || value === "event";
+}
+
+function eventField(key: "entryList.eventTimestamp" | "entryList.eventType" | "entryList.eventGrouping", value: EntryEventValueDto): string {
+  return t(key, {
+    value: value.value,
+    suffix: value.hasMore ? t("entryList.eventTruncated") : ""
+  });
+}
+
+function progressValue(value: unknown): JsonlProgressDto | undefined {
+  if (!isRecord(value)) return undefined;
+  const indexedEntries = nonNegativeInteger(value.indexedEntries);
+  const indexedSourceLines = nonNegativeInteger(value.indexedSourceLines);
+  const stride = nonNegativeInteger(value.stride);
+  const complete = typeof value.complete === "boolean" ? value.complete : undefined;
+  const totalEntries = value.totalEntries === null || value.totalEntries === undefined
+    ? null
+    : nonNegativeInteger(value.totalEntries);
+  const eventStreamHint = value.eventStreamHint === undefined || value.eventStreamHint === null
+    ? null
+    : typeof value.eventStreamHint === "boolean" ? value.eventStreamHint : undefined;
+  if (indexedEntries === undefined || indexedSourceLines === undefined || stride === undefined
+    || complete === undefined || totalEntries === undefined || eventStreamHint === undefined) return undefined;
+  return { indexedEntries, indexedSourceLines, complete, stride, totalEntries, eventStreamHint };
+}
+
+function entryPageValue(value: unknown): EntryPageDto | undefined {
+  if (!isRecord(value) || !Array.isArray(value.entries) || typeof value.hasMore !== "boolean") return undefined;
+  const nextCursor = value.nextCursor === null || value.nextCursor === undefined
+    ? null
+    : nonNegativeInteger(value.nextCursor);
+  const progress = progressValue(value.progress);
+  if (nextCursor === undefined || !progress) return undefined;
+  const entries: EntryDto[] = [];
+  for (const candidate of value.entries) {
+    const entry = entryValue(candidate);
+    if (!entry) return undefined;
+    entries.push(entry);
+  }
+  return { entries, hasMore: value.hasMore, nextCursor, progress };
+}
+
+function entrySelectionValue(value: unknown): EntrySelectionDto | undefined {
+  if (!isRecord(value)) return undefined;
+  const entry = entryValue(value.entry);
+  const sessionRevision = nonNegativeInteger(value.sessionRevision);
+  if (!entry || sessionRevision === undefined || !("root" in value)) return undefined;
+  return { entry, root: value.root as NodeDto | null, sessionRevision };
+}
+
+function entryValue(value: unknown): EntryDto | undefined {
+  if (Array.isArray(value) || !isRecord(value)) return undefined;
+  const eventSummary = eventSummaryValue(value.eventSummary);
+  if (eventSummary === undefined) return undefined;
+  return { ...value, eventSummary } as EntryDto;
+}
+
+function eventSummaryValue(value: unknown): EntryEventSummaryDto | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (Array.isArray(value) || !isRecord(value)) return undefined;
+  const eventType = eventValue(value.eventType);
+  const timestamp = eventValue(value.timestamp);
+  const grouping = eventValue(value.grouping);
+  if (eventType === undefined || timestamp === undefined || grouping === undefined) return undefined;
+  return { eventType, timestamp, grouping };
+}
+
+function eventValue(value: unknown): EntryEventValueDto | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (Array.isArray(value) || !isRecord(value) || typeof value.value !== "string" || typeof value.hasMore !== "boolean"
+    || value.value.length > 512 || [...value.value].length > 256) return undefined;
+  return { value: value.value, hasMore: value.hasMore };
+}
+
+function nonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function statusLabel(status: string): string {
