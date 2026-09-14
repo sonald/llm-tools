@@ -20,6 +20,7 @@ const MAX_TEXT_CHUNK_BYTES: usize = 128 * 1024;
 pub struct TreeDocument {
     parsed: ParsedJson<'static>,
     role_cache: std::sync::Mutex<Option<crate::conversation::RoleCache>>,
+    wrapper_cache: std::sync::Mutex<Option<crate::conversation::WrapperCache>>,
 }
 
 impl TreeDocument {
@@ -27,6 +28,7 @@ impl TreeDocument {
         Ok(TreeDocument {
             parsed: parse_json_owned(input)?,
             role_cache: std::sync::Mutex::new(None),
+            wrapper_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -258,7 +260,7 @@ impl TreeDocument {
         limit: usize,
         style: ConversationStyle,
     ) -> Option<GenericConversationPage> {
-        conversation::conversation_page_with_role_cache(
+        conversation::conversation_page_with_caches(
             &self.parsed,
             scope_root_id,
             candidate_node_id,
@@ -266,6 +268,7 @@ impl TreeDocument {
             limit,
             style,
             &self.role_cache,
+            &self.wrapper_cache,
         )
     }
 

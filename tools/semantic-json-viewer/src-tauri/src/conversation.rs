@@ -10,6 +10,7 @@ const MAX_DISCRIMINATOR_BYTES: usize = 32;
 #[cfg(test)]
 std::thread_local! {
     static ROLE_SCAN_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static WRAPPER_SCAN_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,6 +42,7 @@ pub struct ConversationCandidate {
     pub span: SourceSpan,
     pub message_count: usize,
     pub kind: ConversationKind,
+    pub ambiguous_duplicate_field: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -160,6 +162,7 @@ pub struct GenericConversationBlock {
     pub role_source: Option<ConversationSourceRef>,
     pub openai_refs: Option<ConversationOpenAiRefs>,
     pub anthropic_refs: Option<ConversationAnthropicRefs>,
+    pub ambiguous_duplicate_field: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -182,12 +185,21 @@ pub(crate) struct RoleCache {
     message_id: usize,
     style: ConversationStyle,
     role_source_id: Option<usize>,
+    ambiguous_duplicate_field: bool,
+}
+
+pub(crate) struct WrapperCache {
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    candidate_duplicate_field: bool,
+    system_duplicate_field: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConversationWrapperRef {
     pub scope_root: ConversationSourceRef,
     pub candidate: ConversationSourceRef,
+    pub ambiguous_duplicate_field: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -211,12 +223,25 @@ pub fn detect_candidate(
     candidate_node_id: usize,
 ) -> Option<ConversationCandidate> {
     let candidate = candidate_array(parsed, scope_root_id, candidate_node_id)?;
-    let kind = classify_array(parsed, candidate);
+    let wrapper_ambiguous = candidate_wrapper_field_is_ambiguous(parsed, scope_root_id, candidate);
+    let message_ambiguous = candidate
+        .children
+        .iter()
+        .map(|id| parsed.node(*id))
+        .any(|message| {
+            message_has_duplicate_dependency(parsed, message, ConversationStyle::Generic)
+        });
+    let kind = if wrapper_ambiguous {
+        ConversationKind::None
+    } else {
+        classify_array(parsed, candidate)
+    };
     Some(ConversationCandidate {
         node_id: candidate_node_id,
         span: candidate.span,
         message_count: candidate.children.len(),
         kind,
+        ambiguous_duplicate_field: wrapper_ambiguous || message_ambiguous,
     })
 }
 
@@ -319,8 +344,25 @@ fn required_ratio(count: usize) -> usize {
 }
 
 fn inspect_message(parsed: &ParsedJson<'_>, message: &JsonNode, metrics: &mut Metrics) {
-    let mut role_key = false;
-    let mut recognized_role = false;
+    if message_has_duplicate_dependency(parsed, message, ConversationStyle::Generic) {
+        return;
+    }
+    let role_node = message
+        .children
+        .iter()
+        .copied()
+        .find(|id| object_key(parsed.node(*id)) == Some("role"))
+        .or_else(|| {
+            message
+                .children
+                .iter()
+                .copied()
+                .find(|id| object_key(parsed.node(*id)) == Some("from"))
+        });
+    let role_key = role_node.is_some();
+    let recognized_role = role_node
+        .and_then(|id| string_value(parsed, parsed.node(id)))
+        .is_some_and(|value| is_recognized_role(&value));
     let mut content_or_tool = false;
     let mut openai_signal = false;
     for &child_id in &message.children {
@@ -329,14 +371,7 @@ fn inspect_message(parsed: &ParsedJson<'_>, message: &JsonNode, metrics: &mut Me
             continue;
         };
         match key {
-            "role" | "from" => {
-                role_key = true;
-                if let Some(value) = string_value(parsed, child) {
-                    if is_recognized_role(&value) {
-                        recognized_role = true;
-                    }
-                }
-            }
+            "role" | "from" => {}
             "content" | "value" => {
                 content_or_tool = true;
             }
@@ -420,6 +455,152 @@ fn direct_child_by_key<'a>(
         .find(|node| object_key(node) == Some(wanted))
 }
 
+fn has_key(parsed: &ParsedJson<'_>, object: &JsonNode, wanted: &str) -> bool {
+    object
+        .children
+        .iter()
+        .any(|id| object_key(parsed.node(*id)) == Some(wanted))
+}
+
+fn has_duplicate_key(parsed: &ParsedJson<'_>, object: &JsonNode, wanted: &str) -> bool {
+    object.children.iter().any(|id| {
+        matches!(
+            &parsed.node(*id).locator,
+            ChildLocator::ObjectKey {
+                key,
+                occurrence,
+                ..
+            } if key == wanted && *occurrence > 1
+        )
+    })
+}
+
+fn message_has_duplicate_dependency(
+    parsed: &ParsedJson<'_>,
+    message: &JsonNode,
+    style: ConversationStyle,
+) -> bool {
+    if message.kind != JsonKind::Object {
+        return false;
+    }
+    let has_role = has_key(parsed, message, "role");
+    let role_or_fallback = has_duplicate_key(parsed, message, "role")
+        || (style == ConversationStyle::Generic
+            && !has_role
+            && has_duplicate_key(parsed, message, "from"));
+    let content = has_duplicate_key(parsed, message, "content");
+    let value = style == ConversationStyle::Generic && has_duplicate_key(parsed, message, "value");
+    let tool = matches!(
+        style,
+        ConversationStyle::Generic | ConversationStyle::OpenAi
+    ) && ["tool_calls", "function_call", "tool_call_id"]
+        .iter()
+        .any(|key| has_duplicate_key(parsed, message, key));
+    match style {
+        ConversationStyle::Generic => role_or_fallback || content || value || tool,
+        ConversationStyle::OpenAi => role_or_fallback || content || tool,
+        ConversationStyle::Anthropic => role_or_fallback || content,
+    }
+}
+
+fn candidate_wrapper_field_is_ambiguous(
+    parsed: &ParsedJson<'_>,
+    scope_root_id: usize,
+    candidate: &JsonNode,
+) -> bool {
+    if parsed
+        .node_at(scope_root_id)
+        .is_none_or(|node| node.kind != JsonKind::Object)
+    {
+        return false;
+    }
+    let ChildLocator::ObjectKey { key, .. } = &candidate.locator else {
+        return false;
+    };
+    let scope_root = parsed
+        .node_at(scope_root_id)
+        .expect("scope root was checked above");
+    has_duplicate_key(parsed, scope_root, key)
+}
+
+fn wrapper_has_ambiguous_dependency(
+    parsed: &ParsedJson<'_>,
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    candidate: &JsonNode,
+    style: ConversationStyle,
+    wrapper_cache: Option<&std::sync::Mutex<Option<WrapperCache>>>,
+) -> bool {
+    let (candidate_duplicate_field, system_duplicate_field) = if let Some(wrapper_cache) =
+        wrapper_cache
+    {
+        let Ok(mut cache) = wrapper_cache.lock() else {
+            return wrapper_has_ambiguous_dependency_uncached(
+                parsed,
+                scope_root_id,
+                candidate,
+                style,
+            );
+        };
+        if let Some(entry) = cache.as_ref() {
+            if entry.scope_root_id == scope_root_id && entry.candidate_node_id == candidate_node_id
+            {
+                (
+                    entry.candidate_duplicate_field,
+                    entry.system_duplicate_field,
+                )
+            } else {
+                let flags = wrapper_ambiguity_flags(parsed, scope_root_id, candidate);
+                *cache = Some(WrapperCache {
+                    scope_root_id,
+                    candidate_node_id,
+                    candidate_duplicate_field: flags.0,
+                    system_duplicate_field: flags.1,
+                });
+                flags
+            }
+        } else {
+            let flags = wrapper_ambiguity_flags(parsed, scope_root_id, candidate);
+            *cache = Some(WrapperCache {
+                scope_root_id,
+                candidate_node_id,
+                candidate_duplicate_field: flags.0,
+                system_duplicate_field: flags.1,
+            });
+            flags
+        }
+    } else {
+        wrapper_ambiguity_flags(parsed, scope_root_id, candidate)
+    };
+    candidate_duplicate_field || style == ConversationStyle::Anthropic && system_duplicate_field
+}
+
+fn wrapper_has_ambiguous_dependency_uncached(
+    parsed: &ParsedJson<'_>,
+    scope_root_id: usize,
+    candidate: &JsonNode,
+    style: ConversationStyle,
+) -> bool {
+    let (candidate_duplicate_field, system_duplicate_field) =
+        wrapper_ambiguity_flags(parsed, scope_root_id, candidate);
+    candidate_duplicate_field || style == ConversationStyle::Anthropic && system_duplicate_field
+}
+
+fn wrapper_ambiguity_flags(
+    parsed: &ParsedJson<'_>,
+    scope_root_id: usize,
+    candidate: &JsonNode,
+) -> (bool, bool) {
+    #[cfg(test)]
+    WRAPPER_SCAN_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    let candidate_duplicate_field =
+        candidate_wrapper_field_is_ambiguous(parsed, scope_root_id, candidate);
+    let system_duplicate_field = parsed.node_at(scope_root_id).is_some_and(|scope_root| {
+        scope_root.kind == JsonKind::Object && has_duplicate_key(parsed, scope_root, "system")
+    });
+    (candidate_duplicate_field, system_duplicate_field)
+}
+
 fn object_key(node: &JsonNode) -> Option<&str> {
     match &node.locator {
         ChildLocator::ObjectKey { key, .. } => Some(key.as_str()),
@@ -488,10 +669,12 @@ pub fn conversation_page(
         limit,
         style,
         None,
+        None,
     )
 }
 
-pub(crate) fn conversation_page_with_role_cache(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn conversation_page_with_caches(
     parsed: &ParsedJson<'_>,
     scope_root_id: usize,
     candidate_node_id: usize,
@@ -499,6 +682,7 @@ pub(crate) fn conversation_page_with_role_cache(
     limit: usize,
     style: ConversationStyle,
     role_cache: &std::sync::Mutex<Option<RoleCache>>,
+    wrapper_cache: &std::sync::Mutex<Option<WrapperCache>>,
 ) -> Option<GenericConversationPage> {
     conversation_page_impl(
         parsed,
@@ -508,9 +692,11 @@ pub(crate) fn conversation_page_with_role_cache(
         limit,
         style,
         Some(role_cache),
+        Some(wrapper_cache),
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn conversation_page_impl(
     parsed: &ParsedJson<'_>,
     scope_root_id: usize,
@@ -519,12 +705,31 @@ fn conversation_page_impl(
     limit: usize,
     style: ConversationStyle,
     role_cache: Option<&std::sync::Mutex<Option<RoleCache>>>,
+    wrapper_cache: Option<&std::sync::Mutex<Option<WrapperCache>>>,
 ) -> Option<GenericConversationPage> {
     if limit == 0 {
         return None;
     }
     let candidate = candidate_array(parsed, scope_root_id, candidate_node_id)?;
     let scope_root = parsed.node_at(scope_root_id)?;
+    if wrapper_has_ambiguous_dependency(
+        parsed,
+        scope_root_id,
+        candidate_node_id,
+        candidate,
+        style,
+        wrapper_cache,
+    ) {
+        if cursor.is_some() {
+            return None;
+        }
+        return Some(ambiguous_wrapper_page(
+            scope_root_id,
+            candidate_node_id,
+            scope_root,
+            candidate,
+        ));
+    }
     let cursor_was_provided = cursor.is_some();
     let mut cursor = cursor.unwrap_or(GenericConversationCursor {
         message_index: 0,
@@ -597,6 +802,7 @@ fn conversation_page_impl(
                 role_source: None,
                 openai_refs: None,
                 anthropic_refs: refs,
+                ambiguous_duplicate_field: false,
             });
             cursor.phase = GenericConversationPhase::SystemContent;
             cursor.element_index = 0;
@@ -636,6 +842,7 @@ fn conversation_page_impl(
                 role_source: None,
                 openai_refs: None,
                 anthropic_refs: refs,
+                ambiguous_duplicate_field: false,
             });
             if field.kind == JsonKind::Array && !field.children.is_empty() {
                 cursor.element_index += 1;
@@ -653,8 +860,9 @@ fn conversation_page_impl(
             node_id: message_id,
             span: message.span,
         };
-        let role_source_id =
-            selected_role_node_cached(parsed, message_id, message, style, role_cache);
+        let role_selection =
+            selected_role_info_cached(parsed, message_id, message, style, role_cache);
+        let role_source_id = role_selection.source_id;
         let role_source = role_source_id.map(|node_id| ConversationSourceRef {
             node_id,
             span: parsed.node_at(node_id).expect("role node must exist").span,
@@ -670,23 +878,40 @@ fn conversation_page_impl(
 
         match cursor.phase {
             GenericConversationPhase::Message => {
-                blocks.push(GenericConversationBlock {
-                    kind: GenericConversationBlockKind::Message,
-                    message: Some(message_ref),
-                    source: None,
-                    field: None,
-                    category: GenericConversationCategory::Message,
-                    role,
-                    role_source,
-                    openai_refs: None,
-                    anthropic_refs: None,
-                });
-                cursor.phase = if message.kind == JsonKind::Object {
-                    GenericConversationPhase::Fields
-                } else {
+                if role_selection.ambiguous_duplicate_field {
+                    blocks.push(GenericConversationBlock {
+                        kind: GenericConversationBlockKind::Source,
+                        message: Some(message_ref),
+                        source: Some(message_ref),
+                        field: None,
+                        category: GenericConversationCategory::Unknown,
+                        role: NormalizedRole::Unknown,
+                        role_source: None,
+                        openai_refs: None,
+                        anthropic_refs: None,
+                        ambiguous_duplicate_field: true,
+                    });
                     advance_message(&mut cursor);
-                    GenericConversationPhase::Message
-                };
+                } else {
+                    blocks.push(GenericConversationBlock {
+                        kind: GenericConversationBlockKind::Message,
+                        message: Some(message_ref),
+                        source: None,
+                        field: None,
+                        category: GenericConversationCategory::Message,
+                        role,
+                        role_source,
+                        openai_refs: None,
+                        anthropic_refs: None,
+                        ambiguous_duplicate_field: false,
+                    });
+                    cursor.phase = if message.kind == JsonKind::Object {
+                        GenericConversationPhase::Fields
+                    } else {
+                        advance_message(&mut cursor);
+                        GenericConversationPhase::Message
+                    };
+                }
             }
             GenericConversationPhase::Fields => {
                 let field_id = message.children[cursor.field_index].index();
@@ -723,6 +948,7 @@ fn conversation_page_impl(
                         role_source,
                         openai_refs: classification.openai_refs,
                         anthropic_refs: classification.anthropic_refs,
+                        ambiguous_duplicate_field: false,
                     });
                     cursor.element_index += 1;
                 } else {
@@ -736,6 +962,7 @@ fn conversation_page_impl(
                         role_source,
                         openai_refs: classification.openai_refs,
                         anthropic_refs: classification.anthropic_refs,
+                        ambiguous_duplicate_field: false,
                     });
                     cursor.field_index += 1;
                 }
@@ -769,8 +996,46 @@ fn conversation_page_impl(
                 node_id: candidate_node_id,
                 span: candidate.span,
             },
+            ambiguous_duplicate_field: false,
         },
     })
+}
+
+fn ambiguous_wrapper_page(
+    scope_root_id: usize,
+    candidate_node_id: usize,
+    scope_root: &JsonNode,
+    candidate: &JsonNode,
+) -> GenericConversationPage {
+    let scope_root_ref = ConversationSourceRef {
+        node_id: scope_root_id,
+        span: scope_root.span,
+    };
+    let candidate_ref = ConversationSourceRef {
+        node_id: candidate_node_id,
+        span: candidate.span,
+    };
+    GenericConversationPage {
+        blocks: vec![GenericConversationBlock {
+            kind: GenericConversationBlockKind::Source,
+            message: None,
+            source: Some(scope_root_ref),
+            field: None,
+            category: GenericConversationCategory::Unknown,
+            role: NormalizedRole::Unknown,
+            role_source: None,
+            openai_refs: None,
+            anthropic_refs: None,
+            ambiguous_duplicate_field: true,
+        }],
+        has_more: false,
+        next_cursor: None,
+        wrapper_ref: ConversationWrapperRef {
+            scope_root: scope_root_ref,
+            candidate: candidate_ref,
+            ambiguous_duplicate_field: true,
+        },
+    }
 }
 
 fn cursor_position_is_valid(
@@ -821,13 +1086,15 @@ fn cursor_position_is_valid(
                 return false;
             }
             let field = parsed.node(message.children[cursor.field_index]);
-            if selected_role_node_cached(
+            let role_selection = selected_role_info_cached(
                 parsed,
                 candidate.children[cursor.message_index].index(),
                 message,
                 style,
                 role_cache,
-            ) == Some(message.children[cursor.field_index].index())
+            );
+            if role_selection.ambiguous_duplicate_field
+                || role_selection.source_id == Some(message.children[cursor.field_index].index())
             {
                 return false;
             }
@@ -916,14 +1183,20 @@ fn normalize_cursor(
             continue;
         }
         let field = parsed.node(message.children[cursor.field_index]);
-        if selected_role_node_cached(
+        let role_selection = selected_role_info_cached(
             parsed,
             candidate.children[cursor.message_index].index(),
             message,
             style,
             role_cache,
-        ) == Some(message.children[cursor.field_index].index())
-        {
+        );
+        if role_selection.ambiguous_duplicate_field {
+            cursor.phase = GenericConversationPhase::Message;
+            cursor.field_index = 0;
+            cursor.element_index = 0;
+            return;
+        }
+        if role_selection.source_id == Some(message.children[cursor.field_index].index()) {
             cursor.field_index += 1;
             cursor.element_index = 0;
             continue;
@@ -978,28 +1251,41 @@ fn cursor_has_more(
     }
 }
 
-fn selected_role_node(
+#[derive(Clone, Copy)]
+struct RoleSelection {
+    source_id: Option<usize>,
+    ambiguous_duplicate_field: bool,
+}
+
+fn selected_role_info(
     parsed: &ParsedJson<'_>,
     message: &JsonNode,
     style: ConversationStyle,
-) -> Option<usize> {
+) -> RoleSelection {
     #[cfg(test)]
     ROLE_SCAN_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    let ambiguous_duplicate_field = message_has_duplicate_dependency(parsed, message, style);
     let role = message
         .children
         .iter()
         .copied()
         .find(|id| object_key(parsed.node(*id)) == Some("role"));
-    let selected = if role.is_some() || style != ConversationStyle::Generic {
-        role
+    let source_id = if ambiguous_duplicate_field {
+        None
+    } else if role.is_some() || style != ConversationStyle::Generic {
+        role.map(|id| id.index())
     } else {
         message
             .children
             .iter()
             .copied()
             .find(|id| object_key(parsed.node(*id)) == Some("from"))
+            .map(|id| id.index())
     };
-    selected.map(|id| id.index())
+    RoleSelection {
+        source_id,
+        ambiguous_duplicate_field,
+    }
 }
 
 #[cfg(test)]
@@ -1012,31 +1298,45 @@ fn role_scan_count() -> usize {
     ROLE_SCAN_COUNT.with(std::cell::Cell::get)
 }
 
-fn selected_role_node_cached(
+#[cfg(test)]
+fn reset_wrapper_scan_count() {
+    WRAPPER_SCAN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn wrapper_scan_count() -> usize {
+    WRAPPER_SCAN_COUNT.with(std::cell::Cell::get)
+}
+
+fn selected_role_info_cached(
     parsed: &ParsedJson<'_>,
     message_id: usize,
     message: &JsonNode,
     style: ConversationStyle,
     role_cache: Option<&std::sync::Mutex<Option<RoleCache>>>,
-) -> Option<usize> {
+) -> RoleSelection {
     let Some(role_cache) = role_cache else {
-        return selected_role_node(parsed, message, style);
+        return selected_role_info(parsed, message, style);
     };
     let Ok(mut cache) = role_cache.lock() else {
-        return selected_role_node(parsed, message, style);
+        return selected_role_info(parsed, message, style);
     };
     if let Some(entry) = cache.as_ref() {
         if entry.message_id == message_id && entry.style == style {
-            return entry.role_source_id;
+            return RoleSelection {
+                source_id: entry.role_source_id,
+                ambiguous_duplicate_field: entry.ambiguous_duplicate_field,
+            };
         }
     }
-    let role_source_id = selected_role_node(parsed, message, style);
+    let selection = selected_role_info(parsed, message, style);
     *cache = Some(RoleCache {
         message_id,
         style,
-        role_source_id,
+        role_source_id: selection.source_id,
+        ambiguous_duplicate_field: selection.ambiguous_duplicate_field,
     });
-    role_source_id
+    selection
 }
 
 fn normalized_role(parsed: &ParsedJson<'_>, node: &JsonNode) -> NormalizedRole {
@@ -1644,7 +1944,7 @@ mod tests {
             kind(
                 r#"{"messages":[{"role":"developer","role":"user","content":"x"},{"role":"assistant","content":"y"}]}"#
             ),
-            ConversationKind::OpenAi
+            ConversationKind::Possible
         );
     }
 
@@ -1784,6 +2084,178 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_wrapper_fields_return_one_ambiguous_full_scope_source() {
+        let parsed = parse_json(
+            br#"{"mess\u0061ges":[{"role":"user","content":"first"}],"messages":[{"role":"assistant","content":"second"}]}"#,
+        )
+        .unwrap();
+        let root = parsed.root().index();
+        let candidate = parsed.node(parsed.root()).children[0].index();
+        let detected = detect_candidate(&parsed, root, candidate).unwrap();
+        assert_eq!(detected.kind, ConversationKind::None);
+        assert!(detected.ambiguous_duplicate_field);
+
+        let page = generic_conversation_page(&parsed, root, candidate, None, 100).unwrap();
+        assert_eq!(page.blocks.len(), 1);
+        assert_eq!(page.blocks[0].kind, GenericConversationBlockKind::Source);
+        assert_eq!(
+            page.blocks[0].category,
+            GenericConversationCategory::Unknown
+        );
+        assert!(page.blocks[0].ambiguous_duplicate_field);
+        assert_eq!(
+            page.blocks[0].source.unwrap().span,
+            parsed.node(parsed.root()).span
+        );
+        assert!(page.wrapper_ref.ambiguous_duplicate_field);
+        assert!(!page.has_more);
+        assert!(generic_conversation_page(
+            &parsed,
+            root,
+            candidate,
+            Some(GenericConversationCursor {
+                message_index: 0,
+                phase: GenericConversationPhase::Fields,
+                field_index: 0,
+                element_index: 0,
+            }),
+            1,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn ambiguous_message_dependencies_fall_back_without_hiding_following_messages() {
+        let mut tail_fields = String::new();
+        for index in 0..220 {
+            tail_fields.push_str(&format!(r#""unknown-{index}":true,"#));
+        }
+        let input = format!(
+            r#"[{{"ro\u006ce":"user","role":false,"content":"ambiguous-role"}},{{"role":"assistant","content":"first","content":false}},{{"role":"user","from":"human","from":"other","content":"from-is-ignored"}},{{"role":"assistant","unknown":true,"unknown":false,"content":"unknown-duplicate"}},{{"role":"assistant",{tail_fields}"content":"late-first","content":"late-second"}},{{"role":"tool","content":"after"}}]"#
+        );
+        let parsed = parse_json(input.as_bytes()).unwrap();
+        let root = parsed.root().index();
+        let mut cursor = None;
+        let mut blocks = Vec::new();
+        loop {
+            let page = generic_conversation_page(&parsed, root, root, cursor, 1).unwrap();
+            blocks.extend(page.blocks);
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+
+        let ambiguous = blocks
+            .iter()
+            .filter(|block| block.ambiguous_duplicate_field)
+            .collect::<Vec<_>>();
+        assert_eq!(ambiguous.len(), 3);
+        for block in &ambiguous {
+            assert_eq!(block.kind, GenericConversationBlockKind::Source);
+            assert_eq!(block.category, GenericConversationCategory::Unknown);
+            assert_eq!(block.role, NormalizedRole::Unknown);
+            assert!(block.role_source.is_none());
+            assert!(block.openai_refs.is_none());
+            assert!(block.anthropic_refs.is_none());
+            assert_eq!(block.message.unwrap().span, block.source.unwrap().span);
+        }
+        assert!(blocks.iter().any(|block| {
+            block.kind == GenericConversationBlockKind::Message
+                && block.role == NormalizedRole::User
+        }));
+        assert!(blocks.iter().any(|block| {
+            block.kind == GenericConversationBlockKind::Message
+                && block.role == NormalizedRole::Tool
+        }));
+    }
+
+    #[test]
+    fn ambiguous_messages_do_not_create_a_strong_candidate_classification() {
+        assert_eq!(
+            kind(
+                r#"[{"role":"user","role":"assistant","content":"a"},{"role":"assistant","content":"b","content":"c"}]"#
+            ),
+            ConversationKind::None
+        );
+    }
+
+    #[test]
+    fn tool_dependency_duplicates_fall_back_for_generic_and_openai_only() {
+        let parsed = parse_json(
+            br#"[{"role":"assistant","content":"x","tool_calls":[],"tool_calls":[]},{"role":"assistant","content":"x","function_call":{},"function_call":{}},{"role":"tool","content":"x","tool_call_id":"a","tool_call_id":"b"},{"role":"assistant","content":"normal"}]"#,
+        )
+        .unwrap();
+        let root = parsed.root().index();
+        for style in [ConversationStyle::Generic, ConversationStyle::OpenAi] {
+            let mut cursor = None;
+            let mut blocks = Vec::new();
+            loop {
+                let page = conversation_page(&parsed, root, root, cursor, 1, style).unwrap();
+                blocks.extend(page.blocks);
+                cursor = page.next_cursor;
+                if !page.has_more {
+                    break;
+                }
+            }
+            assert_eq!(
+                blocks
+                    .iter()
+                    .filter(|block| block.ambiguous_duplicate_field)
+                    .count(),
+                3
+            );
+            assert_eq!(
+                blocks
+                    .iter()
+                    .filter(|block| block.kind == GenericConversationBlockKind::Message)
+                    .count(),
+                1
+            );
+        }
+
+        let anthropic =
+            conversation_page(&parsed, root, root, None, 1, ConversationStyle::Anthropic).unwrap();
+        assert!(!anthropic.blocks[0].ambiguous_duplicate_field);
+        assert_eq!(
+            anthropic.blocks[0].kind,
+            GenericConversationBlockKind::Message
+        );
+    }
+
+    #[test]
+    fn duplicate_anthropic_system_wrapper_falls_back_to_the_complete_scope() {
+        let parsed = parse_json(
+            br#"{"system":"first","system":"second","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":[{"type":"thinking","thinking":"work"}]}]}"#,
+        )
+        .unwrap();
+        let root = parsed.root().index();
+        let candidate = parsed.node(parsed.root()).children[2].index();
+        assert!(
+            !detect_candidate(&parsed, root, candidate)
+                .unwrap()
+                .ambiguous_duplicate_field
+        );
+
+        let page = conversation_page(
+            &parsed,
+            root,
+            candidate,
+            None,
+            100,
+            ConversationStyle::Anthropic,
+        )
+        .unwrap();
+        assert_eq!(page.blocks.len(), 1);
+        assert!(page.wrapper_ref.ambiguous_duplicate_field);
+        assert_eq!(
+            page.blocks[0].source.unwrap().span,
+            parsed.node(parsed.root()).span
+        );
+        assert!(page.blocks[0].ambiguous_duplicate_field);
+    }
+
+    #[test]
     fn collection_item_is_the_only_non_root_scope_allowed() {
         let parsed = parse_json(
             br#"[{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"}]}]"#,
@@ -1902,39 +2374,23 @@ mod tests {
             }
         }
 
-        assert_eq!(blocks[0].kind, GenericConversationBlockKind::Message);
-        assert_eq!(blocks[0].role, NormalizedRole::User);
-        assert!(blocks[0].role_source.is_some());
+        assert_eq!(blocks[0].kind, GenericConversationBlockKind::Source);
+        assert_eq!(blocks[0].category, GenericConversationCategory::Unknown);
+        assert_eq!(blocks[0].role, NormalizedRole::Unknown);
+        assert!(blocks[0].ambiguous_duplicate_field);
+        assert_eq!(
+            blocks[0].message.unwrap().node_id,
+            blocks[0].source.unwrap().node_id
+        );
+        assert!(blocks[0].role_source.is_none());
+        assert!(blocks[0].openai_refs.is_none());
+        assert!(blocks[0].anthropic_refs.is_none());
         assert_eq!(
             blocks
                 .iter()
                 .map(|block| (block.kind, block.category))
                 .collect::<Vec<_>>(),
             vec![
-                (
-                    GenericConversationBlockKind::Message,
-                    GenericConversationCategory::Message
-                ),
-                (
-                    GenericConversationBlockKind::Source,
-                    GenericConversationCategory::Role
-                ),
-                (
-                    GenericConversationBlockKind::Source,
-                    GenericConversationCategory::Content
-                ),
-                (
-                    GenericConversationBlockKind::Source,
-                    GenericConversationCategory::Content
-                ),
-                (
-                    GenericConversationBlockKind::Source,
-                    GenericConversationCategory::Value
-                ),
-                (
-                    GenericConversationBlockKind::Source,
-                    GenericConversationCategory::Tool
-                ),
                 (
                     GenericConversationBlockKind::Source,
                     GenericConversationCategory::Unknown
@@ -1961,10 +2417,11 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(blocks[8].role, NormalizedRole::User);
+        assert_eq!(blocks[1].role, NormalizedRole::Unknown);
+        assert_eq!(blocks[2].role, NormalizedRole::User);
         assert_eq!(
-            blocks[9].source.unwrap().node_id,
-            blocks[9].field.unwrap().node_id
+            blocks[5].source.unwrap().node_id,
+            blocks[5].field.unwrap().node_id
         );
         assert!(
             blocks
@@ -2149,6 +2606,149 @@ mod tests {
             }
         }
         assert_eq!(role_scan_count(), 2);
+    }
+
+    #[test]
+    fn tree_document_caches_wrapper_scan_across_pages_and_rechecks_new_keys() {
+        let messages = (0..128)
+            .map(|index| format!(r#"{{"role":"user","content":"message-{index}"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let conversation = r#"{"role":"user","content":"other"}"#;
+        let padding = (0..128)
+            .map(|index| format!(r#""padding-{index}":true"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let input =
+            format!(r#"{{{padding},"messages":[{messages}],"conversation":[{conversation}]}}"#);
+        let tree = crate::tree::TreeDocument::from_bytes(input.into_bytes()).unwrap();
+        let root = tree.root().id;
+        let root_children = tree.children(root, 0, 200).unwrap();
+        let messages_id = root_children
+            .nodes
+            .iter()
+            .find(|node| node.label == "messages")
+            .unwrap()
+            .id;
+        let conversation_id = root_children
+            .nodes
+            .iter()
+            .find(|node| node.label == "conversation")
+            .unwrap()
+            .id;
+
+        reset_wrapper_scan_count();
+        let mut cursor = None;
+        let mut page_count = 0;
+        loop {
+            let page = tree
+                .generic_conversation_page(root, messages_id, cursor, 1)
+                .unwrap();
+            page_count += 1;
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        assert_eq!(page_count, 256);
+        assert_eq!(wrapper_scan_count(), 1);
+
+        let style_page =
+            tree.conversation_page(root, messages_id, None, 1, ConversationStyle::Anthropic);
+        assert!(style_page.is_some());
+        assert_eq!(wrapper_scan_count(), 1);
+        let mut anthropic_cursor = None;
+        let mut anthropic_page_count = 0;
+        let mut anthropic_message_count = 0;
+        loop {
+            let page = tree
+                .conversation_page(
+                    root,
+                    messages_id,
+                    anthropic_cursor,
+                    1,
+                    ConversationStyle::Anthropic,
+                )
+                .unwrap();
+            anthropic_page_count += 1;
+            anthropic_message_count += page
+                .blocks
+                .iter()
+                .filter(|block| block.kind == GenericConversationBlockKind::Message)
+                .count();
+            anthropic_cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        assert!(anthropic_page_count >= 256);
+        assert_eq!(anthropic_message_count, 128);
+        assert_eq!(wrapper_scan_count(), 1);
+
+        let other_candidate_page = tree.generic_conversation_page(root, conversation_id, None, 1);
+        assert!(other_candidate_page.is_some());
+        assert_eq!(wrapper_scan_count(), 2);
+
+        let collection_input =
+            format!(r#"[{{"messages":[{conversation}]}},{{"messages":[{conversation}]}}]"#);
+        let collection =
+            crate::tree::TreeDocument::from_bytes(collection_input.into_bytes()).unwrap();
+        let items = collection.children(collection.root().id, 0, 2).unwrap();
+        let first_item = items.nodes[0].id;
+        let second_item = items.nodes[1].id;
+        let first_candidate = collection.children(first_item, 0, 10).unwrap().nodes[0].id;
+        let second_candidate = collection.children(second_item, 0, 10).unwrap().nodes[0].id;
+        reset_wrapper_scan_count();
+        assert!(collection
+            .generic_conversation_page(first_item, first_candidate, None, 1)
+            .is_some());
+        assert!(collection
+            .generic_conversation_page(second_item, second_candidate, None, 1)
+            .is_some());
+        assert_eq!(wrapper_scan_count(), 2);
+
+        let mut duplicate_input =
+            String::from(r#"{"messages":[{"role":"user","content":"first"}],"#);
+        for index in 0..220 {
+            duplicate_input.push_str(&format!(r#""padding-{index}":true,"#));
+        }
+        duplicate_input.push_str(r#""messages":[{"role":"assistant","content":"tail"}]}"#);
+        let duplicate_tree =
+            crate::tree::TreeDocument::from_bytes(duplicate_input.into_bytes()).unwrap();
+        let duplicate_root = duplicate_tree.root().id;
+        let duplicate_candidate = duplicate_tree
+            .children(duplicate_root, 0, 200)
+            .unwrap()
+            .nodes[0]
+            .id;
+        reset_wrapper_scan_count();
+        let duplicate_page = duplicate_tree
+            .generic_conversation_page(duplicate_root, duplicate_candidate, None, 1)
+            .unwrap();
+        assert_eq!(wrapper_scan_count(), 1);
+        assert!(duplicate_page.wrapper_ref.ambiguous_duplicate_field);
+        assert_eq!(duplicate_page.blocks.len(), 1);
+        assert_eq!(
+            duplicate_page.blocks[0].source.unwrap().span,
+            duplicate_tree.root().span
+        );
+        assert!(duplicate_tree
+            .generic_conversation_page(duplicate_root, duplicate_candidate, None, 1)
+            .is_some());
+        assert_eq!(wrapper_scan_count(), 1);
+        assert!(duplicate_tree
+            .generic_conversation_page(
+                duplicate_root,
+                duplicate_candidate,
+                Some(GenericConversationCursor {
+                    message_index: 0,
+                    phase: GenericConversationPhase::Fields,
+                    field_index: 0,
+                    element_index: 0,
+                }),
+                1,
+            )
+            .is_none());
     }
 
     #[test]

@@ -420,6 +420,7 @@ pub struct ConversationCandidateDto {
     pub span_end: usize,
     pub message_count: usize,
     pub kind: String,
+    pub ambiguous_duplicate_field: bool,
     pub scope_root_id: usize,
     pub scope_root_span_start: usize,
     pub scope_root_span_end: usize,
@@ -487,6 +488,7 @@ pub struct GenericConversationBlockDto {
     pub openai_refs: Option<ConversationOpenAiRefsDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anthropic_refs: Option<ConversationAnthropicRefsDto>,
+    pub ambiguous_duplicate_field: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -532,6 +534,7 @@ pub struct ConversationWrapperRefDto {
     pub candidate_node_id: usize,
     pub candidate_span_start: usize,
     pub candidate_span_end: usize,
+    pub ambiguous_duplicate_field: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -3233,6 +3236,7 @@ fn conversation_candidate_dto(
         span_end: candidate.span.end,
         message_count: candidate.message_count,
         kind: candidate.kind.as_str().to_owned(),
+        ambiguous_duplicate_field: candidate.ambiguous_duplicate_field,
         scope_root_id,
         scope_root_span_start: scope_root_span.start,
         scope_root_span_end: scope_root_span.end,
@@ -3399,6 +3403,7 @@ fn generic_conversation_block_dto(block: GenericConversationBlock) -> GenericCon
         role_source_span_end,
         openai_refs: block.openai_refs.map(conversation_openai_refs_dto),
         anthropic_refs: block.anthropic_refs.map(conversation_anthropic_refs_dto),
+        ambiguous_duplicate_field: block.ambiguous_duplicate_field,
     }
 }
 
@@ -3450,6 +3455,7 @@ fn conversation_wrapper_ref_dto(
         candidate_node_id: wrapper.candidate.node_id,
         candidate_span_start: wrapper.candidate.span.start,
         candidate_span_end: wrapper.candidate.span.end,
+        ambiguous_duplicate_field: wrapper.ambiguous_duplicate_field,
     }
 }
 
@@ -4066,6 +4072,138 @@ mod tests {
     }
 
     #[test]
+    fn conversation_duplicate_dependencies_round_trip_ambiguous_markers_and_fallbacks() {
+        let wrapper_path = temp_path("ipc-conversation-duplicate-wrapper");
+        fs::write(
+            &wrapper_path,
+            br#"{"mess\u0061ges":[{"role":"user","content":"first"}],"messages":[{"role":"assistant","content":"second"}]}"#,
+        )
+        .unwrap();
+        let state = AppState::default();
+        let wrapper = open_file_inner(&state, wrapper_path.to_str().unwrap()).unwrap();
+        let root_id = wrapper.root.as_ref().unwrap().id;
+        let candidate_id = child_id(&state, None, root_id, "messages", wrapper.session_revision);
+        let candidate = get_conversation_candidate_inner(
+            &state,
+            root_id,
+            candidate_id,
+            None,
+            wrapper.session_revision,
+        )
+        .unwrap();
+        assert_eq!(candidate.kind, "none");
+        assert!(candidate.ambiguous_duplicate_field);
+
+        let wrapper_page = get_generic_conversation_blocks_inner(
+            &state,
+            root_id,
+            candidate_id,
+            None,
+            100,
+            wrapper.session_revision,
+            None,
+        )
+        .unwrap();
+        assert_eq!(wrapper_page.blocks.len(), 1);
+        assert_eq!(wrapper_page.blocks[0].category, "unknown");
+        assert!(wrapper_page.blocks[0].ambiguous_duplicate_field);
+        assert_eq!(
+            wrapper_page.blocks[0].source_span_start,
+            Some(wrapper_page.wrapper_ref.scope_root_span_start)
+        );
+        assert!(wrapper_page.wrapper_ref.ambiguous_duplicate_field);
+        let encoded = serde_json::to_string(&wrapper_page).unwrap();
+        assert!(encoded.contains("ambiguousDuplicateField"));
+        fs::remove_file(wrapper_path).unwrap();
+
+        let message_path = temp_path("ipc-conversation-duplicate-message");
+        fs::write(
+            &message_path,
+            br#"[{"ro\u006ce":"user","role":"assistant","content":"ambiguous role"},{"role":"assistant","content":"first","content":"second"}]"#,
+        )
+        .unwrap();
+        let message_file = open_file_inner(&state, message_path.to_str().unwrap()).unwrap();
+        let candidate =
+            get_conversation_candidate_inner(&state, 0, 0, None, message_file.session_revision)
+                .unwrap();
+        assert_eq!(candidate.kind, "none");
+        assert!(candidate.ambiguous_duplicate_field);
+
+        let first = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            0,
+            None,
+            1,
+            message_file.session_revision,
+            None,
+        )
+        .unwrap();
+        assert_eq!(first.blocks.len(), 1);
+        assert!(first.blocks[0].ambiguous_duplicate_field);
+        assert_eq!(first.blocks[0].role, "unknown");
+        assert!(first.blocks[0].role_source_node_id.is_none());
+        assert!(first.blocks[0].openai_refs.is_none());
+        assert!(first.blocks[0].anthropic_refs.is_none());
+        assert!(first.has_more);
+
+        let second = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            0,
+            first.next_cursor.clone(),
+            1,
+            message_file.session_revision,
+            None,
+        )
+        .unwrap();
+        assert_eq!(second.blocks.len(), 1);
+        assert!(second.blocks[0].ambiguous_duplicate_field);
+        assert!(!second.has_more);
+
+        for style in [ConversationStyle::OpenAi, ConversationStyle::Anthropic] {
+            let page = get_conversation_blocks_inner(
+                &state,
+                0,
+                0,
+                None,
+                1,
+                message_file.session_revision,
+                None,
+                style,
+            )
+            .unwrap();
+            assert!(page.blocks[0].ambiguous_duplicate_field);
+            assert!(page.blocks[0].openai_refs.is_none());
+            assert!(page.blocks[0].anthropic_refs.is_none());
+        }
+
+        let forged = GenericConversationCursorDto {
+            kind: GenericConversationCursorKindDto::GenericConversation,
+            style: ConversationStyleDto::Generic,
+            scope_root_id: 0,
+            candidate_node_id: 0,
+            message_index: 0,
+            phase: GenericConversationPhaseDto::Fields,
+            field_index: 0,
+            element_index: 0,
+            session_revision: message_file.session_revision,
+        };
+        let forged_error = get_generic_conversation_blocks_inner(
+            &state,
+            0,
+            0,
+            Some(forged),
+            1,
+            message_file.session_revision,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(forged_error.code, "invalid_request");
+        fs::remove_file(message_path).unwrap();
+    }
+
+    #[test]
     fn conversation_candidate_ipc_binds_jsonl_selection_revision_and_file_state() {
         let path = temp_jsonl_path("ipc-conversation-entry");
         let line = br#"{"messages":[{"role":"user","content":"a"},{"role":"assistant","tool_calls":[{"function":{"name":"lookup","arguments":"{}"}}]}]}"#;
@@ -4089,6 +4227,7 @@ mod tests {
         let candidate =
             get_conversation_candidate_inner(&state, 0, messages, None, selected_revision).unwrap();
         assert_eq!(candidate.kind, "openai");
+        assert!(!candidate.ambiguous_duplicate_field);
         assert_eq!(candidate.message_count, 2);
 
         let second = select_entry_inner(&state, 1, selected_revision).unwrap();
@@ -4142,9 +4281,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(page.blocks.len(), 1);
-        assert_eq!(page.blocks[0].kind, "message");
-        assert_eq!(page.blocks[0].role, "user");
-        assert!(page.blocks[0].role_source_node_id.is_some());
+        assert_eq!(page.blocks[0].kind, "source");
+        assert_eq!(page.blocks[0].category, "unknown");
+        assert_eq!(page.blocks[0].role, "unknown");
+        assert!(page.blocks[0].ambiguous_duplicate_field);
+        assert_eq!(
+            page.blocks[0].message_node_id,
+            page.blocks[0].source_node_id
+        );
+        assert!(page.blocks[0].role_source_node_id.is_none());
+        assert!(page.blocks[0].openai_refs.is_none());
+        assert!(page.blocks[0].anthropic_refs.is_none());
         assert!(page.has_more);
         assert_eq!(page.wrapper_ref.scope_root_id, 0);
         assert_eq!(page.wrapper_ref.candidate_node_id, 0);
@@ -4187,12 +4334,6 @@ mod tests {
                 .map(|block| (block.kind.as_str(), block.category.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                ("message", "message"),
-                ("source", "role"),
-                ("source", "content"),
-                ("source", "content"),
-                ("source", "value"),
-                ("source", "tool"),
                 ("source", "unknown"),
                 ("message", "message"),
                 ("source", "content"),
@@ -4962,6 +5103,79 @@ mod tests {
             ConversationStyle::Anthropic,
         )
         .unwrap();
+        assert_eq!(first.blocks.len(), 1);
+        assert_eq!(first.blocks[0].kind, "source");
+        assert_eq!(first.blocks[0].category, "unknown");
+        assert!(first.blocks[0].ambiguous_duplicate_field);
+        assert_eq!(first.blocks[0].source_node_id, Some(0));
+        assert_eq!(first.blocks[0].source_span_start, Some(0));
+        assert_eq!(
+            first.blocks[0].source_span_end,
+            Some(summary.root.as_ref().unwrap().span_end)
+        );
+        assert!(first.blocks[0].message_node_id.is_none());
+        assert!(first.blocks[0].role_source_node_id.is_none());
+        assert!(first.blocks[0].anthropic_refs.is_none());
+        assert!(first.blocks[0].openai_refs.is_none());
+        assert!(first.wrapper_ref.ambiguous_duplicate_field);
+        assert!(!first.has_more);
+        let raw_scope = read_raw_slice_inner(
+            &state,
+            first.blocks[0].source_span_start.unwrap(),
+            first.blocks[0].source_span_end.unwrap(),
+            summary.session_revision,
+        )
+        .unwrap();
+        assert!(raw_scope.text.contains("system-0"));
+        assert!(raw_scope.text.contains("content-204"));
+        assert!(serde_json::to_vec(&first).unwrap().len() < MAX_IPC_PAYLOAD_BYTES);
+
+        let generic = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            None,
+            1,
+            summary.session_revision,
+            None,
+            ConversationStyle::Generic,
+        )
+        .unwrap();
+        assert_eq!(generic.blocks[0].kind, "message");
+        assert!(!generic.blocks[0].ambiguous_duplicate_field);
+        assert!(!generic.wrapper_ref.ambiguous_duplicate_field);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn conversation_blocks_ipc_anthropic_pages_system_and_content_arrays_without_duplicates() {
+        let path = temp_path("ipc-anthropic-system-content-pages-clean");
+        let system_elements = (0..205)
+            .map(|index| format!("\"system-{index}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let content_elements = (0..205)
+            .map(|index| format!(r#"{{"type":"text","text":"content-{index}"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let input = format!(
+            r#"{{"before":true,"system":[{system_elements}],"middle":1,"messages":[{{"role":"user","content":[{content_elements}]}}]}}"#
+        );
+        fs::write(&path, input).unwrap();
+        let state = AppState::default();
+        let summary = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let candidate = child_id(&state, None, 0, "messages", summary.session_revision);
+        let first = get_conversation_blocks_inner(
+            &state,
+            0,
+            candidate,
+            None,
+            1,
+            summary.session_revision,
+            None,
+            ConversationStyle::Anthropic,
+        )
+        .unwrap();
         let cross_style = get_conversation_blocks_inner(
             &state,
             0,
@@ -4974,6 +5188,7 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(cross_style.code, "invalid_request");
+
         let mut system_values = Vec::new();
         let mut content_values = Vec::new();
         let mut record_page = |page: &GenericConversationPageDto| {
@@ -5040,6 +5255,7 @@ mod tests {
                 break;
             }
         }
+
         let first_message = blocks
             .iter()
             .position(|block| block.kind == "message")
@@ -5048,11 +5264,12 @@ mod tests {
             .iter()
             .filter(|block| block.kind == "system")
             .collect();
-        assert_eq!(system_headers.len(), 2);
+        assert_eq!(system_headers.len(), 1);
         assert!(system_headers.iter().all(|block| {
             block.message_node_id.is_none()
                 && block.source_node_id.is_some()
                 && block.field_node_id.is_some()
+                && !block.ambiguous_duplicate_field
         }));
         assert!(blocks[..first_message]
             .iter()
@@ -5062,7 +5279,7 @@ mod tests {
                 .iter()
                 .filter(|block| block.category == "text" && block.message_node_id.is_none())
                 .count(),
-            1
+            0
         );
         assert_eq!(
             blocks
@@ -5089,7 +5306,6 @@ mod tests {
             system_values,
             (0..205)
                 .map(|index| format!("system-{index}"))
-                .chain(std::iter::once("second".to_owned()))
                 .collect::<Vec<_>>()
         );
         assert_eq!(
