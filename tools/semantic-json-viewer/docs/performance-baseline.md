@@ -101,6 +101,27 @@
 - 首 active Tree retained capacity：source `2,097,152 B`、nodes `67,200,112 B`、children `8,388,608 B`、ObjectKey `0 B`、decoded checkpoints `0 B`，total `77,685,872 B`（约 `74.09 MiB`）；index `768 B`。
 - 这是容量预算边界的单次压力证据，不替代固定 benchmark。64 MiB 是否包含 active selected Tree 尚待用户决策；在决策前不将其标为 cache gate PASS，也不据此误标 oversized。
 
+## 9507a4d F-12 10,000-message Core benchmark（warm）
+
+- 日期：2026-09-14；环境：同一台 macOS Darwin arm64/aarch64 主机，11 logical CPUs，36 GiB 内存。
+- 构建与范围：5 个全新 release 进程；Core-only，不包含 Tauri/WebView。runner 为 `run-conversation-performance.mjs`，实现位于 `9507a4d`。
+- 固定输入：10,000 messages，`2,282,927 B`，SHA-256 `f39d6769a6e2ea70bbc97f653d7f62db821ae67514d25a64e70663734b85b19c`。运行前后 SHA 一致，5 轮 `identityCurrent=true`，`errors=[]`。
+- Conversation 结果（每轮一致）：OpenAI candidate，572 页，page size 100，57,147 blocks，其中 10,000 个 message blocks、34,289 个带 source ref 的 unknown blocks，最大页 100 blocks，完整遍历到末页。
+- 无损 source smoke：尾部 `F12_TAIL_SENTINEL_9999` 的 source span 为 `[2282900, 2282924)`，按 24 B 有界 slice 读取成功；最长 source span 为 `202,116 B`，该检查只请求 256 B 且保留 `hasMore=true`，未请求或渲染完整大字段。Document 打开阶段仍读取完整源文件，不能把此项理解为文件只读取了 256 B。
+- 每轮 ParsedJson tree retained capacity：`12,532,021 B`。这是 Core retained buffer capacity，不是应用私有工作集或峰值内存。
+
+下表单位为 µs；p95 按 5 个样本的 nearest-rank 计算，因此等于该组最大样本。
+
+| 指标 | 5 次原始样本（µs） | median（µs） | p95（µs） |
+| --- | --- | ---: | ---: |
+| open | 14955, 13642, 13187, 12216, 11977 | 13187 | 14955 |
+| candidate | 539, 533, 293, 297, 295 | 297 | 539 |
+| first100BlockPage | 18, 16, 11, 10, 11 | 11 | 18 |
+| remainingPagesToEnd | 3574, 3034, 3937, 3114, 3083 | 3114 | 3937 |
+| allPagesToEnd | 3593, 3051, 3949, 3125, 3094 | 3125 | 3949 |
+
+本次只测 warm macOS Core 路径；没有 WebView/renderer/native/private-memory 证据，未测 cold cache 与 Linux 参考环境，因此不将它标为 F-12 最终 PASS，也不把 retained capacity 当作 M3 的完整内存 gate。
+
 ## c06fbd0 Native bundle smoke（流程采样）
 
 - Native bundle 构建版本为 `c06fbd0`，当时尚未包含 shrink；当前进程不是 fresh launch。
