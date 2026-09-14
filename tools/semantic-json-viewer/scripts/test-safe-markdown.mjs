@@ -101,6 +101,7 @@ function browserExpression(fixtures, commonSource) {
 const {renderSafeMarkdown}=await import("/src/markdown-renderer.ts");
 const {renderCode,renderPlainCodePage,scanCodeLines}=await import("/src/code-renderer.ts");
 const {ContentViewer}=await import("/src/content-viewer.ts");
+const {TreeView}=await import("/src/tree-view.ts");
 const fixtures=${JSON.stringify(fixtures)};
 const commonSource=${JSON.stringify(commonSource)};
 const nl=String.fromCharCode(10);
@@ -377,6 +378,68 @@ const makeViewer=()=>{
   document.body.append(dialog);
   return {dialog,elements};
 };
+const openableTreeHost=document.createElement("div");
+openableTreeHost.innerHTML='<section id="tree"></section><button id="tab">Tree</button>';
+document.body.append(openableTreeHost);
+const openableTreePanel=openableTreeHost.querySelector("#tree");
+const openableTreeTab=openableTreeHost.querySelector("#tab");
+if(!(openableTreePanel instanceof HTMLElement)||!(openableTreeTab instanceof HTMLButtonElement)) throw new Error("openable Tree fixture is incomplete");
+const openableViewerParts=makeViewer();
+const openableViewerCalls=[];
+const openableSettle=async()=>{await Promise.resolve();await new Promise((resolve)=>setTimeout(resolve,0));};
+const openableViewer=new ContentViewer({elements:openableViewerParts.elements,invoke:async(command,args)=>{
+  openableViewerCalls.push({command,args});
+  if(command==="get_string_detection") return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"};
+  if(command==="get_string_metrics") return {decodedBytes:5000,characterCount:5000,lineCount:1};
+  if(command==="read_decoded_text") return {start:0,text:"complete long value",hasMore:false,nextOffset:null};
+  throw new Error("unexpected openable viewer command "+command);
+}});
+const openableRoot={id:1,kind:"object",spanStart:0,spanEnd:10000,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:3};
+const openableNodes=[
+  {id:2,kind:"string",spanStart:10,spanEnd:5010,label:"long",labelHasMore:false,valuePreview:"preview",valueHasMore:true,childCount:0},
+  {id:3,kind:"string",spanStart:5011,spanEnd:5025,label:"short",labelHasMore:false,valuePreview:"short",valueHasMore:false,childCount:0},
+  {id:4,kind:"number",spanStart:5026,spanEnd:5035,label:"count",labelHasMore:false,valuePreview:"123456",valueHasMore:true,childCount:0}
+];
+const openableTreeCalls=[];
+const openableOpens=[];
+const openableTree=new TreeView({panel:openableTreePanel,tab:openableTreeTab,inspector:null,fields:null,onSelection:()=>{},onStringSelection:()=>{},onStringOpen:(target,opener)=>{openableOpens.push({target,opener});void openableViewer.open(target,opener);},onError:(error)=>{throw error;},invoke:async(command,args)=>{
+  openableTreeCalls.push({command,args});
+  if(command==="get_children") return {nodes:openableNodes,hasMore:false,nextCursor:null};
+  throw new Error("unexpected openable Tree command "+command);
+}});
+openableTree.setSession({mode:"nested",sessionRevision:42,scopeId:7,sourceSize:10000,ariaLabel:"Nested JSON",scopeLabel:"Nested JSON scope"},openableRoot);
+openableTreePanel.querySelector(".tree-disclosure")?.dispatchEvent(new MouseEvent("click",{bubbles:true,detail:1}));
+await openableSettle();
+check(openableTreePanel.querySelector('[data-node-id="2"]')!==null,"openable Tree did not load its children");
+check(!openableTreeCalls.some((call)=>call.command==="get_string_metrics")&&!openableViewerCalls.some((call)=>call.command==="get_string_metrics"),"Tree loading introduced a string metrics request");
+openableTreePanel.querySelector('[data-node-id="2"] .tree-label')?.click();
+await openableSettle();
+openableTreePanel.querySelector('[data-node-id="3"] .tree-value')?.click();
+await openableSettle();
+check(openableOpens.length===0&&openableTreePanel.querySelector('[data-node-id="3"]')?.getAttribute("aria-selected")==="true","short string summary opened Content Viewer or did not select");
+openableTreePanel.querySelector('[data-node-id="4"] .tree-value')?.click();
+await openableSettle();
+check(openableOpens.length===0&&openableTreePanel.querySelector('[data-node-id="4"]')?.getAttribute("aria-selected")==="true","non-string summary opened Content Viewer or did not select");
+check(openableTreePanel.querySelector('[data-node-id="2"]')?.getAttribute("aria-selected")!=="true","long-string label click did not leave selection on the later ordinary node");
+check(!openableTreeCalls.some((call)=>call.command==="get_string_metrics")&&!openableViewerCalls.some((call)=>call.command==="get_string_metrics"),"ordinary Tree selection introduced a string metrics request");
+const longValue=openableTreePanel.querySelector('[data-node-id="2"] .tree-value');
+check(longValue?.classList.contains("tree-value-openable")&&longValue?.title==="Open full string in Content Viewer"&&getComputedStyle(longValue).cursor==="pointer","long string summary is not discoverable");
+longValue?.click();
+await openableSettle();
+const currentLongItem=openableTreePanel.querySelector('[data-node-id="2"]');
+check(openableOpens.length===1&&openableOpens[0].target.nodeId===2&&openableOpens[0].target.scopeId===7&&openableOpens[0].opener===currentLongItem,"long string summary did not open the current node and scope");
+check(openableViewer.isOpen&&openableViewerParts.elements.node.textContent==="#2"&&openableViewerParts.elements.scope.textContent==="Nested JSON scope","Content Viewer did not receive the long string target");
+openableViewer.close();
+await openableSettle();
+check(document.activeElement===openableTreePanel.querySelector('[data-node-id="2"]'),"closing Content Viewer did not restore focus to the rebuilt Tree item");
+const doubleValue=openableTreePanel.querySelector('[data-node-id="2"] .tree-value');
+doubleValue?.dispatchEvent(new MouseEvent("click",{bubbles:true,detail:2}));
+await openableSettle();
+check(openableOpens.length===2&&openableOpens.at(-1).target.nodeId===2,"existing string double-click did not open exactly once");
+openableViewer.close();
+await openableSettle();
+openableTreeHost.remove();
+openableViewerParts.dialog.remove();
 const codeViewerParts=makeViewer();
 const codeSource="const value = 42;";
 const codeViewer=new ContentViewer({elements:codeViewerParts.elements,invoke:async(command)=>{
@@ -1116,7 +1179,7 @@ const nestedBytes=new TextEncoder().encode(nestedSource).byteLength;
 const leafSource='{"leaf":true}';
 const leafBytes=new TextEncoder().encode(leafSource).byteLength;
 const nestedRoot=node(0,"object",0,nestedBytes,"$",1);
-const nestedChild=node(1,"string",9,nestedBytes-1,"child",0,"{\\"leaf\\":true}");
+const nestedChild={...node(1,"string",9,nestedBytes-1,"child",0,"{\\"leaf\\":true}"),valueHasMore:true};
 const leafRoot=node(10,"object",0,leafBytes,"$",0);
 const nestedCalls=[];
 let failNestedChildClose=true;
@@ -1161,7 +1224,7 @@ nestedDisclosure.click();
 await settle();
 const nestedChildButton=nestedParts.elements.nested.parsedTree.querySelector('[data-node-id="1"]');
 check(nestedChildButton!==null,"Nested child node did not load: "+JSON.stringify(nestedCalls)+" / "+JSON.stringify(nestedChild)+" / "+nestedParts.elements.nested.parsedTree.textContent);
-nestedChildButton.dispatchEvent(new MouseEvent("click",{bubbles:true,detail:2}));
+nestedChildButton.querySelector(".tree-value")?.click();
 await settle();
 check(nestedCalls.some((call)=>call.command==="open_nested_json"&&call.args.parentScopeId===1&&call.args.maxDepth===null),"Nested child call did not use current parent scope/null maxDepth");
 check(!nestedParts.elements.nested.back.hidden,"Nested child Back should be visible");

@@ -516,6 +516,8 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .tree-value { color: #4c5668; }
 
+.tree-value-openable { color: var(--blue); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+
 .tree-group { margin-left: 20px; border-left: 1px solid var(--line); }
 
 .tree-loading { padding: 8px 12px; color: var(--muted); font-size: 9px; }

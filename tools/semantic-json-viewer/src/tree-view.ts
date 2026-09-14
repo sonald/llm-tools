@@ -469,8 +469,10 @@ export class TreeView {
       this.focusKey = record.node.id;
       this.toggle(record);
     } else {
+      const openString = record.node.kind === "string"
+        && (doubleClick || record.node.valueHasMore && target.closest(".tree-value") !== null);
       this.select(record);
-      if (doubleClick && record.node.kind === "string") {
+      if (openString) {
         const currentItem = this.panel.querySelector<HTMLElement>(`[data-node-id="${record.node.id}"]`);
         this.onStringOpen(this.contentTarget(record), currentItem ?? item);
       }
@@ -683,7 +685,13 @@ export class TreeView {
     const value = document.createElement("span");
     value.className = "tree-value";
     value.textContent = node.valuePreview ?? "—";
-    if (node.valueHasMore) value.textContent += " · truncated";
+    if (node.valueHasMore) {
+      value.textContent += " · truncated";
+      if (node.kind === "string") {
+        value.classList.add("tree-value-openable");
+        value.title = "Open full string in Content Viewer";
+      }
+    }
     item.append(disclosure, label, kind, span, children, value);
     return item;
   }
