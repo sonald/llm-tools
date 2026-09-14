@@ -496,7 +496,8 @@ const fallbackViewer=new ContentViewer({elements:fallback.elements,invoke:async(
 await fallbackViewer.open({revision:1,nodeId:1,spanStart:0,spanEnd:new TextEncoder().encode(fallbackSource).byteLength,scopeLabel:"Document",pathSegments:["$","content"],pathTruncated:false});
 check(fallback.elements.representation.textContent==="Decoded Source","fallback representation is not Decoded Source");
 check(fallback.elements.rendererNote.textContent==="Semantic rendering failed.\\nShowing plain text instead.","fallback note is not exact");
-check(fallback.elements.content.textContent===fallbackSource,"fallback did not preserve source text");
+const fallbackRows=fallback.elements.content.querySelectorAll(".text-line-view-row");
+check(fallbackRows.length<5001&&fallbackRows[0]?.textContent.startsWith("fallback0"),"fallback did not preserve a bounded source window");
 check(!fallback.elements.content.classList.contains("is-markdown"),"fallback left markdown class installed");
 fallbackViewer.close();
 fallback.dialog.remove();
@@ -595,7 +596,7 @@ const fallbackLargeViewer=new ContentViewer({elements:fallbackLargeParts.element
 }});
 await withStableRenderClock(()=>fallbackLargeViewer.open({revision:20,nodeId:200,spanStart:0,spanEnd:fallbackLargeSource.length,scopeId:null,scopeLabel:"Document",pathSegments:["$","fallback-large"],pathTruncated:false},fallbackLargeParts.elements.close));
 check(fallbackLargePages.length>1&&fallbackLargeCalls.filter((call)=>call.command==="read_decoded_text").length===fallbackLargePages.length,"large Markdown fallback did not collect all pages");
-check(fallbackLargeParts.elements.representation.textContent==="Decoded Source"&&fallbackLargeParts.elements.content.textContent===fallbackLargePages[0],"failed Markdown render did not retain one source page");
+check(fallbackLargeParts.elements.representation.textContent==="Decoded Source"&&fallbackLargeParts.elements.content.querySelectorAll(".text-line-view-row").length<1000&&fallbackLargeParts.elements.content.textContent.startsWith("fallback-0"),"failed Markdown render did not retain a bounded source page");
 check(fallbackLargeParts.elements.next.disabled===false&&fallbackLargeParts.elements.rendererNote.textContent==="Semantic rendering failed."+nl+"Showing plain text instead.","failed Markdown render lost paging or fallback note");
 fallbackLargeViewer.close();
 fallbackLargeParts.dialog.remove();

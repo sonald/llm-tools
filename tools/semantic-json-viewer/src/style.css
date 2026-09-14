@@ -666,6 +666,14 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .content-viewer-content { min-width: 0; min-height: 100%; margin: 0; color: var(--text); font: 10px/1.6 "SFMono-Regular", Consolas, monospace; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere; }
 
+.content-viewer-content.is-text-lines { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.text-line-view-row { display: block; min-width: 0; min-height: 1.6em; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.text-line-view-break { display: none; }
+
+.content-viewer-content.is-text-lines.is-no-wrap .text-line-view-row { width: max-content; min-width: 100%; white-space: pre; overflow-wrap: normal; }
+
 .content-viewer-content.is-no-wrap:not(.is-markdown) { width: max-content; min-width: 100%; white-space: pre; overflow-wrap: normal; }
 
 .content-viewer-content:focus-visible { outline: 2px solid #4987ff; outline-offset: 2px; }

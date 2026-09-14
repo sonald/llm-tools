@@ -11,6 +11,7 @@ import { renderSafeMarkdown } from "./markdown-renderer";
 import { TreeView, type NodeDto, type TreeCopyElements, type TreeViewSnapshot } from "./tree-view";
 import { SearchView, type SearchMatch, type SearchViewElements } from "./search-view";
 import { RenderedSearch, type RenderedMatch, type RenderedSearchTarget } from "./rendered-search";
+import { TextLineView, type TextLineHighlight } from "./text-line-view";
 
 export type ContentTarget = {
   revision: number;
@@ -324,6 +325,7 @@ export class ContentViewer {
   private rawPageIndex = -1;
   private rawNextOffset: number | null = null;
   private rawCacheBytes = 0;
+  private readonly rawPageStartStates = new Map<number, CodeLineState>();
   private nestedPageCacheBytes = 0;
   private sourceRevealEpoch = 0;
   private contentReadBusy = false;
@@ -352,6 +354,7 @@ export class ContentViewer {
   private codeGutterAlignmentEpoch = 0;
   private readonly contentResizeObserver: ResizeObserver | null;
   private readonly contentResizeTarget: HTMLElement;
+  private textLineView: TextLineView | null = null;
   private lastContentWidth: number | null = null;
 
   constructor(options: ContentViewerOptions) {
@@ -843,7 +846,10 @@ export class ContentViewer {
         scopeId: target.scopeId
       });
       if (!this.isReadCurrent(generation, target, intent)) return;
-      const chunk = normalizeRawChunk(value, target.spanStart + offset, target.spanStart, target.spanEnd, Math.min(TEXT_CHUNK_BYTES, end - offset));
+      const previous = direction === "next" ? this.rawPages.get(this.rawPageOffsets[this.rawPageIndex]) : undefined;
+      const pageStartState = this.rawPageStartStates.get(offset)
+        ?? (previous ? scanCodeLines(previous.text, previous.lineState) : { line: 1, previousWasCR: false });
+      const chunk = normalizeRawChunk(value, target.spanStart + offset, target.spanStart, target.spanEnd, Math.min(TEXT_CHUNK_BYTES, end - offset), pageStartState);
       if (!chunk) throw new Error("The raw lexeme response was invalid.");
       if (direction === "next") {
         this.rawPageOffsets = this.rawPageOffsets.slice(0, this.rawPageIndex + 1);
@@ -867,7 +873,7 @@ export class ContentViewer {
     this.contentReadBusy = false;
     this.busy = false;
     this.elements.content.classList.remove("is-markdown");
-    this.elements.content.textContent = chunk.text;
+    this.installTextChunk(chunk);
     this.representation = "decoded";
     this.ordinaryRepresentation = "raw";
     this.rawNextOffset = chunk.nextOffset;
@@ -887,6 +893,8 @@ export class ContentViewer {
     const previous = this.rawPages.get(chunk.start);
     if (previous) this.rawCacheBytes -= utf8ByteLength(previous.text);
     this.rawPages.set(chunk.start, chunk);
+    this.rawPageStartStates.set(chunk.start, chunk.lineState);
+    if (chunk.nextOffset !== null) this.rawPageStartStates.set(chunk.nextOffset, scanCodeLines(chunk.text, chunk.lineState));
     this.rawCacheBytes += utf8ByteLength(chunk.text);
     this.trimTextCaches();
   }
@@ -1166,6 +1174,7 @@ export class ContentViewer {
     this.nestedRepresentation = "parsed";
     this.nestedBusy = false;
     this.busy = false;
+    this.disposeTextLineView();
     this.cleanupParsedPresentation();
     this.setNestedTreeSession(frame);
     this.setNestedVisible(true);
@@ -1283,6 +1292,7 @@ export class ContentViewer {
   private installChunk(chunk: TextChunk, initial = false, sourceFallback: TextChunk | null = null): void {
     this.contentReadBusy = false;
     this.busy = false;
+    this.disposeTextLineView();
     this.elements.content.classList.remove("is-markdown");
     this.markdownRenderFailed = false;
     this.codeRenderReason = null;
@@ -1311,7 +1321,7 @@ export class ContentViewer {
       } else {
         sourceChunk = sourceFallback ?? chunk;
         cacheChunk = sourceChunk;
-        this.elements.content.textContent = sourceChunk.text;
+        this.installTextChunk(sourceChunk);
         this.representation = "decoded";
         this.ordinaryRepresentation = "decoded";
         this.markdownRenderFailed = true;
@@ -1323,12 +1333,12 @@ export class ContentViewer {
       this.ordinaryRepresentation = "rendered";
       this.codeRenderReason = result.reason;
     } else {
-      this.elements.content.textContent = chunk.text;
+      this.installTextChunk(chunk);
       this.representation = "decoded";
       this.ordinaryRepresentation = "decoded";
     }
     if (cacheChunk) this.cacheDecodedPage(cacheChunk);
-    this.rememberCodeChunk(sourceChunk);
+    this.rememberTextChunk(sourceChunk);
     this.nextOffset = sourceChunk.nextOffset;
     if (this.renderMode === "html") {
       this.htmlRepresentation = "source";
@@ -1393,6 +1403,7 @@ export class ContentViewer {
         this.bestEffortCloseScope(value, target.revision);
         throw new Error("The nested JSON scope response was invalid.");
       }
+      this.disposeTextLineView();
       this.cleanupParsedPresentation();
       const frame: NestedFrame = {
         scope,
@@ -1536,6 +1547,7 @@ export class ContentViewer {
     if (!preserveSearch) this.sourceRevealEpoch += 1;
     if (representation === "preview") {
       if (this.htmlPreviewUnavailable || this.htmlPreview === null || !this.htmlElements) return;
+      this.disposeTextLineView();
       this.htmlRepresentation = "preview";
       this.htmlNote = HTML_PREVIEW_NOTE;
       if (!this.htmlSearchRoot && this.htmlPreview !== null) this.prepareHtmlSearchRoot(this.htmlPreview);
@@ -1712,6 +1724,7 @@ export class ContentViewer {
       this.bestEffortCloseScope(value, parent.scope.sessionRevision);
       throw new Error("The nested JSON scope response was invalid.");
     }
+    this.disposeTextLineView();
     this.cleanupParsedPresentation();
     const frame: NestedFrame = {
       scope,
@@ -1829,6 +1842,7 @@ export class ContentViewer {
     if (parent.kind === "json") {
       this.renderMode = "nestedJson";
       this.busy = false;
+      this.disposeTextLineView();
       this.cleanupParsedPresentation();
       this.nestedTree?.restore(snapshot);
       if (!snapshot) this.setNestedTreeSession(parent);
@@ -1855,6 +1869,7 @@ export class ContentViewer {
     this.elements.content.removeAttribute("aria-busy");
     this.sourceSearch?.invalidate();
     this.nestedRepresentation = representation;
+    if (representation === "parsed") this.disposeTextLineView();
     this.setNestedVisible(true);
     this.renderMetadata();
     this.renderPaging();
@@ -1930,9 +1945,12 @@ export class ContentViewer {
         ? { nodeId: frame.source.nodeId, offset, length: TEXT_CHUNK_BYTES, sessionRevision: frame.scope.sessionRevision, scopeId: frame.source.scopeId }
         : { sourceStart: rawStart, length: requestLength, sessionRevision: frame.scope.sessionRevision, scopeId: frame.source.scopeId });
       if (!this.isReadCurrent(generation, frame.source, intent) || this.nestedFrames.at(-1) !== frame || this.nestedRepresentation !== representation) return;
+      const previous = direction === "next" ? state.current : undefined;
+      const pageStartState = state.pages.get(offset)?.lineState
+        ?? (previous ? scanCodeLines(previous.text, previous.lineState) : { line: 1, previousWasCR: false });
       const chunk = representation === "raw"
-        ? normalizeRawChunk(value, rawStart, frame.source.spanStart, frame.source.spanEnd, requestLength)
-        : validateChunk(value, offset, boundary, undefined, true);
+        ? normalizeRawChunk(value, rawStart, frame.source.spanStart, frame.source.spanEnd, requestLength, pageStartState)
+        : validateChunk(value, offset, boundary, undefined, true, pageStartState);
       if (!chunk) throw new Error("The nested text response was invalid.");
       if (direction === "next") {
         state.offsets = state.offsets.slice(0, state.offsetIndex + 1);
@@ -1967,7 +1985,7 @@ export class ContentViewer {
     this.contentReadBusy = false;
     this.nestedBusy = false;
     this.elements.content.classList.remove("is-markdown");
-    this.elements.content.textContent = chunk.text;
+    this.installTextChunk(chunk);
     this.setStatus(representation === "decoded" ? "Decoded nested string ready" : "Raw nested lexeme ready");
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
@@ -2137,6 +2155,7 @@ export class ContentViewer {
 
   private handleRenderedIntentChange(): void {
     this.cancelContentRead();
+    this.textLineView?.setHighlight(null);
     if (this.renderMode === "html" && this.htmlRepresentation === "preview" && this.htmlPreview !== null) {
       this.writeHtmlPreview(this.htmlPreview, this.generation, this.target);
     }
@@ -2257,16 +2276,24 @@ export class ContentViewer {
       this.offsetIndex = 0;
       this.nextOffset = chunk.nextOffset;
       this.cacheDecodedPage(chunk);
+      const relative = Math.max(0, backend.matchStart - chunk.start);
+      const plainRendered = this.renderMode === "plainText";
       if (this.renderMode === "code" && this.semanticLimit === "code") {
         const result = renderPlainCodePage(chunk.text, this.codeLanguageHint, this.codeLimitReason ?? "sizeLimit", chunk.lineState);
         this.elements.content.replaceChildren(result.fragment);
         this.codeRenderReason = result.reason;
+      } else if (plainRendered) {
+        this.installTextChunk(chunk, {
+          start: utf8ByteOffsetToUtf16(chunk.text, relative),
+          end: utf8ByteOffsetToUtf16(chunk.text, relative + utf8ByteLength(query)),
+          marker: "renderedSearch"
+        });
       } else {
         this.elements.content.textContent = chunk.text;
       }
       this.representation = "rendered";
       this.ordinaryRepresentation = "rendered";
-      this.rememberCodeChunk(chunk);
+      this.rememberTextChunk(chunk);
       this.elements.range.textContent = `[${chunk.start}, ${chunk.start + utf8ByteLength(chunk.text)})`;
       this.contentReadBusy = false;
       this.busy = false;
@@ -2276,9 +2303,9 @@ export class ContentViewer {
       this.elements.alert.hidden = true;
       this.renderMetadata();
       this.renderPaging();
+      if (plainRendered) return;
       await this.renderedSearch?.reprojectDom(this.elements.content);
       if (!this.isCurrent(generation, target) || this.sourceRevealEpoch !== intent) return;
-      const relative = backend.matchStart - chunk.start;
       this.renderedSearch?.highlightSourceRange(
         utf8ByteOffsetToUtf16(chunk.text, relative),
         utf8ByteOffsetToUtf16(chunk.text, relative + utf8ByteLength(query))
@@ -2478,17 +2505,7 @@ export class ContentViewer {
     const relative = Math.max(0, matchStart - chunk.start);
     const start = utf8ByteOffsetToUtf16(chunk.text, relative);
     const end = utf8ByteOffsetToUtf16(chunk.text, relative + queryBytes);
-    const before = chunk.text.slice(0, start);
-    const marked = chunk.text.slice(start, end);
-    const after = chunk.text.slice(end);
-    const fragment = document.createDocumentFragment();
-    if (before) fragment.append(document.createTextNode(before));
-    const mark = document.createElement("mark");
-    mark.textContent = marked;
-    mark.dataset.searchMatch = "true";
-    fragment.append(mark);
-    if (after) fragment.append(document.createTextNode(after));
-    this.elements.content.replaceChildren(fragment);
+    this.installTextChunk(chunk, { start, end });
     this.representation = "decoded";
     const frame = this.nestedFrames.at(-1);
     if (frame && this.nestedRepresentation === representation) {
@@ -2510,6 +2527,8 @@ export class ContentViewer {
       this.nextOffset = chunk.nextOffset;
       this.cacheDecodedPage(chunk);
     }
+    if (representation === "decoded" && !frame) this.rememberTextChunk(chunk);
+    if (representation === "raw" && !frame) this.rawPageStartStates.set(chunk.start, chunk.lineState);
     const target = this.searchTarget();
     const rangeStart = raw && target ? target.spanStart + chunk.start : chunk.start;
     this.elements.range.textContent = `[${rangeStart}, ${rangeStart + utf8ByteLength(chunk.text)})`;
@@ -2665,8 +2684,7 @@ export class ContentViewer {
     this.trimTextCaches();
   }
 
-  private rememberCodeChunk(chunk: TextChunk): void {
-    if (this.renderMode !== "code") return;
+  private rememberTextChunk(chunk: TextChunk): void {
     this.codeLineCheckpoints.set(chunk.start, chunk.lineState);
     if (chunk.nextOffset !== null) {
       this.codeLineCheckpoints.set(chunk.nextOffset, scanCodeLines(chunk.text, chunk.lineState));
@@ -2680,6 +2698,7 @@ export class ContentViewer {
 
   private clearRawPages(): void {
     this.rawPages.clear();
+    this.rawPageStartStates.clear();
     this.rawPageOffsets = [];
     this.rawPageIndex = -1;
     this.rawNextOffset = null;
@@ -2754,6 +2773,7 @@ export class ContentViewer {
   }
 
   private releaseNestedScopes(): void {
+    this.disposeTextLineView();
     this.clearParsedSearchPeek();
     const root = this.nestedFrames[0];
     if (root) {
@@ -3067,13 +3087,27 @@ export class ContentViewer {
   }
 
   private clearContent(): void {
+    this.disposeTextLineView();
     this.elements.content.textContent = "";
     this.elements.content.classList.remove("is-markdown");
+  }
+
+  private installTextChunk(chunk: TextChunk, highlight: TextLineHighlight | null = null): void {
+    if (!this.textLineView) {
+      this.textLineView = new TextLineView(this.elements.content, this.contentResizeTarget);
+    }
+    this.textLineView.setText(chunk.text, this.wrapMode === "wrap", highlight, chunk.lineState.previousWasCR, chunk.hasMore);
+  }
+
+  private disposeTextLineView(): void {
+    this.textLineView?.dispose();
+    this.textLineView = null;
   }
 
   private setWrapMode(mode: WrapMode): void {
     this.wrapMode = mode;
     this.applyWrapMode();
+    this.textLineView?.setWrap(mode === "wrap");
     this.syncWrapControls();
     this.scheduleCodeGutterAlignment();
   }
@@ -3333,7 +3367,8 @@ function normalizeRawChunk(
   requestedAbsoluteStart: number,
   spanStart: number,
   spanEnd: number,
-  requestLength: number
+  requestLength: number,
+  pageStartState: CodeLineState = { line: 1, previousWasCR: false }
 ): TextChunk | undefined {
   if (!isRecord(value) || typeof value.text !== "string" || typeof value.hasMore !== "boolean"
     || value.nextOffset !== null && safeOffset(value.nextOffset) === undefined) return undefined;
@@ -3348,7 +3383,7 @@ function normalizeRawChunk(
     text: value.text,
     hasMore,
     nextOffset: hasMore ? end - spanStart : null,
-    lineState: { line: 1, previousWasCR: false }
+    lineState: pageStartState
   };
 }
 

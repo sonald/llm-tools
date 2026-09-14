@@ -61,6 +61,7 @@ async function browser(args) {
 function browserTest() {
   return `(async()=>{
 const {ContentViewer}=await import("/src/content-viewer.ts");
+const {TextLineView}=await import("/src/text-line-view.ts");
 let assertions=0;
 const check=(value,message)=>{assertions+=1;if(!value)throw new Error(message);};
 const settle=async()=>{await Promise.resolve();await Promise.resolve();await new Promise((resolve)=>setTimeout(resolve,0));};
@@ -96,6 +97,11 @@ await plain.viewer.open(plainTarget);await settle();
 check(plain.elements.wrap.wrap.getAttribute("aria-pressed")==="true","Wrap control did not expose the default pressed state");
 check(plain.elements.wrap.noWrap.getAttribute("aria-pressed")==="false","No Wrap control did not expose the default unpressed state");
 check(!plain.elements.wrap.wrap.disabled&&!plain.elements.wrap.noWrap.disabled,"Wrap controls stayed disabled for Plain Text");
+plain.elements.search.query.value="needle";plain.elements.search.form.requestSubmit();await settle();
+const plainRenderedResult=plain.elements.search.results.querySelector("button");
+check(plainRenderedResult!==null,"Plain Rendered search did not return a result");
+plainRenderedResult.click();await settle();
+check(plain.elements.content.querySelector("mark[data-rendered-search=\\"true\\"]")?.textContent==="needle","Plain Rendered search did not reproject and highlight its source hit");
 const originalRange=plain.elements.range.textContent;
 const originalContent=plain.elements.content.textContent;
 plain.elements.wrap.noWrap.focus();plain.elements.wrap.noWrap.click();
@@ -134,6 +140,185 @@ const paged=makeViewer(pageInvoke);await paged.viewer.open(target(5,5,pageSource
 const firstPageRange=paged.elements.range.textContent;check(paged.elements.next.disabled===false,"Plain Text did not expose its next page");paged.elements.wrap.noWrap.click();check(paged.elements.content.classList.contains("is-no-wrap"),"No Wrap did not apply before paging");paged.elements.next.click();await settle();
 check(paged.elements.previous.disabled===false&&paged.elements.range.textContent!==firstPageRange,"Next page did not advance the decoded page offset");check(paged.elements.content.classList.contains("is-no-wrap"),"Paging discarded the shared No Wrap state");paged.elements.previous.click();await settle();check(paged.elements.range.textContent===firstPageRange,"Previous page did not restore the original page offset");
 paged.viewer.clear(false);paged.host.remove();
+
+const virtualLines=Array.from({length:12000},(_,index)=>"row-"+String(index).padStart(5,"0")+" "+(index===10?"long-"+"x".repeat(500):index===9000?"跨页":"payload"));
+const virtualSource=virtualLines.join("\\n")+"\\n跨行\\nneedle 中文\\nterminal";
+const virtualCalls=[];
+const virtualInvoke=async(command,args)=>{
+  virtualCalls.push({command,args});
+  if(command==="get_string_detection")return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"};
+  if(command==="get_string_metrics")return {decodedBytes:utf8(virtualSource),characterCount:virtualSource.length,lineCount:virtualLines.length+3};
+  if(command==="search_current"){
+    const query=args.query;const matchIndex=virtualSource.indexOf(query);
+    if(matchIndex<0)throw new Error("virtual search fixture query is absent");
+    const matchStart=utf8(virtualSource.slice(0,matchIndex));
+    return {matches:[{nodeId:10,field:"value",pathSegments:["$","content"],pathTruncated:false,sourceSpanStart:100,sourceSpanEnd:100+utf8(virtualSource),matchStart,matchEnd:matchStart+utf8(query)}],hasMore:false,nextCursor:null};
+  }
+  if(command==="read_decoded_text"){
+    const text=sliceByUtf8(virtualSource,args.offset,args.length);const end=args.offset+utf8(text);return {start:args.offset,text,hasMore:end<utf8(virtualSource),nextOffset:end<utf8(virtualSource)?end:null};
+  }
+  if(command==="read_raw_slice"){
+    const relative=args.sourceStart-100;const text=sliceByUtf8(virtualSource,relative,args.length);const end=relative+utf8(text);return {start:args.sourceStart,text,hasMore:end<utf8(virtualSource),nextOffset:end<utf8(virtualSource)?args.sourceStart+utf8(text):null};
+  }
+  throw new Error("unexpected virtual command "+command);
+};
+const virtual=makeViewer(virtualInvoke);
+await virtual.viewer.open(target(10,10,virtualSource));await settle();
+const virtualBody=virtual.elements.content.parentElement;
+const virtualTotalLines=virtualLines.length+3;
+const virtualRows=()=>Array.from(virtual.elements.content.querySelectorAll(".text-line-view-row"));
+check(virtualRows().length>0&&virtualRows().length<virtualTotalLines,"128 KiB Plain Text did not render a bounded line window");
+check(virtualRows()[0]?.textContent.replace(/\\r?\\n$/,"")===virtualLines[Number(virtualRows()[0]?.dataset.lineIndex??-1)],"virtualized head line changed source text");
+virtual.elements.search.query.value="row-00010";virtual.elements.search.form.requestSubmit();await settle();
+const virtualRenderedResult=virtual.elements.search.results.querySelector("button");
+check(virtualRenderedResult!==null,"virtualized Plain Rendered search did not return a result");
+virtualRenderedResult.click();await settle();
+check(virtual.elements.content.querySelector("mark[data-rendered-search=\\"true\\"]")?.textContent==="row-00010","virtualized Plain Rendered search did not install its UTF-16 highlight");
+virtualBody.scrollTop=virtualBody.scrollHeight/2;virtualBody.dispatchEvent(new Event("scroll"));await settle();
+virtualBody.scrollTop=0;virtualBody.dispatchEvent(new Event("scroll"));await settle();
+check(virtual.elements.content.querySelector("mark[data-rendered-search=\\"true\\"]")?.textContent==="row-00010","virtualized Plain Rendered search did not rebuild its highlight after row recycling");
+const selectionRow=virtualRows().find((row)=>row.dataset.lineIndex==="10");
+const selectionText=selectionRow?.firstChild;
+if(!(selectionText instanceof Text))throw new Error("virtualized selection fixture did not expose a text node");
+const selected=window.getSelection();const selectedRange=document.createRange();selectedRange.setStart(selectionText,5);selectedRange.setEnd(selectionText,15);selected?.removeAllRanges();selected?.addRange(selectedRange);
+virtual.elements.wrap.noWrap.click();await settle();
+const selectedText=selected?.toString()??"";
+virtualBody.scrollLeft=120;virtualBody.dispatchEvent(new Event("scroll"));await settle();
+check(selectedText.length>0&&selected?.toString()===selectedText,"horizontal No Wrap scrolling lost the source selection");
+selected?.removeAllRanges();
+virtualBody.scrollLeft=160;virtualBody.dispatchEvent(new Event("scroll"));await settle();
+check(selected?.toString()==="","cleared source selection was resurrected during a stable-window scroll");
+const verticalRow=virtualRows().find((row)=>row.dataset.lineIndex==="10");
+const verticalTextNode=verticalRow?.firstChild;
+if(!(verticalTextNode instanceof Text))throw new Error("vertical selection fixture did not expose a text node");
+const verticalRange=document.createRange();verticalRange.setStart(verticalTextNode,5);verticalRange.setEnd(verticalTextNode,15);
+selected?.addRange(verticalRange);
+const verticalSelected=selected?.toString()??"";
+virtualBody.scrollTop=virtualBody.scrollHeight/2;virtualBody.dispatchEvent(new Event("scroll"));await settle();
+virtualBody.scrollTop=0;virtualBody.dispatchEvent(new Event("scroll"));await settle();
+check(verticalSelected.length>0&&selected?.toString()===verticalSelected,"vertical row recycling did not restore the source selection");
+virtual.elements.wrap.wrap.click();await settle();
+virtualBody.scrollTop=virtualBody.scrollHeight/2;virtualBody.dispatchEvent(new Event("scroll"));await settle();
+const virtualMiddleRows=virtualRows();
+check(virtualMiddleRows.length>0&&virtualMiddleRows.length<virtualTotalLines&&virtualMiddleRows.some((row)=>Number(row.dataset.lineIndex)>1000),"virtualized middle scroll did not move the bounded window");
+virtualBody.scrollTop=virtualBody.scrollHeight;virtualBody.dispatchEvent(new Event("scroll"));await settle();
+const virtualTailRows=virtualRows();
+check(virtualTailRows.length>0&&virtualTailRows.length<virtualTotalLines&&virtualTailRows.some((row)=>Number(row.dataset.lineIndex)>6000),"virtualized page tail scroll did not move to the page tail");
+virtual.elements.next.click();await settle();
+virtualBody.scrollTop=virtualBody.scrollHeight;virtualBody.dispatchEvent(new Event("scroll"));await settle();
+const virtualFinalRows=virtualRows();
+check(virtualFinalRows.length>0&&virtualFinalRows.length<virtualTotalLines&&virtualFinalRows.some((row)=>row.textContent==="terminal"),"virtualized final page tail did not expose the terminal source line");
+virtualBody.scrollTop=virtualBody.scrollHeight/2;virtualBody.dispatchEvent(new Event("scroll"));await settle();
+const virtualAnchor=virtualRows().find((row)=>Number(row.dataset.lineIndex)>1000);
+const virtualAnchorIndex=Number(virtualAnchor?.dataset.lineIndex??-1);
+const virtualAnchorTop=virtualAnchor?.getBoundingClientRect().top??0;
+virtualBody.style.width="180px";await new Promise((resolve)=>setTimeout(resolve,50));await settle();
+const virtualAnchorAfter=virtual.elements.content.querySelector('[data-line-index="'+virtualAnchorIndex+'"]');
+check(virtualAnchorAfter!==null&&Math.abs(virtualAnchorAfter.getBoundingClientRect().top-virtualAnchorTop)<20,"Wrap resize lost the visible line anchor");
+virtual.elements.string.decodedTab.click();await settle();
+const crossLineQuery="needle 中文";
+virtual.elements.search.query.value=crossLineQuery;virtual.elements.search.form.requestSubmit();await settle();
+const virtualSearchResult=virtual.elements.search.results.querySelector("button");
+check(virtualSearchResult!==null,"virtualized decoded search did not return a result");
+virtualSearchResult.click();await settle();
+const virtualMarks=Array.from(virtual.elements.content.querySelectorAll("mark[data-search-match=\\"true\\"]"));
+check(virtualMarks.length===1&&virtualMarks[0].textContent==="needle 中文","Unicode search did not rebuild the visible line highlight");
+virtual.elements.string.rawTab.click();await settle();
+check(virtualRows().length>0&&virtualRows().length<virtualTotalLines,"Raw Lexeme did not use the bounded line window");
+virtual.elements.next.click();await settle();
+virtualBody.scrollTop=virtualBody.scrollHeight;virtualBody.dispatchEvent(new Event("scroll"));await settle();
+check(virtual.elements.content.textContent.includes("跨行")&&!virtual.elements.content.textContent.includes("�"),"cross-page multibyte Raw text was not source-faithful");
+virtual.viewer.clear(false);await settle();
+check(virtualRows().length===0&&!virtual.elements.content.classList.contains("is-text-lines"),"closing the viewer retained virtualized text DOM or state");
+virtual.host.remove();
+
+const boundaryPageBytes=128*1024;
+const boundaryPage0="x".repeat(boundaryPageBytes-1)+"\\r";
+const boundaryPage1="\\nb\\n\\n";
+const boundarySource=boundaryPage0+boundaryPage1;
+const boundaryInvoke=async(command,args)=>{
+  if(command==="get_string_detection")return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"};
+  if(command==="get_string_metrics")return {decodedBytes:utf8(boundarySource),characterCount:boundarySource.length,lineCount:4};
+  if(command==="read_decoded_text"){
+    const text=args.offset===0?boundaryPage0:boundaryPage1;
+    return {start:args.offset,text,hasMore:args.offset===0,nextOffset:args.offset===0?boundaryPageBytes:null};
+  }
+  throw new Error("unexpected CRLF boundary command");
+};
+const boundary=makeViewer(boundaryInvoke);
+await boundary.viewer.open(target(11,11,boundarySource));await settle();
+const boundaryRows=()=>Array.from(boundary.elements.content.querySelectorAll(".text-line-view-row"));
+check(boundaryRows().length===1&&boundaryRows()[0].textContent.startsWith("xxx"),"CRLF page 0 incorrectly materialized a trailing empty line");
+boundary.elements.next.click();await settle();
+check(boundaryRows().length===3&&boundaryRows()[0].textContent.replace(/\\r?\\n$/,"")==="b"&&boundaryRows()[1].getBoundingClientRect().height>0&&boundaryRows()[2].getBoundingClientRect().height>0&&boundary.elements.content.textContent==="b\\n\\n","CRLF continuation or empty/terminal lines were not source-faithful");
+boundary.viewer.clear(false);await settle();
+check(boundaryRows().length===0,"CRLF boundary viewer did not dispose its line index on close");
+boundary.host.remove();
+
+const crossLineScroll=document.createElement("div");
+const crossLineHost=document.createElement("div");
+crossLineScroll.style.height="100px";
+crossLineHost.className="content-viewer-content";
+crossLineScroll.append(crossLineHost);
+document.body.append(crossLineScroll);
+const crossLineText="跨行\\nneedle 中文";
+const crossLineView=new TextLineView(crossLineHost,crossLineScroll);
+crossLineView.setText(crossLineText,true,{start:0,end:crossLineText.length});
+check(Array.from(crossLineHost.querySelectorAll("mark[data-search-match=\\"true\\"]")).map((mark)=>mark.textContent).join("|")==="跨行|needle 中文","cross-line highlight did not rebuild per-line marks");
+crossLineView.dispose();
+crossLineScroll.remove();
+
+const copySource=Array.from({length:220},(_,index)=>"row-"+String(index).padStart(3,"0")+(index===100?" 中文😀":"")).join("\\r\\n")+"\\r\\nlast";
+const copyInvoke=async(command,args)=>{
+  if(command==="get_string_detection")return {semanticType:"plainText",detectionSource:"contentDetected",plainReason:"fallback"};
+  if(command==="get_string_metrics")return {decodedBytes:utf8(copySource),characterCount:copySource.length,lineCount:221};
+  if(command==="read_decoded_text"){
+    const text=sliceByUtf8(copySource,args.offset,args.length);const end=args.offset+utf8(text);return {start:args.offset,text,hasMore:end<utf8(copySource),nextOffset:end<utf8(copySource)?end:null};
+  }
+  throw new Error("unexpected copy selection command");
+};
+const copy=makeViewer(copyInvoke);
+await copy.viewer.open(target(12,12,copySource));await settle();
+const copyBody=copy.elements.content.parentElement;
+const copyRows=()=>Array.from(copy.elements.content.querySelectorAll(".text-line-view-row"));
+copyBody.scrollTop=100*16;copyBody.dispatchEvent(new Event("scroll"));await settle();
+const copyFirstRow=copyRows().find((row)=>row.dataset.lineIndex==="100");
+const copySecondRow=copyRows().find((row)=>row.dataset.lineIndex==="101");
+const copyFirstText=copyFirstRow?.firstChild;
+const copySecondText=copySecondRow?.firstChild;
+if(!(copyFirstText instanceof Text)||!(copySecondText instanceof Text))throw new Error("copy selection fixture did not expose adjacent text rows");
+const copyRange=document.createRange();copyRange.setStart(copyFirstText,0);copyRange.setEnd(copySecondText,copySecondText.data.length);
+const copySelection=window.getSelection();copySelection?.removeAllRanges();copySelection?.addRange(copyRange);
+const copyStart=Number(copyFirstRow?.dataset.utf16Start);const copyEnd=Number(copySecondRow?.dataset.utf16End);const copyExpected=copySource.slice(copyStart,copyEnd);
+copyBody.scrollTop=copyBody.scrollHeight;copyBody.dispatchEvent(new Event("scroll"));await settle();
+let copiedText="";
+const copyEvent=new Event("copy",{bubbles:true,cancelable:true});
+Object.defineProperty(copyEvent,"clipboardData",{value:{setData:(kind,value)=>{if(kind==="text/plain")copiedText=value;}}});
+document.dispatchEvent(copyEvent);
+check(copyEvent.defaultPrevented&&copiedText===copyExpected&&copiedText.includes("\\r\\n")&&copiedText.includes("中文😀"),"offscreen copy did not preserve the exact CRLF/multibyte source range");
+const outside=document.createElement("div");
+outside.textContent="external selection";
+copy.elements.dialog.append(outside);
+const outsideText=outside.firstChild;
+if(!(outsideText instanceof Text))throw new Error("external selection fixture did not expose text");
+const outsideRange=document.createRange();outsideRange.selectNodeContents(outsideText);
+copySelection?.removeAllRanges();copySelection?.addRange(outsideRange);await settle();
+copyBody.scrollTop=0;copyBody.dispatchEvent(new Event("scroll"));await settle();
+check(copySelection?.toString()==="external selection","external selection did not invalidate the saved source range");
+outside.remove();
+copyBody.scrollTop=100*16;copyBody.dispatchEvent(new Event("scroll"));await settle();
+const cancelRow=copyRows().find((row)=>row.dataset.lineIndex==="100");
+const cancelText=cancelRow?.firstChild;
+if(!(cancelText instanceof Text))throw new Error("cancel selection fixture did not expose a text row");
+const cancelRange=document.createRange();cancelRange.setStart(cancelText,0);cancelRange.setEnd(cancelText,8);
+copySelection?.removeAllRanges();copySelection?.addRange(cancelRange);
+copyBody.scrollTop=copyBody.scrollHeight;copyBody.dispatchEvent(new Event("scroll"));await settle();
+copySelection?.removeAllRanges();document.dispatchEvent(new Event("selectionchange"));await settle();
+copyBody.scrollTop=0;copyBody.dispatchEvent(new Event("scroll"));await settle();
+check(copySelection?.toString()==="","explicitly cleared offscreen selection was resurrected");
+copy.viewer.clear(false);await settle();
+check(copyRows().length===0,"copy viewer did not dispose its text rows");
+copy.host.remove();
 
 const fence=String.fromCharCode(96).repeat(3);
 const markdownSource="# Prose\\n\\nThis paragraph should reflow.\\n\\n"+fence+"javascript\\n"+"const veryLongValue = "+'"'+"L".repeat(2200)+'"' + ";\\n"+fence;
@@ -219,9 +404,9 @@ const nestedInvoke=async(command,args)=>{
   if(command==="get_string_detection")return args.nodeId===32?{semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null}:{semanticType:"nestedJson",detectionSource:"contentDetected",plainReason:null};
   if(command==="get_string_metrics")return {decodedBytes:6,characterCount:6,lineCount:1};
   if(command==="open_nested_json"){
-    const depth=args.parentScopeId===null?1:2;const scopeId=depth===1?80:81;return {scopeId,parentScopeId:args.parentScopeId,sourceNodeId:args.nodeId,depth,maxDepth:10,parsedBytes:depth===1?20:10,cumulativeBytes:depth===1?20:30,sessionRevision:3,root:{id:depth===1?30:40,kind:"object",spanStart:0,spanEnd:depth===1?20:10,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:depth===1?1:0}};
+    const depth=args.parentScopeId===null?1:2;const scopeId=depth===1?80:81;return {scopeId,parentScopeId:args.parentScopeId,sourceNodeId:args.nodeId,depth,maxDepth:10,parsedBytes:depth===1?20:11,cumulativeBytes:depth===1?20:31,sessionRevision:3,root:{id:depth===1?30:40,kind:"object",spanStart:0,spanEnd:depth===1?20:11,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:depth===1?1:0}};
   }
-  if(command==="get_children")return {nodes:[{id:32,kind:"string",spanStart:2,spanEnd:18,label:"child",labelHasMore:false,valuePreview:"nested",valueHasMore:false,childCount:0}],hasMore:false,nextCursor:null};
+  if(command==="get_children")return {nodes:[{id:32,kind:"string",spanStart:2,spanEnd:18,label:"child",labelHasMore:false,valuePreview:"nested",valueHasMore:true,childCount:0}],hasMore:false,nextCursor:null};
   if(command==="read_decoded_text")return {start:0,text:"nested text",hasMore:false,nextOffset:null};
   if(command==="read_raw_slice")return {start:args.sourceStart,text:'"nested text"',hasMore:false,nextOffset:null};
   if(command==="close_nested_scope")return null;
@@ -229,8 +414,8 @@ const nestedInvoke=async(command,args)=>{
 };
 const nested=makeViewer(nestedInvoke,{nested:true});await nested.viewer.open(target(3,20,nestedSource));await settle();
 const rootItem=nested.host.querySelector('[data-node-id="30"]');check(rootItem!==null,"Nested Parsed root was not rendered");rootItem.querySelector(".tree-disclosure")?.click();await settle();
-const childItem=nested.host.querySelector('[data-node-id="32"]');check(childItem!==null,"Nested child was not paged into the tree");childItem.dispatchEvent(new MouseEvent("click",{bubbles:true,detail:2}));await settle();
-check(nested.host.querySelector('[data-node-id="40"]')!==null,"Nested frame did not open");nested.elements.nested.decodedTab.click();await settle();nested.elements.wrap.noWrap.click();
+const childItem=nested.host.querySelector('[data-node-id="32"]');check(childItem!==null,"Nested child was not paged into the tree");childItem.querySelector(".tree-value")?.click();await settle();
+check(nested.host.querySelector('[data-node-id="40"]')!==null,"Nested frame did not open");nested.elements.nested.decodedTab.click();await settle();check(nested.elements.content.querySelector(".text-line-view-row")!==null,"Nested decoded string did not use the line view");nested.elements.nested.rawTab.click();await settle();check(nested.elements.content.querySelector(".text-line-view-row")!==null,"Nested raw string did not use the line view");nested.elements.nested.decodedTab.click();await settle();nested.elements.wrap.noWrap.click();
 check(nested.elements.content.classList.contains("is-no-wrap"),"Nested decoded source did not accept No Wrap");nested.elements.nested.back.click();await settle();
 check(nested.elements.content.classList.contains("is-no-wrap")&&nested.elements.representation.textContent.includes("Parsed"),"Returning from nested frame mixed state or dropped No Wrap");
 check(nested.elements.wrap.noWrap.disabled===true,"No Wrap was not disabled for the Parsed tree");
