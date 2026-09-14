@@ -234,6 +234,7 @@ fn run_document(config: &Config, cache: Value) -> Result<Value, Box<dyn std::err
         .ok_or("document raw first slice was unavailable")?;
     let ready_to_raw_first_slice_us = micros(ready_to_raw_start.elapsed());
     let open_to_raw_first_slice_us = micros(start.elapsed());
+    let retained_capacity = session.retained_capacity()?;
     let identity = session.identity();
     let modified_unix =
         identity.modified.duration_since(UNIX_EPOCH).ok().map(
@@ -251,7 +252,7 @@ fn run_document(config: &Config, cache: Value) -> Result<Value, Box<dyn std::err
         "cache": cache,
         "timingsUs": {"openToRoot": open_to_root_us, "openToRawFirstSlice": open_to_raw_first_slice_us, "readyToRawFirstSlice": ready_to_raw_first_slice_us},
         "rawFirstSlice": {"start": raw.start, "bytes": raw.text.len(), "hasMore": raw.has_more, "nextOffset": raw.next_offset},
-        "memory": {"measured": false, "applicationOwnedMiB": null, "inputResidentWindowMiB": null, "reason": "benchmark runner does not claim full application private memory or smaps without a platform harness"},
+        "memory": {"measured": false, "coreRetainedBufferCapacity": {"scope": "ParsedJson tree buffers only; excludes FileSource, temporary read slices, parser frames, and RSS/live/peak/private memory", "sourceCapacityBytes": retained_capacity.source_capacity_bytes, "nodesCapacityBytes": retained_capacity.nodes_capacity_bytes, "childrenCapacityBytes": retained_capacity.children_capacity_bytes, "objectKeyCapacityBytes": retained_capacity.object_key_capacity_bytes, "decodedCheckpointsCapacityBytes": retained_capacity.decoded_checkpoints_capacity_bytes, "totalCapacityBytes": retained_capacity.total_capacity_bytes}, "applicationOwnedMiB": null, "inputResidentWindowMiB": null, "reason": "benchmark runner does not claim full application private memory or smaps without a platform harness"},
         "errors": [],
     }))
 }

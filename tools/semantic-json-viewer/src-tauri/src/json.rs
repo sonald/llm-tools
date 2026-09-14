@@ -93,6 +93,18 @@ pub struct ParsedJson<'a> {
     checkpoints: Vec<DecodedCheckpoint>,
 }
 
+/// Heap capacities retained by the parsed JSON tree after parsing. This does
+/// not include file-source buffers, temporary read slices, or parser frames.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ParsedJsonRetainedCapacity {
+    pub source_capacity_bytes: usize,
+    pub nodes_capacity_bytes: usize,
+    pub children_capacity_bytes: usize,
+    pub object_key_capacity_bytes: usize,
+    pub decoded_checkpoints_capacity_bytes: usize,
+    pub total_capacity_bytes: usize,
+}
+
 impl<'a> ParsedJson<'a> {
     pub fn root(&self) -> NodeId {
         NodeId(0)
@@ -112,6 +124,50 @@ impl<'a> ParsedJson<'a> {
 
     pub fn node_at(&self, index: usize) -> Option<&JsonNode> {
         self.nodes.get(index)
+    }
+
+    /// Reports retained capacities for the parsed JSON tree buffers only.
+    pub fn retained_capacity(&self) -> ParsedJsonRetainedCapacity {
+        let source_capacity_bytes = match &self.source {
+            Cow::Borrowed(_) => 0,
+            Cow::Owned(source) => source.capacity(),
+        };
+        let nodes_capacity_bytes = self
+            .nodes
+            .capacity()
+            .saturating_mul(std::mem::size_of::<JsonNode>());
+        let children_capacity_bytes = self.nodes.iter().fold(0usize, |total, node| {
+            total.saturating_add(
+                node.children
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<NodeId>()),
+            )
+        });
+        let object_key_capacity_bytes = self.nodes.iter().fold(0usize, |total, node| {
+            let capacity = match &node.locator {
+                ChildLocator::ObjectKey { key, .. } => key.capacity(),
+                ChildLocator::Root | ChildLocator::ArrayIndex(_) => 0,
+            };
+            total.saturating_add(capacity)
+        });
+        let decoded_checkpoints_capacity_bytes = self
+            .checkpoints
+            .capacity()
+            .saturating_mul(std::mem::size_of::<DecodedCheckpoint>());
+        let total_capacity_bytes = source_capacity_bytes
+            .saturating_add(nodes_capacity_bytes)
+            .saturating_add(children_capacity_bytes)
+            .saturating_add(object_key_capacity_bytes)
+            .saturating_add(decoded_checkpoints_capacity_bytes);
+
+        ParsedJsonRetainedCapacity {
+            source_capacity_bytes,
+            nodes_capacity_bytes,
+            children_capacity_bytes,
+            object_key_capacity_bytes,
+            decoded_checkpoints_capacity_bytes,
+            total_capacity_bytes,
+        }
     }
 
     pub fn raw_lexeme(&self, id: NodeId) -> &[u8] {
@@ -1527,6 +1583,79 @@ mod tests {
             ChildLocator::ObjectKey { occurrence: 2, .. }
         ));
         assert_eq!(parsed.raw_lexeme(children[1]), b"922337203685477580712345");
+    }
+
+    #[test]
+    fn retained_capacity_reports_owned_and_arena_buffer_capacities() {
+        let key = r#"\u0061"#.repeat(257);
+        let value = r#"\u0061"#.repeat(11_000);
+        let source_text = format!(r#"{{"{key}":"{value}","items":[1,2,3]}}"#);
+        let source = source_text.as_bytes();
+        let borrowed = parse_json(source).unwrap();
+        let borrowed_capacity = borrowed.retained_capacity();
+        let expected_nodes = borrowed
+            .nodes
+            .capacity()
+            .saturating_mul(std::mem::size_of::<JsonNode>());
+        let expected_children = borrowed.nodes.iter().fold(0usize, |total, node| {
+            total.saturating_add(
+                node.children
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<NodeId>()),
+            )
+        });
+        let expected_object_keys = borrowed.nodes.iter().fold(0usize, |total, node| {
+            total.saturating_add(match &node.locator {
+                ChildLocator::ObjectKey { key, .. } => key.capacity(),
+                ChildLocator::Root | ChildLocator::ArrayIndex(_) => 0,
+            })
+        });
+        let expected_checkpoints = borrowed
+            .checkpoints
+            .capacity()
+            .saturating_mul(std::mem::size_of::<DecodedCheckpoint>());
+        assert_eq!(borrowed_capacity.source_capacity_bytes, 0);
+        assert_eq!(borrowed_capacity.nodes_capacity_bytes, expected_nodes);
+        assert_eq!(borrowed_capacity.children_capacity_bytes, expected_children);
+        assert_eq!(
+            borrowed_capacity.object_key_capacity_bytes,
+            expected_object_keys
+        );
+        assert_eq!(
+            borrowed_capacity.decoded_checkpoints_capacity_bytes,
+            expected_checkpoints
+        );
+        assert!(expected_checkpoints > 0);
+        assert_eq!(
+            borrowed_capacity.total_capacity_bytes,
+            borrowed_capacity
+                .source_capacity_bytes
+                .saturating_add(borrowed_capacity.nodes_capacity_bytes)
+                .saturating_add(borrowed_capacity.children_capacity_bytes)
+                .saturating_add(borrowed_capacity.object_key_capacity_bytes)
+                .saturating_add(borrowed_capacity.decoded_checkpoints_capacity_bytes)
+        );
+
+        let mut owned_input = Vec::with_capacity(source.len() + 37);
+        owned_input.extend_from_slice(source);
+        let expected_source_capacity = owned_input.capacity();
+        let owned = parse_json_owned(owned_input).unwrap();
+        let owned_capacity = owned.retained_capacity();
+        assert_eq!(
+            owned_capacity.source_capacity_bytes,
+            expected_source_capacity
+        );
+        assert!(owned_capacity.source_capacity_bytes > owned.source().len());
+        assert_eq!(owned_capacity.nodes_capacity_bytes, expected_nodes);
+        assert_eq!(owned_capacity.children_capacity_bytes, expected_children);
+        assert_eq!(
+            owned_capacity.object_key_capacity_bytes,
+            expected_object_keys
+        );
+        assert_eq!(
+            owned_capacity.decoded_checkpoints_capacity_bytes,
+            expected_checkpoints
+        );
     }
 
     #[test]

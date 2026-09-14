@@ -7,7 +7,7 @@ use crate::conversation::{
 };
 use crate::json::{
     parse_json_owned, ChildLocator, DecodedString, JsonKind, JsonNode, ParseError, ParsedJson,
-    SourceSpan,
+    ParsedJsonRetainedCapacity, SourceSpan,
 };
 use crate::search::{self, SearchError, SearchPage, SearchRequest};
 use crate::semantic_detection::{detect, Detection, NestedBudget, PlainReason, MAX_INPUT_BYTES};
@@ -32,6 +32,10 @@ impl TreeDocument {
     pub fn root(&self) -> NodeProjection {
         let root_id = self.parsed.root();
         self.projection(root_id.index(), self.parsed.node(root_id))
+    }
+
+    pub fn retained_capacity(&self) -> ParsedJsonRetainedCapacity {
+        self.parsed.retained_capacity()
     }
 
     pub fn node(&self, id: usize) -> Option<NodeProjection> {

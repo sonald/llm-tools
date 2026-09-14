@@ -6,7 +6,7 @@ use crate::conversation::{
     ConversationCandidate, ConversationStyle, GenericConversationCursor, GenericConversationPage,
 };
 use crate::file_source::FileSource;
-use crate::json::ParseError;
+use crate::json::{ParseError, ParsedJsonRetainedCapacity};
 use crate::search::{SearchError, SearchPage, SearchRequest};
 use crate::semantic_detection::{Detection, NestedBudget};
 use crate::tree::{NodePage, NodeProjection, StringMetrics, TextChunk, TreeDocument};
@@ -95,6 +95,11 @@ impl DocumentSession {
 
     pub fn is_current(&self) -> bool {
         self.source.is_current()
+    }
+
+    pub fn retained_capacity(&self) -> io::Result<ParsedJsonRetainedCapacity> {
+        self.ensure_current()?;
+        Ok(self.tree.retained_capacity())
     }
 
     fn ensure_current(&self) -> io::Result<()> {
@@ -264,6 +269,7 @@ mod tests {
         let session = DocumentSession::open(&path).unwrap();
         let root = session.root().unwrap();
         assert_eq!(root.child_count, 2);
+        assert!(session.retained_capacity().unwrap().source_capacity_bytes >= input.len());
 
         let children = session.children(root.id, 0, 10).unwrap().unwrap();
         assert_eq!(children.nodes[0].label, "name");
