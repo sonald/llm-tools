@@ -48,7 +48,6 @@ pub struct JsonNode {
     pub locator: ChildLocator,
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
-    pub decoded: Option<String>,
     pub string_has_escape: bool,
 }
 
@@ -526,7 +525,17 @@ impl<'a> Parser<'a> {
         };
 
         match byte {
-            b'"' => self.parse_string(start),
+            b'"' => {
+                let (span, string_has_escape) = self.parse_string(start)?;
+                Ok(JsonNode {
+                    kind: JsonKind::String,
+                    span,
+                    locator: ChildLocator::Root,
+                    parent: None,
+                    children: Vec::new(),
+                    string_has_escape,
+                })
+            }
             b'-' | b'0'..=b'9' => self.parse_number(start),
             b't' => self.parse_keyword(start, b"true", JsonKind::True),
             b'f' => self.parse_keyword(start, b"false", JsonKind::False),
@@ -578,7 +587,6 @@ impl<'a> Parser<'a> {
                         locator: value_locator,
                         parent: value_parent,
                         children: Vec::new(),
-                        decoded: None,
                         string_has_escape: false,
                     });
                     self.index += 1;
@@ -606,7 +614,6 @@ impl<'a> Parser<'a> {
                         locator: value_locator,
                         parent: value_parent,
                         children: Vec::new(),
-                        decoded: None,
                         string_has_escape: false,
                     });
                     self.index += 1;
@@ -661,11 +668,16 @@ impl<'a> Parser<'a> {
                     return Err(self.error("expected object key"));
                 }
 
-                let key_node = self.parse_string(self.index)?;
-                let key = key_node
-                    .decoded
-                    .ok_or_else(|| self.error("expected object key"))?;
-                let key_span = key_node.span;
+                let (key_span, key_has_escape) = self.parse_string(self.index)?;
+                let key = DecodedString {
+                    source: self.input,
+                    text: self.text,
+                    span: key_span,
+                    has_escape: key_has_escape,
+                    checkpoints: &[],
+                }
+                .to_cow()
+                .into_owned();
                 let occurrence = occurrences.entry(key.clone()).or_insert(0);
                 *occurrence += 1;
                 let occurrence = *occurrence;
@@ -766,7 +778,6 @@ impl<'a> Parser<'a> {
                 locator: ChildLocator::Root,
                 parent: None,
                 children: Vec::new(),
-                decoded: None,
                 string_has_escape: false,
             })
         } else {
@@ -832,13 +843,11 @@ impl<'a> Parser<'a> {
             locator: ChildLocator::Root,
             parent: None,
             children: Vec::new(),
-            decoded: None,
             string_has_escape: false,
         })
     }
 
-    fn parse_string(&mut self, start: usize) -> Result<JsonNode, ParseError> {
-        let mut decoded = String::new();
+    fn parse_string(&mut self, start: usize) -> Result<(SourceSpan, bool), ParseError> {
         let mut string_has_escape = false;
         self.index += 1;
 
@@ -850,23 +859,18 @@ impl<'a> Parser<'a> {
 
             if character == '"' {
                 self.index += 1;
-                return Ok(JsonNode {
-                    kind: JsonKind::String,
-                    span: SourceSpan {
+                return Ok((
+                    SourceSpan {
                         start,
                         end: self.index,
                     },
-                    locator: ChildLocator::Root,
-                    parent: None,
-                    children: Vec::new(),
-                    decoded: Some(decoded),
                     string_has_escape,
-                });
+                ));
             }
 
             if character == '\\' {
                 string_has_escape = true;
-                self.parse_escape(&mut decoded)?;
+                self.parse_escape()?;
             } else if matches!(character, '\u{0}'..='\u{1f}') {
                 return Err(error_at(
                     self.input,
@@ -874,7 +878,6 @@ impl<'a> Parser<'a> {
                     "unescaped control character in string",
                 ));
             } else {
-                decoded.push(character);
                 self.index += character.len_utf8();
             }
         }
@@ -904,7 +907,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_escape(&mut self, decoded: &mut String) -> Result<(), ParseError> {
+    fn parse_escape(&mut self) -> Result<char, ParseError> {
         let escape_start = self.index;
         self.index += 1;
         let Some(character) = self.text[self.index..].chars().next() else {
@@ -913,26 +916,20 @@ impl<'a> Parser<'a> {
         self.index += character.len_utf8();
 
         match character {
-            '"' => decoded.push('"'),
-            '\\' => decoded.push('\\'),
-            '/' => decoded.push('/'),
-            'b' => decoded.push('\u{8}'),
-            'f' => decoded.push('\u{c}'),
-            'n' => decoded.push('\n'),
-            'r' => decoded.push('\r'),
-            't' => decoded.push('\t'),
-            'u' => self.parse_unicode_escape(decoded, escape_start)?,
-            _ => return Err(error_at(self.input, escape_start, "invalid string escape")),
+            '"' => Ok('"'),
+            '\\' => Ok('\\'),
+            '/' => Ok('/'),
+            'b' => Ok('\u{8}'),
+            'f' => Ok('\u{c}'),
+            'n' => Ok('\n'),
+            'r' => Ok('\r'),
+            't' => Ok('\t'),
+            'u' => self.parse_unicode_escape(escape_start),
+            _ => Err(error_at(self.input, escape_start, "invalid string escape")),
         }
-
-        Ok(())
     }
 
-    fn parse_unicode_escape(
-        &mut self,
-        decoded: &mut String,
-        escape_start: usize,
-    ) -> Result<(), ParseError> {
+    fn parse_unicode_escape(&mut self, escape_start: usize) -> Result<char, ParseError> {
         let high = self.parse_hex4()?;
 
         if (0xd800..=0xdbff).contains(&high) {
@@ -950,14 +947,12 @@ impl<'a> Parser<'a> {
             }
             let code_point =
                 0x10000 + (((u32::from(high) - 0xd800) << 10) | (u32::from(low) - 0xdc00));
-            decoded.push(char::from_u32(code_point).expect("valid surrogate pair"));
+            Ok(char::from_u32(code_point).expect("valid surrogate pair"))
         } else if (0xdc00..=0xdfff).contains(&high) {
-            return Err(error_at(self.input, escape_start, "unpaired low surrogate"));
+            Err(error_at(self.input, escape_start, "unpaired low surrogate"))
         } else {
-            decoded.push(char::from_u32(u32::from(high)).expect("valid non-surrogate scalar"));
+            Ok(char::from_u32(u32::from(high)).expect("valid non-surrogate scalar"))
         }
-
-        Ok(())
     }
 
     fn parse_hex4(&mut self) -> Result<u16, ParseError> {
@@ -1020,7 +1015,6 @@ mod tests {
     fn preserves_big_integer_and_exponent_lexemes() {
         let parsed = parse_json(b"123456789012345678901234567890").unwrap();
         assert_eq!(root(&parsed).kind, JsonKind::Number);
-        assert_eq!(root(&parsed).decoded, None);
         assert_eq!(lexeme(&parsed), "123456789012345678901234567890");
 
         let parsed = parse_json(b"-1.234e+567890").unwrap();
@@ -1032,18 +1026,21 @@ mod tests {
     fn preserves_unicode_escape_and_literal_emoji() {
         let parsed = parse_json(b"\"\\u0041\"").unwrap();
         assert_eq!(root(&parsed).kind, JsonKind::String);
-        assert_eq!(root(&parsed).decoded.as_deref(), Some("A"));
+        assert_eq!(parsed.decoded_string_at(0).unwrap().to_cow().as_ref(), "A");
         assert_eq!(lexeme(&parsed), "\"\\u0041\"");
 
         let parsed = parse_json("\"🦀\"".as_bytes()).unwrap();
-        assert_eq!(root(&parsed).decoded.as_deref(), Some("🦀"));
+        assert_eq!(parsed.decoded_string_at(0).unwrap().to_cow().as_ref(), "🦀");
         assert_eq!(lexeme(&parsed), "\"🦀\"");
     }
 
     #[test]
     fn decodes_valid_surrogate_pair() {
         let parsed = parse_json(b"\"\\ud83d\\ude00\"").unwrap();
-        assert_eq!(root(&parsed).decoded.as_deref(), Some("\u{1f600}"));
+        assert_eq!(
+            parsed.decoded_string_at(0).unwrap().to_cow().as_ref(),
+            "\u{1f600}"
+        );
     }
 
     #[test]
@@ -1062,7 +1059,10 @@ mod tests {
         for (input, expected) in cases {
             let parsed = parse_json(input).unwrap();
             assert_eq!(root(&parsed).kind, JsonKind::String);
-            assert_eq!(root(&parsed).decoded.as_deref(), Some(expected));
+            assert_eq!(
+                parsed.decoded_string_at(0).unwrap().to_cow().as_ref(),
+                expected
+            );
         }
     }
 
@@ -1075,6 +1075,23 @@ mod tests {
         assert_eq!(error.byte_offset, 1);
         assert_eq!(error.line, 1);
         assert_eq!(error.column, 2);
+    }
+
+    #[test]
+    fn reports_invalid_string_escape_positions() {
+        let cases = [
+            (&b"\"\\q\""[..], "invalid string escape", 1),
+            (&b"\"\\u12x4\""[..], "invalid unicode escape digit", 5),
+            (&b"\"\\u12\""[..], "incomplete unicode escape", 3),
+        ];
+
+        for (input, message, byte_offset) in cases {
+            let error = parse_json(input).unwrap_err();
+            assert_eq!(error.message, message);
+            assert_eq!(error.byte_offset, byte_offset);
+            assert_eq!(error.line, 1);
+            assert_eq!(error.column, byte_offset + 1);
+        }
     }
 
     #[test]
@@ -1092,7 +1109,7 @@ mod tests {
         assert_eq!(lexeme(&parsed), "true");
 
         let parsed = parse_json(b"\xEF\xBB\xBF\"A\"").unwrap();
-        assert_eq!(root(&parsed).decoded.as_deref(), Some("A"));
+        assert_eq!(parsed.decoded_string_at(0).unwrap().to_cow().as_ref(), "A");
         assert_eq!(root(&parsed).span, SourceSpan { start: 3, end: 6 });
         assert_eq!(lexeme(&parsed), "\"A\"");
     }
@@ -1396,7 +1413,6 @@ mod tests {
 
         let count = parsed.node(children[0]);
         assert_eq!(count.kind, JsonKind::Number);
-        assert_eq!(count.decoded, None);
         assert_eq!(
             str::from_utf8(parsed.raw_lexeme(children[0])).unwrap(),
             "123456789012345678901234567890"
@@ -1404,7 +1420,6 @@ mod tests {
 
         let rate = parsed.node(children[1]);
         assert_eq!(rate.kind, JsonKind::Number);
-        assert_eq!(rate.decoded, None);
         assert_eq!(
             str::from_utf8(parsed.raw_lexeme(children[1])).unwrap(),
             "-1.234e+567890"
@@ -1412,7 +1427,14 @@ mod tests {
 
         let escaped = parsed.node(children[2]);
         assert_eq!(escaped.kind, JsonKind::String);
-        assert_eq!(escaped.decoded.as_deref(), Some("A"));
+        assert_eq!(
+            parsed
+                .decoded_string_at(children[2].index())
+                .unwrap()
+                .to_cow()
+                .as_ref(),
+            "A"
+        );
         assert_eq!(
             str::from_utf8(parsed.raw_lexeme(children[2])).unwrap(),
             "\"\\u0041\""
@@ -1420,7 +1442,14 @@ mod tests {
 
         let emoji = parsed.node(children[3]);
         assert_eq!(emoji.kind, JsonKind::String);
-        assert_eq!(emoji.decoded.as_deref(), Some("🦀"));
+        assert_eq!(
+            parsed
+                .decoded_string_at(children[3].index())
+                .unwrap()
+                .to_cow()
+                .as_ref(),
+            "🦀"
+        );
         assert_eq!(
             str::from_utf8(parsed.raw_lexeme(children[3])).unwrap(),
             "\"🦀\""
