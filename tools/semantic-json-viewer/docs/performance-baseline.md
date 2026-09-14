@@ -1,6 +1,6 @@
 # Semantic JSON Viewer Core 性能基线
 
-> 状态：pre-lazy Core baseline，非发布验收 PASS，也不是最终性能报告。
+> 状态：保留 2026-09-09 pre-lazy Core baseline，并追加 2026-09-14 lazy-string/explicit-stack 复测；两者均非发布验收 PASS，也不是最终性能报告。
 
 ## 测试边界
 
@@ -41,6 +41,38 @@
 | openToRaw | 774717, 757643, 807332, 975471, 733550 | 774717 | 975471 |
 | readyToRaw | 4000, 2133, 5661, 5483, 2616 | 4000 | 5661 |
 
+## 2026-09-14 复测（lazy string decode + explicit container stack）
+
+- 环境：同一台 macOS Darwin arm64/aarch64 主机，11 logical CPUs，36 GiB 内存。
+- 构建与版本：release、Core-only（不含 Tauri/WebView，未测 RAM）；源码版本 `5cae6e5`，同时包含显式容器栈与 eager decoded 移除，不能将结果变化单独归因于其中一项。
+- 输入：沿用“固定输入”中的 100 MiB JSON 与 1 GiB JSONL，字节数和 SHA-256 完全一致。
+- 运行方式：每个 scenario 各 5 个全新 release 进程；JSONL 完成 index 后 idle 5 秒，再进行每轮 100 个 distinct head-tail selects，全部 `Valid`。所有结果的 `error[]` 为空，`identityCurrent` 为 `true`。
+- runner：`c214a20`。
+- p95 仍按 5 个样本 nearest-rank 计算，因此等于该组最大样本；单位均为 µs。
+
+### JSONL
+
+| 指标 | 5 次原始样本（µs） | median（µs） | p95（µs） |
+| --- | --- | ---: | ---: |
+| openToFirst20 | 658, 556, 487, 501, 632 | 556 | 658 |
+| index | 833992, 789032, 1096148, 783740, 779325 | 789032 | 1096148 |
+| perRunSeekMedian | 79.5, 27, 51, 53, 35 | 51 | 79.5 |
+| perRunSeekP95 | 140, 32, 57, 60, 63 | 60 | 140 |
+
+### Document（JSON）
+
+| 指标 | 5 次原始样本（µs） | median（µs） | p95（µs） |
+| --- | --- | ---: | ---: |
+| Document root | 569347, 516463, 517314, 521839, 516680 | 517314 | 569347 |
+| openToRaw | 571495, 518415, 519375, 523963, 518823 | 519375 | 571495 |
+| readyToRaw | 2147, 1951, 2061, 2122, 2143 | 2122 | 2147 |
+
+### 复测边界（仍非发布 PASS）
+
+- 未测 Tauri/WebView 首屏、完整应用私有工作集、index/arena/cache 的精确 capacity。
+- Linux 参考环境与 cold cache 尚未验证；macOS 的 cold preparation 不受 runner 支持，不能与 warm 结果聚合或据此推断 cold 性能。
+- 无预物化 value 的独立 allocation 回归已通过，但它只证明 parse 阶段的分配行为，不是整应用内存证明。
+
 ## 复现命令
 
 以下命令从仓库根目录执行，描述复现路径；本记录不声称在本次写文档操作中重新运行过这些命令。输出目录应为本次新建的临时目录，避免覆盖已有文件：
@@ -58,4 +90,4 @@ npm run benchmark:core -- --scenario document --path "$tmpdir/benchmark.json" --
 
 - 未测 Tauri/WebView 端到端耗时、RAM、index/LRU/private/inputmapping 内存。
 - Linux x86_64（至少 8 logical cores、16 GiB、NVMe）尚待验证。
-- 该结果只反映固定输入分布下的 lazy 前 Core 基线；不能外推到其他数据分布，也不能替代 spec §18 的最终性能验收。
+- 9/9 与 9/14 记录都只反映固定输入分布下的 Core 行为；不能外推到其他数据分布，也不能替代 spec §18 的最终性能验收。
