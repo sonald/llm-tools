@@ -117,7 +117,7 @@
 | Theme | 11043392 |
 | Networking | 6783504 |
 
-分类项相加为 `927487520 B`，与给定 total `926537248 B` 相差 `950272 B`；两者可能来自采样口径差异，本页不将分类项相加后冒充 total。主进程 `phys_footprint_peak` 为 `1210894328 B`。
+分类项相加为 `927487520 B`，与给定 total `926537248 B` 相差 `950272 B`；两者口径未进一步核定，本页保留原始值，不将分类项相加后冒充 total。主进程 `phys_footprint_peak` 为 `1210894328 B`。
 
 这只是 Native 采样流程 smoke，不是 5 轮 full-app PASS；不把 retained capacity 与 footprint 混为一谈，不与 Linux 直接等价，也不声称 cold cache 或文件 mapping 已测。
 
