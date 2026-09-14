@@ -1,5 +1,6 @@
 pub mod conversation;
 pub mod document_session;
+pub mod event_hint;
 pub mod file_route;
 pub mod file_source;
 pub mod html_sanitizer;

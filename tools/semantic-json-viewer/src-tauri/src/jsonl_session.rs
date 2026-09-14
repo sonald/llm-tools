@@ -6,6 +6,7 @@ use std::str::from_utf8;
 use crate::conversation::{
     ConversationCandidate, ConversationStyle, GenericConversationCursor, GenericConversationPage,
 };
+use crate::event_hint::EventHintSampler;
 use crate::file_source::{FileIdentity, FileSource, ReadChunk};
 use crate::json::ParsedJsonRetainedCapacity;
 use crate::jsonl_entry::{inspect_entry, EntryStatus, MAX_ENTRY_BYTES, PREVIEW_BYTES};
@@ -25,6 +26,7 @@ pub struct JsonlProgress {
     pub complete: bool,
     pub stride: u64,
     pub total_entries: Option<u64>,
+    pub event_stream_hint: Option<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,6 +82,7 @@ pub struct JsonlSession {
     selected: Option<(u64, TreeDocument)>,
     selected_location: Option<EntryLocation>,
     many_invalid_utf8_warning: bool,
+    event_hint: EventHintSampler,
 }
 
 fn append_entry_byte(bytes: &mut Vec<u8>, byte: u8) -> io::Result<()> {
@@ -107,6 +110,7 @@ impl JsonlSession {
             selected: None,
             selected_location: None,
             many_invalid_utf8_warning: false,
+            event_hint: EventHintSampler::new(),
         };
         session.scan_next()?;
         Ok(session)
@@ -169,6 +173,7 @@ impl JsonlSession {
                     "file ended before the next JSONL chunk",
                 ));
             }
+            self.event_hint.feed(&[], true);
             self.finish_index();
             self.ensure_current()?;
             return Ok(self.progress_unchecked());
@@ -178,6 +183,7 @@ impl JsonlSession {
             .as_mut()
             .expect("incomplete JSONL session has an indexer")
             .feed(&chunk.bytes);
+        self.event_hint.feed(&chunk.bytes, !chunk.has_more);
         self.next_offset = if chunk.has_more {
             chunk.next_offset.ok_or_else(|| {
                 io::Error::new(
@@ -728,6 +734,7 @@ impl JsonlSession {
                 complete: true,
                 stride: index.stride,
                 total_entries: Some(index.total_entry_count),
+                event_stream_hint: self.event_hint.hint(),
             }
         } else {
             let indexer = self
@@ -740,6 +747,7 @@ impl JsonlSession {
                 complete: false,
                 stride: indexer.stride(),
                 total_entries: None,
+                event_stream_hint: self.event_hint.hint(),
             }
         }
     }
@@ -1215,6 +1223,7 @@ mod tests {
                 complete: false,
                 stride: 1,
                 total_entries: None,
+                event_stream_hint: None,
             }
         );
         fs::remove_file(path).unwrap();
@@ -1259,6 +1268,29 @@ mod tests {
         assert_eq!(page.locations.len(), 20);
         assert!(!page.has_more);
         assert_eq!(page.next_cursor, None);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn event_hint_stops_sampling_at_two_hundred_but_index_scans_the_rest() {
+        let bytes = (0..205)
+            .map(|index| format!(r#"{{"type":"event","session_id":"s{index}"}}"#))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (path, mut session) = session("jsonl-session-event-hint-limit", bytes.as_bytes());
+
+        let progress = finish(&mut session);
+        assert_eq!(progress.total_entries, Some(205));
+        assert_eq!(progress.event_stream_hint, Some(false));
+        assert_eq!(
+            session
+                .list_entries(200, 200)
+                .unwrap()
+                .unwrap()
+                .locations
+                .len(),
+            5
+        );
         fs::remove_file(path).unwrap();
     }
 
@@ -1333,6 +1365,7 @@ mod tests {
             selected: None,
             selected_location: None,
             many_invalid_utf8_warning: false,
+            event_hint: EventHintSampler::new(),
         };
 
         assert_eq!(

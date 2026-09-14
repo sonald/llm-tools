@@ -349,6 +349,7 @@ pub struct JsonlProgressDto {
     pub complete: bool,
     pub stride: u64,
     pub total_entries: Option<u64>,
+    pub event_stream_hint: Option<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -3569,6 +3570,7 @@ fn progress_dto(progress: JsonlProgress) -> JsonlProgressDto {
         complete: progress.complete,
         stride: progress.stride,
         total_entries: progress.total_entries,
+        event_stream_hint: progress.event_stream_hint,
     }
 }
 
@@ -3774,6 +3776,55 @@ mod tests {
             assert_eq!(candidate.scope_root_id, root_id, "{name} scope root");
         }
         fs::remove_dir_all(directory).expect("generated fixture directory should be removable");
+    }
+
+    #[test]
+    fn event_hint_ipc_consumes_generated_f06_fixtures_and_reaches_list_progress() {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system clock is before Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "semantic-json-viewer-ipc-event-fixtures-{}-{nanos}",
+            std::process::id()
+        ));
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/generate-semantic-fixtures.mjs");
+        let output = Command::new("node")
+            .arg(script)
+            .arg(&directory)
+            .output()
+            .expect("node must be available to generate event fixtures");
+        assert!(
+            output.status.success(),
+            "fixture generation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let state = AppState::default();
+        for (name, expected_hint) in [
+            ("event-stream-positive.jsonl", true),
+            ("event-stream-training-negative.jsonl", false),
+        ] {
+            let path = directory.join(name);
+            let summary = open_file_inner(&state, path.to_str().expect("fixture path is UTF-8"))
+                .expect("generated event fixture should open");
+            let progress = summary.progress.as_ref().expect("entry progress");
+            assert_eq!(progress.event_stream_hint, Some(expected_hint), "{name}");
+            assert_eq!(progress.indexed_entries, 10, "{name} indexed entries");
+            assert!(progress.complete, "{name} should finish in the first chunk");
+
+            let page = list_entries_inner(&state, 0, 200, summary.session_revision)
+                .expect("event fixture should list");
+            assert_eq!(
+                page.progress.event_stream_hint,
+                Some(expected_hint),
+                "{name} list hint"
+            );
+            assert_eq!(page.entries.len(), 10, "{name} list entries");
+        }
+        fs::remove_dir_all(directory)
+            .expect("generated event fixture directory should be removable");
     }
 
     fn nested_chain(depth: usize) -> String {
