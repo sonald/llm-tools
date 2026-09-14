@@ -418,6 +418,7 @@ const childItem=nested.host.querySelector('[data-node-id="32"]');check(childItem
 check(nested.host.querySelector('[data-node-id="40"]')!==null,"Nested frame did not open");nested.elements.nested.decodedTab.click();await settle();check(nested.elements.content.querySelector(".text-line-view-row")!==null,"Nested decoded string did not use the line view");nested.elements.nested.rawTab.click();await settle();check(nested.elements.content.querySelector(".text-line-view-row")!==null,"Nested raw string did not use the line view");nested.elements.nested.decodedTab.click();await settle();nested.elements.wrap.noWrap.click();
 check(nested.elements.content.classList.contains("is-no-wrap"),"Nested decoded source did not accept No Wrap");nested.elements.nested.back.click();await settle();
 check(nested.elements.content.classList.contains("is-no-wrap")&&nested.elements.representation.textContent.includes("Parsed"),"Returning from nested frame mixed state or dropped No Wrap");
+check(nested.elements.string.representations.hidden,"Returning to Parsed parent left ordinary string representations visible");
 check(nested.elements.wrap.noWrap.disabled===true,"No Wrap was not disabled for the Parsed tree");
 nested.viewer.clear(false);nested.host.remove();
 return {pass:true,assertions};

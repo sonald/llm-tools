@@ -2550,6 +2550,11 @@ export class ContentViewer {
 
   private setNestedVisible(active: boolean): void {
     const nested = this.nestedElements;
+    const parsed = active && this.nestedFrames.at(-1)?.kind === "json" && this.nestedRepresentation === "parsed";
+    if (parsed) {
+      this.setStringVisible(false);
+      this.setHtmlVisible(false);
+    }
     if (!nested) return;
     const frame = this.nestedFrames.at(-1);
     const parsedFrame = frame?.kind === "json";
