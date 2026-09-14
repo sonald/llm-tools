@@ -16,25 +16,25 @@
 | 编码 | UTF-8 和 UTF-8 BOM 支持；UTF-16/UTF-32 BOM 文件级拒绝；坏 UTF-8 `.json` 可保留为 Raw-only；坏 JSONL 行保留 Lossy Text/Hex，前部样本中坏行超过 20% 时给 warning | 已实现，Native 完整矩阵尚未验：`src-tauri/src/file_route.rs`、`src-tauri/src/jsonl_entry.rs`、`src-tauri/src/jsonl_session.rs`、`src-tauri/src/ipc.rs` |
 | 大 Entry | Entry 大于 16 MiB 不解析，保留有界 Raw 预览与位置能力 | 已实现：`src-tauri/src/jsonl_entry.rs` (`MAX_ENTRY_BYTES`)、`src-tauri/src/jsonl_session.rs` |
 | 无损 JSON | duplicate key occurrence、原始 span、超大整数、exponent、转义和 emoji 均保留；Copy 从原始 span 读取 | 已实现：`src-tauri/src/json.rs`、`src-tauri/src/tree.rs`、`src-tauri/src/ipc.rs`；局部 Native 证据见 `docs/native-acceptance.md` |
-| Schema 重复字段 | 通用树路径有 occurrence；Schema 依赖字段的重复 key 仍缺 `Ambiguous duplicate field` 提示和 Generic Object 回退，不能用 tool ID 关联歧义处理替代 | 未完成：`src-tauri/src/conversation.rs`、`src/conversation-view.ts` |
+| Schema 重复字段 | 消息、包装对象及已支持的专用子对象按实际依赖检查重复 key；显示歧义提示并保留完整 Raw/Tree source，不继续专用渲染 | `4754220`、`8919672`、`bb8cf6d`；独立 Core 318、Conversation UI 96 通过，Native 未验 |
 
 ## 浏览与渲染
 
 | 范围 | 当前行为 | 状态与证据 |
 | --- | --- | --- |
-| EntryList / Tree | EntryList 当前 50 行分页；Tree child IPC page 为 200。大型 Tree child 列表加载后仍可能累积 DOM，不能称为完整滚动虚拟化 | 部分实现：`src/entry-list.ts`、`src/tree-view.ts` |
+| EntryList / Tree | Entry 与 Tree child IPC page 均为 200；Entry 按实测行高挂载视口窗口，Tree 按 35px 行高挂载窗口，保留已加载数据和导航状态 | `55d8f92`、`453f22a`；独立 Entry 43、Tree 33 浏览器检查通过，Native 未验；DOM 上限不等于 projection cache 预算已验收 |
 | Collection / Conversation / Plain | Collection 窗口、Conversation block 窗口和 Plain text line window 已有实现及局部证据；不据此宣称所有列表或 Code 窗口都已虚拟化 | 部分证据：`src/collection-list.ts`、`src/conversation-view.ts`、`src/text-line-view.ts`、`docs/native-acceptance.md` |
 | Code | 支持 Python、JavaScript、TypeScript、Rust、C、C++、Java、Go、Shell、SQL、JSON、YAML；自动猜语言上限 256 KiB，高亮上限为 1 MiB 或 20,000 行，超限退回 Plain Code window | `ace1f24` 已实现超限窗口；独立 wrap 90、Rendered 61 自动化通过，Native 尚未验收：`src/code-renderer.ts`、`src/content-viewer.ts` |
 | Markdown | 自动渲染上限 2 MiB；显式继续渲染上限 32 MiB；链接显示为文本、图片为占位，raw HTML 不执行 | 已实现但安全 Native 五零证据未闭环：`src/content-viewer.ts`、`src/markdown-renderer.ts` |
 | HTML | HTML Preview 输入上限 512 KiB，输出上限 1 MiB；HTML 自动启发式检测上限 64 KiB | Core/浏览器路径已有边界；Native 五项零证据仍未闭环：`src/content-viewer.ts`、`src-tauri/src/html_sanitizer.rs`、`src-tauri/src/semantic_detection.rs` |
-| Nested JSON | 单层 2 MiB、累计 8 MiB；Core 默认最大深度 5、硬上限 10。UI 还没有把最大深度 10 作为入口暴露；`4a090e6` 已修复重复 tabs，自动化通过，原 Native FAIL 待复测 | Core/UI 修复已提交，Native 仍不完整：`src-tauri/src/semantic_detection.rs`、`src-tauri/src/ipc.rs`、`src/content-viewer.ts`、`docs/native-acceptance.md` |
+| Nested JSON | 单层 2 MiB、累计 8 MiB；默认深度 5，UI 可选 1–10，变更时从嵌套根重新打开；`4a090e6` 的原 Native tabs FAIL 仍待复测 | `d9b6066`；独立 Content Viewer 144、Parsed Search 32 通过，Native 仍不完整：`docs/native-acceptance.md` |
 
 ## Entry hint、国际化与平台
 
 | 范围 | 当前行为 | 状态与证据 |
 | --- | --- | --- |
 | Event Stream hint | Core hint 和 summary 路径已提交；`f06d3dc` 已实现 Auto / Generic / Event UI，headless 25 项断言和 main 集成通过 | UI 已提交、Native 未验：`src-tauri/src/event_hint.rs`、`src/entry-list.ts`、`docs/native-acceptance.md` |
-| i18n | 壳、列表、Tree、Raw 标签已有中文资源/实证；Viewer、Conversation、Search 和错误文案仍未全量翻译 | 部分/WIP：`src/i18n.ts`、`src/i18n/en.ts`、`src/i18n/zh-CN.ts`；实证见 `docs/native-acceptance.md` |
+| i18n | 壳、列表、Tree、Raw 和搜索组件已有中文资源；搜索组件独立英文 115/中文 8 浏览器检查通过。Viewer 提供的搜索说明、Viewer/Conversation 其余文案和部分错误仍未全量翻译 | `68b019b`；整体仍为部分/WIP，Native 实证见 `docs/native-acceptance.md` |
 | macOS | 有 macOS arm64 Native 局部真实证据；`4a090e6` 的 Nested tabs 自动化修复已通过，但原 Native FAIL 尚未复测关闭 | 部分验收：`docs/native-acceptance.md` |
 | Linux | Linux 参考环境的 cold/warm、fresh 五轮、private-memory 和完整性能门槛尚未测 | 未验：`docs/performance-baseline.md` |
 | Windows | `320af83` 已补 FileSource 的平台读取分支；本机回归通过，但未进行 Windows 编译、运行或安全验收，不先列为已支持 | 未验：`src-tauri/src/file_source.rs` |

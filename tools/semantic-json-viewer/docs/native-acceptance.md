@@ -14,6 +14,8 @@
 - `4a090e6` 已修复 Nested 重复 tabs；自动化已通过，但原 Native tabs FAIL 尚未重新启动应用复测，因此不关闭下述 FAIL。
 - `ace1f24` 已实现 Code 超限窗口；独立 wrap 90 项、Rendered 61 项通过，但尚未做 Native 真实复测。
 - `4754220` 已实现 Conversation 消息及包装对象依赖字段重复时的完整 source 回退与 `ambiguousDuplicateField` DTO 标记；主代理独立 `cargo test --lib --quiet` 为 310 passed。宽对象的 Generic/Anthropic 连续分页与 style 切换只执行一次包装字段检查，切换 scope/candidate 会重新检查。该提交不包含专用子对象适配、UI 歧义提示或 Native 验收，不能据此关闭 spec §6.3。
+- 后续 `8919672` 与 `bb8cf6d` 补充专用子对象和 UI 歧义回退；独立 Core 318、Conversation UI 96 通过。`55d8f92` Entry 窗口独立 43、`453f22a` Tree 窗口独立 33、`d9b6066` Nested 深度设置独立 Content Viewer 144/Parsed Search 32、`68b019b` 搜索本地化独立英文 115/中文 8 通过。最终前端 build/i18n 检查通过；这些均未重跑 Native，不关闭原 Native FAIL。
+- `f14c971` 将旧 Code DOM 断言对齐现有 TextLineView，并固定英文测试入口；独立安全渲染套件 1773 项通过，浏览器 HAR 为 2 entries、hostile/http-hostile/data 请求均为 0。这不是 F-11 Native 五零证据。
 - 后续 Tauri bundle 构建成功，嵌入 assets 为 `index-CYvEL1Ai.js` / `index-C3LmfEmL.css`。尝试退出旧应用时 CUA 报告 macOS 锁屏，未能启动新实例复测；本节不能新增该 bundle 的 Native PASS。已有 Native 表格仍明确只对应 `index-Cn2orAV9.js`。
 
 ## 已实证项目
