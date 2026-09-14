@@ -1,0 +1,44 @@
+# Semantic JSON Viewer 支持矩阵
+
+> 这是当前实现的 M4 快照，不是发布声明。源代码行为以当前 checkout 为准；真实 Native 证据见 [`native-acceptance.md`](native-acceptance.md)，Core 性能和内存观测见 [`performance-baseline.md`](performance-baseline.md)。两份证据都明确存在未验收项，不能合并解释为 F-00 至 F-12 全 PASS。
+
+状态含义：`已实现` 表示当前代码有对应路径；`部分/WIP` 表示仍有限制、缺口或只完成局部证据；`未支持/未验` 不纳入当前支持承诺。
+
+## 文件、编码与无损能力
+
+| 范围 | 当前行为 | 状态与证据 |
+| --- | --- | --- |
+| 本地 `.json` | 按根节点路由：根 array 为 Collection，其他根类型为 Document；pretty 或 one-line 不改变此规则 | 已实现：`src-tauri/src/file_route.rs` 的 `path_kind`、`route_json`、`mode_for_root` |
+| `.jsonl` / `.ndjson` | 明确扩展名直接进入 Entry；Entry 列表按非空物理行浏览 | 已实现：`src-tauri/src/file_route.rs`、`src/entry-list.ts` |
+| 未知扩展 | 自动判断时，`≤128 MiB` 先尝试完整 JSON；更大输入只取有界 JSONL 样本，至少 2 条且需达到 90% 合法行。`128 MiB` 是自动路由分支阈值，不是 JSON 文件大小上限；显式 Document 选择可走完整读取 | 已实现但需遵守边界：`src-tauri/src/file_route.rs` (`FULL_PARSE_LIMIT_BYTES`、`SAMPLE_SIZE_LIMIT`、`detects_jsonl`) |
+| framing | RS framing 有专门拒绝；串接 JSON 在 Unknown 路由有专门检测，显式 `.json` 为 Invalid JSON，`.jsonl` 为坏 Entry，不能称为所有扩展名统一文件级拒绝 | 已实现：`src-tauri/src/file_route.rs`；F00/F07 固定输入生成器见 `fixtures/generate-raw-document-fixtures.mjs` |
+| 显式拒绝 | `jsonc`、`json5`、`gz`、`zst` 拒绝，不解压。YAML/XML 没有 parser，但其扩展名属于 unknown，不是一律按扩展名拒绝 | 已实现的路由边界：`src-tauri/src/file_route.rs`；v0.1 排除项见 `docs/spec.md` §24 |
+| 编码 | UTF-8 和 UTF-8 BOM 支持；UTF-16/UTF-32 BOM 文件级拒绝；坏 UTF-8 `.json` 可保留为 Raw-only；坏 JSONL 行保留 Lossy Text/Hex，前部样本中坏行超过 20% 时给 warning | 已实现，Native 完整矩阵尚未验：`src-tauri/src/file_route.rs`、`src-tauri/src/jsonl_entry.rs`、`src-tauri/src/jsonl_session.rs`、`src-tauri/src/ipc.rs` |
+| 大 Entry | Entry 大于 16 MiB 不解析，保留有界 Raw 预览与位置能力 | 已实现：`src-tauri/src/jsonl_entry.rs` (`MAX_ENTRY_BYTES`)、`src-tauri/src/jsonl_session.rs` |
+| 无损 JSON | duplicate key occurrence、原始 span、超大整数、exponent、转义和 emoji 均保留；Copy 从原始 span 读取 | 已实现：`src-tauri/src/json.rs`、`src-tauri/src/tree.rs`、`src-tauri/src/ipc.rs`；局部 Native 证据见 `docs/native-acceptance.md` |
+| Schema 重复字段 | 通用树路径有 occurrence；Schema 依赖字段的重复 key 仍缺 `Ambiguous duplicate field` 提示和 Generic Object 回退，不能用 tool ID 关联歧义处理替代 | 未完成：`src-tauri/src/conversation.rs`、`src/conversation-view.ts` |
+
+## 浏览与渲染
+
+| 范围 | 当前行为 | 状态与证据 |
+| --- | --- | --- |
+| EntryList / Tree | EntryList 当前 50 行分页；Tree child IPC page 为 200。大型 Tree child 列表加载后仍可能累积 DOM，不能称为完整滚动虚拟化 | 部分实现：`src/entry-list.ts`、`src/tree-view.ts` |
+| Collection / Conversation / Plain | Collection 窗口、Conversation block 窗口和 Plain text line window 已有实现及局部证据；不据此宣称所有列表或 Code 窗口都已虚拟化 | 部分证据：`src/collection-list.ts`、`src/conversation-view.ts`、`src/text-line-view.ts`、`docs/native-acceptance.md` |
+| Code | 支持 Python、JavaScript、TypeScript、Rust、C、C++、Java、Go、Shell、SQL、JSON、YAML；自动猜语言上限 256 KiB，高亮上限为 1 MiB 或 20,000 行，超限退回 Plain Code window | 前端路径已有实现；超限 Code window 仍 WIP、Native 尚未验收：`src/code-renderer.ts`、`src/content-viewer.ts` |
+| Markdown | 自动渲染上限 2 MiB；显式继续渲染上限 32 MiB；链接显示为文本、图片为占位，raw HTML 不执行 | 已实现但安全 Native 五零证据未闭环：`src/content-viewer.ts`、`src/markdown-renderer.ts` |
+| HTML | HTML Preview 输入上限 512 KiB，输出上限 1 MiB；HTML 自动启发式检测上限 64 KiB | Core/浏览器路径已有边界；Native 五项零证据仍未闭环：`src/content-viewer.ts`、`src-tauri/src/html_sanitizer.rs`、`src-tauri/src/semantic_detection.rs` |
+| Nested JSON | 单层 2 MiB、累计 8 MiB；Core 默认最大深度 5、硬上限 10。UI 还没有把最大深度 10 作为入口暴露 | Core 已实现，UI 不完整：`src-tauri/src/semantic_detection.rs`、`src-tauri/src/ipc.rs`、`src/content-viewer.ts` |
+
+## Entry hint、国际化与平台
+
+| 范围 | 当前行为 | 状态与证据 |
+| --- | --- | --- |
+| Event Stream hint | Core hint 和 summary 路径已提交；Auto / Generic / Event 的完整 UI 体验仍在 WIP | 部分/WIP：`src-tauri/src/event_hint.rs`、`src/entry-list.ts` |
+| i18n | 壳、列表、Tree、Raw 标签已有中文资源/实证；Viewer、Conversation、Search 和错误文案仍未全量翻译 | 部分/WIP：`src/i18n.ts`、`src/i18n/en.ts`、`src/i18n/zh-CN.ts`；实证见 `docs/native-acceptance.md` |
+| macOS | 有 macOS arm64 Native 局部真实证据，但存在未关闭 Nested tabs FAIL | 部分验收：`docs/native-acceptance.md` |
+| Linux | Linux 参考环境的 cold/warm、fresh 五轮、private-memory 和完整性能门槛尚未测 | 未验：`docs/performance-baseline.md` |
+| Windows | `320af83` 已补 FileSource 的平台读取分支；本机回归通过，但未进行 Windows 编译、运行或安全验收，不先列为已支持 | 未验：`src-tauri/src/file_source.rs` |
+
+## 明确排除（v0.1）
+
+不支持或不进入本版本：JSON 编辑、保存/重写、目录批量打开和多文件 Tab、stdin、tail、gzip/zstd 解压、Query Language、全文件 JSONPath、Semantic Search、跨 Entry 聚合/字段统计、远程图片，以及 spec §24 列出的其他扩展能力。这里的“排除”是范围边界，不代表未来实现不存在价值。
