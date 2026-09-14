@@ -9,7 +9,9 @@ use crate::conversation::{
 use crate::event_hint::EventHintSampler;
 use crate::file_source::{FileIdentity, FileSource, ReadChunk};
 use crate::json::ParsedJsonRetainedCapacity;
-use crate::jsonl_entry::{inspect_entry, EntryStatus, MAX_ENTRY_BYTES, PREVIEW_BYTES};
+use crate::jsonl_entry::{
+    inspect_entry_with_summary, EntryEventSummary, EntryStatus, MAX_ENTRY_BYTES, PREVIEW_BYTES,
+};
 use crate::jsonl_index::{
     Checkpoint, EntryLocation, JsonlIndex, JsonlIndexRetainedCapacity, JsonlIndexer,
 };
@@ -40,6 +42,7 @@ pub struct EntryPage {
 pub struct EntrySummary {
     pub location: EntryLocation,
     pub status: EntryStatus,
+    pub event_summary: Option<EntryEventSummary>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -336,17 +339,20 @@ impl JsonlSession {
             .byte_end
             .checked_sub(location.byte_start)
             .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
-        let (status, tree) = match loaded.bytes {
-            None => (EntryStatus::Oversized, None),
+        let (status, tree, event_summary) = match loaded.bytes {
+            None => (EntryStatus::Oversized, None, None),
             Some(_bytes)
                 if length > u64::try_from(MAX_ENTRY_BYTES).expect("entry size exceeds u64") =>
             {
-                (EntryStatus::Oversized, None)
+                (EntryStatus::Oversized, None, None)
             }
-            Some(bytes) if from_utf8(&bytes).is_err() => (EntryStatus::InvalidUtf8, None),
+            Some(bytes) if from_utf8(&bytes).is_err() => (EntryStatus::InvalidUtf8, None, None),
             Some(bytes) => match TreeDocument::from_bytes(bytes) {
-                Ok(tree) => (EntryStatus::Valid, Some(tree)),
-                Err(error) => (EntryStatus::InvalidJson(error), None),
+                Ok(tree) => {
+                    let event_summary = tree.event_summary();
+                    (EntryStatus::Valid, Some(tree), event_summary)
+                }
+                Err(error) => (EntryStatus::InvalidJson(error), None, None),
             },
         };
         self.ensure_current()?;
@@ -356,7 +362,11 @@ impl JsonlSession {
         }
         self.selected_location = Some(location);
         Ok(Some(EntrySelection {
-            summary: EntrySummary { location, status },
+            summary: EntrySummary {
+                location,
+                status,
+                event_summary,
+            },
             root,
         }))
     }
@@ -939,14 +949,19 @@ impl JsonlSession {
             .byte_end
             .checked_sub(location.byte_start)
             .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
-        let status = if length > u64::try_from(MAX_ENTRY_BYTES).expect("entry size exceeds u64") {
-            EntryStatus::Oversized
-        } else {
-            let bytes = self.read_range(location.byte_start, length)?;
-            inspect_entry(&bytes)
-        };
+        let (status, event_summary) =
+            if length > u64::try_from(MAX_ENTRY_BYTES).expect("entry size exceeds u64") {
+                (EntryStatus::Oversized, None)
+            } else {
+                let bytes = self.read_range(location.byte_start, length)?;
+                inspect_entry_with_summary(&bytes)
+            };
         self.ensure_current()?;
-        Ok(EntrySummary { location, status })
+        Ok(EntrySummary {
+            location,
+            status,
+            event_summary,
+        })
     }
 
     fn read_range(&self, start: u64, length: u64) -> io::Result<Vec<u8>> {
@@ -1419,6 +1434,27 @@ mod tests {
         ));
         assert_eq!(page.summaries[3].status, EntryStatus::Valid);
         assert_eq!(page.summaries[3].location.source_line, 4);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn list_and_select_keep_event_summary_and_entry_location_identical() {
+        let bytes =
+            br#"{"type":"tool_call","timestamp":"2026-01-01T00:00:00Z","session_id":"session-1"}
+[]
+{"type":"training_sample"}"#;
+        let (path, mut session) = session("jsonl-session-event-summary", bytes);
+        let page = session.list_entry_summaries(0, 200).unwrap().unwrap();
+        assert_eq!(page.summaries.len(), 3);
+        assert!(page.summaries[0].event_summary.is_some());
+        assert_eq!(page.summaries[1].event_summary, None);
+        assert!(page.summaries[2].event_summary.is_some());
+
+        let listed = page.summaries[0].clone();
+        let selected = session.select_entry(0).unwrap().unwrap();
+        assert_eq!(selected.summary.location, listed.location);
+        assert_eq!(selected.summary.status, listed.status);
+        assert_eq!(selected.summary.event_summary, listed.event_summary);
         fs::remove_file(path).unwrap();
     }
 

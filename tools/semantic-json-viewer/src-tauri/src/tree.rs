@@ -9,6 +9,7 @@ use crate::json::{
     parse_json_owned, ChildLocator, DecodedString, JsonKind, JsonNode, ParseError, ParsedJson,
     ParsedJsonRetainedCapacity, SourceSpan,
 };
+use crate::jsonl_entry::{event_summary_from_parsed, EntryEventSummary};
 use crate::search::{self, SearchError, SearchPage, SearchRequest};
 use crate::semantic_detection::{detect, Detection, NestedBudget, PlainReason, MAX_INPUT_BYTES};
 
@@ -36,6 +37,10 @@ impl TreeDocument {
 
     pub fn retained_capacity(&self) -> ParsedJsonRetainedCapacity {
         self.parsed.retained_capacity()
+    }
+
+    pub fn event_summary(&self) -> Option<EntryEventSummary> {
+        event_summary_from_parsed(&self.parsed)
     }
 
     pub fn node(&self, id: usize) -> Option<NodeProjection> {

@@ -19,7 +19,7 @@ use crate::file_route::{
 use crate::file_source::{FileIdentity, FileSource, ReadChunk};
 use crate::html_sanitizer::{self, HtmlPreviewReason};
 use crate::json::JsonKind;
-use crate::jsonl_entry::EntryStatus;
+use crate::jsonl_entry::{EntryEventSummary, EntryEventValue, EntryStatus};
 use crate::jsonl_session::{
     EntrySelection, EntrySummary, JsonlProgress, JsonlSession, OversizedPreview,
 };
@@ -376,6 +376,22 @@ pub struct EntryDto {
     pub location: EntryLocationDto,
     pub status: String,
     pub parse_error: Option<ParseErrorDto>,
+    pub event_summary: Option<EntryEventSummaryDto>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryEventValueDto {
+    pub value: String,
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryEventSummaryDto {
+    pub event_type: Option<EntryEventValueDto>,
+    pub timestamp: Option<EntryEventValueDto>,
+    pub grouping: Option<EntryEventValueDto>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -3589,6 +3605,7 @@ fn entry_dto(summary: EntrySummary) -> EntryDto {
             }),
         ),
     };
+    let event_summary = summary.event_summary.map(event_summary_dto);
     EntryDto {
         location: EntryLocationDto {
             entry_ordinal: summary.location.entry_ordinal,
@@ -3598,6 +3615,22 @@ fn entry_dto(summary: EntrySummary) -> EntryDto {
         },
         status: status.to_owned(),
         parse_error,
+        event_summary,
+    }
+}
+
+fn event_summary_dto(summary: EntryEventSummary) -> EntryEventSummaryDto {
+    EntryEventSummaryDto {
+        event_type: summary.event_type.map(event_value_dto),
+        timestamp: summary.timestamp.map(event_value_dto),
+        grouping: summary.grouping.map(event_value_dto),
+    }
+}
+
+fn event_value_dto(value: EntryEventValue) -> EntryEventValueDto {
+    EntryEventValueDto {
+        value: value.value,
+        has_more: value.has_more,
     }
 }
 
@@ -3620,6 +3653,7 @@ fn oversized_preview_dto(preview: OversizedPreview) -> OversizedPreviewDto {
             },
             status: "oversized".to_owned(),
             parse_error: None,
+            event_summary: None,
         },
         head: preview.head,
         tail: preview.tail,
@@ -3822,9 +3856,87 @@ mod tests {
                 "{name} list hint"
             );
             assert_eq!(page.entries.len(), 10, "{name} list entries");
+            let event_summary = page.entries[0]
+                .event_summary
+                .as_ref()
+                .expect("event fixture entry summary");
+            assert_eq!(
+                event_summary
+                    .event_type
+                    .as_ref()
+                    .expect("event type summary")
+                    .value,
+                if expected_hint {
+                    "message"
+                } else {
+                    "training_sample"
+                },
+                "{name} event type"
+            );
+            if expected_hint {
+                assert_eq!(
+                    event_summary
+                        .timestamp
+                        .as_ref()
+                        .expect("timestamp summary")
+                        .value,
+                    "2026-01-01T00:00:00Z"
+                );
+            } else {
+                assert_eq!(event_summary.timestamp, None, "{name} timestamp");
+                assert_eq!(event_summary.grouping, None, "{name} grouping");
+            }
+            let encoded = serde_json::to_value(&page.entries[0]).expect("event DTO encoding");
+            assert!(
+                encoded.get("eventSummary").is_some(),
+                "{name} event wire field"
+            );
         }
         fs::remove_dir_all(directory)
             .expect("generated event fixture directory should be removable");
+    }
+
+    #[test]
+    fn event_summary_page_stays_below_ipc_payload_limit_at_full_page_boundary() {
+        let path = temp_jsonl_path("ipc-event-summary-payload");
+        let escaped_nuls = r#"\u0000"#.repeat(256);
+        let input = (0..200)
+            .map(|_| {
+                format!(
+                    r#"{{"type":"{escaped_nuls}","timestamp":"{escaped_nuls}","session_id":"{escaped_nuls}"}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, input).expect("event payload fixture should be writable");
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().expect("fixture path is UTF-8"))
+            .expect("event payload fixture should open");
+        let mut progress = opened.progress.clone().expect("entry progress");
+        while !progress.complete {
+            progress = scan_entries_inner(&state, opened.session_revision)
+                .expect("event payload fixture should finish indexing");
+        }
+
+        let page = list_entries_inner(&state, 0, 200, opened.session_revision)
+            .expect("event payload fixture should list");
+        assert_eq!(page.entries.len(), 200);
+        for entry in &page.entries {
+            let summary = entry.event_summary.as_ref().expect("event summary");
+            for value in [
+                summary.event_type.as_ref().expect("event type"),
+                summary.timestamp.as_ref().expect("timestamp"),
+                summary.grouping.as_ref().expect("grouping"),
+            ] {
+                assert_eq!(value.value.chars().count(), 256);
+                assert!(value.value.chars().all(|character| character == '\0'));
+                assert!(!value.has_more);
+            }
+        }
+        let encoded = serde_json::to_vec(&page).expect("event page should serialize");
+        println!("event summary page payload bytes: {}", encoded.len());
+        assert!(encoded.len() < MAX_IPC_PAYLOAD_BYTES);
+        fs::remove_file(path).expect("event payload fixture should be removable");
     }
 
     fn nested_chain(depth: usize) -> String {
