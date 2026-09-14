@@ -470,10 +470,11 @@ pub fn parse_json(input: &[u8]) -> Result<ParsedJson<'_>, ParseError> {
 }
 
 pub fn parse_json_owned(input: Vec<u8>) -> Result<ParsedJson<'static>, ParseError> {
-    let (nodes, checkpoints) = {
+    let (mut nodes, checkpoints) = {
         let parsed = parse_json(&input)?;
         (parsed.nodes, parsed.checkpoints)
     };
+    nodes.shrink_to_fit();
     let source = String::from_utf8(input).expect("parse_json validated UTF-8");
 
     Ok(ParsedJson {
@@ -1586,6 +1587,45 @@ mod tests {
     }
 
     #[test]
+    fn owned_node_arena_shrink_preserves_duplicate_raw_spans() {
+        let source = br#"{"a":0,"a":1,"a":2,"a":3,"a":4}"#.to_vec();
+        let borrowed = parse_json(&source).unwrap();
+        let borrowed_capacity = borrowed.nodes.capacity();
+        assert!(borrowed_capacity > borrowed.node_count());
+
+        let parsed = parse_json_owned(source).unwrap();
+        assert_eq!(parsed.nodes.capacity(), parsed.node_count());
+        assert!(parsed.nodes.capacity() < borrowed_capacity);
+
+        let children = parsed.node(parsed.root()).children.clone();
+        for (index, expected) in [b"0".as_slice(), b"1", b"2", b"3", b"4"]
+            .into_iter()
+            .enumerate()
+        {
+            let child = parsed.node(children[index]);
+            assert_eq!(parsed.raw_lexeme(children[index]), expected);
+            assert_eq!(
+                child.span,
+                SourceSpan {
+                    start: 5 + index * 6,
+                    end: 6 + index * 6,
+                }
+            );
+            assert_eq!(
+                child.locator,
+                ChildLocator::ObjectKey {
+                    key: "a".to_owned(),
+                    key_span: SourceSpan {
+                        start: 1 + index * 6,
+                        end: 4 + index * 6,
+                    },
+                    occurrence: index + 1,
+                }
+            );
+        }
+    }
+
+    #[test]
     fn retained_capacity_reports_owned_and_arena_buffer_capacities() {
         let key = r#"\u0061"#.repeat(257);
         let value = r#"\u0061"#.repeat(11_000);
@@ -1597,6 +1637,10 @@ mod tests {
             .nodes
             .capacity()
             .saturating_mul(std::mem::size_of::<JsonNode>());
+        assert!(
+            borrowed_capacity.nodes_capacity_bytes
+                > borrowed.node_count() * std::mem::size_of::<JsonNode>()
+        );
         let expected_children = borrowed.nodes.iter().fold(0usize, |total, node| {
             total.saturating_add(
                 node.children
@@ -1646,7 +1690,11 @@ mod tests {
             expected_source_capacity
         );
         assert!(owned_capacity.source_capacity_bytes > owned.source().len());
-        assert_eq!(owned_capacity.nodes_capacity_bytes, expected_nodes);
+        assert_eq!(
+            owned_capacity.nodes_capacity_bytes,
+            owned.node_count() * std::mem::size_of::<JsonNode>()
+        );
+        assert!(owned_capacity.nodes_capacity_bytes < expected_nodes);
         assert_eq!(owned_capacity.children_capacity_bytes, expected_children);
         assert_eq!(
             owned_capacity.object_key_capacity_bytes,
