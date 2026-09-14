@@ -24,18 +24,18 @@
 | --- | --- | --- |
 | EntryList / Tree | EntryList 当前 50 行分页；Tree child IPC page 为 200。大型 Tree child 列表加载后仍可能累积 DOM，不能称为完整滚动虚拟化 | 部分实现：`src/entry-list.ts`、`src/tree-view.ts` |
 | Collection / Conversation / Plain | Collection 窗口、Conversation block 窗口和 Plain text line window 已有实现及局部证据；不据此宣称所有列表或 Code 窗口都已虚拟化 | 部分证据：`src/collection-list.ts`、`src/conversation-view.ts`、`src/text-line-view.ts`、`docs/native-acceptance.md` |
-| Code | 支持 Python、JavaScript、TypeScript、Rust、C、C++、Java、Go、Shell、SQL、JSON、YAML；自动猜语言上限 256 KiB，高亮上限为 1 MiB 或 20,000 行，超限退回 Plain Code window | 前端路径已有实现；超限 Code window 仍 WIP、Native 尚未验收：`src/code-renderer.ts`、`src/content-viewer.ts` |
+| Code | 支持 Python、JavaScript、TypeScript、Rust、C、C++、Java、Go、Shell、SQL、JSON、YAML；自动猜语言上限 256 KiB，高亮上限为 1 MiB 或 20,000 行，超限退回 Plain Code window | `ace1f24` 已实现超限窗口；独立 wrap 90、Rendered 61 自动化通过，Native 尚未验收：`src/code-renderer.ts`、`src/content-viewer.ts` |
 | Markdown | 自动渲染上限 2 MiB；显式继续渲染上限 32 MiB；链接显示为文本、图片为占位，raw HTML 不执行 | 已实现但安全 Native 五零证据未闭环：`src/content-viewer.ts`、`src/markdown-renderer.ts` |
 | HTML | HTML Preview 输入上限 512 KiB，输出上限 1 MiB；HTML 自动启发式检测上限 64 KiB | Core/浏览器路径已有边界；Native 五项零证据仍未闭环：`src/content-viewer.ts`、`src-tauri/src/html_sanitizer.rs`、`src-tauri/src/semantic_detection.rs` |
-| Nested JSON | 单层 2 MiB、累计 8 MiB；Core 默认最大深度 5、硬上限 10。UI 还没有把最大深度 10 作为入口暴露 | Core 已实现，UI 不完整：`src-tauri/src/semantic_detection.rs`、`src-tauri/src/ipc.rs`、`src/content-viewer.ts` |
+| Nested JSON | 单层 2 MiB、累计 8 MiB；Core 默认最大深度 5、硬上限 10。UI 还没有把最大深度 10 作为入口暴露；`4a090e6` 已修复重复 tabs，自动化通过，原 Native FAIL 待复测 | Core/UI 修复已提交，Native 仍不完整：`src-tauri/src/semantic_detection.rs`、`src-tauri/src/ipc.rs`、`src/content-viewer.ts`、`docs/native-acceptance.md` |
 
 ## Entry hint、国际化与平台
 
 | 范围 | 当前行为 | 状态与证据 |
 | --- | --- | --- |
-| Event Stream hint | Core hint 和 summary 路径已提交；Auto / Generic / Event 的完整 UI 体验仍在 WIP | 部分/WIP：`src-tauri/src/event_hint.rs`、`src/entry-list.ts` |
+| Event Stream hint | Core hint 和 summary 路径已提交；`f06d3dc` 已实现 Auto / Generic / Event UI，headless 25 项断言和 main 集成通过 | UI 已提交、Native 未验：`src-tauri/src/event_hint.rs`、`src/entry-list.ts`、`docs/native-acceptance.md` |
 | i18n | 壳、列表、Tree、Raw 标签已有中文资源/实证；Viewer、Conversation、Search 和错误文案仍未全量翻译 | 部分/WIP：`src/i18n.ts`、`src/i18n/en.ts`、`src/i18n/zh-CN.ts`；实证见 `docs/native-acceptance.md` |
-| macOS | 有 macOS arm64 Native 局部真实证据，但存在未关闭 Nested tabs FAIL | 部分验收：`docs/native-acceptance.md` |
+| macOS | 有 macOS arm64 Native 局部真实证据；`4a090e6` 的 Nested tabs 自动化修复已通过，但原 Native FAIL 尚未复测关闭 | 部分验收：`docs/native-acceptance.md` |
 | Linux | Linux 参考环境的 cold/warm、fresh 五轮、private-memory 和完整性能门槛尚未测 | 未验：`docs/performance-baseline.md` |
 | Windows | `320af83` 已补 FileSource 的平台读取分支；本机回归通过，但未进行 Windows 编译、运行或安全验收，不先列为已支持 | 未验：`src-tauri/src/file_source.rs` |
 
