@@ -1,8 +1,12 @@
 use std::fs::{self, File};
 use std::io::{self, ErrorKind};
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+#[cfg(unix)]
+use std::os::unix::fs::FileExt;
+#[cfg(windows)]
+use std::os::windows::fs::FileExt;
 
 const MAX_READ_BYTES: usize = 256 * 1024;
 
@@ -90,7 +94,7 @@ impl FileSource {
             let absolute_offset = offset
                 .checked_add(filled as u64)
                 .ok_or_else(|| io::Error::from(ErrorKind::InvalidData))?;
-            let read = match self.file.read_at(&mut bytes[filled..], absolute_offset) {
+            let read = match read_at(&self.file, &mut bytes[filled..], absolute_offset) {
                 Ok(read) => read,
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),
@@ -117,8 +121,21 @@ impl FileSource {
     }
 }
 
+#[cfg(unix)]
+fn read_at(file: &File, bytes: &mut [u8], offset: u64) -> io::Result<usize> {
+    file.read_at(bytes, offset)
+}
+
+#[cfg(windows)]
+fn read_at(file: &File, bytes: &mut [u8], offset: u64) -> io::Result<usize> {
+    file.seek_read(bytes, offset)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::thread;
+
     use super::*;
 
     fn temp_path(prefix: &str) -> PathBuf {
@@ -180,6 +197,37 @@ mod tests {
             source.read_chunk(0, 0).unwrap_err().kind(),
             ErrorKind::InvalidInput
         );
+
+        drop(source);
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn interleaved_concurrent_reads_keep_absolute_offsets_independent() {
+        let path = temp_path("file-source-interleaved");
+        let contents = (0..1024u32).flat_map(u32::to_le_bytes).collect::<Vec<_>>();
+        fs::write(&path, &contents).unwrap();
+        let source = Arc::new(FileSource::open(&path).unwrap());
+
+        let handles = (0..4)
+            .map(|worker| {
+                let source = Arc::clone(&source);
+                let contents = contents.clone();
+                thread::spawn(move || {
+                    for round in 0..64 {
+                        let word = (worker * 67 + round * 31) % 1024;
+                        let offset = (word * 4) as u64;
+                        let chunk = source.read_chunk(offset, 4).unwrap();
+                        let start = offset as usize;
+                        assert_eq!(chunk.bytes, contents[start..start + 4]);
+                        assert!(!chunk.has_more || chunk.next_offset == Some(offset + 4));
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().expect("concurrent read should not panic");
+        }
 
         drop(source);
         fs::remove_file(&path).unwrap();
