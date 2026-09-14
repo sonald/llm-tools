@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f2f4f7" />
-    <title>Semantic JSON Viewer</title>
+    <title data-i18n="shell.appTitle">Semantic JSON Viewer</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
@@ -15,19 +15,19 @@
           <span class="brand-mark" aria-hidden="true">{}</span>
           <h1 id="app-title">Semantic JSON Viewer</h1>
         </div>
-        <button class="open-button" id="open-file" type="button">Open File <span class="shortcut" aria-hidden="true">Ctrl/Cmd+O</span></button>
-        <div class="file-context" aria-label="Current file">
+        <button class="open-button" id="open-file" type="button" title="Open File" data-i18n-title="shell.openFile"><span data-i18n="shell.openFile">Open File</span> <span class="shortcut" aria-hidden="true">Ctrl/Cmd+O</span></button>
+        <div class="file-context" aria-label="Current file" data-i18n-aria-label="shell.currentFile">
           <strong id="file-name">No file open</strong>
           <span class="file-path" id="file-path">—</span>
           <span class="mode-pill" id="file-mode">—</span>
         </div>
         <div class="topbar-spacer"></div>
-        <button class="drawer-toggle" id="navigation-toggle" type="button" aria-controls="navigation" aria-expanded="true">Navigation</button>
-        <button class="drawer-toggle" id="inspector-toggle" type="button" aria-controls="inspector" aria-expanded="true">Inspector</button>
+        <button class="drawer-toggle" id="navigation-toggle" type="button" aria-controls="navigation" aria-expanded="true" data-i18n="shell.navigation">Navigation</button>
+        <button class="drawer-toggle" id="inspector-toggle" type="button" aria-controls="inspector" aria-expanded="true" data-i18n="shell.inspector">Inspector</button>
       </header>
 
       <div class="error-region" id="error-region" role="alert" aria-live="assertive" hidden>
-        <strong id="error-title">Open failed</strong>
+        <strong id="error-title" data-i18n="shell.openFailed">Open failed</strong>
         <span id="error-message"></span>
         <span id="error-details"></span>
       </div>
@@ -35,95 +35,95 @@
       <div class="workspace">
         <aside class="navigation" id="navigation" aria-labelledby="navigation-title">
           <div class="pane-heading">
-            <h2 id="navigation-title">Navigation</h2>
+            <h2 id="navigation-title" data-i18n="shell.navigation">Navigation</h2>
             <span class="pane-kicker" id="navigation-mode">—</span>
           </div>
           <div class="navigation-state" id="navigation-state" role="status" aria-live="polite">
             <span class="state-icon" aria-hidden="true">·</span>
-            <strong>No file is open.</strong>
-            <span>Open a local JSON or JSONL file to begin.</span>
+            <strong data-i18n="shell.noFileOpen">No file is open.</strong>
+            <span data-i18n="shell.openLocalFile">Open a local JSON or JSONL file to begin.</span>
           </div>
           <section class="entry-navigation" id="entry-navigation" aria-labelledby="entry-navigation-title" hidden>
             <div class="entry-navigation-heading">
-              <h3 id="entry-navigation-title">Entries</h3>
-              <span class="pane-kicker">50 per page</span>
+              <h3 id="entry-navigation-title" data-i18n="shell.entries">Entries</h3>
+              <span class="pane-kicker" data-i18n="shell.entriesPerPage">50 per page</span>
             </div>
             <div class="entry-go">
-              <label for="entry-go-input">Go to Entry</label>
+              <label for="entry-go-input" data-i18n="shell.goToEntry">Go to Entry</label>
               <div class="entry-go-controls">
-                <input id="entry-go-input" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="entry-go-error" />
-                <button class="secondary-button" id="entry-go-button" type="button">Go</button>
+                <input id="entry-go-input" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="entry-go-error" placeholder="Entry number" data-i18n-placeholder="shell.entryNumber" />
+                <button class="secondary-button" id="entry-go-button" type="button" data-i18n="shell.go">Go</button>
               </div>
               <span class="entry-go-error" id="entry-go-error" role="alert"></span>
             </div>
-            <div class="entry-list" id="entry-list" role="listbox" aria-label="JSONL entries" aria-busy="false"></div>
+            <div class="entry-list" id="entry-list" role="listbox" aria-label="JSONL entries" data-i18n-aria-label="shell.jsonlEntries" aria-busy="false"></div>
             <div class="entry-list-footer">
-              <button class="secondary-button" id="entry-prev" type="button">Previous</button>
-              <button class="secondary-button" id="entry-next" type="button">Next</button>
+              <button class="secondary-button" id="entry-prev" type="button" data-i18n="shell.previous">Previous</button>
+              <button class="secondary-button" id="entry-next" type="button" data-i18n="shell.next">Next</button>
             </div>
             <div class="entry-list-status" id="entry-list-status" role="status" aria-live="polite"></div>
-            <button class="secondary-button entry-list-retry" id="entry-list-retry" type="button" hidden>Retry loading entries</button>
+            <button class="secondary-button entry-list-retry" id="entry-list-retry" type="button" data-i18n="shell.retryEntries" hidden>Retry loading entries</button>
           </section>
           <section class="collection-navigation" id="collection-navigation" aria-labelledby="collection-navigation-title" hidden>
             <div class="entry-navigation-heading">
-              <h3 id="collection-navigation-title">Items</h3>
-              <span class="pane-kicker">virtual list</span>
+              <h3 id="collection-navigation-title" data-i18n="shell.items">Items</h3>
+              <span class="pane-kicker" data-i18n="shell.virtualList">virtual list</span>
             </div>
             <div class="entry-go">
-              <label for="collection-go-input">Go to Item</label>
+              <label for="collection-go-input" data-i18n="shell.goToItem">Go to Item</label>
               <div class="entry-go-controls">
-                <input id="collection-go-input" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="collection-go-error" />
-                <button class="secondary-button" id="collection-go-button" type="button">Go</button>
+                <input id="collection-go-input" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="collection-go-error" placeholder="Item number" data-i18n-placeholder="shell.itemNumber" />
+                <button class="secondary-button" id="collection-go-button" type="button" data-i18n="shell.go">Go</button>
               </div>
               <span class="entry-go-error" id="collection-go-error" role="alert"></span>
             </div>
-            <div class="collection-list" id="collection-list" role="listbox" aria-label="JSON array items" aria-busy="false"></div>
+            <div class="collection-list" id="collection-list" role="listbox" aria-label="JSON array items" data-i18n-aria-label="shell.jsonArrayItems" aria-busy="false"></div>
             <div class="entry-list-status" id="collection-list-status" role="status" aria-live="polite"></div>
-            <button class="secondary-button entry-list-retry" id="collection-list-retry" type="button" hidden>Retry loading items</button>
+            <button class="secondary-button entry-list-retry" id="collection-list-retry" type="button" data-i18n="shell.retryItems" hidden>Retry loading items</button>
           </section>
         </aside>
 
         <main class="reader" id="reader" aria-labelledby="reader-title">
           <div class="reader-toolbar">
-            <h2 id="reader-title">Semantic</h2>
-            <button class="secondary-button" id="content-viewer-preview" type="button" aria-label="Preview selected string in Content Viewer" disabled>Preview</button>
-            <div class="view-tabs" role="tablist" aria-label="Reader views">
-              <button class="view-tab is-active" id="semantic-tab" type="button" role="tab" aria-selected="true" aria-controls="semantic-panel">Semantic</button>
-              <button class="view-tab" id="tree-tab" type="button" role="tab" aria-selected="false" aria-controls="tree-panel" disabled aria-disabled="true">Tree</button>
-              <button class="view-tab" id="raw-tab" type="button" role="tab" aria-selected="false" aria-controls="raw-panel" disabled aria-disabled="true">Raw</button>
+            <h2 id="reader-title" data-i18n="shell.semantic">Semantic</h2>
+            <button class="secondary-button" id="content-viewer-preview" type="button" aria-label="Preview selected string in Content Viewer" data-i18n-aria-label="shell.previewSelectedString" disabled data-i18n="shell.preview">Preview</button>
+            <div class="view-tabs" role="tablist" aria-label="Reader views" data-i18n-aria-label="shell.readerViews">
+              <button class="view-tab is-active" id="semantic-tab" type="button" role="tab" aria-selected="true" aria-controls="semantic-panel" data-i18n="shell.semantic">Semantic</button>
+              <button class="view-tab" id="tree-tab" type="button" role="tab" aria-selected="false" aria-controls="tree-panel" disabled aria-disabled="true" data-i18n="shell.tree">Tree</button>
+              <button class="view-tab" id="raw-tab" type="button" role="tab" aria-selected="false" aria-controls="raw-panel" disabled aria-disabled="true" data-i18n="shell.raw">Raw</button>
             </div>
           </div>
-          <section class="scope-search-panel" id="scope-search-panel" aria-label="Search current scope" hidden>
+          <section class="scope-search-panel" id="scope-search-panel" aria-label="Search current scope" data-i18n-aria-label="shell.searchCurrentScope" hidden>
             <form class="scope-search-form" id="scope-search" role="search" aria-describedby="scope-search-description">
               <div class="scope-search-controls">
                 <label class="scope-search-query" for="scope-search-query">
-                  <span>Search current scope</span>
-                  <input id="scope-search-query" name="query" type="search" autocomplete="off" spellcheck="false" />
+                  <span data-i18n="shell.searchCurrentScope">Search current scope</span>
+                  <input id="scope-search-query" name="query" type="search" autocomplete="off" spellcheck="false" placeholder="Search current scope" data-i18n-placeholder="shell.searchCurrentScope" />
                 </label>
                 <fieldset class="scope-search-representation">
-                  <legend>Search in</legend>
-                  <label><input id="scope-search-representation-decoded" type="radio" name="representation" value="decoded" checked /> Decoded</label>
-                  <label><input id="scope-search-representation-raw" type="radio" name="representation" value="rawSource" /> Raw Source</label>
+                  <legend data-i18n="shell.searchIn">Search in</legend>
+                  <label><input id="scope-search-representation-decoded" type="radio" name="representation" value="decoded" checked /> <span data-i18n="shell.decoded">Decoded</span></label>
+                  <label><input id="scope-search-representation-raw" type="radio" name="representation" value="rawSource" /> <span data-i18n="shell.rawSource">Raw Source</span></label>
                 </fieldset>
-                <button class="primary-button scope-search-submit" id="scope-search-submit" type="submit">Search</button>
+                <button class="primary-button scope-search-submit" id="scope-search-submit" type="submit" data-i18n="shell.search">Search</button>
               </div>
-              <p class="scope-search-description" id="scope-search-description">Open a file to search its current scope.</p>
+              <p class="scope-search-description" id="scope-search-description" data-i18n="shell.openFileToSearch">Open a file to search its current scope.</p>
             </form>
             <div class="scope-search-results-panel" id="scope-search-results-panel" hidden>
               <div class="scope-search-status" id="scope-search-status" role="status" aria-live="polite"></div>
-              <div class="scope-search-results" id="scope-search-results" role="list" aria-label="Search results"></div>
+              <div class="scope-search-results" id="scope-search-results" role="list" aria-label="Search results" data-i18n-aria-label="shell.searchResults"></div>
               <div class="scope-search-footer">
-                <button class="secondary-button" id="scope-search-prev" type="button">Previous page</button>
-                <button class="secondary-button" id="scope-search-next" type="button">Next page</button>
+                <button class="secondary-button" id="scope-search-prev" type="button" data-i18n="shell.previous">Previous page</button>
+                <button class="secondary-button" id="scope-search-next" type="button" data-i18n="shell.next">Next page</button>
               </div>
             </div>
           </section>
           <section class="reader-panel" id="semantic-panel" role="tabpanel" aria-labelledby="semantic-tab">
             <div class="reader-state" id="reader-state" role="status" aria-live="polite">
               <div class="reader-glyph" aria-hidden="true">⌁</div>
-              <h3>Reader ready</h3>
-              <p>Semantic view will appear here after a file is opened.</p>
-              <button class="secondary-button" id="reader-open" type="button">Open a file</button>
+              <h3 data-i18n="shell.readerReady">Reader ready</h3>
+              <p data-i18n="shell.semanticAfterOpen">Semantic view will appear here after a file is opened.</p>
+              <button class="secondary-button" id="reader-open" type="button" data-i18n="shell.openAFile">Open a file</button>
             </div>
             <div id="conversation-view" hidden></div>
           </section>
@@ -133,46 +133,46 @@
 
         <aside class="inspector" id="inspector" aria-labelledby="inspector-title">
           <div class="pane-heading">
-            <h2 id="inspector-title">File Inspector</h2>
-            <span class="pane-kicker">read-only</span>
+            <h2 id="inspector-title" data-i18n="shell.fileInspector">File Inspector</h2>
+            <span class="pane-kicker" data-i18n="shell.readOnly">read-only</span>
           </div>
           <dl class="inspector-list">
-            <div class="inspector-row"><dt>Path</dt><dd class="mono" id="inspector-path">—</dd></div>
-            <div class="inspector-row"><dt>Size</dt><dd id="inspector-size">—</dd></div>
-            <div class="inspector-row"><dt>Mode</dt><dd id="inspector-mode">—</dd></div>
-            <div class="inspector-row"><dt>Revision</dt><dd class="mono" id="inspector-revision">—</dd></div>
-            <div class="inspector-row inspector-progress-row"><dt>Progress</dt><dd id="inspector-progress">—</dd></div>
+            <div class="inspector-row"><dt data-i18n="shell.path">Path</dt><dd class="mono" id="inspector-path">—</dd></div>
+            <div class="inspector-row"><dt data-i18n="shell.size">Size</dt><dd id="inspector-size">—</dd></div>
+            <div class="inspector-row"><dt data-i18n="shell.mode">Mode</dt><dd id="inspector-mode">—</dd></div>
+            <div class="inspector-row"><dt data-i18n="shell.revision">Revision</dt><dd class="mono" id="inspector-revision">—</dd></div>
+            <div class="inspector-row inspector-progress-row"><dt data-i18n="shell.progress">Progress</dt><dd id="inspector-progress">—</dd></div>
           </dl>
           <p class="warning-note" id="inspector-warning" hidden></p>
-          <p class="inspector-empty" id="inspector-empty">Select a file to inspect its identity and indexing state.</p>
+          <p class="inspector-empty" id="inspector-empty" data-i18n="shell.inspectIdentity">Select a file to inspect its identity and indexing state.</p>
           <section class="entry-inspector" id="entry-inspector" aria-labelledby="entry-inspector-title" hidden>
-            <h3 id="entry-inspector-title">Entry Inspector</h3>
+            <h3 id="entry-inspector-title" data-i18n="shell.entryInspector">Entry Inspector</h3>
             <dl class="entry-inspector-list">
-              <div><dt>Entry</dt><dd class="mono" id="entry-inspector-ordinal">—</dd></div>
-              <div><dt>Status</dt><dd id="entry-inspector-status">—</dd></div>
-              <div><dt>Source line</dt><dd class="mono" id="entry-inspector-source-line">—</dd></div>
-              <div><dt>Bytes</dt><dd class="mono" id="entry-inspector-bytes">—</dd></div>
-              <div><dt>Parse message</dt><dd id="entry-inspector-parse-message">—</dd></div>
-              <div><dt>Byte offset</dt><dd class="mono" id="entry-inspector-parse-byte-offset">—</dd></div>
-              <div><dt>Line</dt><dd class="mono" id="entry-inspector-parse-line">—</dd></div>
-              <div><dt>Column</dt><dd class="mono" id="entry-inspector-parse-column">—</dd></div>
+              <div><dt data-i18n="shell.entry">Entry</dt><dd class="mono" id="entry-inspector-ordinal">—</dd></div>
+              <div><dt data-i18n="shell.status">Status</dt><dd id="entry-inspector-status">—</dd></div>
+              <div><dt data-i18n="shell.sourceLine">Source line</dt><dd class="mono" id="entry-inspector-source-line">—</dd></div>
+              <div><dt data-i18n="shell.bytes">Bytes</dt><dd class="mono" id="entry-inspector-bytes">—</dd></div>
+              <div><dt data-i18n="shell.parseMessage">Parse message</dt><dd id="entry-inspector-parse-message">—</dd></div>
+              <div><dt data-i18n="shell.byteOffset">Byte offset</dt><dd class="mono" id="entry-inspector-parse-byte-offset">—</dd></div>
+              <div><dt data-i18n="shell.line">Line</dt><dd class="mono" id="entry-inspector-parse-line">—</dd></div>
+              <div><dt data-i18n="shell.column">Column</dt><dd class="mono" id="entry-inspector-parse-column">—</dd></div>
             </dl>
           </section>
           <section class="node-inspector" id="node-inspector" aria-labelledby="node-inspector-title" hidden>
-            <h3 id="node-inspector-title">Node Inspector</h3>
+            <h3 id="node-inspector-title" data-i18n="shell.nodeInspector">Node Inspector</h3>
             <dl class="node-inspector-list">
-              <div><dt>Node ID</dt><dd class="mono" id="node-id">—</dd></div>
-              <div><dt>Label</dt><dd id="node-label">—</dd></div>
-              <div><dt>JSON type</dt><dd id="node-kind">—</dd></div>
-              <div><dt>Span</dt><dd class="mono" id="node-span">—</dd></div>
-              <div><dt>Children</dt><dd id="node-children">—</dd></div>
-              <div><dt>Value</dt><dd id="node-value">—</dd></div>
+              <div><dt data-i18n="shell.nodeId">Node ID</dt><dd class="mono" id="node-id">—</dd></div>
+              <div><dt data-i18n="shell.label">Label</dt><dd id="node-label">—</dd></div>
+              <div><dt data-i18n="shell.jsonType">JSON type</dt><dd id="node-kind">—</dd></div>
+              <div><dt data-i18n="shell.span">Span</dt><dd class="mono" id="node-span">—</dd></div>
+              <div><dt data-i18n="shell.children">Children</dt><dd id="node-children">—</dd></div>
+              <div><dt data-i18n="shell.value">Value</dt><dd id="node-value">—</dd></div>
             </dl>
-            <div class="copy-actions" aria-label="Copy selected node">
-              <button class="secondary-button" id="node-copy-raw" type="button">Copy Raw</button>
-              <button class="secondary-button" id="node-copy-subtree" type="button">Copy JSON Subtree</button>
-              <button class="secondary-button" id="node-copy-decoded" type="button">Copy Decoded Value</button>
-              <button class="secondary-button" id="node-copy-path" type="button">Copy Path</button>
+            <div class="copy-actions" aria-label="Copy selected node" data-i18n-aria-label="shell.copySelectedNode">
+              <button class="secondary-button" id="node-copy-raw" type="button" data-i18n="shell.copyRaw">Copy Raw</button>
+              <button class="secondary-button" id="node-copy-subtree" type="button" data-i18n="shell.copyJsonSubtree">Copy JSON Subtree</button>
+              <button class="secondary-button" id="node-copy-decoded" type="button" data-i18n="shell.copyDecodedValue">Copy Decoded Value</button>
+              <button class="secondary-button" id="node-copy-path" type="button" data-i18n="shell.copyPath">Copy Path</button>
               <span class="copy-status" id="node-copy-status" role="status" aria-live="polite"></span>
             </div>
           </section>
@@ -182,21 +182,21 @@
       <footer class="statusbar" aria-live="polite">
         <span id="status-mode">—</span>
         <span id="status-size">—</span>
-        <span id="status-progress">Ready</span>
+        <span id="status-progress" data-i18n="shell.ready">Ready</span>
         <span class="status-spacer"></span>
-        <span id="status-warning" class="status-warning" hidden>Encoding warning</span>
-        <span id="status-ready" class="status-ready">Ready</span>
+        <span id="status-warning" class="status-warning" data-i18n="shell.encodingWarning" hidden>Encoding warning</span>
+        <span id="status-ready" class="status-ready" data-i18n="shell.ready">Ready</span>
       </footer>
     </div>
 
     <dialog class="mode-dialog" id="mode-dialog" aria-labelledby="mode-dialog-title" aria-describedby="mode-dialog-copy">
       <form method="dialog" class="mode-dialog-form">
-        <h2 id="mode-dialog-title">Choose how to open this file</h2>
-        <p id="mode-dialog-copy">The file type could not be identified automatically.</p>
+        <h2 id="mode-dialog-title" data-i18n="shell.chooseFileMode">Choose how to open this file</h2>
+        <p id="mode-dialog-copy" data-i18n="shell.modeChoiceCopy">The file type could not be identified automatically.</p>
         <div class="mode-dialog-actions">
-          <button class="secondary-button" id="mode-cancel" value="cancel" type="submit">Cancel</button>
-          <button class="secondary-button" id="mode-json" value="json" type="submit">Open as JSON</button>
-          <button class="primary-button" id="mode-jsonl" value="jsonl" type="submit">Open as JSONL</button>
+          <button class="secondary-button" id="mode-cancel" value="cancel" type="submit" data-i18n="shell.cancel">Cancel</button>
+          <button class="secondary-button" id="mode-json" value="json" type="submit" data-i18n="shell.openAsJson">Open as JSON</button>
+          <button class="primary-button" id="mode-jsonl" value="jsonl" type="submit" data-i18n="shell.openAsJsonl">Open as JSONL</button>
         </div>
       </form>
     </dialog>

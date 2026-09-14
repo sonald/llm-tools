@@ -7,6 +7,9 @@ import { EntryList, type EntrySelectionDto } from "./entry-list";
 import { MAX_ENTRY_BYTES, RawView } from "./raw-view";
 import { SearchView, type SearchMatch, type SearchScope } from "./search-view";
 import { TreeView, type NodeDto } from "./tree-view";
+import { applyStaticTranslations, locale, t } from "./i18n";
+
+applyStaticTranslations();
 
 type FileMode = "document" | "collection" | "entry";
 
@@ -237,7 +240,7 @@ const contentViewerSearchResults = required<HTMLElement>("content-viewer-search-
 const contentViewerSearchPrevious = required<HTMLButtonElement>("content-viewer-search-prev");
 const contentViewerSearchNext = required<HTMLButtonElement>("content-viewer-search-next");
 
-const PREVIEW_ARIA_LABEL = "Preview selected string in Content Viewer";
+const PREVIEW_ARIA_LABEL = t("shell.previewSelectedString");
 const previewButton = required<HTMLButtonElement>("content-viewer-preview");
 let selectedStringTarget: ContentTarget | null = null;
 
@@ -417,7 +420,7 @@ const conversationView = new ConversationView({
 function required<T extends Element>(id: string): T {
   const node = document.getElementById(id);
   if (!node) {
-    throw new Error(`Missing UI element: ${id}`);
+    throw new Error(t("main.missingUiElement", { id }));
   }
   return node as unknown as T;
 }
@@ -507,14 +510,14 @@ function documentErrorValue(value: unknown, size: number): IpcErrorPayload | nul
 function ipcError(value: unknown): IpcErrorPayload {
   if (isRecord(value)) {
     const code = typeof value.code === "string" ? value.code : "open_failed";
-    const message = typeof value.message === "string" ? value.message : "The file could not be opened.";
+    const message = typeof value.message === "string" ? value.message : t("main.fileCouldNotBeOpened");
     const parseError = parseErrorValue(value.parseError);
     return parseError ? { code, message, parseError } : { code, message };
   }
   if (value instanceof Error) {
     return { code: "open_failed", message: value.message };
   }
-  return { code: "open_failed", message: "The file could not be opened." };
+  return { code: "open_failed", message: t("main.fileCouldNotBeOpened") };
 }
 
 function handleEntryProgress(progress: JsonlProgressDto): void {
@@ -571,7 +574,7 @@ async function handleConversationTree(target: { ref: { nodeId: number; spanStart
         : state.summary?.root?.id ?? null) === requestScopeNodeId;
   if (!sameScope) return;
   if (!focused) {
-    setText(statusReady, `Tree Node ${target.ref.nodeId} could not be loaded in the current scope.`);
+    setText(statusReady, t("main.treeNodeUnavailable", { nodeId: target.ref.nodeId }));
     setActiveView("tree");
   }
 }
@@ -587,7 +590,7 @@ function handleSearchReveal(match: SearchMatch): void {
   rawView.revealRange(
     revealStart,
     revealEnd,
-    `${match.field === "rawSource" ? "Raw Source" : match.field === "key" ? "Key" : "Value"} search match`
+    t(match.field === "rawSource" ? "main.rawSourceSearchMatch" : match.field === "key" ? "main.keySearchMatch" : "main.valueSearchMatch")
   );
   setActiveView("raw");
 }
@@ -613,8 +616,8 @@ function handleCollectionSelection(node: NodeDto, ordinal: number): void {
     sessionRevision: summary.sessionRevision,
     scopeId: null,
     sourceSize: summary.size,
-    ariaLabel: `JSON Item ${ordinal} structure`,
-    scopeLabel: `Item ${ordinal}`
+    ariaLabel: t("main.jsonItemStructure", { ordinal }),
+    scopeLabel: t("main.itemLabel", { ordinal })
   }, node);
   rawView.setItemSession(summary.sessionRevision, node, summary.size, "collection");
   if (previousView === "tree") setActiveView("tree");
@@ -664,7 +667,7 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
   contentViewer.clearOverridesForRevision(selection.sessionRevision);
   contentViewer.clear(false);
   if (selection.sessionRevision !== summary.sessionRevision + 1) {
-    state.error = { code: "internal", message: "Entry selection returned an unexpected session revision." };
+    state.error = { code: "internal", message: t("main.entrySelectionUnexpectedRevision") };
     render();
     return;
   }
@@ -687,16 +690,16 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
   const oversized = selection.entry.status === "oversized";
   const rootMatchesStatus = valid ? selection.root !== null : selection.root === null;
   if (!rootMatchesStatus) {
-    state.error = { code: "internal", message: "Entry selection returned an inconsistent Tree root." };
+    state.error = { code: "internal", message: t("main.entrySelectionInconsistentRoot") };
     treeView.setSession({
       mode: "entry",
       sessionRevision: selection.sessionRevision,
       scopeId: null,
       sourceSize: entrySourceSize(selection.entry),
-      ariaLabel: "JSON Entry structure",
+      ariaLabel: t("main.jsonEntryStructure"),
       scopeLabel: entryScopeLabel(selection.entry.location.entryOrdinal)
     }, null);
-    rawView.clear("Tree is unavailable because the Entry selection was inconsistent.");
+    rawView.clear(t("main.rawTreeUnavailable"));
     setActiveView("semantic");
   } else {
     treeView.setSession(
@@ -705,7 +708,7 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
         sessionRevision: selection.sessionRevision,
         scopeId: null,
         sourceSize: entrySourceSize(selection.entry),
-        ariaLabel: "JSON Entry structure",
+    ariaLabel: t("main.jsonEntryStructure"),
         scopeLabel: entryScopeLabel(selection.entry.location.entryOrdinal)
       },
       valid ? selection.root : null
@@ -717,10 +720,10 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
     } else if (invalidJson || invalidUtf8 || oversized) {
       rawAvailable = rawView.setNonValidEntry(selection.sessionRevision, selection.entry);
     } else {
-      rawView.clear("Select a valid Entry to open Raw bytes.");
+      rawView.clear(t("main.selectValidEntryRaw"));
     }
     if ((invalidJson || invalidUtf8 || oversized) && !rawAvailable) {
-      state.error = { code: "internal", message: "Invalid Entry Raw bytes could not be opened." };
+      state.error = { code: "internal", message: t("main.invalidEntryRawUnavailable") };
       setActiveView("semantic");
     } else if ((valid || invalidJson || invalidUtf8 || oversized) && previousView === "raw") {
       setActiveView("raw");
@@ -739,7 +742,7 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
 function handleEntryRevisionUnknown(value: unknown): void {
   const next = entrySummaryValue(value);
   if (!next || next.mode !== "entry" || !next.progress) {
-    state.error = { code: "internal", message: "The refreshed JSONL session has an invalid shape." };
+    state.error = { code: "internal", message: t("main.refreshedJsonlInvalidShape") };
     render();
     return;
   }
@@ -754,15 +757,15 @@ function handleEntryRevisionUnknown(value: unknown): void {
   state.invalidatedRevision = null;
   state.scanQueued = null;
   state.scanStoppedRevision = null;
-  rawView.clear("Select a valid Entry to open Raw bytes.");
+  rawView.clear(t("main.selectValidEntryRaw"));
   entryList.resync(next.sessionRevision, next.progress);
   treeView.setSession({
     mode: "entry",
     sessionRevision: next.sessionRevision,
     scopeId: null,
     sourceSize: 1,
-    ariaLabel: "JSON Entry structure",
-    scopeLabel: "Entry"
+        ariaLabel: t("main.jsonEntryStructure"),
+    scopeLabel: t("main.entryMode")
   }, null);
   setActiveView("semantic");
   render();
@@ -827,13 +830,13 @@ function jsonlProgressValue(value: unknown): JsonlProgressDto | undefined {
 }
 
 function modeLabel(mode: FileMode): string {
-  if (mode === "document") return "Document";
-  if (mode === "collection") return "Collection";
-  return "Entry";
+  if (mode === "document") return t("main.modeDocument");
+  if (mode === "collection") return t("main.modeCollection");
+  return t("main.modeEntry");
 }
 
 function entryScopeLabel(ordinal: number): string {
-  return `Entry ${ordinal + 1}`;
+  return t("main.entryLabel", { ordinal: ordinal + 1 });
 }
 
 function entrySourceSize(entry: EntrySelectionDto["entry"]): number {
@@ -847,17 +850,23 @@ function fileLabel(path: string): string {
 }
 
 function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KiB`;
-  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MiB`;
-  return `${(size / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+  if (size < 1024) return t("main.bytesB", { value: size });
+  if (size < 1024 * 1024) return t("main.bytesKiB", { value: (size / 1024).toFixed(1) });
+  if (size < 1024 * 1024 * 1024) return t("main.bytesMiB", { value: (size / (1024 * 1024)).toFixed(1) });
+  return t("main.bytesGiB", { value: (size / (1024 * 1024 * 1024)).toFixed(2) });
 }
 
 function progressLabel(progress: JsonlProgressDto): string {
   if (progress.complete && progress.totalEntries !== null) {
-    return `${progress.indexedEntries.toLocaleString()} / ${progress.totalEntries.toLocaleString()}`;
+    return t("main.progressComplete", {
+      indexed: progress.indexedEntries.toLocaleString(locale),
+      total: progress.totalEntries.toLocaleString(locale)
+    });
   }
-  return `${progress.indexedEntries.toLocaleString()} indexed · through line ${progress.indexedSourceLines.toLocaleString()}`;
+  return t("main.progressIndexed", {
+    indexed: progress.indexedEntries.toLocaleString(locale),
+    line: progress.indexedSourceLines.toLocaleString(locale)
+  });
 }
 
 function setText(node: HTMLElement, value: string): void {
@@ -873,7 +882,7 @@ function currentConversationContext(): ConversationContext | null {
       sessionRevision: summary.sessionRevision,
       sourceSize: summary.size,
       scopeRoot: summary.root,
-      scopeLabel: "Document root"
+      scopeLabel: t("main.documentRoot")
     } : null;
   }
   if (summary.mode === "collection") {
@@ -883,7 +892,7 @@ function currentConversationContext(): ConversationContext | null {
       sessionRevision: summary.sessionRevision,
       sourceSize: summary.size,
       scopeRoot: item.node,
-      scopeLabel: `Item ${item.ordinal}`
+      scopeLabel: t("main.itemLabel", { ordinal: item.ordinal })
     } : null;
   }
   if (!state.selectedEntry || state.selectedEntry.status !== "valid" || !state.selectedEntryRoot) return null;
@@ -900,25 +909,30 @@ function renderError(): void {
   const error = state.error;
   errorRegion.hidden = error === null;
   if (!error) {
-    setText(errorTitle, "Open failed");
+    setText(errorTitle, t("shell.openFailed"));
     setText(errorMessage, "");
     setText(errorDetails, "");
     return;
   }
 
   const titles: Record<string, string> = {
-    invalid_json: "Invalid JSON",
-    unsupported_encoding: "Unsupported encoding",
-    unsupported_framing: "Unsupported framing",
-    unsupported_format: "Unsupported format",
-    mode_choice_required: "Choose a file mode",
-    file_changed: "File changed on disk"
+    invalid_json: t("main.invalidJson"),
+    unsupported_encoding: t("main.unsupportedEncoding"),
+    unsupported_framing: t("main.unsupportedFraming"),
+    unsupported_format: t("main.unsupportedFormat"),
+    mode_choice_required: t("main.chooseFileMode"),
+    file_changed: t("main.fileChangedOnDisk")
   };
-  setText(errorTitle, titles[error.code] ?? "Open failed");
+  setText(errorTitle, titles[error.code] ?? t("shell.openFailed"));
   setText(errorMessage, error.message);
   if (error.parseError) {
     const parse = error.parseError;
-    setText(errorDetails, `Line ${parse.line} · Column ${parse.column} · Byte offset ${parse.byteOffset}: ${parse.message}`);
+    setText(errorDetails, t("main.parseErrorDetails", {
+      line: parse.line,
+      column: parse.column,
+      byteOffset: parse.byteOffset,
+      message: parse.message
+    }));
   } else {
     setText(errorDetails, "");
   }
@@ -929,14 +943,14 @@ function renderSummary(): void {
   if (!summary) {
     conversationView.setContext(null);
     readerState.hidden = false;
-    setText(fileName, "No file open");
+    setText(fileName, t("main.noFileOpenLabel"));
     setText(filePath, "—");
     setText(fileMode, "—");
     setText(navigationMode, "—");
-    setText(navigationState.querySelector("strong") as HTMLElement, "No file is open.");
-    setText(navigationState.querySelector("span:last-child") as HTMLElement, "Open a local JSON or JSONL file to begin.");
-    setText(readerState.querySelector("h3") as HTMLElement, state.opening ? "Opening file…" : "Reader ready");
-    setText(readerState.querySelector("p") as HTMLElement, state.opening ? "The previous view stays available while the new file opens." : "Semantic view will appear here after a file is opened.");
+    setText(navigationState.querySelector("strong") as HTMLElement, t("shell.noFileOpen"));
+    setText(navigationState.querySelector("span:last-child") as HTMLElement, t("shell.openLocalFile"));
+    setText(readerState.querySelector("h3") as HTMLElement, state.opening ? t("main.openingFile") : t("shell.readerReady"));
+    setText(readerState.querySelector("p") as HTMLElement, state.opening ? t("main.previousViewStays") : t("shell.semanticAfterOpen"));
     setText(inspectorPath, "—");
     setText(inspectorSize, "—");
     setText(inspectorMode, "—");
@@ -946,121 +960,142 @@ function renderSummary(): void {
     inspectorWarning.hidden = true;
     setText(statusMode, "—");
     setText(statusSize, "—");
-    setText(statusProgress, state.opening ? "Opening…" : "Ready");
+    setText(statusProgress, state.opening ? t("main.opening") : t("shell.ready"));
     statusWarning.hidden = true;
     return;
   }
 
   const invalidated = summaryIsInvalidated(summary);
   const rawOnly = summary.documentError !== null;
-  const mode = invalidated ? "Unavailable" : rawOnly ? "Raw-only Document" : modeLabel(summary.mode);
+  const mode = invalidated ? t("main.unavailable") : rawOnly ? t("main.rawOnlyDocument") : modeLabel(summary.mode);
   setText(fileName, fileLabel(summary.path));
   setText(filePath, summary.path);
-  setText(fileMode, invalidated ? "Unavailable" : rawOnly ? mode : `${mode} Mode`);
+  setText(fileMode, invalidated ? t("main.unavailable") : rawOnly ? mode : t("main.modeSuffix", { mode }));
   setText(navigationMode, mode);
   setText(
     navigationState.querySelector("strong") as HTMLElement,
-    invalidated ? "Unavailable" : rawOnly ? "Raw-only document" : mode === "Entry" ? "Entry index" : `${mode} outline`
+    invalidated ? t("main.unavailable") : rawOnly ? t("main.rawOnlyDocumentLower") : summary.mode === "entry" ? t("main.entryIndex") : t("main.modeOutline", { mode })
   );
   setText(navigationState.querySelector("span:last-child") as HTMLElement, navigationCopy(summary));
   setText(readerState.querySelector("h3") as HTMLElement, readerTitle(summary));
   setText(readerState.querySelector("p") as HTMLElement, readerCopy(summary));
   setText(inspectorPath, summary.path);
-  setText(inspectorSize, `${formatBytes(summary.size)} (${summary.size.toLocaleString()} bytes)`);
-  setText(inspectorMode, invalidated ? "Unavailable" : rawOnly ? mode : `${mode} Mode`);
+  setText(inspectorSize, t("main.sizeBytes", {
+    size: formatBytes(summary.size),
+    bytes: summary.size.toLocaleString(locale)
+  }));
+  setText(inspectorMode, invalidated ? t("main.unavailable") : rawOnly ? mode : t("main.modeSuffix", { mode }));
   setText(inspectorRevision, String(summary.sessionRevision));
   const stopped = state.scanStoppedRevision === summary.sessionRevision;
   setText(
     inspectorProgress,
-    invalidated ? "File changed · Raw unavailable" : rawOnly ? "Raw bytes available" : summary.progress ? stopped ? `Indexing stopped · ${progressLabel(summary.progress)}` : progressLabel(summary.progress) : "Structure loaded"
+    invalidated ? t("main.fileChangedRawUnavailable") : rawOnly ? t("main.rawBytesAvailable") : summary.progress ? stopped ? t("main.indexingStoppedProgress", { progress: progressLabel(summary.progress) }) : progressLabel(summary.progress) : t("main.structureLoaded")
   );
   inspectorEmpty.hidden = true;
   inspectorWarning.hidden = !summary.manyInvalidUtf8Warning;
-  setText(inspectorWarning, "Many entries are not valid UTF-8. The file remains open in byte-safe mode.");
-  setText(statusMode, invalidated ? "Unavailable" : rawOnly ? mode : `${mode} Mode`);
+  setText(inspectorWarning, t("main.warningInvalidUtf8"));
+  setText(statusMode, invalidated ? t("main.unavailable") : rawOnly ? mode : t("main.modeSuffix", { mode }));
   setText(statusSize, formatBytes(summary.size));
-  setText(statusProgress, invalidated ? "File changed · Raw unavailable" : rawOnly ? "Raw bytes available" : statusProgressLabel(summary));
+  setText(statusProgress, invalidated ? t("main.fileChangedRawUnavailable") : rawOnly ? t("main.rawBytesAvailable") : statusProgressLabel(summary));
   statusWarning.hidden = !summary.manyInvalidUtf8Warning;
-  setText(statusReady, invalidated ? "Unavailable" : state.opening ? "Opening…" : stopped ? "Indexing stopped" : summary.progress && !summary.progress.complete ? "Indexing…" : "Ready");
+  setText(statusReady, invalidated ? t("main.unavailable") : state.opening ? t("main.opening") : stopped ? t("main.indexingStopped") : summary.progress && !summary.progress.complete ? t("main.indexing") : t("shell.ready"));
   const conversationContext = currentConversationContext();
   conversationView.setContext(conversationContext);
   readerState.hidden = conversationContext !== null;
 }
 
 function navigationCopy(summary: FileSummary): string {
-  if (summaryIsInvalidated(summary)) return "File changed · Raw unavailable";
-  if (summary.documentError) return "Raw bytes available.";
+  if (summaryIsInvalidated(summary)) return t("main.fileChangedRawUnavailable");
+  if (summary.documentError) return t("main.rawBytesAvailablePeriod");
   if (summary.mode === "entry" && summary.progress) {
-    if (state.scanStoppedRevision === summary.sessionRevision) return `Indexing stopped · ${summary.progress.indexedEntries.toLocaleString()} entries indexed.`;
-    return summary.progress.complete ? "Indexed entries are ready." : `${summary.progress.indexedEntries.toLocaleString()} entries indexed so far.`;
+    if (state.scanStoppedRevision === summary.sessionRevision) {
+      return t("main.indexingStoppedEntries", { entries: summary.progress.indexedEntries.toLocaleString(locale) });
+    }
+    return summary.progress.complete
+      ? t("main.indexedEntriesReady")
+      : t("main.indexedEntriesSoFar", { entries: summary.progress.indexedEntries.toLocaleString(locale) });
   }
-  return summary.mode === "collection" ? "Items load on demand." : "Outline loads on demand.";
+  return summary.mode === "collection" ? t("main.itemsOnDemand") : t("main.outlineOnDemand");
 }
 
 function readerTitle(summary: FileSummary): string {
-  if (summaryIsInvalidated(summary)) return "Unavailable";
+  if (summaryIsInvalidated(summary)) return t("main.unavailable");
   if (summary.documentError) {
-    return summary.documentError.code === "invalid_json" ? "Invalid JSON" : "Unsupported encoding";
+    return summary.documentError.code === "invalid_json" ? t("main.invalidJson") : t("main.unsupportedEncoding");
   }
-  if (state.scanStoppedRevision === summary.sessionRevision) return "Indexing stopped";
-  if (summary.mode === "entry" && summary.progress && !summary.progress.complete) return "Indexing in the background";
-  return `${modeLabel(summary.mode)} reader ready`;
+  if (state.scanStoppedRevision === summary.sessionRevision) return t("main.indexingStopped");
+  if (summary.mode === "entry" && summary.progress && !summary.progress.complete) return t("main.indexingBackground");
+  return t("main.readerReadyForMode", { mode: modeLabel(summary.mode) });
 }
 
 function readerCopy(summary: FileSummary): string {
-  if (summaryIsInvalidated(summary)) return "File changed · Raw unavailable";
+  if (summaryIsInvalidated(summary)) return t("main.fileChangedRawUnavailable");
   if (summary.documentError) {
     return summary.documentError.code === "invalid_json"
-      ? "Tree and Semantic are unavailable because this document could not be parsed. Original Raw bytes remain available."
-      : "Tree and Semantic are unavailable. Raw provides Lossy Text and Hex; source bytes are unchanged.";
+      ? t("main.documentParseUnavailable")
+      : t("main.encodingTreeUnavailable");
   }
   if (summary.mode === "entry" && summary.progress) {
-    if (state.scanStoppedRevision === summary.sessionRevision) return `Indexing stopped at ${summary.progress.indexedEntries.toLocaleString()} entries. The partial index remains available.`;
-    if (state.selectedEntry?.status === "invalidJson") return "Tree is unavailable. Original Raw bytes are available.";
-    if (state.selectedEntry?.status === "invalidUtf8") return "Invalid UTF-8 Entry selected. Raw provides Lossy Text and Hex. Source bytes are unchanged.";
+    if (state.scanStoppedRevision === summary.sessionRevision) {
+      return t("main.indexingStoppedAtEntries", { entries: summary.progress.indexedEntries.toLocaleString(locale) });
+    }
+    if (state.selectedEntry?.status === "invalidJson") return t("main.entryTreeUnavailable");
+    if (state.selectedEntry?.status === "invalidUtf8") return t("main.invalidUtf8EntrySelected");
     if (state.selectedEntry?.status === "oversized") {
       const { byteStart, byteEnd } = state.selectedEntry.location;
       const length = byteEnd - byteStart;
       if (Number.isSafeInteger(byteStart) && Number.isSafeInteger(byteEnd) && byteStart >= 0 && byteEnd > byteStart && Number.isSafeInteger(length) && length > MAX_ENTRY_BYTES) {
-        return `Oversized Entry selected. Raw shows bounded 128 KiB windows; use Previous and Next to page through the Entry.`;
+        return t("main.oversizedEntrySelected");
       }
     }
     if (state.selectedEntry) {
       const entry = state.selectedEntry;
       return entry.status === "valid"
-        ? `Entry ${entry.location.entryOrdinal + 1} is selected. Tree is available.`
-        : `Entry ${entry.location.entryOrdinal + 1} is selected. Tree is unavailable for ${entryStatusLabel(entry.status)}.`;
+        ? t("main.entrySelectedTree", { ordinal: entry.location.entryOrdinal + 1 })
+        : t("main.entrySelectedNoTree", {
+          ordinal: entry.location.entryOrdinal + 1,
+          status: entryStatusLabel(entry.status)
+        });
     }
-    return "Select a valid Entry to enable Tree.";
+    return t("main.selectValidEntry");
   }
   if (summary.mode === "collection") {
     return state.selectedItem
-      ? `Item ${state.selectedItem.ordinal} is selected. Tree and Raw are available.`
-      : "Select an Item to enable Tree, Raw, and current-scope search.";
+      ? t("main.itemSelected", { ordinal: state.selectedItem.ordinal })
+      : t("main.selectItem");
   }
-  return "The semantic projection for this document will appear here.";
+  return t("main.semanticProjection");
 }
 
 function statusProgressLabel(summary: FileSummary): string {
-  if (summaryIsInvalidated(summary)) return "File changed · Raw unavailable";
-  if (!summary.progress) return "Structure ready";
+  if (summaryIsInvalidated(summary)) return t("main.fileChangedRawUnavailable");
+  if (!summary.progress) return t("main.structureReady");
   const progress = state.scanStoppedRevision === summary.sessionRevision
-    ? `Indexing stopped · ${summary.progress.indexedEntries.toLocaleString()} indexed`
+    ? t("main.indexingStoppedIndexed", { entries: summary.progress.indexedEntries.toLocaleString(locale) })
     : summary.progress.complete && summary.progress.totalEntries !== null
-      ? `${summary.progress.totalEntries.toLocaleString()} entries`
-      : `Indexing · ${summary.progress.indexedEntries.toLocaleString()} indexed`;
+      ? t("main.entriesCount", { entries: summary.progress.totalEntries.toLocaleString(locale) })
+      : t("main.indexingIndexed", { entries: summary.progress.indexedEntries.toLocaleString(locale) });
   if (summary.mode !== "entry") return progress;
   const selected = state.selectedEntry;
-  if (!selected) return `Indexed through line ${summary.progress.indexedSourceLines.toLocaleString()} · ${progress}`;
+  if (!selected) return t("main.indexedThroughLine", {
+    line: summary.progress.indexedSourceLines.toLocaleString(locale),
+    progress
+  });
   const { entryOrdinal, sourceLine, byteStart, byteEnd } = selected.location;
-  return `Entry ${entryOrdinal + 1} · source line ${sourceLine} · bytes [${byteStart}, ${byteEnd}) · ${progress}`;
+  return t("main.entryProgress", {
+    entry: entryOrdinal + 1,
+    line: sourceLine,
+    start: byteStart,
+    end: byteEnd,
+    progress
+  });
 }
 
 function entryStatusLabel(status: string): string {
-  if (status === "invalidJson") return "Invalid JSON";
-  if (status === "invalidUtf8") return "Invalid UTF-8";
-  if (status === "oversized") return "Oversized Entry";
-  return status === "valid" ? "Valid" : status;
+  if (status === "invalidJson") return t("main.invalidJson");
+  if (status === "invalidUtf8") return t("main.invalidUtf8");
+  if (status === "oversized") return t("main.oversizedEntry");
+  return status === "valid" ? t("main.valid") : status;
 }
 
 function setActiveView(view: "semantic" | "tree" | "raw"): void {
@@ -1079,7 +1114,7 @@ function setActiveView(view: "semantic" | "tree" | "raw"): void {
     tab.tabIndex = active ? 0 : -1;
     panel.hidden = !active;
   }
-  setText(treeReaderTitle, view[0].toUpperCase() + view.slice(1));
+  setText(treeReaderTitle, view === "semantic" ? t("shell.semantic") : view === "tree" ? t("shell.tree") : t("shell.raw"));
   if (view === "tree") treeView.activate();
   if (view === "raw") rawView.activate();
   else rawView.deactivate();
@@ -1092,10 +1127,10 @@ function currentSearchScope(): SearchScope | null {
   const enabled = !state.opening && !state.selectionBusy;
   if (summary.documentError) {
     return {
-      label: "Raw-only Document",
+      label: t("main.rawOnlySearchLabel"),
       description: enabled
-        ? "Current scope: Document bytes. Decoded search is unavailable; Raw Source searches the original bytes."
-        : "Current scope: Raw-only Document. Search is temporarily unavailable.",
+        ? t("main.currentScopeDocumentBytes")
+        : t("main.rawOnlySearchUnavailable"),
       enabled,
       decodedEnabled: false,
       scopeStart: 0,
@@ -1107,8 +1142,10 @@ function currentSearchScope(): SearchScope | null {
   }
   if (summary.mode === "document") {
     return {
-      label: "Document root",
-      description: enabled ? "Current scope: Document root." : "Current scope: Document root. Search is temporarily unavailable.",
+      label: t("main.documentRoot"),
+      description: enabled
+        ? t("main.currentScopeDocumentRoot")
+        : t("main.currentScopeDocumentSearchUnavailable"),
       enabled,
       decodedEnabled: true,
       scopeStart: 0,
@@ -1122,8 +1159,8 @@ function currentSearchScope(): SearchScope | null {
     const item = state.selectedItem;
     if (!item) {
       return {
-        label: "Selected Item",
-        description: "Current scope: selected Item. Select an Item to enable search.",
+        label: t("main.selectedItemLabel"),
+        description: t("main.selectItemSearch"),
         enabled: false,
         decodedEnabled: true,
         scopeStart: 0,
@@ -1134,8 +1171,10 @@ function currentSearchScope(): SearchScope | null {
       };
     }
     return {
-      label: `Item ${item.ordinal}`,
-      description: enabled ? `Current scope: selected Item ${item.ordinal}.` : `Current scope: selected Item ${item.ordinal}. Search is temporarily unavailable.`,
+      label: t("main.itemLabel", { ordinal: item.ordinal }),
+      description: enabled
+        ? t("main.currentScopeSelectedItem", { ordinal: item.ordinal })
+        : t("main.currentScopeSelectedItemUnavailable", { ordinal: item.ordinal }),
       enabled,
       decodedEnabled: true,
       scopeStart: item.node.spanStart,
@@ -1148,8 +1187,8 @@ function currentSearchScope(): SearchScope | null {
   const entry = state.selectedEntry;
   if (!entry) {
     return {
-      label: "Selected Entry",
-      description: "Current scope: selected Entry. Select an Entry to enable search.",
+      label: t("main.selectedEntryLabel"),
+      description: t("main.selectEntrySearch"),
       enabled: false,
       decodedEnabled: true,
       scopeStart: 0,
@@ -1163,12 +1202,12 @@ function currentSearchScope(): SearchScope | null {
   const decodedEnabled = entry.status === "valid";
   const status = entryStatusLabel(entry.status);
   return {
-    label: `Entry ${entry.location.entryOrdinal + 1}`,
+    label: t("main.entryLabel", { ordinal: entry.location.entryOrdinal + 1 }),
     description: enabled
       ? decodedEnabled
-        ? `Current scope: selected Entry ${entry.location.entryOrdinal + 1}.`
-        : `Current scope: selected Entry ${entry.location.entryOrdinal + 1} (${status}). Raw Source only.`
-      : `Current scope: selected Entry ${entry.location.entryOrdinal + 1}. Search is temporarily unavailable.`,
+        ? t("main.currentScopeSelectedEntry", { ordinal: entry.location.entryOrdinal + 1 })
+        : t("main.currentScopeSelectedEntryRaw", { ordinal: entry.location.entryOrdinal + 1, status })
+      : t("main.currentScopeSelectedEntryUnavailable", { ordinal: entry.location.entryOrdinal + 1 }),
     enabled,
     decodedEnabled,
     scopeStart: 0,
@@ -1261,7 +1300,7 @@ function failClosedSummary(generation: number): void {
   state.selectedEntry = null;
   state.selectedEntryRoot = null;
   state.selectedItem = null;
-  state.error = { code: "internal", message: "The file summary returned by the backend was invalid." };
+  state.error = { code: "internal", message: t("main.invalidFileSummary") };
   state.invalidatedRevision = null;
   state.opening = false;
   state.selectionBusy = false;
@@ -1320,19 +1359,19 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
       ? { revision: summary.sessionRevision, root: summary.root, sourceSize: summary.size }
       : null);
     if (summary.mode === "collection") {
-      treeView.clear("Select an Item to enable Tree.");
-      rawView.clear("Select an Item to open Raw bytes.");
+      treeView.clear(t("main.selectItem"));
+      rawView.clear(t("main.selectItemRaw"));
     } else {
       treeView.setSession({
         mode: summary.mode,
         sessionRevision: summary.sessionRevision,
         scopeId: null,
         sourceSize: summary.size,
-        ariaLabel: "JSON structure",
+        ariaLabel: t("main.jsonStructure"),
         scopeLabel: modeLabel(summary.mode)
       });
       if (summary.root) rawView.setSession(summary.sessionRevision, summary.root, summary.size, summary.mode);
-      else rawView.clear("Select a valid Entry to open Raw bytes.");
+      else rawView.clear(t("main.selectValidEntryRaw"));
     }
     entryList.setSession(summary.mode === "entry" && summary.progress ? {
       revision: summary.sessionRevision,
