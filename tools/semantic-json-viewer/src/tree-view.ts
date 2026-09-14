@@ -44,6 +44,24 @@ type NodeRecord = {
   error: string | null;
 };
 
+type TreeRow =
+  | {
+    kind: "node";
+    key: number;
+    id: number;
+    level: number;
+    position: number;
+    setSize: number;
+  }
+  | {
+    kind: "load" | "retry" | "loading";
+    key: `load:${number}` | `retry:${number}` | `loading:${number}`;
+    parentId: number;
+    level: number;
+    position: number;
+    setSize: number;
+  };
+
 export type TreeCopyElements = {
   raw: HTMLButtonElement;
   subtree: HTMLButtonElement;
@@ -54,6 +72,7 @@ export type TreeCopyElements = {
 
 type TreeViewOptions = {
   panel: HTMLElement;
+  viewport?: HTMLElement;
   tab: HTMLButtonElement;
   inspector: HTMLElement | null;
   fields: {
@@ -80,6 +99,8 @@ export type TreeViewSnapshot = {
   rootError: string | null;
   selectedId: number | null;
   focusKey: FocusKey;
+  scrollTop: number;
+  scrollLeft: number;
   records: Array<{
     id: number;
     node: NodeDto;
@@ -94,9 +115,13 @@ export type TreeViewSnapshot = {
 };
 
 const CHILD_PAGE_SIZE = 200;
+const TREE_ROW_HEIGHT = 35;
+const TREE_OVERSCAN_ROWS = 10;
+const TREE_TOP_PADDING = 18;
 
 export class TreeView {
   private readonly panel: HTMLElement;
+  private readonly viewport: HTMLElement;
   private readonly tab: HTMLButtonElement;
   private readonly inspector: HTMLElement | null;
   private readonly fields: TreeViewOptions["fields"];
@@ -114,12 +139,21 @@ export class TreeView {
   private selectedId: number | null = null;
   private focusKey: FocusKey = null;
   private readonly records = new Map<number, NodeRecord>();
+  private logicalRows: TreeRow[] = [];
+  private logicalRowsDirty = true;
+  private treeRoot: HTMLElement | null = null;
+  private programmaticScroll: { top: number; left: number } | null = null;
+  private readonly resizeObserver: ResizeObserver | null;
   private narrowRestoreSnapshot: TreeViewSnapshot | null = null;
   private copyGeneration = 0;
   private copyBusy = false;
 
   constructor(options: TreeViewOptions) {
     this.panel = options.panel;
+    const requestedViewport = options.viewport ?? options.panel;
+    this.viewport = requestedViewport === options.panel || requestedViewport.contains(options.panel)
+      ? requestedViewport
+      : options.panel;
     this.tab = options.tab;
     this.inspector = options.inspector;
     this.fields = options.fields;
@@ -129,6 +163,12 @@ export class TreeView {
     this.onError = options.onError;
     this.invokeRequest = options.invoke ?? invoke;
     this.copy = options.copy;
+    this.viewport.classList.add("tree-viewport");
+    this.viewport.addEventListener("scroll", () => this.handleViewportScroll(), { passive: true });
+    this.resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(() => this.renderWindow());
+    this.resizeObserver?.observe(this.viewport);
     this.panel.addEventListener("click", (event) => this.handleClick(event));
     this.panel.addEventListener("keydown", (event) => this.handleKeydown(event));
     this.copy?.raw.addEventListener("click", () => void this.copySelected("raw", t("tree.copiedRaw")));
@@ -144,6 +184,7 @@ export class TreeView {
     this.copyBusy = false;
     if (this.copy) this.copy.status.textContent = "";
     this.narrowRestoreSnapshot = null;
+    this.programmaticScroll = null;
     this.session = session;
     const root = seededRoot === undefined || seededRoot === null
       ? null
@@ -156,7 +197,10 @@ export class TreeView {
     this.selectedId = null;
     this.focusKey = root?.id ?? null;
     this.records.clear();
+    this.logicalRowsDirty = true;
     if (root) this.records.set(root.id, this.newRecord(root, null));
+    this.viewport.scrollTop = 0;
+    this.viewport.scrollLeft = 0;
     this.onStringSelection(null);
     const enabled = session.mode !== "entry" || seededRoot !== undefined && seededRoot !== null;
     this.tab.disabled = !enabled;
@@ -175,6 +219,8 @@ export class TreeView {
       rootError: this.rootError,
       selectedId: this.selectedId,
       focusKey: this.focusKey,
+      scrollTop: this.viewport.scrollTop,
+      scrollLeft: this.viewport.scrollLeft,
       records: Array.from(this.records.entries()).map(([id, record]) => ({
         id,
         node: { ...record.node },
@@ -191,7 +237,9 @@ export class TreeView {
 
   restore(snapshot: TreeViewSnapshot | null): void {
     if (!snapshot) return;
+    const shouldRestoreFocus = this.panel.contains(document.activeElement);
     this.narrowRestoreSnapshot = null;
+    this.programmaticScroll = null;
     this.generation += 1;
     this.copyGeneration += 1;
     this.copyBusy = false;
@@ -202,7 +250,10 @@ export class TreeView {
     this.rootError = snapshot.rootError;
     this.selectedId = snapshot.selectedId;
     this.focusKey = snapshot.focusKey;
+    const restoreScrollTop = Math.max(0, snapshot.scrollTop ?? 0);
+    const restoreScrollLeft = Math.max(0, snapshot.scrollLeft ?? 0);
     this.records.clear();
+    this.logicalRowsDirty = true;
     for (const saved of snapshot.records) {
       this.records.set(saved.id, {
         node: { ...saved.node },
@@ -221,10 +272,13 @@ export class TreeView {
     this.onStringSelection(this.selectedId === null ? null : this.records.get(this.selectedId)?.node.kind === "string"
       ? this.contentTarget(this.records.get(this.selectedId)!)
       : null);
-    if (this.rootId !== null && this.records.has(this.rootId)) this.renderTree();
+    if (this.rootId !== null && this.records.has(this.rootId)) {
+      this.renderTree();
+      this.restoreViewportScroll(restoreScrollTop, restoreScrollLeft);
+    }
     else if (this.rootError !== null) this.renderRootError();
     else this.renderPlaceholder(this.session.mode === "entry" ? t("tree.selectValidEntry") : t("tree.openDocumentRoot"));
-    this.restoreFocus();
+    if (shouldRestoreFocus) this.restoreFocus();
   }
 
   clear(message = t("tree.openDocumentOrCollection")): void {
@@ -232,6 +286,7 @@ export class TreeView {
     this.copyGeneration += 1;
     this.copyBusy = false;
     this.narrowRestoreSnapshot = null;
+    this.programmaticScroll = null;
     if (this.copy) this.copy.status.textContent = "";
     this.session = null;
     this.rootId = null;
@@ -240,6 +295,7 @@ export class TreeView {
     this.selectedId = null;
     this.focusKey = null;
     this.records.clear();
+    this.logicalRowsDirty = true;
     this.onStringSelection(null);
     this.tab.disabled = true;
     this.tab.setAttribute("aria-disabled", "true");
@@ -275,13 +331,35 @@ export class TreeView {
   async focusNode(nodeId: number, expectedSpanStart?: number, expectedSpanEnd?: number): Promise<boolean> {
     const session = this.session;
     if (!session || !Number.isSafeInteger(nodeId) || nodeId < 0) return false;
+    const known = this.records.get(nodeId);
+    if (known
+      && (expectedSpanStart === undefined || known.node.spanStart === expectedSpanStart)
+      && (expectedSpanEnd === undefined || known.node.spanEnd === expectedSpanEnd)) {
+      const ancestors: NodeRecord[] = [];
+      let current = known;
+      while (current.parentId !== null) {
+        const parent = this.records.get(current.parentId);
+        if (!parent) break;
+        ancestors.push(parent);
+        current = parent;
+      }
+      if (current.parentId === null && (current.node.id === this.rootId || this.rootId === null)) {
+        for (const ancestor of ancestors) ancestor.expanded = true;
+        this.logicalRowsDirty = true;
+        this.select(known);
+        this.focusLogicalKey(nodeId);
+        return true;
+      }
+    }
     if (!this.narrowRestoreSnapshot) this.narrowRestoreSnapshot = this.snapshot();
+    this.programmaticScroll = null;
     const generation = ++this.generation;
     this.rootLoading = true;
     this.rootError = null;
     this.selectedId = null;
     this.focusKey = null;
     this.records.clear();
+    this.logicalRowsDirty = true;
     this.renderLoading();
     try {
       const value = await this.invokeRequest<unknown>("get_node_summary", {
@@ -304,6 +382,7 @@ export class TreeView {
       this.focusKey = node.id;
       const record = this.newRecord(node, null);
       this.records.set(node.id, record);
+      this.logicalRowsDirty = true;
       this.select(record);
       return true;
     } catch (error) {
@@ -346,6 +425,7 @@ export class TreeView {
       this.rootLoading = false;
       this.rootId = node.id;
       this.records.set(node.id, this.newRecord(node, null));
+      this.logicalRowsDirty = true;
       this.focusKey = node.id;
       this.renderTree();
     } catch (error) {
@@ -368,6 +448,7 @@ export class TreeView {
     const cursor = record.nextCursor ?? 0;
     record.loading = true;
     record.error = null;
+    this.logicalRowsDirty = true;
     this.renderTree();
     try {
       const value = await this.invokeRequest<unknown>("get_children", {
@@ -394,6 +475,7 @@ export class TreeView {
         }
         record.children.push(node.id);
       }
+      this.logicalRowsDirty = true;
       if (!record.hasMore && this.focusKey === `load:${record.node.id}`) this.focusKey = record.node.id;
       this.renderTree();
     } catch (error) {
@@ -405,6 +487,7 @@ export class TreeView {
         return;
       }
       record.error = errorMessage(error);
+      this.logicalRowsDirty = true;
       this.renderTree();
     }
   }
@@ -412,6 +495,7 @@ export class TreeView {
   private toggle(record: NodeRecord): void {
     if (record.node.childCount === 0) return;
     record.expanded = !record.expanded;
+    this.logicalRowsDirty = true;
     if (record.expanded && !record.loaded && !record.loading) {
       void this.loadChildren(record);
       return;
@@ -485,68 +569,68 @@ export class TreeView {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
     const item = target.closest<HTMLElement>("[role=treeitem]");
-    if (!item) return;
-    if (item.dataset.loadParent || item.dataset.retryParent) {
-      const parentId = Number(item.dataset.loadParent ?? item.dataset.retryParent);
-      const parent = this.records.get(parentId);
+    const key = item ? rowKey(item) : target === this.treeRoot ? this.focusKey : null;
+    if (key === null) return;
+    const index = this.logicalRows.findIndex((row) => row.key === key);
+    if (index < 0) return;
+    const row = this.logicalRows[index];
+    if (row.kind !== "node") {
+      const parent = this.records.get(row.parentId);
       if (!parent) return;
-      const visible = this.visibleItems();
-      const index = visible.indexOf(item);
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        this.focusItemKey(visible[index + 1]);
+        this.focusLogicalIndex(index + 1, 1);
       } else if (event.key === "ArrowUp") {
         event.preventDefault();
-        this.focusItemKey(visible[index - 1]);
+        this.focusLogicalIndex(index - 1, -1);
       } else if (event.key === "Home") {
         event.preventDefault();
-        this.focusItemKey(visible[0]);
+        this.focusLogicalIndex(0, 1);
       } else if (event.key === "End") {
         event.preventDefault();
-        this.focusItemKey(visible[visible.length - 1]);
+        this.focusLogicalIndex(this.logicalRows.length - 1, -1);
       } else if (event.key === "ArrowLeft") {
         event.preventDefault();
         this.focusItem(parent.node.id);
       } else if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        if (item.dataset.retryParent) this.focusKey = parent.node.id;
+        if (row.kind === "retry") this.focusKey = parent.node.id;
         void this.loadChildren(parent);
       }
       return;
     }
-    const record = this.records.get(Number(item.dataset.nodeId));
+    const record = this.records.get(row.id);
     if (!record) return;
-    const visible = this.visibleItems();
-    const index = visible.indexOf(item);
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
-        this.focusItemKey(visible[index + 1]);
+        this.focusLogicalIndex(index + 1, 1);
         break;
       case "ArrowUp":
         event.preventDefault();
-        this.focusItemKey(visible[index - 1]);
+        this.focusLogicalIndex(index - 1, -1);
         break;
       case "Home":
         event.preventDefault();
-        this.focusItemKey(visible[0]);
+        this.focusLogicalIndex(0, 1);
         break;
       case "End":
         event.preventDefault();
-        this.focusItemKey(visible[visible.length - 1]);
+        this.focusLogicalIndex(this.logicalRows.length - 1, -1);
         break;
       case "ArrowRight":
         event.preventDefault();
         if (record.node.childCount > 0 && !record.expanded) {
           this.toggle(record);
         } else if (record.expanded && record.children.length > 0) {
-          this.focusItem(record.children[0]);
+          this.focusLogicalKey(record.children[0]);
         }
         break;
       case "ArrowLeft":
         event.preventDefault();
         if (record.expanded) {
           record.expanded = false;
+          this.logicalRowsDirty = true;
           this.renderTree();
           this.focusItem(record.node.id);
         } else if (record.parentId !== null) {
@@ -564,26 +648,39 @@ export class TreeView {
     }
   }
 
-  private visibleItems(): HTMLElement[] {
-    return Array.from(this.panel.querySelectorAll<HTMLElement>("[role=treeitem]"));
-  }
-
   private focusItem(id: number): void {
-    this.focusKey = id;
-    this.focusDom(`[data-node-id="${id}"]`);
+    this.focusLogicalKey(id);
   }
 
-  private focusItemKey(item: HTMLElement | undefined): void {
-    if (!item) return;
-    if (item.dataset.nodeId) this.focusKey = Number(item.dataset.nodeId);
-    else if (item.dataset.loadParent) this.focusKey = `load:${Number(item.dataset.loadParent)}`;
-    else if (item.dataset.retryParent) this.focusKey = `retry:${Number(item.dataset.retryParent)}`;
-    else return;
-    this.focusDomElement(item);
+  private focusLogicalIndex(index: number, direction: 1 | -1): void {
+    let candidate = index;
+    while (candidate >= 0 && candidate < this.logicalRows.length
+      && this.logicalRows[candidate].kind === "loading") {
+      candidate += direction;
+    }
+    const row = this.logicalRows[candidate];
+    if (row && row.kind !== "loading") this.focusLogicalKey(row.key as FocusKey);
+  }
+
+  private focusLogicalKey(key: FocusKey): void {
+    if (key === null) return;
+    this.focusKey = key;
+    const generation = this.generation;
+    const session = this.session;
+    const index = this.logicalRows.findIndex((row) => row.key === key);
+    if (index >= 0) this.scrollToRow(index);
+    this.renderWindow();
+    queueMicrotask(() => {
+      if (!session || !this.isCurrent(generation, session) || this.focusKey !== key) return;
+      const item = this.rowElementForKey(key);
+      if (item) this.focusDomElement(item);
+    });
   }
 
   private renderTree(): void {
     const shouldRestoreFocus = this.panel.contains(document.activeElement);
+    const scrollTop = this.viewport.scrollTop;
+    const scrollLeft = this.viewport.scrollLeft;
     const shell = document.createElement("div");
     shell.className = "tree-scope-shell";
     if (this.narrowRestoreSnapshot) {
@@ -597,74 +694,209 @@ export class TreeView {
     const root = document.createElement("div");
     root.className = "tree-root";
     root.setAttribute("role", "tree");
+    root.tabIndex = -1;
     root.setAttribute("aria-label", this.session?.ariaLabel ?? t("main.jsonStructure"));
     root.setAttribute("aria-busy", String(this.rootLoading));
-    if (this.rootId === null) {
-      this.renderLoading(root);
-    } else {
-      const record = this.records.get(this.rootId);
-      if (record) this.appendRecord(root, record, 1);
-    }
+    this.treeRoot = root;
     shell.append(root);
     this.panel.replaceChildren(shell);
+    if (this.rootId === null) this.renderLoading(root);
+    else {
+      this.renderWindow();
+      this.restoreViewportScroll(scrollTop, scrollLeft);
+    }
     this.panel.setAttribute("aria-busy", String(this.rootLoading));
     this.renderInspector(this.selectedId === null ? null : this.records.get(this.selectedId)?.node ?? null);
     if (shouldRestoreFocus) this.restoreFocus();
   }
 
-  private appendRecord(parent: HTMLElement, record: NodeRecord, level: number): void {
-    parent.append(this.nodeElement(record, level));
-    if (!record.expanded) return;
-    const group = document.createElement("div");
-    group.className = "tree-group";
-    group.setAttribute("role", "group");
-    for (const childId of record.children) {
-      const child = this.records.get(childId);
-      if (child) this.appendRecord(group, child, level + 1);
+  private ensureLogicalRows(): void {
+    if (!this.logicalRowsDirty) return;
+    const rows: TreeRow[] = [];
+    if (this.rootId !== null && this.records.has(this.rootId)) {
+      type StackEntry =
+        | { kind: "node"; id: number; level: number; position: number; setSize: number }
+        | { kind: "after"; id: number; level: number };
+      const stack: StackEntry[] = [{
+        kind: "node",
+        id: this.rootId,
+        level: 1,
+        position: 1,
+        setSize: 1
+      }];
+      while (stack.length > 0) {
+        const entry = stack.pop()!;
+        const record = this.records.get(entry.id);
+        if (!record) continue;
+        if (entry.kind === "after") {
+          const position = record.children.length + 1;
+          if (record.loading) {
+            rows.push({
+              kind: "loading",
+              key: `loading:${record.node.id}`,
+              parentId: record.node.id,
+              level: entry.level,
+              position,
+              setSize: record.node.childCount
+            });
+          } else if (record.error !== null) {
+            rows.push({
+              kind: "retry",
+              key: `retry:${record.node.id}`,
+              parentId: record.node.id,
+              level: entry.level,
+              position,
+              setSize: record.node.childCount
+            });
+          } else if (record.hasMore && record.nextCursor !== null) {
+            rows.push({
+              kind: "load",
+              key: `load:${record.node.id}`,
+              parentId: record.node.id,
+              level: entry.level,
+              position,
+              setSize: record.node.childCount
+            });
+          }
+          continue;
+        }
+
+        rows.push({
+          kind: "node",
+          key: record.node.id,
+          id: record.node.id,
+          level: entry.level,
+          position: entry.position,
+          setSize: entry.setSize
+        });
+        if (!record.expanded) continue;
+        stack.push({ kind: "after", id: record.node.id, level: entry.level + 1 });
+        for (let index = record.children.length - 1; index >= 0; index -= 1) {
+          const childId = record.children[index];
+          if (!this.records.has(childId)) continue;
+          stack.push({
+            kind: "node",
+            id: childId,
+            level: entry.level + 1,
+            position: index + 1,
+            setSize: record.node.childCount
+          });
+        }
+      }
     }
-    if (record.loading) {
-      const loading = document.createElement("div");
-      loading.className = "tree-loading";
-      loading.setAttribute("role", "status");
-      loading.textContent = t("tree.loadingChildren");
-      group.append(loading);
-    }
-    if (record.error !== null) {
-      const retry = document.createElement("button");
-      retry.className = "tree-retry";
-      retry.type = "button";
-      retry.dataset.retryParent = String(record.node.id);
-      retry.setAttribute("role", "treeitem");
-      retry.setAttribute("aria-level", String(level + 1));
-      retry.tabIndex = this.focusKey === `retry:${record.node.id}` ? 0 : -1;
-      retry.setAttribute("aria-label", t("tree.retryLoadingChildren"));
-      retry.textContent = t("tree.retryLoadingChildrenDetail", { message: record.error });
-      group.append(retry);
-    }
-    if (record.hasMore && record.nextCursor !== null) {
-      const load = document.createElement("button");
-      load.className = "tree-load-more";
-      load.type = "button";
-      load.dataset.loadParent = String(record.node.id);
-      load.setAttribute("role", "treeitem");
-      load.setAttribute("aria-level", String(level + 1));
-      load.tabIndex = this.focusKey === `load:${record.node.id}` ? 0 : -1;
-      load.textContent = t("tree.loadMoreChildren", { cursor: record.nextCursor });
-      group.append(load);
-    }
-    parent.append(group);
+    this.logicalRows = rows;
+    this.logicalRowsDirty = false;
   }
 
-  private nodeElement(record: NodeRecord, level: number): HTMLButtonElement {
+  private renderWindow(): void {
+    const root = this.treeRoot;
+    if (!root || this.rootId === null) return;
+    const active = document.activeElement;
+    const activeKey = active instanceof HTMLElement
+      && this.panel.contains(active)
+      && active.getAttribute("role") === "treeitem"
+      ? rowKey(active)
+      : null;
+    this.ensureLogicalRows();
+    const [start, end] = this.visibleRange(this.logicalRows.length);
+    const top = document.createElement("div");
+    top.className = "tree-virtual-spacer";
+    top.setAttribute("aria-hidden", "true");
+    top.style.height = `${start * TREE_ROW_HEIGHT}px`;
+    const list = document.createElement("div");
+    list.className = "tree-virtual-list";
+    list.setAttribute("role", "presentation");
+    for (let index = start; index < end; index += 1) {
+      list.append(this.createRowElement(this.logicalRows[index]));
+    }
+    const bottom = document.createElement("div");
+    bottom.className = "tree-virtual-spacer";
+    bottom.setAttribute("aria-hidden", "true");
+    bottom.style.height = `${(this.logicalRows.length - end) * TREE_ROW_HEIGHT}px`;
+    root.replaceChildren(top, list, bottom);
+    root.setAttribute("aria-busy", String(this.rootLoading));
+    root.tabIndex = this.focusKey !== null && this.rowElementForKey(this.focusKey) === null ? 0 : -1;
+    if (activeKey !== null && activeKey === this.focusKey) this.restoreFocus();
+  }
+
+  private visibleRange(rowCount: number): [number, number] {
+    if (rowCount === 0) return [0, 0];
+    const viewportHeight = this.viewport.clientHeight;
+    const visible = viewportHeight > 0 ? Math.max(1, Math.ceil(viewportHeight / TREE_ROW_HEIGHT)) : 1;
+    if (viewportHeight <= 0) return [0, Math.min(rowCount, visible + TREE_OVERSCAN_ROWS * 2)];
+    const firstRowTop = this.firstRowTop();
+    const relativeScrollTop = Math.max(0, this.viewport.scrollTop - firstRowTop);
+    const first = Math.min(rowCount, Math.floor(relativeScrollTop / TREE_ROW_HEIGHT));
+    return [
+      Math.max(0, first - TREE_OVERSCAN_ROWS),
+      Math.min(rowCount, first + visible + TREE_OVERSCAN_ROWS)
+    ];
+  }
+
+  private firstRowTop(): number {
+    if (!this.treeRoot) return TREE_TOP_PADDING;
+    const viewportRect = this.viewport.getBoundingClientRect();
+    const rootRect = this.treeRoot.getBoundingClientRect();
+    return Math.max(0, rootRect.top - viewportRect.top + this.viewport.scrollTop + TREE_TOP_PADDING);
+  }
+
+  private createRowElement(row: TreeRow): HTMLElement {
+    if (row.kind === "node") {
+      const record = this.records.get(row.id);
+      if (!record) throw new Error("Tree row record was not loaded.");
+      return this.nodeElement(record, row);
+    }
+    const parent = this.records.get(row.parentId);
+    if (!parent) throw new Error("Tree operation row parent was not loaded.");
+    const position = row.position;
+    if (row.kind === "loading") {
+      const loading = document.createElement("div");
+      loading.className = "tree-loading";
+      loading.setAttribute("role", "treeitem");
+      loading.setAttribute("aria-level", String(row.level));
+      loading.setAttribute("aria-posinset", String(position));
+      loading.setAttribute("aria-setsize", String(row.setSize));
+      loading.setAttribute("aria-busy", "true");
+      loading.style.setProperty("--tree-indent", `${(row.level - 1) * 20}px`);
+      loading.textContent = t("tree.loadingChildren");
+      return loading;
+    }
+    const operation = document.createElement("button");
+    operation.className = row.kind === "retry" ? "tree-retry" : "tree-load-more";
+    operation.type = "button";
+    operation.setAttribute("role", "treeitem");
+    operation.setAttribute("aria-level", String(row.level));
+    operation.setAttribute("aria-posinset", String(position));
+    operation.setAttribute("aria-setsize", String(row.setSize));
+    operation.style.setProperty("--tree-indent", `${(row.level - 1) * 20}px`);
+    operation.tabIndex = this.focusKey === row.key ? 0 : -1;
+    if (row.kind === "retry") {
+      operation.dataset.retryParent = String(row.parentId);
+      operation.setAttribute("aria-label", t("tree.retryLoadingChildren"));
+      operation.title = parent.error ?? t("tree.retryLoadingChildren");
+      operation.textContent = t("tree.retryLoadingChildrenDetail", { message: parent.error ?? "" });
+    } else {
+      operation.dataset.loadParent = String(row.parentId);
+      operation.setAttribute("aria-label", t("tree.loadMoreChildren", { cursor: parent.nextCursor ?? 0 }));
+      operation.title = t("tree.loadMoreChildren", { cursor: parent.nextCursor ?? 0 });
+      operation.textContent = t("tree.loadMoreChildren", { cursor: parent.nextCursor ?? 0 });
+    }
+    return operation;
+  }
+
+  private nodeElement(record: NodeRecord, row: Extract<TreeRow, { kind: "node" }>): HTMLButtonElement {
     const node = record.node;
     const item = document.createElement("button");
     item.className = "tree-item";
     item.type = "button";
     item.dataset.nodeId = String(node.id);
     item.setAttribute("role", "treeitem");
-    item.setAttribute("aria-level", String(level));
+    item.setAttribute("aria-level", String(row.level));
+    item.setAttribute("aria-posinset", String(row.position));
+    item.setAttribute("aria-setsize", String(row.setSize));
     item.setAttribute("aria-selected", String(this.selectedId === node.id));
     item.tabIndex = this.focusKey === node.id ? 0 : -1;
+    item.style.setProperty("--tree-indent", `${(row.level - 1) * 20}px`);
     if (node.childCount > 0) item.setAttribute("aria-expanded", String(record.expanded));
     if (record.loading) item.setAttribute("aria-busy", "true");
 
@@ -698,7 +930,70 @@ export class TreeView {
     return item;
   }
 
+  private handleViewportScroll(): void {
+    const expected = this.programmaticScroll;
+    const programmatic = expected !== null
+      && expected.top === this.viewport.scrollTop
+      && expected.left === this.viewport.scrollLeft;
+    this.programmaticScroll = null;
+    if (!programmatic) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement
+        && this.panel.contains(active)
+        && active.getAttribute("role") === "treeitem") {
+        this.treeRoot?.focus({ preventScroll: true });
+      }
+    }
+    this.renderWindow();
+  }
+
+  private scrollToRow(index: number): void {
+    if (this.viewport.clientHeight <= 0) return;
+    const firstRowTop = this.firstRowTop();
+    const rowTop = index * TREE_ROW_HEIGHT;
+    const rowBottom = rowTop + TREE_ROW_HEIGHT;
+    const viewportTop = this.viewport.scrollTop;
+    const viewportBottom = viewportTop + this.viewport.clientHeight;
+    const nextScrollTop = rowTop + firstRowTop < viewportTop
+      ? rowTop
+      : rowBottom + firstRowTop > viewportBottom
+        ? rowBottom - this.viewport.clientHeight + firstRowTop
+        : viewportTop;
+    if (nextScrollTop === viewportTop) return;
+    this.programmaticScroll = {
+      top: Math.max(0, nextScrollTop),
+      left: this.viewport.scrollLeft
+    };
+    this.viewport.scrollTop = Math.max(0, nextScrollTop);
+    this.programmaticScroll = {
+      top: this.viewport.scrollTop,
+      left: this.viewport.scrollLeft
+    };
+  }
+
+  private restoreViewportScroll(top: number, left: number): void {
+    this.programmaticScroll = { top, left };
+    this.viewport.scrollTop = top;
+    this.viewport.scrollLeft = left;
+    this.programmaticScroll = {
+      top: this.viewport.scrollTop,
+      left: this.viewport.scrollLeft
+    };
+    this.renderWindow();
+  }
+
+  private rowElementForKey(key: FocusKey): HTMLElement | null {
+    if (key === null) return null;
+    const selector = typeof key === "number"
+      ? `[data-node-id="${key}"]`
+      : key.startsWith("load:")
+        ? `[data-load-parent="${key.slice(5)}"]`
+        : `[data-retry-parent="${key.slice(6)}"]`;
+    return this.panel.querySelector<HTMLElement>(selector);
+  }
+
   private renderPlaceholder(message: string): void {
+    this.treeRoot = null;
     const state = document.createElement("div");
     state.className = "tree-state";
     state.setAttribute("role", "status");
@@ -712,6 +1007,7 @@ export class TreeView {
   }
 
   private renderLoading(container?: HTMLElement): void {
+    if (!container) this.treeRoot = null;
     const state = document.createElement("div");
     state.className = "tree-state";
     state.setAttribute("role", "status");
@@ -724,6 +1020,7 @@ export class TreeView {
   }
 
   private renderRootError(): void {
+    this.treeRoot = null;
     const state = document.createElement("div");
     state.className = "tree-state";
     state.setAttribute("role", "alert");
@@ -824,24 +1121,25 @@ export class TreeView {
   private restoreFocus(): void {
     if (this.focusKey === null) return;
     const focusKey = this.focusKey;
+    const generation = this.generation;
+    const session = this.session;
     queueMicrotask(() => {
-      const selector = typeof focusKey === "number"
-        ? `[data-node-id="${focusKey}"]`
-        : focusKey.startsWith("load:")
-          ? `[data-load-parent="${focusKey.slice(5)}"]`
-          : `[data-retry-parent="${focusKey.slice(6)}"]`;
-      this.panel.querySelector<HTMLElement>(selector)?.focus();
+      if (!session || !this.isCurrent(generation, session) || this.focusKey !== focusKey) return;
+      const item = this.rowElementForKey(focusKey);
+      if (item) this.focusDomElement(item);
+      else if (this.treeRoot) {
+        this.treeRoot.tabIndex = 0;
+        this.treeRoot.focus({ preventScroll: true });
+      }
     });
   }
 
-  private focusDom(selector: string): void {
-    const item = this.panel.querySelector<HTMLElement>(selector);
-    if (item) this.focusDomElement(item);
-  }
-
   private focusDomElement(item: HTMLElement): void {
-    for (const other of this.visibleItems()) other.tabIndex = other === item ? 0 : -1;
-    item.focus();
+    if (this.treeRoot) this.treeRoot.tabIndex = -1;
+    for (const other of this.panel.querySelectorAll<HTMLElement>("[role=treeitem]")) {
+      if ("tabIndex" in other) other.tabIndex = other === item ? 0 : -1;
+    }
+    item.focus({ preventScroll: true });
   }
 
   private newRecord(node: NodeDto, parentId: number | null): NodeRecord {
@@ -897,6 +1195,24 @@ function errorCode(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const code = Reflect.get(error, "code");
   return typeof code === "string" ? code : undefined;
+}
+
+function rowKey(item: HTMLElement): FocusKey {
+  if (item.dataset.nodeId) return safeRowId(item.dataset.nodeId);
+  if (item.dataset.loadParent) {
+    const parentId = safeRowId(item.dataset.loadParent);
+    return parentId === null ? null : `load:${parentId}`;
+  }
+  if (item.dataset.retryParent) {
+    const parentId = safeRowId(item.dataset.retryParent);
+    return parentId === null ? null : `retry:${parentId}`;
+  }
+  return null;
+}
+
+function safeRowId(value: string): number | null {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : null;
 }
 
 function errorMessage(error: unknown): string {

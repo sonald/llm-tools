@@ -447,6 +447,7 @@ export class ContentViewer {
     this.nestedTree = this.nestedElements
       ? new TreeView({
         panel: this.nestedElements.parsedTree,
+        viewport: this.nestedElements.parsedPanel,
         tab: this.nestedElements.parsedTab,
         inspector: null,
         fields: null,

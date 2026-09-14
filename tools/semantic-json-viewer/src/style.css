@@ -490,11 +490,19 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .tree-root { min-width: 560px; padding: 18px 14px 80px; font: 10px/1.45 "SFMono-Regular", Consolas, monospace; }
 
+.tree-viewport { overflow-anchor: none; }
+
+.tree-root:focus-visible { outline: 2px solid #4987ff; outline-offset: -2px; }
+
+.tree-virtual-list { display: flex; min-width: 100%; flex-direction: column; }
+
+.tree-virtual-spacer { flex: 0 0 auto; pointer-events: none; }
+
 .tree-scope-shell { min-width: 0; }
 
 .tree-return-scope { margin: 10px 14px 0; min-height: 28px; padding: 0 9px; font-size: 10px; }
 
-.tree-item { display: grid; width: 100%; min-height: 35px; grid-template-columns: 18px minmax(0, 1fr) 94px 122px 90px minmax(110px, .7fr); align-items: center; gap: 8px; padding: 6px 8px; border: 0; border-bottom: 1px solid #edf0f4; color: var(--text); background: transparent; text-align: left; }
+.tree-item { display: grid; width: 100%; height: 35px; min-height: 35px; max-height: 35px; grid-template-columns: 18px minmax(0, 1fr) 94px 122px 90px minmax(110px, .7fr); align-items: center; gap: 8px; padding: 6px 8px 6px calc(8px + var(--tree-indent, 0px)); border: 0; border-bottom: 1px solid #edf0f4; color: var(--text); background: transparent; text-align: left; }
 
 .tree-item:hover { background: var(--surface-muted); }
 
@@ -516,11 +524,9 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .tree-value-openable { color: var(--blue); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
 
-.tree-group { margin-left: 20px; border-left: 1px solid var(--line); }
+.tree-loading { display: flex; height: 35px; min-height: 35px; max-height: 35px; align-items: center; margin: 0; padding: 6px 12px 6px calc(12px + var(--tree-indent, 0px)); overflow: hidden; color: var(--muted); font-size: 9px; }
 
-.tree-loading { padding: 8px 12px; color: var(--muted); font-size: 9px; }
-
-.tree-load-more, .tree-retry { min-height: 30px; margin: 5px 0 5px 8px; padding: 5px 9px; border: 1px dashed var(--line-strong); border-radius: 5px; color: var(--blue); background: var(--surface-muted); text-align: left; font-size: 9px; }
+.tree-load-more, .tree-retry { width: 100%; height: 35px; min-height: 35px; max-height: 35px; margin: 0; padding: 5px 9px 5px calc(9px + var(--tree-indent, 0px)); overflow: hidden; border: 1px dashed var(--line-strong); border-radius: 0; color: var(--blue); background: var(--surface-muted); text-align: left; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 
 .tree-retry { border-style: solid; color: var(--danger); background: var(--danger-soft); }
 
