@@ -672,6 +672,14 @@ h3 { font-size: 16px; font-weight: 700; }
 
 .text-line-view-break { display: none; }
 
+.content-viewer-content.is-code-lines .text-line-view-row { display: grid; grid-template-columns: max-content minmax(0, 1fr); }
+
+.text-line-view-gutter { padding-right: 12px; color: var(--faint); text-align: right; white-space: pre; user-select: none; }
+
+.text-line-view-source { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.content-viewer-content.is-code-lines.is-no-wrap .text-line-view-source { white-space: pre; overflow-wrap: normal; }
+
 .content-viewer-content.is-text-lines.is-no-wrap .text-line-view-row { width: max-content; min-width: 100%; white-space: pre; overflow-wrap: normal; }
 
 .content-viewer-content.is-no-wrap:not(.is-markdown) { width: max-content; min-width: 100%; white-space: pre; overflow-wrap: normal; }

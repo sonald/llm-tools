@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
   renderCode,
-  renderPlainCodePage,
   scanCodeLines,
   type CodeLanguage,
   type CodeLineState,
@@ -1301,16 +1300,10 @@ export class ContentViewer {
     let sourceChunk = chunk;
     let cacheChunk: TextChunk | null = canRenderSemantic ? null : chunk;
     if (this.renderMode === "code" && this.semanticLimit === "code" && this.ordinaryRepresentation !== "decoded") {
-      const result = renderPlainCodePage(
-        chunk.text,
-        this.codeLanguageHint,
-        this.codeLimitReason ?? "sizeLimit",
-        chunk.lineState
-      );
-      this.elements.content.replaceChildren(result.fragment);
+      this.installTextChunk(chunk, null, chunk.lineState.line);
       this.representation = "rendered";
       this.ordinaryRepresentation = "rendered";
-      this.codeRenderReason = result.reason;
+      this.codeRenderReason = this.codeLimitReason ?? "sizeLimit";
     } else if (canRenderSemantic && this.renderMode === "markdown") {
       const fragment = renderSafeMarkdown(chunk.text);
       if (fragment) {
@@ -2278,16 +2271,13 @@ export class ContentViewer {
       this.cacheDecodedPage(chunk);
       const relative = Math.max(0, backend.matchStart - chunk.start);
       const plainRendered = this.renderMode === "plainText";
-      if (this.renderMode === "code" && this.semanticLimit === "code") {
-        const result = renderPlainCodePage(chunk.text, this.codeLanguageHint, this.codeLimitReason ?? "sizeLimit", chunk.lineState);
-        this.elements.content.replaceChildren(result.fragment);
-        this.codeRenderReason = result.reason;
-      } else if (plainRendered) {
+      const codeOverflow = this.renderMode === "code" && this.semanticLimit === "code";
+      if (plainRendered || codeOverflow) {
         this.installTextChunk(chunk, {
           start: utf8ByteOffsetToUtf16(chunk.text, relative),
           end: utf8ByteOffsetToUtf16(chunk.text, relative + utf8ByteLength(query)),
           marker: "renderedSearch"
-        });
+        }, codeOverflow ? chunk.lineState.line : null);
       } else {
         this.elements.content.textContent = chunk.text;
       }
@@ -2303,7 +2293,7 @@ export class ContentViewer {
       this.elements.alert.hidden = true;
       this.renderMetadata();
       this.renderPaging();
-      if (plainRendered) return;
+      if (plainRendered || codeOverflow) return;
       await this.renderedSearch?.reprojectDom(this.elements.content);
       if (!this.isCurrent(generation, target) || this.sourceRevealEpoch !== intent) return;
       this.renderedSearch?.highlightSourceRange(
@@ -3097,11 +3087,22 @@ export class ContentViewer {
     this.elements.content.classList.remove("is-markdown");
   }
 
-  private installTextChunk(chunk: TextChunk, highlight: TextLineHighlight | null = null): void {
+  private installTextChunk(
+    chunk: TextChunk,
+    highlight: TextLineHighlight | null = null,
+    firstLineNumber: number | null = null
+  ): void {
     if (!this.textLineView) {
       this.textLineView = new TextLineView(this.elements.content, this.contentResizeTarget);
     }
-    this.textLineView.setText(chunk.text, this.wrapMode === "wrap", highlight, chunk.lineState.previousWasCR, chunk.hasMore);
+    this.textLineView.setText(
+      chunk.text,
+      this.wrapMode === "wrap",
+      highlight,
+      chunk.lineState.previousWasCR,
+      chunk.hasMore,
+      firstLineNumber
+    );
   }
 
   private disposeTextLineView(): void {
@@ -3144,6 +3145,7 @@ export class ContentViewer {
   }
 
   private alignCodeGutters(): void {
+    if (this.elements.content.classList.contains("is-code-lines")) return;
     for (const pre of this.elements.content.querySelectorAll<HTMLPreElement>("pre.sjv-code")) {
       const gutter = pre.querySelector<HTMLElement>(".sjv-code-gutter");
       const source = pre.querySelector<HTMLElement>(".sjv-code-source");

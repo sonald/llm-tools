@@ -320,6 +320,73 @@ copy.viewer.clear(false);await settle();
 check(copyRows().length===0,"copy viewer did not dispose its text rows");
 copy.host.remove();
 
+const codeOverflowLines=Array.from({length:22050},(_,index)=>index===21000?"tail😀needle":"line-"+String(index).padStart(5,"0"));
+const codeOverflowSource=codeOverflowLines.join("\\r\\n")+"\\r\\n";
+const codeOverflowCalls=[];
+const codeOverflowInvoke=async(command,args)=>{
+  codeOverflowCalls.push({command,args});
+  if(command==="get_string_detection")return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  if(command==="get_string_metrics")return {decodedBytes:utf8(codeOverflowSource),characterCount:codeOverflowSource.length,lineCount:codeOverflowLines.length+1};
+  if(command==="search_current"){
+    const query=args.query;const matchIndex=codeOverflowSource.indexOf(query);
+    if(matchIndex<0)throw new Error("code overflow search fixture query is absent");
+    const matchStart=utf8(codeOverflowSource.slice(0,matchIndex));
+    return {matches:[{nodeId:13,field:"value",pathSegments:["$","code"],pathTruncated:false,sourceSpanStart:100,sourceSpanEnd:100+utf8(codeOverflowSource),matchStart,matchEnd:matchStart+utf8(query)}],hasMore:false,nextCursor:null};
+  }
+  if(command==="read_decoded_text"){
+    const text=sliceByUtf8(codeOverflowSource,args.offset,args.length);const end=args.offset+utf8(text);return {start:args.offset,text,hasMore:end<utf8(codeOverflowSource),nextOffset:end<utf8(codeOverflowSource)?end:null};
+  }
+  throw new Error("unexpected code overflow command");
+};
+const codeOverflow=makeViewer(codeOverflowInvoke);
+await codeOverflow.viewer.open(target(13,13,codeOverflowSource));await settle();
+const overflowRows=()=>Array.from(codeOverflow.elements.content.querySelectorAll(".text-line-view-row"));
+const overflowGutter=()=>codeOverflow.elements.content.querySelector(".text-line-view-gutter");
+const overflowSource=()=>codeOverflow.elements.content.querySelector(".text-line-view-source");
+check(codeOverflow.elements.content.classList.contains("is-code-lines")&&overflowRows().length>0&&overflowRows().length<20000&&overflowGutter()?.getAttribute("aria-hidden")==="true","Code line-limit fallback did not use a bounded line window with a hidden gutter");
+check(overflowGutter()?.textContent==="1"&&overflowSource()?.textContent.startsWith("line-00000"),"Code line-limit fallback did not start at absolute line 1 without changing source text");
+const overflowGutterWidth=overflowGutter()?.getBoundingClientRect().width??0;
+check(overflowGutterWidth>0&&overflowRows().every((row)=>row.querySelector(".text-line-view-gutter")?.getBoundingClientRect().width===overflowGutterWidth),"Code gutter width was not fixed for the page");
+codeOverflow.elements.wrap.noWrap.click();await settle();
+check(codeOverflow.elements.content.classList.contains("is-code-lines")&&getComputedStyle(overflowSource()).whiteSpace==="pre"&&getComputedStyle(overflowGutter()).userSelect==="none","Code No Wrap did not keep source/gutter geometry");
+codeOverflow.elements.wrap.wrap.click();await settle();
+codeOverflow.elements.next.click();await settle();
+check(Number(overflowGutter()?.textContent)>1&&codeOverflow.elements.content.classList.contains("is-code-lines"),"Code next page did not preserve absolute line numbers");
+codeOverflow.elements.search.query.value="tail😀needle";codeOverflow.elements.search.form.requestSubmit();await settle();
+const codeOverflowResult=codeOverflow.elements.search.results.querySelector("button");
+check(codeOverflowResult!==null,"Code overflow Rendered search did not return its distant match");
+codeOverflowResult.click();await settle();
+check(overflowGutter()?.textContent==="21001"&&codeOverflow.elements.content.querySelector("mark[data-rendered-search=\\"true\\"]")?.textContent==="tail😀needle","Code overflow Rendered search did not seek with absolute lines and source UTF-16 highlight");
+const overflowCopySource=overflowSource()?.querySelector("mark")?.firstChild??overflowSource()?.firstChild;
+if(!(overflowCopySource instanceof Text))throw new Error("Code overflow copy fixture did not expose a source text node");
+const overflowCopyRange=document.createRange();overflowCopyRange.setStart(overflowCopySource,0);overflowCopyRange.setEnd(overflowCopySource,overflowCopySource.data.length);
+const overflowSelection=window.getSelection();overflowSelection?.removeAllRanges();overflowSelection?.addRange(overflowCopyRange);
+codeOverflow.elements.content.parentElement.scrollTop=codeOverflow.elements.content.parentElement.scrollHeight;codeOverflow.elements.content.parentElement.dispatchEvent(new Event("scroll"));await settle();
+let overflowCopiedText="";
+const overflowCopyEvent=new Event("copy",{bubbles:true,cancelable:true});
+Object.defineProperty(overflowCopyEvent,"clipboardData",{value:{setData:(kind,value)=>{if(kind==="text/plain")overflowCopiedText=value;}}});
+document.dispatchEvent(overflowCopyEvent);
+check(overflowCopyEvent.defaultPrevented&&overflowCopiedText==="tail😀needle"&&!overflowCopiedText.includes("21001"),"Code overflow copy included a gutter line number or lost source text");
+const codeOverflowBody=codeOverflow.elements.content.parentElement;
+codeOverflowBody.scrollTop=codeOverflowBody.scrollHeight/2;codeOverflowBody.dispatchEvent(new Event("scroll"));await settle();
+codeOverflowBody.scrollTop=0;codeOverflowBody.dispatchEvent(new Event("scroll"));await settle();
+check(codeOverflow.elements.content.querySelector("mark[data-rendered-search=\\"true\\"]")?.textContent==="tail😀needle","Code overflow search highlight was not rebuilt after row recycling");
+codeOverflow.viewer.clear(false);await settle();
+check(codeOverflow.elements.content.querySelector(".text-line-view-row")===null&& !codeOverflow.elements.content.classList.contains("is-code-lines"),"Code overflow close retained its line view");
+codeOverflow.host.remove();
+
+const codeSizeSource="x".repeat(1024*1024+1);
+const codeSizeInvoke=async(command,args)=>{
+  if(command==="get_string_detection")return {semanticType:"code",detectionSource:"contentDetected",plainReason:null};
+  if(command==="get_string_metrics")return {decodedBytes:utf8(codeSizeSource),characterCount:codeSizeSource.length,lineCount:1};
+  if(command==="read_decoded_text"){const text=sliceByUtf8(codeSizeSource,args.offset,args.length);const end=args.offset+utf8(text);return {start:args.offset,text,hasMore:end<utf8(codeSizeSource),nextOffset:end<utf8(codeSizeSource)?end:null};}
+  throw new Error("unexpected code size-limit command");
+};
+const codeSize=makeViewer(codeSizeInvoke);
+await codeSize.viewer.open(target(14,14,codeSizeSource));await settle();
+check(codeSize.elements.content.classList.contains("is-code-lines")&&codeSize.elements.content.querySelectorAll(".text-line-view-row").length===1&&codeSize.elements.content.querySelector(".text-line-view-gutter")?.textContent==="1","Code size-limit fallback did not use a bounded code line window");
+codeSize.viewer.clear(false);codeSize.host.remove();
+
 const fence=String.fromCharCode(96).repeat(3);
 const markdownSource="# Prose\\n\\nThis paragraph should reflow.\\n\\n"+fence+"javascript\\n"+"const veryLongValue = "+'"'+"L".repeat(2200)+'"' + ";\\n"+fence;
 const markdownInvoke=async(command,args)=>{

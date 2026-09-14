@@ -39,6 +39,8 @@ export class TextLineView {
   private heights: number[] = [];
   private offsets: number[] = [0];
   private wrap = true;
+  private codeLines = false;
+  private firstLineNumber = 1;
   private highlight: TextLineHighlight | null = null;
   private lastWidth: number | null = null;
   private readonly observedRows = new Set<HTMLElement>();
@@ -65,11 +67,14 @@ export class TextLineView {
     wrap: boolean,
     highlight: TextLineHighlight | null = null,
     previousWasCR = false,
-    hasMore = false
+    hasMore = false,
+    firstLineNumber: number | null = null
   ): void {
     this.text = text;
     this.lines = splitLines(text, previousWasCR, hasMore);
     this.wrap = wrap;
+    this.codeLines = firstLineNumber !== null;
+    this.firstLineNumber = firstLineNumber ?? 1;
     this.highlight = normalizeHighlight(highlight, text.length);
     this.renderedFirst = null;
     this.renderedLast = null;
@@ -117,6 +122,7 @@ export class TextLineView {
     this.observedRows.clear();
     this.host.replaceChildren();
     this.host.classList.remove("is-text-lines");
+    this.host.classList.remove("is-code-lines");
     this.text = "";
     this.lines = [];
     this.heights = [];
@@ -134,6 +140,7 @@ export class TextLineView {
       for (const row of this.observedRows) this.resizeObserver?.unobserve(row);
       this.observedRows.clear();
       this.host.classList.add("is-text-lines");
+      this.host.classList.toggle("is-code-lines", this.codeLines);
       this.host.replaceChildren();
       this.renderedFirst = 0;
       this.renderedLast = 0;
@@ -180,6 +187,7 @@ export class TextLineView {
     bottom.setAttribute("aria-hidden", "true");
     bottom.style.height = String(Math.max(0, (this.offsets.at(-1) ?? 0) - (this.offsets[last] ?? 0))) + "px";
     this.host.classList.add("is-text-lines");
+    this.host.classList.toggle("is-code-lines", this.codeLines);
     this.host.replaceChildren(top, rows, bottom);
     this.renderedFirst = first;
     this.renderedLast = last;
@@ -209,36 +217,50 @@ export class TextLineView {
     row.dataset.utf16Start = String(line.start);
     row.dataset.utf16End = String(line.contentEnd);
     if (!this.wrap) row.style.height = String(this.heights[index] ?? DEFAULT_LINE_HEIGHT) + "px";
+    const source = this.codeLines ? document.createElement("span") : row;
+    if (this.codeLines) {
+      const gutter = document.createElement("span");
+      gutter.className = "text-line-view-gutter";
+      gutter.setAttribute("aria-hidden", "true");
+      gutter.textContent = String(this.firstLineNumber + index);
+      gutter.style.width = this.gutterWidth();
+      source.className = "text-line-view-source";
+      row.append(gutter, source);
+    }
     const highlight = this.highlight;
     if (!highlight || highlight.end <= line.start || highlight.start >= line.contentEnd) {
-      this.appendLineText(row, line.start, line.contentEnd, line.end);
+      this.appendLineText(source, line.start, line.contentEnd, line.end);
       return row;
     }
     const start = Math.max(line.start, highlight.start);
     const end = Math.min(line.contentEnd, highlight.end);
-    if (start > line.start) row.append(document.createTextNode(this.text.slice(line.start, start)));
+    if (start > line.start) source.append(document.createTextNode(this.text.slice(line.start, start)));
     const mark = document.createElement("mark");
     if (highlight.marker === "renderedSearch") mark.dataset.renderedSearch = "true";
     else mark.dataset.searchMatch = "true";
     mark.textContent = this.text.slice(start, end);
-    row.append(mark);
-    if (end < line.contentEnd) row.append(document.createTextNode(this.text.slice(end, line.contentEnd)));
-    this.appendLineBreak(row, line.contentEnd, line.end);
+    source.append(mark);
+    if (end < line.contentEnd) source.append(document.createTextNode(this.text.slice(end, line.contentEnd)));
+    this.appendLineBreak(source, line.contentEnd, line.end);
     return row;
   }
 
-  private appendLineText(row: HTMLElement, start: number, contentEnd: number, end: number): void {
-    row.textContent = this.text.slice(start, contentEnd);
-    this.appendLineBreak(row, contentEnd, end);
+  private appendLineText(source: HTMLElement, start: number, contentEnd: number, end: number): void {
+    source.textContent = this.text.slice(start, contentEnd);
+    this.appendLineBreak(source, contentEnd, end);
   }
 
-  private appendLineBreak(row: HTMLElement, contentEnd: number, end: number): void {
+  private appendLineBreak(source: HTMLElement, contentEnd: number, end: number): void {
     if (end <= contentEnd) return;
     const lineBreak = document.createElement("span");
     lineBreak.className = "text-line-view-break";
     lineBreak.setAttribute("aria-hidden", "true");
     lineBreak.textContent = this.text.slice(contentEnd, end);
-    row.append(lineBreak);
+    source.append(lineBreak);
+  }
+
+  private gutterWidth(): string {
+    return String(this.firstLineNumber + this.lines.length - 1).length + "ch";
   }
 
   private handleResize(entries: ResizeObserverEntry[]): void {
@@ -309,9 +331,10 @@ export class TextLineView {
     if (!row) return null;
     const start = Number(row.dataset.utf16Start);
     if (!Number.isSafeInteger(start)) return null;
+    const source = this.sourceElement(row);
     const range = document.createRange();
     try {
-      range.selectNodeContents(row);
+      range.selectNodeContents(source);
       range.setEnd(node, Math.min(offset, node.nodeType === Node.TEXT_NODE ? node.nodeValue?.length ?? 0 : node.childNodes.length));
     } catch {
       return start;
@@ -408,7 +431,7 @@ export class TextLineView {
       const start = Number(row.dataset.utf16Start);
       const end = Number(row.dataset.utf16End);
       if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || offset < start || offset > end) continue;
-      const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+      const walker = document.createTreeWalker(this.sourceElement(row), NodeFilter.SHOW_TEXT);
       let cursor = start;
       let last: Text | null = null;
       while (walker.nextNode()) {
@@ -420,7 +443,7 @@ export class TextLineView {
       }
       if (last) return { node: last, offset: last.data.length };
       const empty = document.createTextNode("");
-      row.append(empty);
+      this.sourceElement(row).append(empty);
       return { node: empty, offset: 0 };
     }
     return null;
@@ -432,6 +455,10 @@ export class TextLineView {
     for (let index = 0; index < this.heights.length; index += 1) {
       this.offsets[index + 1] = this.offsets[index] + this.heights[index];
     }
+  }
+
+  private sourceElement(row: HTMLElement): HTMLElement {
+    return this.codeLines ? row.querySelector<HTMLElement>(".text-line-view-source") ?? row : row;
   }
 
   private lineHeight(): number {

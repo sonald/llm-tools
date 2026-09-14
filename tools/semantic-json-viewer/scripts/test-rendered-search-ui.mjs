@@ -374,7 +374,7 @@ check(codeResult!==null,"large Code rendered backend search did not return its t
 codeResult.click();
 await settle();
 const expectedLine=366668;
-check(codeCalls.some((call)=>call.command==="read_decoded_text"&&call.args.offset===codeMatchOffset)&&codeViewer.elements.content.querySelector(".sjv-code-gutter")?.textContent?.startsWith(String(expectedLine)),"large Code rendered reveal did not use checkpointed CRLF line state");
+check(codeCalls.some((call)=>call.command==="read_decoded_text"&&call.args.offset===codeMatchOffset)&&codeViewer.elements.content.classList.contains("is-code-lines")&&codeViewer.elements.content.querySelector(".text-line-view-gutter")?.textContent===String(expectedLine),"large Code rendered reveal did not use checkpointed CRLF line state");
 codeViewer.viewer.clear(false);
 codeViewer.host.remove();
 
