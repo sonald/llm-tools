@@ -364,6 +364,7 @@ pub struct EntryLocationDto {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParseErrorDto {
+    pub code: String,
     pub message: String,
     pub byte_offset: usize,
     pub line: usize,
@@ -3130,12 +3131,7 @@ fn invalid_json(error: crate::json::ParseError) -> IpcError {
     IpcError {
         code: "invalid_json".to_owned(),
         message: "invalid JSON".to_owned(),
-        parse_error: Some(ParseErrorDto {
-            message: error.message,
-            byte_offset: error.byte_offset,
-            line: error.line,
-            column: error.column,
-        }),
+        parse_error: Some(parse_error_dto(error)),
     }
 }
 
@@ -3595,15 +3591,7 @@ fn entry_dto(summary: EntrySummary) -> EntryDto {
         EntryStatus::Valid => ("valid", None),
         EntryStatus::InvalidUtf8 => ("invalidUtf8", None),
         EntryStatus::Oversized => ("oversized", None),
-        EntryStatus::InvalidJson(error) => (
-            "invalidJson",
-            Some(ParseErrorDto {
-                message: error.message,
-                byte_offset: error.byte_offset,
-                line: error.line,
-                column: error.column,
-            }),
-        ),
+        EntryStatus::InvalidJson(error) => ("invalidJson", Some(parse_error_dto(error))),
     };
     let event_summary = summary.event_summary.map(event_summary_dto);
     EntryDto {
@@ -3616,6 +3604,16 @@ fn entry_dto(summary: EntrySummary) -> EntryDto {
         status: status.to_owned(),
         parse_error,
         event_summary,
+    }
+}
+
+fn parse_error_dto(error: crate::json::ParseError) -> ParseErrorDto {
+    ParseErrorDto {
+        code: error.kind.code().to_owned(),
+        message: error.message,
+        byte_offset: error.byte_offset,
+        line: error.line,
+        column: error.column,
     }
 }
 
@@ -5956,6 +5954,7 @@ mod tests {
         let page = list_entries_inner(&state, 0, 200, summary.session_revision).unwrap();
         let encoded_page = String::from_utf8(serde_json::to_vec(&page).unwrap()).unwrap();
         assert!(encoded_page.contains("parseError"));
+        assert!(encoded_page.contains("\"code\":\"expected_object_key\""));
         assert!(encoded_page.contains("byteOffset"));
         assert!(!encoded_page.contains("byte_offset"));
         let encoded_summary = String::from_utf8(serde_json::to_vec(&summary).unwrap()).unwrap();
@@ -6054,6 +6053,14 @@ mod tests {
         assert_eq!(page.entries[0].status, "valid");
         assert_eq!(page.entries[1].status, "invalidJson");
         assert!(page.entries[1].parse_error.is_some());
+        assert_eq!(
+            page.entries[1]
+                .parse_error
+                .as_ref()
+                .expect("invalid JSON parse error")
+                .code,
+            "expected_object_key"
+        );
         assert_eq!(page.entries[2].status, "invalidUtf8");
         assert!(page.entries[2].parse_error.is_none());
 
@@ -6061,6 +6068,15 @@ mod tests {
         let invalid_json = select_entry_inner(&state, 1, valid.session_revision).unwrap();
         assert_eq!(invalid_json.entry.status, "invalidJson");
         assert!(invalid_json.root.is_none());
+        assert_eq!(
+            invalid_json
+                .entry
+                .parse_error
+                .as_ref()
+                .expect("selected invalid JSON parse error")
+                .code,
+            "expected_object_key"
+        );
         assert_eq!(invalid_json.session_revision, valid.session_revision + 1);
         assert_eq!(
             get_root_node_inner(&state, invalid_json.session_revision)
@@ -6709,6 +6725,7 @@ mod tests {
         let error = summary.document_error.as_ref().expect("document error");
         assert_eq!(error.code, "invalid_json");
         let parse = error.parse_error.as_ref().expect("parse error");
+        assert_eq!(parse.code, "expected_object_key");
         assert_eq!(parse.message, "expected object key");
         assert_eq!(parse.byte_offset, 1);
         assert_eq!(parse.line, 1);

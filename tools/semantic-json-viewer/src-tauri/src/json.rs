@@ -451,8 +451,91 @@ impl Iterator for DecodedScalarIter<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParseErrorKind {
+    TrailingData,
+    InvalidUtf8,
+    UnexpectedEndOfInput,
+    ExpectedScalarJsonValue,
+    ExpectedObjectKey,
+    ExpectedColonAfterObjectKey,
+    ExpectedObjectValueSeparator,
+    ExpectedArrayElementSeparator,
+    InvalidJsonLiteral,
+    LeadingZeroNotAllowed,
+    ExpectedDigit,
+    ExpectedDigitAfterDecimalPoint,
+    ExpectedDigitInExponent,
+    UnterminatedString,
+    UnescapedControlCharacterInString,
+    UnterminatedStringEscape,
+    InvalidStringEscape,
+    UnpairedHighSurrogate,
+    InvalidLowSurrogate,
+    UnpairedLowSurrogate,
+    IncompleteUnicodeEscape,
+    InvalidUnicodeEscapeDigit,
+}
+
+impl ParseErrorKind {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::TrailingData => "trailing_data",
+            Self::InvalidUtf8 => "invalid_utf8",
+            Self::UnexpectedEndOfInput => "unexpected_end_of_input",
+            Self::ExpectedScalarJsonValue => "expected_scalar_json_value",
+            Self::ExpectedObjectKey => "expected_object_key",
+            Self::ExpectedColonAfterObjectKey => "expected_colon_after_object_key",
+            Self::ExpectedObjectValueSeparator => "expected_object_value_separator",
+            Self::ExpectedArrayElementSeparator => "expected_array_element_separator",
+            Self::InvalidJsonLiteral => "invalid_json_literal",
+            Self::LeadingZeroNotAllowed => "leading_zero_not_allowed",
+            Self::ExpectedDigit => "expected_digit",
+            Self::ExpectedDigitAfterDecimalPoint => "expected_digit_after_decimal_point",
+            Self::ExpectedDigitInExponent => "expected_digit_in_exponent",
+            Self::UnterminatedString => "unterminated_string",
+            Self::UnescapedControlCharacterInString => "unescaped_control_character_in_string",
+            Self::UnterminatedStringEscape => "unterminated_string_escape",
+            Self::InvalidStringEscape => "invalid_string_escape",
+            Self::UnpairedHighSurrogate => "unpaired_high_surrogate",
+            Self::InvalidLowSurrogate => "invalid_low_surrogate",
+            Self::UnpairedLowSurrogate => "unpaired_low_surrogate",
+            Self::IncompleteUnicodeEscape => "incomplete_unicode_escape",
+            Self::InvalidUnicodeEscapeDigit => "invalid_unicode_escape_digit",
+        }
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::TrailingData => "trailing data",
+            Self::InvalidUtf8 => "input is not valid UTF-8",
+            Self::UnexpectedEndOfInput => "unexpected end of input",
+            Self::ExpectedScalarJsonValue => "expected a scalar JSON value",
+            Self::ExpectedObjectKey => "expected object key",
+            Self::ExpectedColonAfterObjectKey => "expected ':' after object key",
+            Self::ExpectedObjectValueSeparator => "expected ',' or '}' after object value",
+            Self::ExpectedArrayElementSeparator => "expected ',' or ']' after array element",
+            Self::InvalidJsonLiteral => "invalid JSON literal",
+            Self::LeadingZeroNotAllowed => "leading zero is not allowed",
+            Self::ExpectedDigit => "expected a digit",
+            Self::ExpectedDigitAfterDecimalPoint => "expected a digit after decimal point",
+            Self::ExpectedDigitInExponent => "expected a digit in exponent",
+            Self::UnterminatedString => "unterminated string",
+            Self::UnescapedControlCharacterInString => "unescaped control character in string",
+            Self::UnterminatedStringEscape => "unterminated string escape",
+            Self::InvalidStringEscape => "invalid string escape",
+            Self::UnpairedHighSurrogate => "unpaired high surrogate",
+            Self::InvalidLowSurrogate => "invalid low surrogate",
+            Self::UnpairedLowSurrogate => "unpaired low surrogate",
+            Self::IncompleteUnicodeEscape => "incomplete unicode escape",
+            Self::InvalidUnicodeEscapeDigit => "invalid unicode escape digit",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParseError {
+    pub kind: ParseErrorKind,
     pub message: String,
     pub byte_offset: usize,
     pub line: usize,
@@ -463,7 +546,7 @@ pub fn parse_json(input: &[u8]) -> Result<ParsedJson<'_>, ParseError> {
     let (parsed, consumed) = parse_json_prefix(input)?;
 
     if consumed < input.len() {
-        return Err(error_at(input, consumed, "trailing data"));
+        return Err(error_at(input, consumed, ParseErrorKind::TrailingData));
     }
 
     Ok(parsed)
@@ -486,7 +569,7 @@ pub fn parse_json_owned(input: Vec<u8>) -> Result<ParsedJson<'static>, ParseErro
 
 pub(crate) fn parse_json_prefix(input: &[u8]) -> Result<(ParsedJson<'_>, usize), ParseError> {
     let text = from_utf8(input)
-        .map_err(|error| error_at(input, error.valid_up_to(), "input is not valid UTF-8"))?;
+        .map_err(|error| error_at(input, error.valid_up_to(), ParseErrorKind::InvalidUtf8))?;
     let mut parser = Parser {
         input,
         text,
@@ -561,8 +644,8 @@ impl Frame {
 }
 
 impl<'a> Parser<'a> {
-    fn error(&self, message: &str) -> ParseError {
-        error_at(self.input, self.index, message)
+    fn error(&self, kind: ParseErrorKind) -> ParseError {
+        error_at(self.input, self.index, kind)
     }
 
     fn skip_whitespace(&mut self) {
@@ -578,7 +661,7 @@ impl<'a> Parser<'a> {
     fn parse_scalar(&mut self) -> Result<JsonNode, ParseError> {
         let start = self.index;
         let Some(byte) = self.byte(start) else {
-            return Err(self.error("unexpected end of input"));
+            return Err(self.error(ParseErrorKind::UnexpectedEndOfInput));
         };
 
         match byte {
@@ -597,7 +680,7 @@ impl<'a> Parser<'a> {
             b't' => self.parse_keyword(start, b"true", JsonKind::True),
             b'f' => self.parse_keyword(start, b"false", JsonKind::False),
             b'n' => self.parse_keyword(start, b"null", JsonKind::Null),
-            _ => Err(self.error("expected a scalar JSON value")),
+            _ => Err(self.error(ParseErrorKind::ExpectedScalarJsonValue)),
         }
     }
 
@@ -722,7 +805,7 @@ impl<'a> Parser<'a> {
                     return Ok(FrameAction::Complete(*id));
                 }
                 if self.byte(self.index) != Some(b'"') {
-                    return Err(self.error("expected object key"));
+                    return Err(self.error(ParseErrorKind::ExpectedObjectKey));
                 }
 
                 let (key_span, key_has_escape) = self.parse_string(self.index)?;
@@ -741,7 +824,7 @@ impl<'a> Parser<'a> {
 
                 self.skip_whitespace();
                 if self.byte(self.index) != Some(b':') {
-                    return Err(self.error("expected ':' after object key"));
+                    return Err(self.error(ParseErrorKind::ExpectedColonAfterObjectKey));
                 }
                 self.index += 1;
                 *state = ObjectFrameState::AfterValue;
@@ -796,7 +879,7 @@ impl<'a> Parser<'a> {
                         self.nodes[frame_id.0].span.end = self.index;
                         Ok(FrameAction::Complete(frame_id))
                     }
-                    _ => Err(self.error("expected ',' or '}' after object value")),
+                    _ => Err(self.error(ParseErrorKind::ExpectedObjectValueSeparator)),
                 }
             }
             Frame::Array { state, .. } => {
@@ -812,7 +895,7 @@ impl<'a> Parser<'a> {
                         self.nodes[frame_id.0].span.end = self.index;
                         Ok(FrameAction::Complete(frame_id))
                     }
-                    _ => Err(self.error("expected ',' or ']' after array element")),
+                    _ => Err(self.error(ParseErrorKind::ExpectedArrayElementSeparator)),
                 }
             }
         }
@@ -838,7 +921,7 @@ impl<'a> Parser<'a> {
                 string_has_escape: false,
             })
         } else {
-            Err(self.error("invalid JSON literal"))
+            Err(self.error(ParseErrorKind::InvalidJsonLiteral))
         }
     }
 
@@ -852,7 +935,11 @@ impl<'a> Parser<'a> {
             Some(b'0') => {
                 index += 1;
                 if matches!(self.byte(index), Some(b'0'..=b'9')) {
-                    return Err(error_at(self.input, index, "leading zero is not allowed"));
+                    return Err(error_at(
+                        self.input,
+                        index,
+                        ParseErrorKind::LeadingZeroNotAllowed,
+                    ));
                 }
             }
             Some(b'1'..=b'9') => {
@@ -861,7 +948,7 @@ impl<'a> Parser<'a> {
                     index += 1;
                 }
             }
-            _ => return Err(error_at(self.input, index, "expected a digit")),
+            _ => return Err(error_at(self.input, index, ParseErrorKind::ExpectedDigit)),
         }
 
         if self.byte(index) == Some(b'.') {
@@ -874,7 +961,7 @@ impl<'a> Parser<'a> {
                 return Err(error_at(
                     self.input,
                     index,
-                    "expected a digit after decimal point",
+                    ParseErrorKind::ExpectedDigitAfterDecimalPoint,
                 ));
             }
         }
@@ -889,7 +976,11 @@ impl<'a> Parser<'a> {
                 index += 1;
             }
             if index == exponent_start {
-                return Err(error_at(self.input, index, "expected a digit in exponent"));
+                return Err(error_at(
+                    self.input,
+                    index,
+                    ParseErrorKind::ExpectedDigitInExponent,
+                ));
             }
         }
 
@@ -910,7 +1001,7 @@ impl<'a> Parser<'a> {
 
         loop {
             let Some(character) = self.text[self.index..].chars().next() else {
-                return Err(self.error("unterminated string"));
+                return Err(self.error(ParseErrorKind::UnterminatedString));
             };
             let character_start = self.index;
 
@@ -932,7 +1023,7 @@ impl<'a> Parser<'a> {
                 return Err(error_at(
                     self.input,
                     character_start,
-                    "unescaped control character in string",
+                    ParseErrorKind::UnescapedControlCharacterInString,
                 ));
             } else {
                 self.index += character.len_utf8();
@@ -968,7 +1059,7 @@ impl<'a> Parser<'a> {
         let escape_start = self.index;
         self.index += 1;
         let Some(character) = self.text[self.index..].chars().next() else {
-            return Err(self.error("unterminated string escape"));
+            return Err(self.error(ParseErrorKind::UnterminatedStringEscape));
         };
         self.index += character.len_utf8();
 
@@ -982,7 +1073,11 @@ impl<'a> Parser<'a> {
             'r' => Ok('\r'),
             't' => Ok('\t'),
             'u' => self.parse_unicode_escape(escape_start),
-            _ => Err(error_at(self.input, escape_start, "invalid string escape")),
+            _ => Err(error_at(
+                self.input,
+                escape_start,
+                ParseErrorKind::InvalidStringEscape,
+            )),
         }
     }
 
@@ -991,7 +1086,11 @@ impl<'a> Parser<'a> {
 
         if (0xd800..=0xdbff).contains(&high) {
             if !self.input[self.index..].starts_with(b"\\u") {
-                return Err(error_at(self.input, self.index, "unpaired high surrogate"));
+                return Err(error_at(
+                    self.input,
+                    self.index,
+                    ParseErrorKind::UnpairedHighSurrogate,
+                ));
             }
             self.index += 2;
             let low = self.parse_hex4()?;
@@ -999,14 +1098,18 @@ impl<'a> Parser<'a> {
                 return Err(error_at(
                     self.input,
                     self.index - 4,
-                    "invalid low surrogate",
+                    ParseErrorKind::InvalidLowSurrogate,
                 ));
             }
             let code_point =
                 0x10000 + (((u32::from(high) - 0xd800) << 10) | (u32::from(low) - 0xdc00));
             Ok(char::from_u32(code_point).expect("valid surrogate pair"))
         } else if (0xdc00..=0xdfff).contains(&high) {
-            Err(error_at(self.input, escape_start, "unpaired low surrogate"))
+            Err(error_at(
+                self.input,
+                escape_start,
+                ParseErrorKind::UnpairedLowSurrogate,
+            ))
         } else {
             Ok(char::from_u32(u32::from(high)).expect("valid non-surrogate scalar"))
         }
@@ -1017,7 +1120,7 @@ impl<'a> Parser<'a> {
             return Err(error_at(
                 self.input,
                 self.index,
-                "incomplete unicode escape",
+                ParseErrorKind::IncompleteUnicodeEscape,
             ));
         }
 
@@ -1032,7 +1135,7 @@ impl<'a> Parser<'a> {
                     return Err(error_at(
                         self.input,
                         self.index + offset,
-                        "invalid unicode escape digit",
+                        ParseErrorKind::InvalidUnicodeEscapeDigit,
                     ))
                 }
             };
@@ -1044,12 +1147,13 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn error_at(input: &[u8], byte_offset: usize, message: &str) -> ParseError {
+fn error_at(input: &[u8], byte_offset: usize, kind: ParseErrorKind) -> ParseError {
     let valid = from_utf8(&input[..byte_offset]).unwrap_or("");
     let line = valid.bytes().filter(|byte| *byte == b'\n').count() + 1;
     let line_start = valid.rfind('\n').map_or(0, |index| index + 1);
     ParseError {
-        message: message.to_owned(),
+        kind,
+        message: kind.message().to_owned(),
         byte_offset,
         line,
         column: byte_offset - line_start + 1,
@@ -1149,6 +1253,157 @@ mod tests {
             assert_eq!(error.line, 1);
             assert_eq!(error.column, byte_offset + 1);
         }
+    }
+
+    #[test]
+    fn every_parse_error_kind_has_a_stable_code_and_original_message() {
+        let cases = [
+            (b"true x".as_slice(), ParseErrorKind::TrailingData, 5, 1, 6),
+            (b"\xff".as_slice(), ParseErrorKind::InvalidUtf8, 0, 1, 1),
+            (
+                b"".as_slice(),
+                ParseErrorKind::UnexpectedEndOfInput,
+                0,
+                1,
+                1,
+            ),
+            (
+                b"?".as_slice(),
+                ParseErrorKind::ExpectedScalarJsonValue,
+                0,
+                1,
+                1,
+            ),
+            (b"{".as_slice(), ParseErrorKind::ExpectedObjectKey, 1, 1, 2),
+            (
+                &b"{ \"a\"\r\n1 }"[..],
+                ParseErrorKind::ExpectedColonAfterObjectKey,
+                7,
+                2,
+                1,
+            ),
+            (
+                &b"{ \"a\": 1\r\n\"b\": 2 }"[..],
+                ParseErrorKind::ExpectedObjectValueSeparator,
+                10,
+                2,
+                1,
+            ),
+            (
+                b"[ 1".as_slice(),
+                ParseErrorKind::ExpectedArrayElementSeparator,
+                3,
+                1,
+                4,
+            ),
+            (
+                b"truX".as_slice(),
+                ParseErrorKind::InvalidJsonLiteral,
+                0,
+                1,
+                1,
+            ),
+            (
+                b"01".as_slice(),
+                ParseErrorKind::LeadingZeroNotAllowed,
+                1,
+                1,
+                2,
+            ),
+            (b"-x".as_slice(), ParseErrorKind::ExpectedDigit, 1, 1, 2),
+            (
+                b"1.".as_slice(),
+                ParseErrorKind::ExpectedDigitAfterDecimalPoint,
+                2,
+                1,
+                3,
+            ),
+            (
+                b"1e".as_slice(),
+                ParseErrorKind::ExpectedDigitInExponent,
+                2,
+                1,
+                3,
+            ),
+            (
+                b"\"abc".as_slice(),
+                ParseErrorKind::UnterminatedString,
+                4,
+                1,
+                5,
+            ),
+            (
+                b"\"a\n\"".as_slice(),
+                ParseErrorKind::UnescapedControlCharacterInString,
+                2,
+                1,
+                3,
+            ),
+            (
+                b"\"a\\".as_slice(),
+                ParseErrorKind::UnterminatedStringEscape,
+                3,
+                1,
+                4,
+            ),
+            (
+                b"\"\\q\"".as_slice(),
+                ParseErrorKind::InvalidStringEscape,
+                1,
+                1,
+                2,
+            ),
+            (
+                b"\"\\ud83d\"".as_slice(),
+                ParseErrorKind::UnpairedHighSurrogate,
+                7,
+                1,
+                8,
+            ),
+            (
+                b"\"\\ud800\\u0041\"".as_slice(),
+                ParseErrorKind::InvalidLowSurrogate,
+                9,
+                1,
+                10,
+            ),
+            (
+                b"\"\\udc00\"".as_slice(),
+                ParseErrorKind::UnpairedLowSurrogate,
+                1,
+                1,
+                2,
+            ),
+            (
+                b"\"\\u12\"".as_slice(),
+                ParseErrorKind::IncompleteUnicodeEscape,
+                3,
+                1,
+                4,
+            ),
+            (
+                b"\"\\u12x4\"".as_slice(),
+                ParseErrorKind::InvalidUnicodeEscapeDigit,
+                5,
+                1,
+                6,
+            ),
+        ];
+
+        let mut codes = Vec::new();
+        for (input, kind, byte_offset, line, column) in cases {
+            let error = parse_json(input).unwrap_err();
+            assert_eq!(error.kind, kind, "{input:?}");
+            assert_eq!(error.kind.message(), error.message);
+            assert_eq!(error.kind.code(), kind.code());
+            assert_eq!(error.byte_offset, byte_offset, "{input:?}");
+            assert_eq!(error.line, line, "{input:?}");
+            assert_eq!(error.column, column, "{input:?}");
+            codes.push(error.kind.code());
+        }
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), 22);
     }
 
     #[test]
