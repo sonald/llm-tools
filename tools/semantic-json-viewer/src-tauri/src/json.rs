@@ -463,6 +463,47 @@ struct Parser<'a> {
     checkpoints: Vec<DecodedCheckpoint>,
 }
 
+enum Frame {
+    Object {
+        id: NodeId,
+        occurrences: HashMap<String, usize>,
+        state: ObjectFrameState,
+    },
+    Array {
+        id: NodeId,
+        next_index: usize,
+        state: ArrayFrameState,
+    },
+}
+
+enum ObjectFrameState {
+    FirstKey,
+    Key,
+    AfterValue,
+}
+
+enum ArrayFrameState {
+    FirstValue,
+    Value,
+    AfterValue,
+}
+
+enum FrameAction {
+    Child {
+        parent: NodeId,
+        locator: ChildLocator,
+    },
+    Complete(NodeId),
+}
+
+impl Frame {
+    fn id(&self) -> NodeId {
+        match self {
+            Self::Object { id, .. } | Self::Array { id, .. } => *id,
+        }
+    }
+}
+
 impl<'a> Parser<'a> {
     fn error(&self, message: &str) -> ParseError {
         error_at(self.input, self.index, message)
@@ -499,136 +540,211 @@ impl<'a> Parser<'a> {
         parent: Option<NodeId>,
         locator: ChildLocator,
     ) -> Result<NodeId, ParseError> {
-        self.skip_whitespace();
+        let mut frames: Vec<Frame> = Vec::new();
+        let mut pending = Some((parent, locator));
+        let mut completed = None;
 
-        match self.byte(self.index) {
-            Some(b'{') => self.parse_object(parent, locator),
-            Some(b'[') => self.parse_array(parent, locator),
-            _ => {
-                let mut node = self.parse_scalar()?;
-                node.parent = parent;
-                node.locator = locator;
-                node.children = Vec::new();
-                let id = NodeId(self.nodes.len());
-                if node.kind == JsonKind::String && node.string_has_escape {
-                    self.add_decoded_checkpoints(id.index(), node.span);
+        loop {
+            if let Some(id) = completed.take() {
+                let Some(frame) = frames.last_mut() else {
+                    return Ok(id);
+                };
+                let parent_id = frame.id();
+                self.nodes[parent_id.0].children.push(id);
+                match self.finish_frame_value(frame)? {
+                    FrameAction::Child { parent, locator } => {
+                        pending = Some((Some(parent), locator));
+                    }
+                    FrameAction::Complete(id) => {
+                        frames.pop();
+                        completed = Some(id);
+                    }
                 }
-                self.nodes.push(node);
-                Ok(id)
+                continue;
+            }
+
+            let (value_parent, value_locator) = pending
+                .take()
+                .expect("container parser must always have a pending value");
+            self.skip_whitespace();
+
+            match self.byte(self.index) {
+                Some(b'{') => {
+                    let start = self.index;
+                    let id = NodeId(self.nodes.len());
+                    self.nodes.push(JsonNode {
+                        kind: JsonKind::Object,
+                        span: SourceSpan { start, end: start },
+                        locator: value_locator,
+                        parent: value_parent,
+                        children: Vec::new(),
+                        decoded: None,
+                        string_has_escape: false,
+                    });
+                    self.index += 1;
+                    frames.push(Frame::Object {
+                        id,
+                        occurrences: HashMap::new(),
+                        state: ObjectFrameState::FirstKey,
+                    });
+                    match self.next_frame_value(frames.last_mut().expect("just pushed frame"))? {
+                        FrameAction::Child { parent, locator } => {
+                            pending = Some((Some(parent), locator));
+                        }
+                        FrameAction::Complete(id) => {
+                            frames.pop();
+                            completed = Some(id);
+                        }
+                    }
+                }
+                Some(b'[') => {
+                    let start = self.index;
+                    let id = NodeId(self.nodes.len());
+                    self.nodes.push(JsonNode {
+                        kind: JsonKind::Array,
+                        span: SourceSpan { start, end: start },
+                        locator: value_locator,
+                        parent: value_parent,
+                        children: Vec::new(),
+                        decoded: None,
+                        string_has_escape: false,
+                    });
+                    self.index += 1;
+                    frames.push(Frame::Array {
+                        id,
+                        next_index: 0,
+                        state: ArrayFrameState::FirstValue,
+                    });
+                    match self.next_frame_value(frames.last_mut().expect("just pushed frame"))? {
+                        FrameAction::Child { parent, locator } => {
+                            pending = Some((Some(parent), locator));
+                        }
+                        FrameAction::Complete(id) => {
+                            frames.pop();
+                            completed = Some(id);
+                        }
+                    }
+                }
+                _ => {
+                    let mut node = self.parse_scalar()?;
+                    node.parent = value_parent;
+                    node.locator = value_locator;
+                    node.children = Vec::new();
+                    let id = NodeId(self.nodes.len());
+                    if node.kind == JsonKind::String && node.string_has_escape {
+                        self.add_decoded_checkpoints(id.index(), node.span);
+                    }
+                    self.nodes.push(node);
+                    completed = Some(id);
+                }
             }
         }
     }
 
-    fn parse_object(
-        &mut self,
-        parent: Option<NodeId>,
-        locator: ChildLocator,
-    ) -> Result<NodeId, ParseError> {
-        let start = self.index;
-        let id = NodeId(self.nodes.len());
-        self.nodes.push(JsonNode {
-            kind: JsonKind::Object,
-            span: SourceSpan { start, end: start },
-            locator,
-            parent,
-            children: Vec::new(),
-            decoded: None,
-            string_has_escape: false,
-        });
-        self.index += 1;
+    fn next_frame_value(&mut self, frame: &mut Frame) -> Result<FrameAction, ParseError> {
         self.skip_whitespace();
 
-        if self.byte(self.index) == Some(b'}') {
-            self.index += 1;
-            self.nodes[id.0].span.end = self.index;
-            return Ok(id);
-        }
-
-        let mut occurrences = HashMap::new();
-        loop {
-            self.skip_whitespace();
-            if self.byte(self.index) != Some(b'"') {
-                return Err(self.error("expected object key"));
-            }
-
-            let key_node = self.parse_string(self.index)?;
-            let key = key_node
-                .decoded
-                .ok_or_else(|| self.error("expected object key"))?;
-            let key_span = key_node.span;
-            let occurrence = occurrences.entry(key.clone()).or_insert(0);
-            *occurrence += 1;
-            let occurrence = *occurrence;
-
-            self.skip_whitespace();
-            if self.byte(self.index) != Some(b':') {
-                return Err(self.error("expected ':' after object key"));
-            }
-            self.index += 1;
-
-            let child = self.parse_value(
-                Some(id),
-                ChildLocator::ObjectKey {
-                    key,
-                    key_span,
-                    occurrence,
-                },
-            )?;
-            self.nodes[id.0].children.push(child);
-
-            self.skip_whitespace();
-            match self.byte(self.index) {
-                Some(b',') => self.index += 1,
-                Some(b'}') => {
+        match frame {
+            Frame::Object {
+                id,
+                occurrences,
+                state,
+            } => {
+                if matches!(state, ObjectFrameState::FirstKey)
+                    && self.byte(self.index) == Some(b'}')
+                {
                     self.index += 1;
                     self.nodes[id.0].span.end = self.index;
-                    return Ok(id);
+                    return Ok(FrameAction::Complete(*id));
                 }
-                _ => return Err(self.error("expected ',' or '}' after object value")),
+                if self.byte(self.index) != Some(b'"') {
+                    return Err(self.error("expected object key"));
+                }
+
+                let key_node = self.parse_string(self.index)?;
+                let key = key_node
+                    .decoded
+                    .ok_or_else(|| self.error("expected object key"))?;
+                let key_span = key_node.span;
+                let occurrence = occurrences.entry(key.clone()).or_insert(0);
+                *occurrence += 1;
+                let occurrence = *occurrence;
+
+                self.skip_whitespace();
+                if self.byte(self.index) != Some(b':') {
+                    return Err(self.error("expected ':' after object key"));
+                }
+                self.index += 1;
+                *state = ObjectFrameState::AfterValue;
+                Ok(FrameAction::Child {
+                    parent: *id,
+                    locator: ChildLocator::ObjectKey {
+                        key,
+                        key_span,
+                        occurrence,
+                    },
+                })
+            }
+            Frame::Array {
+                id,
+                next_index,
+                state,
+            } => {
+                if matches!(state, ArrayFrameState::FirstValue)
+                    && self.byte(self.index) == Some(b']')
+                {
+                    self.index += 1;
+                    self.nodes[id.0].span.end = self.index;
+                    return Ok(FrameAction::Complete(*id));
+                }
+
+                let locator = ChildLocator::ArrayIndex(*next_index);
+                *next_index += 1;
+                *state = ArrayFrameState::AfterValue;
+                Ok(FrameAction::Child {
+                    parent: *id,
+                    locator,
+                })
             }
         }
     }
 
-    fn parse_array(
-        &mut self,
-        parent: Option<NodeId>,
-        locator: ChildLocator,
-    ) -> Result<NodeId, ParseError> {
-        let start = self.index;
-        let id = NodeId(self.nodes.len());
-        self.nodes.push(JsonNode {
-            kind: JsonKind::Array,
-            span: SourceSpan { start, end: start },
-            locator,
-            parent,
-            children: Vec::new(),
-            decoded: None,
-            string_has_escape: false,
-        });
-        self.index += 1;
+    fn finish_frame_value(&mut self, frame: &mut Frame) -> Result<FrameAction, ParseError> {
         self.skip_whitespace();
+        let frame_id = frame.id();
 
-        if self.byte(self.index) == Some(b']') {
-            self.index += 1;
-            self.nodes[id.0].span.end = self.index;
-            return Ok(id);
-        }
-
-        let mut array_index = 0;
-        loop {
-            let child = self.parse_value(Some(id), ChildLocator::ArrayIndex(array_index))?;
-            self.nodes[id.0].children.push(child);
-            array_index += 1;
-
-            self.skip_whitespace();
-            match self.byte(self.index) {
-                Some(b',') => self.index += 1,
-                Some(b']') => {
-                    self.index += 1;
-                    self.nodes[id.0].span.end = self.index;
-                    return Ok(id);
+        match frame {
+            Frame::Object { state, .. } => {
+                debug_assert!(matches!(state, ObjectFrameState::AfterValue));
+                match self.byte(self.index) {
+                    Some(b',') => {
+                        self.index += 1;
+                        *state = ObjectFrameState::Key;
+                        self.next_frame_value(frame)
+                    }
+                    Some(b'}') => {
+                        self.index += 1;
+                        self.nodes[frame_id.0].span.end = self.index;
+                        Ok(FrameAction::Complete(frame_id))
+                    }
+                    _ => Err(self.error("expected ',' or '}' after object value")),
                 }
-                _ => return Err(self.error("expected ',' or ']' after array element")),
+            }
+            Frame::Array { state, .. } => {
+                debug_assert!(matches!(state, ArrayFrameState::AfterValue));
+                match self.byte(self.index) {
+                    Some(b',') => {
+                        self.index += 1;
+                        *state = ArrayFrameState::Value;
+                        self.next_frame_value(frame)
+                    }
+                    Some(b']') => {
+                        self.index += 1;
+                        self.nodes[frame_id.0].span.end = self.index;
+                        Ok(FrameAction::Complete(frame_id))
+                    }
+                    _ => Err(self.error("expected ',' or ']' after array element")),
+                }
             }
         }
     }
@@ -1059,6 +1175,124 @@ mod tests {
         assert!(array.children.is_empty());
         assert_eq!(array.span, SourceSpan { start: 0, end: 2 });
         assert_eq!(lexeme(&parsed), "[]");
+    }
+
+    #[test]
+    fn parses_fifty_thousand_nested_arrays_without_recursion() {
+        const DEPTH: usize = 50_000;
+        let mut source = Vec::with_capacity(DEPTH * 2 + 1);
+        source.extend(std::iter::repeat_n(b'[', DEPTH));
+        source.push(b'0');
+        source.extend(std::iter::repeat_n(b']', DEPTH));
+
+        let parsed = parse_json_owned(source).unwrap();
+        assert_eq!(parsed.node_count(), DEPTH + 1);
+
+        let mut id = parsed.root();
+        for index in 0..DEPTH {
+            let node = parsed.node(id);
+            assert_eq!(node.kind, JsonKind::Array);
+            assert_eq!(node.children.len(), 1);
+            assert_eq!(node.children[0], NodeId(index + 1));
+            id = node.children[0];
+        }
+
+        let leaf = parsed.node(id);
+        assert_eq!(leaf.kind, JsonKind::Number);
+        assert_eq!(leaf.parent, Some(NodeId(DEPTH - 1)));
+        assert_eq!(
+            leaf.span,
+            SourceSpan {
+                start: DEPTH,
+                end: DEPTH + 1
+            }
+        );
+        drop(parsed);
+    }
+
+    #[test]
+    fn rejects_a_deep_unclosed_array_without_recursion() {
+        const DEPTH: usize = 50_000;
+        let mut source = Vec::with_capacity(DEPTH * 2);
+        source.extend(std::iter::repeat_n(b'[', DEPTH));
+        source.push(b'0');
+        source.extend(std::iter::repeat_n(b']', DEPTH - 1));
+        let byte_offset = source.len();
+
+        let error = parse_json_owned(source).unwrap_err();
+        assert_eq!(error.message, "expected ',' or ']' after array element");
+        assert_eq!(error.byte_offset, byte_offset);
+        assert_eq!(error.line, 1);
+        assert_eq!(error.column, byte_offset + 1);
+    }
+
+    #[test]
+    fn preserves_a_deep_mixed_object_and_array_chain() {
+        const DEPTH: usize = 2_048;
+        let mut source = Vec::with_capacity(DEPTH * 3 + 1);
+        let mut object_key_spans = Vec::new();
+        for level in 0..DEPTH {
+            if level % 2 == 0 {
+                let start = source.len();
+                source.extend_from_slice(br#"{"k":"#);
+                object_key_spans.push(SourceSpan {
+                    start: start + 1,
+                    end: start + 4,
+                });
+            } else {
+                source.push(b'[');
+            }
+        }
+        let leaf_start = source.len();
+        source.push(b'0');
+        for level in (0..DEPTH).rev() {
+            source.push(if level % 2 == 0 { b'}' } else { b']' });
+        }
+
+        let parsed = parse_json_owned(source).unwrap();
+        assert_eq!(parsed.node_count(), DEPTH + 1);
+        let mut id = parsed.root();
+        for level in 0..DEPTH {
+            let node = parsed.node(id);
+            assert_eq!(
+                node.kind,
+                if level % 2 == 0 {
+                    JsonKind::Object
+                } else {
+                    JsonKind::Array
+                }
+            );
+            assert_eq!(node.children.len(), 1);
+            let child_id = node.children[0];
+            assert_eq!(parsed.node(child_id).parent, Some(id));
+            if level == 0 {
+                assert_eq!(node.locator, ChildLocator::Root);
+            } else if (level - 1) % 2 == 0 {
+                assert_eq!(
+                    node.locator,
+                    ChildLocator::ObjectKey {
+                        key: "k".to_owned(),
+                        key_span: object_key_spans[(level - 1) / 2],
+                        occurrence: 1,
+                    }
+                );
+            } else {
+                assert_eq!(node.locator, ChildLocator::ArrayIndex(0));
+            }
+            id = child_id;
+        }
+
+        let leaf = parsed.node(id);
+        assert_eq!(leaf.kind, JsonKind::Number);
+        assert_eq!(
+            leaf.span,
+            SourceSpan {
+                start: leaf_start,
+                end: leaf_start + 1
+            }
+        );
+        assert_eq!(leaf.parent, Some(NodeId(DEPTH - 1)));
+        drop(parsed);
     }
 
     #[test]

@@ -26,8 +26,8 @@ mutation 覆盖 invalid UTF-8、非法 escape、孤立 surrogate、duplicate key
 - root、parent/child、父 span 包含子 span、节点唯一可达关系成立。
 - ArrayIndex、ObjectKey 的父类型、子位置、key span 和 duplicate-key occurrence 一致。
 
-panic 或不变量失败会以非零退出；runner 使用 `create_new` 在系统临时目录写入原始输入，不覆盖已有文件，并输出 seed、iteration、mutation、字节数、原因和 repro 路径。深度 case 在 parse 前还会留下 `current` repro；若递归 parser 触发不能由 `catch_unwind` 接住的 stack-overflow abort，进程会非零退出但该文件仍可用于复现。使用相同 seed、至少运行到该 iteration 的参数即可重新生成同一输入；repro 文件也保留原始 bytes 供离线检查。
+panic 或不变量失败会以非零退出；runner 使用 `create_new` 在系统临时目录写入原始输入，不覆盖已有文件，并输出 seed、iteration、mutation、字节数、原因和 repro 路径。深度 case 在 parse 前还会留下 `current` repro；若 parser 回归为不能由 `catch_unwind` 接住的 stack-overflow abort，进程会非零退出但该文件仍可用于复现。使用相同 seed、至少运行到该 iteration 的参数即可重新生成同一输入；repro 文件也保留原始 bytes 供离线检查。
 
-已知边界：当前递归 parser 对约 50,000 层数组可复现 stack overflow（exit 134）。这是尚未修复的 parser 安全缺口；本 runner 的受限深度 smoke 通过不能宣称 parser 安全 PASS，也不替代隔离进程/超时的深度安全测试。
+深度边界已改为单一显式 `Vec<Frame>` 容器栈，不再依赖 Rust 调用栈，也不以固定深度拒绝合法 JSON。50,000 层 array、object 和交替混合容器已通过独立 release 进程的 parse、root 读取和正常 drop；单元测试另验证父子节点链和源跨度。深层未闭合输入也返回原有 `ParseError`，而不是 stack-overflow abort。该证据仍不等同于无限资源保证，超大输入应继续使用隔离进程和超时约束进行安全测试。
 
 这不是完整安全报告、coverage 报告或 libFuzzer 证明；长期 100,000 次运行仍只是在固定 seed、固定 mutation 和输入上限下的 bounded evidence。
