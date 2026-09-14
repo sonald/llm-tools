@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { locale, t } from "./i18n";
 import type { NodeDto } from "./tree-view";
 
 export type ParseErrorDto = {
@@ -337,7 +338,7 @@ export class EntryList {
   private applyAction(action: PendingAction): void {
     if (!this.entries.some((entry) => entry.location.entryOrdinal === action.ordinal)) {
       if (action.select && this.progress && !this.progress.complete) {
-        this.goError = "Indexing has not reached this entry yet.";
+        this.goError = t("entryList.indexingNotReached");
         this.render();
       }
       return;
@@ -479,7 +480,7 @@ export class EntryList {
       if (this.isCurrentSelectionRequest(request)) {
         this.finishSelectionRequest();
         this.render();
-        this.onError({ code: "internal", message: "The JSONL session revision could not be refreshed." });
+        this.onError({ code: "internal", message: t("entryList.revisionRefreshFailed") });
       }
     } catch (error) {
       if (this.isCurrentSelectionRequest(request)) {
@@ -494,26 +495,29 @@ export class EntryList {
     if (this.opening || this.pageRequest || this.selectionRequest || !this.session) return;
     const value = this.elements.goInput.value.trim();
     if (!/^\d+$/.test(value)) {
-      this.setGoError("Enter a positive decimal Entry number.");
+      this.setGoError(t("entryList.invalidPositiveNumber"));
       return;
     }
     const displayOrdinal = Number(value);
     if (!Number.isSafeInteger(displayOrdinal) || displayOrdinal < 1 || displayOrdinal > MAX_SAFE_INTEGER) {
-      this.setGoError("Enter a positive decimal Entry number.");
+      this.setGoError(t("entryList.invalidPositiveNumber"));
       return;
     }
     const ordinal = displayOrdinal - 1;
     const progress = this.progress;
     if (!progress) {
-      this.setGoError("Entry indexing is not ready yet.");
+      this.setGoError(t("entryList.indexingNotReady"));
       return;
     }
     if (ordinal >= progress.indexedEntries) {
       if (!progress.complete) {
-        this.setGoError("Indexing has not reached this entry yet.");
+        this.setGoError(t("entryList.indexingNotReached"));
       } else {
         const total = progress.totalEntries ?? progress.indexedEntries;
-        this.setGoError(`Entry ${displayOrdinal.toLocaleString()} is outside the file (total ${total.toLocaleString()}).`);
+        this.setGoError(t("entryList.entryOutsideFile", {
+          entry: displayOrdinal.toLocaleString(locale),
+          total: total.toLocaleString(locale)
+        }));
       }
       return;
     }
@@ -571,7 +575,7 @@ export class EntryList {
     if (this.entries.length === 0) {
       const empty = document.createElement("div");
       empty.className = "entry-list-empty";
-      empty.textContent = this.listError ?? (this.progress?.complete ? "No entries found." : "Indexing entries…");
+      empty.textContent = this.listError ?? (this.progress?.complete ? t("entryList.noEntries") : t("entryList.indexingEntries"));
       this.elements.list.append(empty);
     } else {
       for (const entry of this.entries) this.elements.list.append(this.optionElement(entry, busy));
@@ -597,7 +601,13 @@ export class EntryList {
     item.setAttribute("aria-selected", String(this.selectedEntry?.location.entryOrdinal === entry.location.entryOrdinal));
     item.setAttribute(
       "aria-label",
-      `Entry ${entry.location.entryOrdinal + 1}, source line ${entry.location.sourceLine}, ${statusLabel(entry.status)}, bytes ${entry.location.byteStart} to ${entry.location.byteEnd}`
+      t("entryList.entryAria", {
+        entry: (entry.location.entryOrdinal + 1).toLocaleString(locale),
+        line: entry.location.sourceLine.toLocaleString(locale),
+        status: statusLabel(entry.status),
+        start: entry.location.byteStart,
+        end: entry.location.byteEnd
+      })
     );
 
     const marker = document.createElement("span");
@@ -607,10 +617,17 @@ export class EntryList {
     body.className = "entry-option-body";
     const title = document.createElement("span");
     title.className = "entry-option-title";
-    title.textContent = `Entry ${entry.location.entryOrdinal + 1} · ${statusLabel(entry.status)}`;
+    title.textContent = t("entryList.entryTitle", {
+      entry: (entry.location.entryOrdinal + 1).toLocaleString(locale),
+      status: statusLabel(entry.status)
+    });
     const meta = document.createElement("span");
     meta.className = "entry-option-meta";
-    meta.textContent = `line ${entry.location.sourceLine} · [${entry.location.byteStart}, ${entry.location.byteEnd})`;
+    meta.textContent = t("entryList.lineSpan", {
+      line: entry.location.sourceLine.toLocaleString(locale),
+      start: entry.location.byteStart,
+      end: entry.location.byteEnd
+    });
     body.append(title, meta);
     item.append(marker, body);
     return item;
@@ -621,10 +638,10 @@ export class EntryList {
     if (!this.session) return;
     const entry = this.selectedEntry;
     this.elements.inspectorOrdinal.textContent = entry ? String(entry.location.entryOrdinal + 1) : "—";
-    this.elements.inspectorStatus.textContent = entry ? statusLabel(entry.status) : "No Entry selected";
+    this.elements.inspectorStatus.textContent = entry ? statusLabel(entry.status) : t("entryList.noEntrySelected");
     this.elements.inspectorSourceLine.textContent = entry
       ? String(entry.location.sourceLine)
-      : this.progress ? `Indexed through line ${this.progress.indexedSourceLines}` : "—";
+      : this.progress ? t("entryList.indexedThroughLine", { line: this.progress.indexedSourceLines.toLocaleString(locale) }) : "—";
     this.elements.inspectorBytes.textContent = entry
       ? `[${entry.location.byteStart}, ${entry.location.byteEnd})`
       : "—";
@@ -636,10 +653,10 @@ export class EntryList {
   }
 
   private listStatus(): string {
-    if (this.listError) return "Entries could not be loaded. Retry to continue.";
-    if (!this.entries.length) return this.progress?.complete ? "End of entries." : "Indexing…";
-    if (this.hasNext()) return this.progress && !this.progress.complete && !this.pageHasMore ? "Indexing…" : "More entries available.";
-    return this.progress && !this.progress.complete ? "Indexing…" : "End of entries.";
+    if (this.listError) return t("entryList.entriesLoadError");
+    if (!this.entries.length) return this.progress?.complete ? t("entryList.endOfEntries") : t("entryList.indexing");
+    if (this.hasNext()) return this.progress && !this.progress.complete && !this.pageHasMore ? t("entryList.indexing") : t("entryList.moreEntries");
+    return this.progress && !this.progress.complete ? t("entryList.indexing") : t("entryList.endOfEntries");
   }
 
   private hasNext(): boolean {
@@ -700,10 +717,10 @@ function progressEqual(left: JsonlProgressDto | null, right: JsonlProgressDto): 
 }
 
 function statusLabel(status: string): string {
-  if (status === "valid") return "Valid";
-  if (status === "invalidJson") return "Invalid JSON";
-  if (status === "invalidUtf8") return "Invalid UTF-8";
-  if (status === "oversized") return "Oversized Entry";
+  if (status === "valid") return t("jsonStatus.valid");
+  if (status === "invalidJson") return t("jsonStatus.invalidJson");
+  if (status === "invalidUtf8") return t("jsonStatus.invalidUtf8");
+  if (status === "oversized") return t("jsonStatus.oversized");
   return status;
 }
 
@@ -724,5 +741,5 @@ function errorMessage(error: unknown): string {
     if (typeof message === "string") return message;
   }
   if (error instanceof Error) return error.message;
-  return "The entry list request failed.";
+  return t("entryList.requestFailed");
 }

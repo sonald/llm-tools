@@ -73,4 +73,31 @@ assert.match(main, /setText\(filePath, summary\.path\)/);
 assert.match(main, /setText\(inspectorPath, summary\.path\)/);
 assert.doesNotMatch(main, /MutationObserver/);
 
-console.log(`i18n checks passed: ${staticKeys.length} static markers, ${new Set(dynamicKeys).size} dynamic keys`);
+const localizedModules = ["entry-list.ts", "collection-list.ts", "tree-view.ts", "raw-view.ts"];
+const moduleKeys = new Set();
+for (const fileName of localizedModules) {
+  const source = await readFile(resolve(root, "src", fileName), "utf8");
+  const keys = [...source.matchAll(/\bt\("([^"]+)"/g)].map((match) => match[1]);
+  for (const key of keys) {
+    moduleKeys.add(key);
+    assert.ok(englishKeys.has(key), `${fileName} references missing English catalog key ${key}`);
+  }
+}
+
+assert.equal(
+  english.t("raw.preSource", { source: "payload" }),
+  "Raw UTF-8 bytes for payload",
+  "English Raw labels changed user-provided source text"
+);
+assert.equal(
+  chinese.t("raw.preSource", { source: "payload" }),
+  "payload的原始 UTF-8 字节",
+  "Chinese Raw labels translated user-provided source text"
+);
+assert.equal(
+  chinese.t("tree.copyFailed", { message: "backend diagnostic" }),
+  "复制失败：backend diagnostic",
+  "Chinese Tree copy status translated a backend diagnostic"
+);
+
+console.log(`i18n checks passed: ${staticKeys.length} static markers, ${new Set(dynamicKeys).size} main keys, ${moduleKeys.size} view keys`);

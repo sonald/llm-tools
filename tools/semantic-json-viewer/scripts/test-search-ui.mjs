@@ -78,6 +78,7 @@ function parseBrowserValue(output) {
 
 function browserTest() {
   return `(async () => {
+Object.defineProperty(globalThis,"navigator",{configurable:true,value:{language:"en-US"}});
 const {SearchView}=await import("/src/search-view.ts");
 const {CollectionList}=await import("/src/collection-list.ts");
 const {RawView,MAX_ENTRY_BYTES}=await import("/src/raw-view.ts");
@@ -754,7 +755,7 @@ vite.stderr.on("data", (chunk) => { viteOutput += chunk.toString(); });
 
 try {
   await waitForPort(port, vite);
-  await browser(["open", `http://127.0.0.1:${port}/`]);
+  await browser(["open", `http://127.0.0.1:${port}/scripts/test-app-fixture.html`]);
   const output = await browser(["eval", "-b", Buffer.from(browserTest()).toString("base64")]);
   const result = parseBrowserValue(output);
   if (!result.pass) throw new Error("Search UI browser test did not pass.");

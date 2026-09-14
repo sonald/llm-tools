@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { validateNodePage, type NodeDto } from "./tree-view";
+import { locale, t } from "./i18n";
 
 type Invoke = <T = unknown>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -278,10 +279,10 @@ export class CollectionList {
       if (!this.isCurrent(request)) return;
       const session = this.session!;
       const page = validateNodePage(value, request.start, session.root.childCount, session.sourceSize, []);
-      if (!page) throw new Error("The Collection Item page response was invalid.");
+      if (!page) throw new Error(t("collectionList.pageResponseInvalid"));
       const expected = Math.min(PAGE_SIZE, session.root.childCount - request.start);
       if (page.nodes.length !== expected || page.hasMore !== request.start + expected < session.root.childCount) {
-        throw new Error("The Collection Item page was incomplete.");
+        throw new Error(t("collectionList.pageIncomplete"));
       }
       this.pages.set(request.start, { start: request.start, ...page });
       this.prunePages(request.start);
@@ -361,12 +362,15 @@ export class CollectionList {
     if (!session || this.opening) return;
     const value = this.elements.goInput.value.trim();
     if (!/^\d+$/.test(value)) {
-      this.setGoError("Enter a non-negative decimal Item number.");
+      this.setGoError(t("collectionList.invalidItemNumber"));
       return;
     }
     const ordinal = Number(value);
     if (!Number.isSafeInteger(ordinal) || ordinal < 0 || ordinal >= session.root.childCount) {
-      this.setGoError(`Item ${value} is outside the collection (total ${session.root.childCount.toLocaleString()}).`);
+      this.setGoError(t("collectionList.itemOutside", {
+        item: value,
+        total: session.root.childCount.toLocaleString(locale)
+      }));
       return;
     }
     this.goError = null;
@@ -425,7 +429,7 @@ export class CollectionList {
     if (total === 0) {
       const empty = document.createElement("div");
       empty.className = "collection-list-empty";
-      empty.textContent = "No items found.";
+      empty.textContent = t("collectionList.noItems");
       this.elements.list.append(empty);
       this.rendering = false;
       return;
@@ -467,23 +471,42 @@ export class CollectionList {
     item.setAttribute("aria-setsize", String(this.session?.root.childCount ?? 0));
     item.setAttribute("aria-posinset", String(ordinal + 1));
     item.setAttribute("aria-disabled", String(busy));
-    item.setAttribute("aria-label", `Item ${ordinal}, ${node.kind}, source bytes ${node.spanStart} to ${node.spanEnd}`);
+    item.setAttribute("aria-label", t("collectionList.itemAria", {
+      item: ordinal.toLocaleString(locale),
+      kind: kindLabel(node.kind),
+      start: node.spanStart,
+      end: node.spanEnd
+    }));
     const title = document.createElement("span");
     title.className = "collection-option-title";
-    title.textContent = `Item ${ordinal}`;
+    title.textContent = t("collectionList.itemTitle", { item: ordinal.toLocaleString(locale) });
     const meta = document.createElement("span");
     meta.className = "collection-option-meta";
-    meta.textContent = `${node.kind} · [${node.spanStart}, ${node.spanEnd})`;
+    meta.textContent = t("collectionList.itemMeta", {
+      kind: kindLabel(node.kind),
+      start: node.spanStart,
+      end: node.spanEnd
+    });
     item.append(title, meta);
     return item;
   }
 
   private listStatus(total: number): string {
-    if (this.listError) return "Items could not be loaded. Retry to continue.";
-    if (!total) return "Empty collection.";
-    if (this.pageRequest) return `Loading Items ${this.windowStart.toLocaleString()}–${Math.min(total, this.windowStart + PAGE_SIZE).toLocaleString()}…`;
-    const selected = this.selectedOrdinal === null ? "No Item selected" : `Item ${this.selectedOrdinal} selected`;
-    return `${selected} · ${total.toLocaleString()} items · virtual list`;
+    if (this.listError) return t("collectionList.itemsLoadError");
+    if (!total) return t("collectionList.empty");
+    if (this.pageRequest) {
+      return t("collectionList.loadingItems", {
+        start: this.windowStart.toLocaleString(locale),
+        end: Math.min(total, this.windowStart + PAGE_SIZE).toLocaleString(locale)
+      });
+    }
+    const selected = this.selectedOrdinal === null
+      ? t("collectionList.noItemSelected")
+      : t("collectionList.itemSelected", { item: this.selectedOrdinal.toLocaleString(locale) });
+    return t("collectionList.status", {
+      selected,
+      total: total.toLocaleString(locale)
+    });
   }
 }
 
@@ -492,7 +515,18 @@ function errorMessage(error: unknown): string {
     return Reflect.get(error, "message") as string;
   }
   if (error instanceof Error) return error.message;
-  return "The Collection Items could not be loaded.";
+  return t("collectionList.requestFailed");
+}
+
+function kindLabel(kind: string): string {
+  if (kind === "object") return t("jsonKind.object");
+  if (kind === "array") return t("jsonKind.array");
+  if (kind === "string") return t("jsonKind.string");
+  if (kind === "number") return t("jsonKind.number");
+  if (kind === "true") return t("jsonKind.true");
+  if (kind === "false") return t("jsonKind.false");
+  if (kind === "null") return t("jsonKind.null");
+  return kind;
 }
 
 function isGlobalError(error: unknown): boolean {

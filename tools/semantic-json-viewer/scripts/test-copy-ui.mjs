@@ -57,6 +57,7 @@ async function browser(args) {
 
 function browserTest() {
   return `(async()=>{
+Object.defineProperty(globalThis,"navigator",{configurable:true,value:{language:"en-US"}});
 const {TreeView}=await import("/src/tree-view.ts");
 const {RawView}=await import("/src/raw-view.ts");
 const {ContentViewer}=await import("/src/content-viewer.ts");
@@ -171,7 +172,7 @@ vite.stderr.on("data", (chunk) => { viteOutput += chunk.toString(); });
 
 try {
   await waitForPort(port, vite);
-  await browser(["open", `http://127.0.0.1:${port}/`]);
+  await browser(["open", `http://127.0.0.1:${port}/scripts/test-i18n-fixture.html`]);
   const output = await browser(["eval", "-b", Buffer.from(browserTest()).toString("base64")]);
   let result;
   try {

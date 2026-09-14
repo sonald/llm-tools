@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ContentTarget } from "./content-viewer";
 
+import { t } from "./i18n";
+
 export type TreeMode = "document" | "collection" | "entry" | "nested";
 
 export type NodeDto = {
@@ -129,10 +131,10 @@ export class TreeView {
     this.copy = options.copy;
     this.panel.addEventListener("click", (event) => this.handleClick(event));
     this.panel.addEventListener("keydown", (event) => this.handleKeydown(event));
-    this.copy?.raw.addEventListener("click", () => void this.copySelected("raw", "Copied Raw"));
-    this.copy?.subtree.addEventListener("click", () => void this.copySelected("raw", "Copied JSON Subtree"));
-    this.copy?.decoded.addEventListener("click", () => void this.copySelected("decoded", "Copied Decoded Value"));
-    this.copy?.path.addEventListener("click", () => void this.copySelected("path", "Copied Path"));
+    this.copy?.raw.addEventListener("click", () => void this.copySelected("raw", t("tree.copiedRaw")));
+    this.copy?.subtree.addEventListener("click", () => void this.copySelected("raw", t("tree.copiedJsonSubtree")));
+    this.copy?.decoded.addEventListener("click", () => void this.copySelected("decoded", t("tree.copiedDecodedValue")));
+    this.copy?.path.addEventListener("click", () => void this.copySelected("path", t("tree.copiedPath")));
     this.clear();
   }
 
@@ -149,7 +151,7 @@ export class TreeView {
     this.rootId = root?.id ?? null;
     this.rootLoading = false;
     this.rootError = seededRoot !== undefined && seededRoot !== null && root === undefined
-      ? "The tree root response was invalid."
+      ? t("tree.rootResponseInvalid")
       : null;
     this.selectedId = null;
     this.focusKey = root?.id ?? null;
@@ -162,7 +164,7 @@ export class TreeView {
     this.clearInspector();
     if (root) this.renderTree();
     else if (this.rootError !== null) this.renderRootError();
-    else this.renderPlaceholder(enabled ? "Open Tree to load the document root." : "Select a valid Entry to enable Tree.");
+    else this.renderPlaceholder(enabled ? t("tree.openDocumentRoot") : t("tree.selectValidEntry"));
   }
 
   snapshot(): TreeViewSnapshot | null {
@@ -221,11 +223,11 @@ export class TreeView {
       : null);
     if (this.rootId !== null && this.records.has(this.rootId)) this.renderTree();
     else if (this.rootError !== null) this.renderRootError();
-    else this.renderPlaceholder(this.session.mode === "entry" ? "Select a valid Entry to enable Tree." : "Open Tree to load the document root.");
+    else this.renderPlaceholder(this.session.mode === "entry" ? t("tree.selectValidEntry") : t("tree.openDocumentRoot"));
     this.restoreFocus();
   }
 
-  clear(message = "Open a Document or Collection to load its Tree."): void {
+  clear(message = t("tree.openDocumentOrCollection")): void {
     this.generation += 1;
     this.copyGeneration += 1;
     this.copyBusy = false;
@@ -247,7 +249,7 @@ export class TreeView {
 
   activate(): void {
     if (!this.session || this.session.mode === "entry" && this.rootId === null) {
-      this.renderPlaceholder("Select a valid Entry to enable Tree.");
+      this.renderPlaceholder(t("tree.selectValidEntry"));
       return;
     }
     if (this.rootId !== null) {
@@ -293,7 +295,7 @@ export class TreeView {
         || expectedSpanStart !== undefined && node.spanStart !== expectedSpanStart
         || expectedSpanEnd !== undefined && node.spanEnd !== expectedSpanEnd) {
         this.rootLoading = false;
-        this.rootError = "The requested Tree node response was invalid.";
+        this.rootError = t("tree.requestedNodeInvalid");
         this.renderRootError();
         return false;
       }
@@ -340,7 +342,7 @@ export class TreeView {
       });
       if (!this.isCurrent(generation, session)) return;
       const node = validateNodeDto(value, session.sourceSize);
-      if (!node) throw new Error("The tree root response was invalid.");
+      if (!node) throw new Error(t("tree.rootResponseInvalid"));
       this.rootLoading = false;
       this.rootId = node.id;
       this.records.set(node.id, this.newRecord(node, null));
@@ -377,7 +379,7 @@ export class TreeView {
       });
       if (!this.isCurrent(generation, session)) return;
       const page = validateNodePage(value, cursor, record.node.childCount, session.sourceSize, record.children);
-      if (!page) throw new Error("The tree children response was invalid.");
+      if (!page) throw new Error(t("tree.childrenResponseInvalid"));
       record.loading = false;
       record.loaded = true;
       record.hasMore = page.hasMore;
@@ -589,13 +591,13 @@ export class TreeView {
       back.className = "secondary-button tree-return-scope";
       back.type = "button";
       back.dataset.returnScopeTree = "true";
-      back.textContent = "Return to scope Tree";
+      back.textContent = t("tree.returnToScope");
       shell.append(back);
     }
     const root = document.createElement("div");
     root.className = "tree-root";
     root.setAttribute("role", "tree");
-    root.setAttribute("aria-label", this.session?.ariaLabel ?? "JSON structure");
+    root.setAttribute("aria-label", this.session?.ariaLabel ?? t("main.jsonStructure"));
     root.setAttribute("aria-busy", String(this.rootLoading));
     if (this.rootId === null) {
       this.renderLoading(root);
@@ -624,7 +626,7 @@ export class TreeView {
       const loading = document.createElement("div");
       loading.className = "tree-loading";
       loading.setAttribute("role", "status");
-      loading.textContent = "Loading children…";
+      loading.textContent = t("tree.loadingChildren");
       group.append(loading);
     }
     if (record.error !== null) {
@@ -635,8 +637,8 @@ export class TreeView {
       retry.setAttribute("role", "treeitem");
       retry.setAttribute("aria-level", String(level + 1));
       retry.tabIndex = this.focusKey === `retry:${record.node.id}` ? 0 : -1;
-      retry.setAttribute("aria-label", "Retry loading children");
-      retry.textContent = `Retry loading children · ${record.error}`;
+      retry.setAttribute("aria-label", t("tree.retryLoadingChildren"));
+      retry.textContent = t("tree.retryLoadingChildrenDetail", { message: record.error });
       group.append(retry);
     }
     if (record.hasMore && record.nextCursor !== null) {
@@ -647,7 +649,7 @@ export class TreeView {
       load.setAttribute("role", "treeitem");
       load.setAttribute("aria-level", String(level + 1));
       load.tabIndex = this.focusKey === `load:${record.node.id}` ? 0 : -1;
-      load.textContent = `Load more children · from ${record.nextCursor}`;
+      load.textContent = t("tree.loadMoreChildren", { cursor: record.nextCursor });
       group.append(load);
     }
     parent.append(group);
@@ -672,24 +674,24 @@ export class TreeView {
     const label = document.createElement("span");
     label.className = "tree-label";
     label.textContent = `#${node.id} · ${node.label}`;
-    if (node.labelHasMore) label.textContent += " · truncated";
+    if (node.labelHasMore) label.textContent += ` · ${t("tree.truncated")}`;
     const kind = document.createElement("span");
     kind.className = "tree-kind";
-    kind.textContent = node.kind;
+    kind.textContent = kindLabel(node.kind);
     const span = document.createElement("span");
     span.className = "tree-span";
     span.textContent = `[${node.spanStart}, ${node.spanEnd})`;
     const children = document.createElement("span");
     children.className = "tree-children";
-    children.textContent = `children: ${node.childCount}`;
+    children.textContent = t("tree.childrenCount", { count: node.childCount });
     const value = document.createElement("span");
     value.className = "tree-value";
     value.textContent = node.valuePreview ?? "—";
     if (node.valueHasMore) {
-      value.textContent += " · truncated";
+      value.textContent += ` · ${t("tree.truncated")}`;
       if (node.kind === "string") {
         value.classList.add("tree-value-openable");
-        value.title = "Open full string in Content Viewer";
+        value.title = t("tree.openFullString");
       }
     }
     item.append(disclosure, label, kind, span, children, value);
@@ -701,7 +703,7 @@ export class TreeView {
     state.className = "tree-state";
     state.setAttribute("role", "status");
     const strong = document.createElement("strong");
-    strong.textContent = "Tree view";
+    strong.textContent = t("tree.view");
     const copy = document.createElement("span");
     copy.textContent = message;
     state.append(strong, copy);
@@ -714,7 +716,7 @@ export class TreeView {
     state.className = "tree-state";
     state.setAttribute("role", "status");
     const strong = document.createElement("strong");
-    strong.textContent = "Loading tree…";
+    strong.textContent = t("tree.loading");
     state.append(strong);
     if (container) container.replaceChildren(state);
     else this.panel.replaceChildren(state);
@@ -726,14 +728,14 @@ export class TreeView {
     state.className = "tree-state";
     state.setAttribute("role", "alert");
     const strong = document.createElement("strong");
-    strong.textContent = "Tree could not be loaded";
+    strong.textContent = t("tree.couldNotLoad");
     const copy = document.createElement("span");
-    copy.textContent = this.rootError ?? "Unknown error";
+    copy.textContent = this.rootError ?? t("tree.unknownError");
     const retry = document.createElement("button");
     retry.className = "tree-retry";
     retry.type = "button";
     retry.dataset.retryRoot = "true";
-    retry.textContent = "Retry";
+    retry.textContent = t("tree.retry");
     state.append(strong, copy, retry);
     this.panel.replaceChildren(state);
     this.panel.removeAttribute("aria-busy");
@@ -746,12 +748,12 @@ export class TreeView {
         this.clearInspector();
       } else {
         this.fields.id.textContent = String(node.id);
-        this.fields.label.textContent = node.label + (node.labelHasMore ? " · truncated" : "");
-        this.fields.kind.textContent = node.kind;
+        this.fields.label.textContent = node.label + (node.labelHasMore ? ` · ${t("tree.truncated")}` : "");
+        this.fields.kind.textContent = kindLabel(node.kind);
         this.fields.span.textContent = `[${node.spanStart}, ${node.spanEnd})`;
         this.fields.children.textContent = String(node.childCount);
         this.fields.value.textContent = node.valuePreview ?? "—";
-        if (node.valueHasMore) this.fields.value.textContent += " · truncated";
+        if (node.valueHasMore) this.fields.value.textContent += ` · ${t("tree.truncated")}`;
       }
     }
     this.renderCopyActions(node);
@@ -787,7 +789,7 @@ export class TreeView {
     const sessionRevision = session.sessionRevision;
     const nodeId = node.id;
     this.copyBusy = true;
-    copy.status.textContent = "Copying…";
+    copy.status.textContent = t("tree.copying");
     this.renderCopyActions(node);
     try {
       await this.invokeRequest("copy_node", {
@@ -803,7 +805,7 @@ export class TreeView {
       if (this.isGlobalError(error)) {
         this.onError(error);
       } else {
-        copy.status.textContent = `Copy failed: ${errorMessage(error)}`;
+        copy.status.textContent = t("tree.copyFailed", { message: errorMessage(error) });
       }
     } finally {
       if (this.isCopyCurrent(generation, sessionRevision, nodeId)) {
@@ -858,7 +860,7 @@ export class TreeView {
 
   private contentTarget(record: NodeRecord): ContentTarget {
     const session = this.session;
-    if (!session) throw new Error("Cannot build a Content Viewer target without a Tree session.");
+    if (!session) throw new Error(t("tree.contentViewerSessionRequired"));
     const pathSegments: string[] = [];
     let current: NodeRecord | undefined = record;
     let pathTruncated = this.narrowRestoreSnapshot !== null;
@@ -903,7 +905,18 @@ function errorMessage(error: unknown): string {
     if (typeof message === "string") return message;
   }
   if (error instanceof Error) return error.message;
-  return "The tree request failed.";
+  return t("tree.requestFailed");
+}
+
+function kindLabel(kind: string): string {
+  if (kind === "object") return t("jsonKind.object");
+  if (kind === "array") return t("jsonKind.array");
+  if (kind === "string") return t("jsonKind.string");
+  if (kind === "number") return t("jsonKind.number");
+  if (kind === "true") return t("jsonKind.true");
+  if (kind === "false") return t("jsonKind.false");
+  if (kind === "null") return t("jsonKind.null");
+  return kind;
 }
 
 function isScalarKind(kind: string): boolean {
