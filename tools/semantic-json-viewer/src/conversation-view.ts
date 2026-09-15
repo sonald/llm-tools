@@ -4,6 +4,7 @@ import type { ContentTarget } from "./content-viewer";
 import { renderSafeMarkdown } from "./markdown-renderer";
 import type { NodeDto } from "./tree-view";
 import { t } from "./i18n";
+import { ProjectionBudget } from "./projection-budget";
 
 export type ConversationStyle = "generic" | "openai" | "anthropic";
 export type ConversationFileMode = "document" | "collection" | "entry";
@@ -104,6 +105,7 @@ type ConversationSourceTarget = {
 type ConversationViewOptions = {
   panel: HTMLElement;
   invoke?: typeof invoke;
+  projectionBudget?: ProjectionBudget;
   onError: (error: unknown) => void;
   onRaw: (target: ConversationSourceTarget, opener: HTMLElement) => void;
   onTree: (target: ConversationSourceTarget, opener: HTMLElement) => void;
@@ -206,6 +208,7 @@ export class ConversationView {
   private readonly onRaw: (target: ConversationSourceTarget, opener: HTMLElement) => void;
   private readonly onTree: (target: ConversationSourceTarget, opener: HTMLElement) => void;
   private readonly onContent: (target: ContentTarget, opener: HTMLElement) => void;
+  private readonly projectionBudget: ProjectionBudget;
   private context: ConversationContext | null = null;
   private contextKey: string | null = null;
   private candidates: Candidate[] = [];
@@ -228,7 +231,7 @@ export class ConversationView {
   private windowTopSpacer: HTMLElement | null = null;
   private windowList: HTMLElement | null = null;
   private windowBottomSpacer: HTMLElement | null = null;
-  private readonly blockSummaries = new Map<number, string>();
+  private blockSummaries = new Map<number, string>();
   private readonly summaryRequests = new Set<string>();
   private readonly inlineStates = new Map<number, InlineState>();
   private readonly inlineRequests = new Set<string>();
@@ -241,6 +244,7 @@ export class ConversationView {
   private layoutVersion = 0;
   private renderedLayoutVersion = -1;
   private pendingAnchor: InlineAnchor | null = null;
+  private readonly budgetRejected = new Map<string, number>();
 
   constructor(options: ConversationViewOptions) {
     this.panel = options.panel;
@@ -249,6 +253,7 @@ export class ConversationView {
     this.onRaw = options.onRaw;
     this.onTree = options.onTree;
     this.onContent = options.onContent;
+    this.projectionBudget = options.projectionBudget ?? new ProjectionBudget();
     this.rowResizeObserver = typeof ResizeObserver === "function"
       ? new ResizeObserver((entries) => this.handleRowResize(entries))
       : null;
@@ -280,15 +285,9 @@ export class ConversationView {
     this.previousPages = [];
     this.loading = context !== null;
     this.statusMessage = context ? t("conversation.findingCandidates") : "";
+    this.resetProjectionCache();
     this.blockViewport = null;
     this.resetWindowElements();
-    this.blockSummaries.clear();
-    this.summaryRequests.clear();
-    this.inlineStates.clear();
-    this.inlineRequests.clear();
-    this.toolCardStates.clear();
-    this.toolCardRequests.clear();
-    this.toolCardRefs.clear();
     this.render();
     if (context) void this.discoverCandidates(context, this.generation);
   }
@@ -305,15 +304,9 @@ export class ConversationView {
     this.previousPages = [];
     this.loading = false;
     this.statusMessage = "";
+    this.resetProjectionCache();
     this.blockViewport = null;
     this.resetWindowElements();
-    this.blockSummaries.clear();
-    this.summaryRequests.clear();
-    this.inlineStates.clear();
-    this.inlineRequests.clear();
-    this.toolCardStates.clear();
-    this.toolCardRequests.clear();
-    this.toolCardRefs.clear();
     this.panel.hidden = true;
     this.panel.replaceChildren();
   }
@@ -413,11 +406,7 @@ export class ConversationView {
     this.style = candidate.kind === "openai" ? "openai" : candidate.kind === "anthropic" ? "anthropic" : "generic";
     this.page = null;
     this.previousPages = [];
-    this.inlineStates.clear();
-    this.inlineRequests.clear();
-    this.toolCardStates.clear();
-    this.toolCardRequests.clear();
-    this.toolCardRefs.clear();
+    this.resetProjectionCache();
     this.pendingAnchor = null;
     this.requestGeneration += 1;
     this.loading = false;
@@ -457,13 +446,7 @@ export class ConversationView {
         this.previousPages.push(this.page?.pageStart ?? null);
       }
       this.page = { ...page, pageStart: cursor };
-      this.blockSummaries.clear();
-      this.summaryRequests.clear();
-      this.inlineStates.clear();
-      this.inlineRequests.clear();
-      this.toolCardStates.clear();
-      this.toolCardRequests.clear();
-      this.toolCardRefs.clear();
+      this.resetProjectionCache();
       this.pendingAnchor = null;
       this.loading = false;
       this.statusMessage = page.blocks.length === 0 && page.hasMore
@@ -511,11 +494,7 @@ export class ConversationView {
       this.selectedCandidate = null;
       this.page = null;
       this.previousPages = [];
-      this.inlineStates.clear();
-      this.inlineRequests.clear();
-      this.toolCardStates.clear();
-      this.toolCardRequests.clear();
-      this.toolCardRefs.clear();
+      this.resetProjectionCache();
       this.pendingAnchor = null;
       this.possibleConfirmed = false;
       this.requestGeneration += 1;
@@ -578,11 +557,7 @@ export class ConversationView {
     this.loading = false;
     this.page = null;
     this.previousPages = [];
-    this.inlineStates.clear();
-    this.inlineRequests.clear();
-    this.toolCardStates.clear();
-    this.toolCardRequests.clear();
-    this.toolCardRefs.clear();
+    this.resetProjectionCache();
     this.pendingAnchor = null;
     this.statusMessage = t("conversation.styleChanged");
     this.render();
@@ -894,6 +869,159 @@ export class ConversationView {
     return viewport;
   }
 
+  private resetProjectionCache(): void {
+    this.clearRenderedInlineStates();
+    for (const state of this.inlineStates.values()) this.projectionBudget.release(state);
+    for (const state of this.toolCardStates.values()) this.projectionBudget.release(state);
+    const summaries = this.blockSummaries;
+    this.projectionBudget.release(summaries);
+    summaries.clear();
+    this.blockSummaries = new Map();
+    this.summaryRequests.clear();
+    this.inlineStates.clear();
+    this.inlineRequests.clear();
+    this.toolCardStates.clear();
+    this.toolCardRequests.clear();
+    this.toolCardRefs.clear();
+    this.budgetRejected.clear();
+  }
+
+  private clearRenderedInlineStates(): void {
+    if (!this.windowList) return;
+    for (const host of this.windowList.querySelectorAll<HTMLElement>(".conversation-inline-content")) {
+      this.renderedInlineStates.delete(host);
+      host.replaceChildren();
+    }
+  }
+
+  private inlineStateBytes(state: InlineState): number {
+    // ponytail: conservative UTF-16 accounting plus fixed object overhead;
+    // replace with heap profiling only if the frontend budget needs calibration.
+    return 256 + (state.text?.length ?? 0) * 2 + (state.reason?.length ?? 0) * 2 + (state.detection ? 64 : 0)
+      + (state.metrics ? 64 : 0);
+  }
+
+  private admitInlineState(state: InlineState, nodeId: number, index: number, requestKey: string): boolean {
+    const admitted = this.projectionBudget.admit(
+      state,
+      this.inlineStateBytes(state),
+      () => this.evictInlineState(nodeId, state),
+      () => !this.isVisibleIndex(index)
+    );
+    if (!admitted) this.budgetRejected.set(requestKey, this.projectionBudget.usedBytes);
+    return admitted;
+  }
+
+  private evictInlineState(nodeId: number, state: InlineState): void {
+    if (this.inlineStates.get(nodeId) !== state) return;
+    this.inlineStates.delete(nodeId);
+    if (!this.windowList) return;
+    for (const host of this.windowList.querySelectorAll<HTMLElement>(`[data-conversation-inline-node="${nodeId}"]`)) {
+      if (this.renderedInlineStates.get(host) !== state) continue;
+      this.renderedInlineStates.delete(host);
+      host.replaceChildren(element("p", "conversation-inline-placeholder", t("conversation.inlineUnavailable")));
+    }
+  }
+
+  private toolCardStateBytes(state: ToolCardState): number {
+    // Same conservative UTF-16 estimate as inline projections; this is a
+    // budget model, not a claim about the browser heap.
+    let bytes = 384 + (state.callId?.length ?? 0) * 2 + (state.reason?.length ?? 0) * 2;
+    for (const row of state.rows) bytes += 64 + (row.label.length + row.value.length) * 2;
+    return bytes;
+  }
+
+  private admitToolCardState(state: ToolCardState, index: number, requestKey: string): boolean {
+    const admitted = this.projectionBudget.admit(
+      state,
+      this.toolCardStateBytes(state),
+      () => this.evictToolCardState(index, state),
+      () => !this.isVisibleIndex(index)
+    );
+    if (!admitted) this.budgetRejected.set(requestKey, this.projectionBudget.usedBytes);
+    return admitted;
+  }
+
+  private evictToolCardState(index: number, state: ToolCardState): void {
+    if (this.toolCardStates.get(index) !== state) return;
+    this.toolCardStates.delete(index);
+    this.clearToolCardRefs(index);
+    const host = this.windowList?.querySelector<HTMLElement>(`[data-conversation-block-index="${index}"] .conversation-tool-card`);
+    host?.replaceChildren(element("p", "conversation-tool-card-placeholder", t("conversation.toolDetailsUnavailable")));
+    this.refreshToolCardRelations();
+  }
+
+  private isVisibleIndex(index: number): boolean {
+    return index >= this.windowVisibleStart && index < this.windowVisibleEnd && this.isPanelVisible();
+  }
+
+  private isBudgetRejected(requestKey: string): boolean {
+    const rejectedAt = this.budgetRejected.get(requestKey);
+    if (rejectedAt === undefined) return false;
+    if (rejectedAt === this.projectionBudget.usedBytes) return true;
+    this.budgetRejected.delete(requestKey);
+    return false;
+  }
+
+  private summaryMapBytes(map: Map<number, string>, nodeId: number, preview: string): number {
+    let bytes = 256;
+    let replaced = false;
+    for (const [id, value] of map) {
+      if (id === nodeId) {
+        bytes += 64 + preview.length * 2;
+        replaced = true;
+      } else {
+        bytes += 64 + value.length * 2;
+      }
+    }
+    if (!replaced) bytes += 64 + preview.length * 2;
+    return bytes;
+  }
+
+  private canEvictBlockSummaries(map: Map<number, string> = this.blockSummaries): boolean {
+    if (map !== this.blockSummaries) return true;
+    if (!this.isPanelVisible()) return true;
+    const blocks = this.page?.blocks ?? [];
+    for (let index = this.windowVisibleStart; index < this.windowVisibleEnd && index < blocks.length; index += 1) {
+      const source = this.sourceFor(blocks[index], "raw");
+      if (source && map.has(source.nodeId)) return false;
+    }
+    return true;
+  }
+
+  private evictBlockSummaries(map: Map<number, string> = this.blockSummaries): void {
+    map.clear();
+    if (this.blockSummaries !== map) return;
+    for (const summary of this.windowList?.querySelectorAll<HTMLElement>(".conversation-block-summary") ?? []) {
+      summary.textContent = t("conversation.summaryPlaceholder");
+    }
+  }
+
+  private storeBlockSummary(nodeId: number, preview: string, requestKey: string, isCurrent: () => boolean): boolean {
+    const map = this.blockSummaries;
+    const nextBytes = this.summaryMapBytes(map, nodeId, preview);
+    const admitted = this.projectionBudget.admit(
+      map,
+      nextBytes,
+      () => this.evictBlockSummaries(map),
+      () => this.canEvictBlockSummaries(map)
+    );
+    if (!admitted) {
+      this.budgetRejected.set(requestKey, this.projectionBudget.usedBytes);
+      return false;
+    }
+    if (!isCurrent()) {
+      this.projectionBudget.release(map);
+      map.clear();
+      if (this.blockSummaries === map) {
+        this.blockSummaries = new Map();
+      }
+      return false;
+    }
+    map.set(nodeId, preview);
+    return true;
+  }
+
   private resetWindowElements(): void {
     if (this.windowList && this.rowResizeObserver) {
       for (const child of Array.from(this.windowList.children)) this.rowResizeObserver.unobserve(child);
@@ -1196,7 +1324,18 @@ export class ConversationView {
     const requestKey = this.toolCardRequestKey(request);
     const existing = this.toolCardStates.get(index);
     if (existing && existing.status !== "loading") {
+      this.projectionBudget.touch(existing);
       this.renderToolCard(host, index, existing);
+      return;
+    }
+    if (this.isBudgetRejected(requestKey)) {
+      this.renderToolCard(host, index, {
+        status: "unavailable",
+        rows: [],
+        callId: null,
+        errorState: null,
+        reason: t("conversation.projectionBudgetToolUnavailable")
+      });
       return;
     }
     if (existing?.status === "loading" && !this.toolCardRequests.has(requestKey)) {
@@ -1214,6 +1353,22 @@ export class ConversationView {
       try {
         const state = await this.buildToolCard(block, request);
         if (!this.isCurrentToolProjection(request)) return;
+        if (!this.admitToolCardState(state, index, requestKey)) {
+          this.toolCardStates.delete(index);
+          const liveHost = this.windowList?.querySelector<HTMLElement>(`[data-conversation-block-index="${index}"] .conversation-tool-card`);
+          if (liveHost) this.renderToolCard(liveHost, index, {
+            status: "unavailable",
+            rows: [],
+            callId: null,
+            errorState: null,
+            reason: t("conversation.projectionBudgetToolUnavailable")
+          });
+          return;
+        }
+        if (!this.isCurrentToolProjection(request)) {
+          this.projectionBudget.release(state);
+          return;
+        }
         this.toolCardStates.set(index, state);
         const liveHost = this.windowList?.querySelector<HTMLElement>(`[data-conversation-block-index="${index}"] .conversation-tool-card`);
         if (liveHost) this.renderToolCard(liveHost, index, state);
@@ -1227,7 +1382,8 @@ export class ConversationView {
           errorState: null,
           reason: isSessionError(error) ? t("conversation.sessionChangedTool") : errorMessage(error)
         };
-        this.toolCardStates.set(index, state);
+        this.budgetRejected.set(requestKey, this.projectionBudget.usedBytes);
+        this.toolCardStates.delete(index);
         const liveHost = this.windowList?.querySelector<HTMLElement>(`[data-conversation-block-index="${index}"] .conversation-tool-card`);
         if (liveHost) this.renderToolCard(liveHost, index, state);
         if (isSessionError(error)) this.onError(error);
@@ -1576,7 +1732,10 @@ export class ConversationView {
     if (block.ambiguousDuplicateField) return t("conversation.ambiguousDuplicateFieldSource");
     const source = this.sourceFor(block, "raw");
     const preview = source ? this.blockSummaries.get(source.nodeId) : undefined;
-    if (preview) return t("conversation.sourcePreview", { preview });
+    if (preview) {
+      this.projectionBudget.touch(this.blockSummaries);
+      return t("conversation.sourcePreview", { preview });
+    }
     if (block.kind === "system") return t("conversation.systemSummary");
     if (block.category === "unknown") return t("conversation.unknownSummary");
     if (block.category === "content" || block.category === "text" || block.category === "thinking") {
@@ -1635,10 +1794,15 @@ export class ConversationView {
     const requestKey = this.inlineRequestKey(pageIdentity, source);
     const existing = this.inlineStates.get(source.nodeId);
     if (existing && existing.status !== "loading") {
+      this.projectionBudget.touch(existing);
       this.renderInlineState(host, existing);
       return;
     }
     if (!context) return;
+    if (this.isBudgetRejected(requestKey)) {
+      this.renderInlineState(host, { status: "unavailable", opaque, reason: t("conversation.projectionBudgetUnavailable") });
+      return;
+    }
     if (existing?.status === "loading" && !this.inlineRequests.has(requestKey)) {
       this.inlineStates.delete(source.nodeId);
     }
@@ -1664,9 +1828,23 @@ export class ConversationView {
         }
         if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) return;
         summaryHost.textContent = summaryNode.valuePreview === null ? `${summaryNode.kind} Node ${summaryNode.id}` : summaryNode.valuePreview.slice(0, 240);
-        this.blockSummaries.set(source.nodeId, summaryHost.textContent);
+        const summaryText = summaryHost.textContent;
+        const summaryKey = `${pageIdentity}:${source.nodeId}`;
+        if (!this.storeBlockSummary(source.nodeId, summaryText, summaryKey, () =>
+          this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host))) {
+          summaryHost.textContent = t("conversation.sourcePreview", { preview: summaryText });
+        }
         if (summaryNode.kind !== "string") {
           const state: InlineState = { status: "unavailable", opaque, reason: t("conversation.structuredContent") };
+          if (!this.admitInlineState(state, source.nodeId, index, requestKey)) {
+            this.inlineStates.delete(source.nodeId);
+            this.renderInlineState(host, { status: "unavailable", opaque, reason: t("conversation.projectionBudgetUnavailable") });
+            return;
+          }
+          if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) {
+            this.projectionBudget.release(state);
+            return;
+          }
           this.inlineStates.set(source.nodeId, state);
           this.renderInlineState(host, state);
           return;
@@ -1705,6 +1883,15 @@ export class ConversationView {
           reason: partial ? `Showing the first ${INLINE_READ_BYTES.toLocaleString()} decoded bytes.` : undefined
         };
         if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) return;
+        if (!this.admitInlineState(state, source.nodeId, index, requestKey)) {
+          this.inlineStates.delete(source.nodeId);
+          this.renderInlineState(host, { status: "unavailable", opaque, reason: t("conversation.projectionBudgetUnavailable") });
+          return;
+        }
+        if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) {
+          this.projectionBudget.release(state);
+          return;
+        }
         this.inlineStates.set(source.nodeId, state);
         this.renderInlineState(host, state);
       } catch (error) {
@@ -1714,7 +1901,8 @@ export class ConversationView {
           opaque,
           reason: isSessionError(error) ? t("conversation.sessionChangedContent") : errorMessage(error)
         };
-        this.inlineStates.set(source.nodeId, state);
+        this.budgetRejected.set(requestKey, this.projectionBudget.usedBytes);
+        this.inlineStates.delete(source.nodeId);
         this.renderInlineState(host, state);
         if (isSessionError(error)) this.onError(error);
       } finally {
@@ -1806,8 +1994,13 @@ export class ConversationView {
     const viewport = this.blockViewport;
     const pageStart = this.page?.pageStart ?? null;
     const pageIdentity = cursorKey(pageStart);
-    if (!context || !source || !viewport || this.blockSummaries.has(source.nodeId)) return;
+    if (!context || !source || !viewport) return;
     const requestKey = `${pageIdentity}:${source.nodeId}`;
+    if (this.blockSummaries.has(source.nodeId)) {
+      this.projectionBudget.touch(this.blockSummaries);
+      return;
+    }
+    if (this.isBudgetRejected(requestKey)) return;
     if (this.summaryRequests.has(requestKey)) return;
     this.summaryRequests.add(requestKey);
     const generation = this.generation;
@@ -1824,9 +2017,15 @@ export class ConversationView {
       const node = validateNode(value, context.sourceSize);
       if (!node) return;
       const preview = node.valuePreview === null ? `${node.kind} Node ${node.id}` : node.valuePreview;
-      this.blockSummaries.set(source.nodeId, preview.slice(0, 240));
+      const summaryText = preview.slice(0, 240);
+      this.storeBlockSummary(source.nodeId, summaryText, requestKey, () => {
+        if (!this.isCurrent(context, generation) || this.page === null || cursorKey(this.page.pageStart) !== pageIdentity) return false;
+        const currentBlock = this.page.blocks[index];
+        const currentSource = currentBlock ? this.sourceFor(currentBlock, "raw") : null;
+        return currentSource?.nodeId === source.nodeId;
+      });
       const summary = viewport.querySelector<HTMLElement>(`[data-conversation-block-index="${index}"] .conversation-block-summary`);
-      if (summary) summary.textContent = this.blockSummaries.get(source.nodeId) ?? "";
+      if (summary) summary.textContent = t("conversation.sourcePreview", { preview: summaryText });
     }).catch((error: unknown) => {
       this.summaryRequests.delete(requestKey);
       if (this.isCurrent(context, generation) && isSessionError(error)) this.onError(error);

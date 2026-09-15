@@ -9,6 +9,7 @@ import { SearchView, type SearchMatch, type SearchScope } from "./search-view";
 import { TreeView, type NodeDto } from "./tree-view";
 import { applyStaticTranslations, locale, t } from "./i18n";
 import { parseErrorMessage } from "./parse-error-message";
+import { ProjectionBudget } from "./projection-budget";
 
 applyStaticTranslations();
 
@@ -85,6 +86,8 @@ const state: AppState = {
   scanStoppedRevision: null,
   invalidatedRevision: null
 };
+
+const projectionBudget = new ProjectionBudget();
 
 const appShell = required<HTMLElement>("app-shell");
 const openButton = required<HTMLButtonElement>("open-file");
@@ -414,6 +417,7 @@ const collectionList = new CollectionList({
 const conversationView = new ConversationView({
   panel: conversationPanel,
   invoke,
+  projectionBudget,
   onError: (error) => handleCurrentSessionAsyncError(ipcError(error)),
   onRaw: handleConversationRaw,
   onTree: handleConversationTree,

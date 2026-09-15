@@ -305,6 +305,8 @@ export const en = {
   "conversation.inlineNoLongerVisible": "Inline content is no longer visible.",
   "conversation.toolNoLongerVisible": "Tool card is no longer visible.",
   "conversation.requestFailed": "Conversation request failed.",
+  "conversation.projectionBudgetUnavailable": "Projection cache budget is full; use Raw, Tree, or Open content.",
+  "conversation.projectionBudgetToolUnavailable": "Tool details exceed the projection cache budget; use Raw or Tree.",
   "shell.openFile": "Open File",
   "shell.currentFile": "Current file",
   "shell.navigation": "Navigation",

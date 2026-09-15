@@ -307,6 +307,8 @@ export const zhCN: MessageCatalog = {
   "conversation.defaultStatus": "{scopeLabel} · 节点 {nodeId} · 修订版本 {revision}",
   "conversation.toolNoLongerVisible": "工具卡片已不可见。",
   "conversation.requestFailed": "会话请求失败。",
+  "conversation.projectionBudgetUnavailable": "投影缓存已达到预算；请使用原始、树视图或打开内容。",
+  "conversation.projectionBudgetToolUnavailable": "工具详情超出投影缓存预算；请使用原始或树视图。",
   "shell.openFile": "打开文件",
   "shell.currentFile": "当前文件",
   "shell.navigation": "导航",
