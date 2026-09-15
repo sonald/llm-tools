@@ -536,3 +536,4 @@ export const zhCN: MessageCatalog = {
   "raw.repHex": "{subject}的十六进制字节",
   "raw.repLossy": "{subject}的有损 UTF-8 预览"
 };
+  "search.relocatingHistory": "正在恢复搜索历史…",

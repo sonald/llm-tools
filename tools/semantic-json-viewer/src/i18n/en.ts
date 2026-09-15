@@ -537,3 +537,4 @@ export const en = {
 
 export type MessageKey = keyof typeof en;
 export type MessageCatalog = Record<MessageKey, string>;
+  "search.relocatingHistory": "Restoring search history…",

@@ -380,6 +380,108 @@ check(continuationCalls.length===2&&continuationCalls[1].args.cursor?.byteOffset
 check(continuation.el.results.querySelectorAll("button").length===1,"continuation result page was not rendered");
 check(continuation.el.previous.disabled===false,"previous page history was not retained");
 
+const historyCalls=[];
+const historyView=makeSearch(async(command,args)=>{
+  const pageNumber=args.cursor?.byteOffset ?? 0;
+  historyCalls.push({command,args,pageNumber});
+  return page({
+    matches:[{nodeId:null,field:"rawSource",pathSegments:["$","p"+pageNumber],pathTruncated:false,sourceSpanStart:pageNumber * 10,sourceSpanEnd:pageNumber * 10 + 6,matchStart:pageNumber * 10,matchEnd:pageNumber * 10 + 6}],
+    hasMore:pageNumber<19,
+    nextCursor:pageNumber<19?rawCursor({byteOffset:pageNumber + 1}):null
+  });
+});
+historyView.view.setScope(scope({scopeEnd:1000}));
+historyView.el.decoded.checked=false;
+historyView.el.rawSource.checked=true;
+historyView.el.query.value="needle";
+historyView.el.form.requestSubmit();
+await settle();
+for(let pageNumber=1;pageNumber<20;pageNumber+=1){historyView.el.next.click();await settle();}
+check(historyView.view.cachedPageCount<=16,"Source Search retained more than 16 cached pages");
+check(historyView.view.cachedHistoryBytes<=32*1024*1024,"Source Search exceeded its 32 MiB history budget");
+for(let pageNumber=19;pageNumber>0;pageNumber-=1){historyView.el.previous.click();await settle();}
+check(historyView.el.results.querySelector("button")?.textContent?.includes("p0"),"Previous did not relocate to page 0 after history eviction");
+const historyCallsBeforeCachedNext=historyCalls.length;
+historyView.el.next.click();
+await settle();
+check(historyCalls.length===historyCallsBeforeCachedNext&&historyView.el.results.querySelector("button")?.textContent?.includes("p1"),"Next did not recover from the replayed cached page");
+historyView.host.remove();
+
+let failReplay=false;
+let replayFailureReveal=null;
+const replayFailure=makeSearch(async(command,args)=>{
+  const pageNumber=args.cursor?.byteOffset ?? 0;
+  if(failReplay&&args.cursor===null) throw new Error("history replay failed");
+  return page({
+    matches:[{nodeId:null,field:"rawSource",pathSegments:["$","p"+pageNumber],pathTruncated:false,sourceSpanStart:pageNumber * 10,sourceSpanEnd:pageNumber * 10 + 6,matchStart:pageNumber * 10,matchEnd:pageNumber * 10 + 6}],
+    hasMore:pageNumber<16,
+    nextCursor:pageNumber<16?rawCursor({byteOffset:pageNumber + 1}):null
+  });
+},(match)=>{replayFailureReveal=match;});
+replayFailure.view.setScope(scope({scopeEnd:1000}));
+replayFailure.el.decoded.checked=false;
+replayFailure.el.rawSource.checked=true;
+replayFailure.el.query.value="needle";
+replayFailure.el.form.requestSubmit();
+await settle();
+for(let pageNumber=1;pageNumber<17;pageNumber+=1){replayFailure.el.next.click();await settle();}
+while(!replayFailure.el.results.querySelector("button")?.textContent?.includes("$.p1 ·")){replayFailure.el.previous.click();await settle();}
+failReplay=true;
+replayFailure.el.previous.click();
+await settle();
+const replayFailureButton=replayFailure.el.results.querySelector("button");
+check(replayFailureButton?.textContent?.includes("$.p1 ·")&&replayFailure.el.status.textContent.includes("history replay failed"),"failed history replay did not preserve the displayed page");
+replayFailureButton?.click();
+check(replayFailureReveal?.pathSegments?.at(-1)==="p1","failed history replay did not rebuild the preserved page result action");
+failReplay=false;
+replayFailure.el.previous.click();
+await settle();
+check(replayFailure.el.results.querySelector("button")?.textContent?.includes("$.p0 ·"),"successful history retry did not replace the preserved page");
+replayFailure.host.remove();
+
+let nextFailureReveal=null;
+const nextFailure=makeSearch(async(command,args)=>{
+  if(args.cursor) throw new Error("next page failed");
+  return page({matches:[{nodeId:null,field:"rawSource",pathSegments:["$","p0"],pathTruncated:false,sourceSpanStart:0,sourceSpanEnd:6,matchStart:0,matchEnd:6}],hasMore:true,nextCursor:rawCursor({byteOffset:1})});
+},(match)=>{nextFailureReveal=match;});
+nextFailure.view.setScope(scope({scopeEnd:1000}));
+nextFailure.el.decoded.checked=false;
+nextFailure.el.rawSource.checked=true;
+nextFailure.el.query.value="needle";
+nextFailure.el.form.requestSubmit();
+await settle();
+nextFailure.el.next.click();
+await settle();
+check(nextFailure.el.status.textContent.includes("next page failed"),"failed Next request did not expose its error");
+nextFailure.el.results.querySelector("button")?.click();
+check(nextFailureReveal?.pathSegments?.at(-1)==="p0","failed Next request did not rebuild the preserved page result action");
+nextFailure.host.remove();
+
+let releaseQueryChange;
+const queryCancellation=makeSearch(()=>new Promise((resolve)=>{releaseQueryChange=resolve;}));
+queryCancellation.view.setScope(scope());
+queryCancellation.el.query.value="needle";
+queryCancellation.el.form.requestSubmit();
+await Promise.resolve();
+queryCancellation.el.query.value="changed";
+queryCancellation.el.query.dispatchEvent(new Event("input",{bubbles:true}));
+releaseQueryChange(page({matches:[decodedMatch()],hasMore:false,nextCursor:null}));
+await settle();
+check(queryCancellation.el.results.children.length===0,"late query response repopulated Source Search");
+queryCancellation.host.remove();
+
+let releaseOwnershipChange;
+const ownershipCancellation=makeSearch(()=>new Promise((resolve)=>{releaseOwnershipChange=resolve;}));
+ownershipCancellation.view.setScope(scope());
+ownershipCancellation.el.query.value="needle";
+ownershipCancellation.el.form.requestSubmit();
+await Promise.resolve();
+ownershipCancellation.view.setScope(null);
+releaseOwnershipChange(page({matches:[decodedMatch()],hasMore:false,nextCursor:null}));
+await settle();
+check(ownershipCancellation.el.results.children.length===0,"late ownership response repopulated Source Search");
+ownershipCancellation.host.remove();
+
 const malformedErrors=[];
 const malformed=makeSearch(async()=>({matches:[],hasMore:true,nextCursor:null}),()=>{},(error)=>malformedErrors.push(error));
 malformed.view.setScope(scope());

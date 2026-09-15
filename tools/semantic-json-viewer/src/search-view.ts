@@ -71,16 +71,22 @@ type SearchViewOptions = SearchViewElements & {
 type SearchHistoryPage = {
   requestCursor: SearchCursor | null;
   page: SearchPage;
+  bytes: number;
 };
 
 type SearchRequestToken = {
   epoch: number;
   serial: number;
+  query: string;
+  representation: SearchRepresentation;
+  scope: string;
 };
 
 const PAGE_SIZE = 50;
 const MAX_PATH_BYTES = 2048;
 const MAX_QUERY_BYTES = 4096;
+const MAX_HISTORY_PAGES = 16;
+const MAX_HISTORY_BYTES = 32 * 1024 * 1024;
 const UTF8 = new TextEncoder();
 
 export class SearchView {
@@ -92,8 +98,9 @@ export class SearchView {
   private readonly onRepresentationChange: ((representation: SearchRepresentation) => void) | undefined;
   private rawEnabled = true;
   private scope: SearchScope | null = null;
-  private history: SearchHistoryPage[] = [];
-  private currentIndex = -1;
+  private history = new Map<number, SearchHistoryPage>();
+  private historyBytes = 0;
+  private currentPageNumber = -1;
   private epoch = 0;
   private serial = 0;
   private request: SearchRequestToken | null = null;
@@ -152,6 +159,14 @@ export class SearchView {
     return this.epoch;
   }
 
+  get cachedPageCount(): number {
+    return this.history.size;
+  }
+
+  get cachedHistoryBytes(): number {
+    return this.historyBytes;
+  }
+
   setRepresentation(representation: SearchRepresentation): void {
     if (this.owner() === "rendered") return;
     this.elements.decoded.checked = representation === "decoded";
@@ -203,8 +218,9 @@ export class SearchView {
     const ownsForm = this.owner() !== "rendered";
     this.epoch += 1;
     this.request = null;
-    this.history = [];
-    this.currentIndex = -1;
+    this.history.clear();
+    this.historyBytes = 0;
+    this.currentPageNumber = -1;
     this.busy = false;
     if (ownsForm) {
       if (clearQuery) this.elements.query.value = "";
@@ -228,16 +244,10 @@ export class SearchView {
     }
     const representation = this.selectedRepresentation(scope);
     const requestCursor = null;
-    this.epoch += 1;
-    this.onIntentChange();
-    this.history = [];
-    this.currentIndex = -1;
-    const token = { epoch: this.epoch, serial: ++this.serial };
-    this.request = token;
-    this.busy = true;
-    this.elements.resultsPanel.hidden = false;
-    this.setStatus(t("search.searching"));
-    this.render();
+    this.history.clear();
+    this.historyBytes = 0;
+    this.currentPageNumber = -1;
+    const token = this.beginRequest(query, representation, scope, t("search.searching"));
     try {
       const value = await this.invoke<unknown>("search_current", {
         query,
@@ -250,8 +260,9 @@ export class SearchView {
       });
       if (!this.isCurrent(token)) return;
       const page = parseSearchPageValue(value, representation, query, scope);
-      this.history = [{ requestCursor, page }];
-      this.currentIndex = 0;
+      this.putHistoryPage(0, { requestCursor, page, bytes: estimateHistoryPageBytes(requestCursor, page) }, this.currentPageNumber);
+      if (!this.isCurrent(token)) return;
+      this.setCurrentPage(0);
       this.setStatus(pageStatus(page, representation));
       this.elements.resultsPanel.hidden = false;
       this.renderPage();
@@ -272,12 +283,15 @@ export class SearchView {
 
   private async showNext(): Promise<void> {
     if (!this.isOwner()) return;
-    const current = this.history[this.currentIndex];
+    const current = this.currentHistoryPage();
     const scope = this.scope;
-    if (!scope || this.busy || !current || !current.page.hasMore) return;
-    if (this.currentIndex + 1 < this.history.length) {
-      this.currentIndex += 1;
-      this.setStatus(pageStatus(this.history[this.currentIndex].page, this.selectedRepresentation(scope)));
+    if (!scope || this.busy || this.currentPageNumber < 0 || !current || !current.page.hasMore) return;
+    const cachedPageNumber = this.currentPageNumber + 1;
+    if (this.history.has(cachedPageNumber)) {
+      this.invalidatePageIntent();
+      this.setCurrentPage(cachedPageNumber);
+      const cached = this.currentHistoryPage();
+      if (cached) this.setStatus(pageStatus(cached.page, this.selectedRepresentation(scope)));
       this.renderPage();
       return;
     }
@@ -285,14 +299,7 @@ export class SearchView {
     if (!cursor) return;
     const query = this.elements.query.value;
     const representation = this.selectedRepresentation(scope);
-    this.epoch += 1;
-    this.onIntentChange();
-    const token = { epoch: this.epoch, serial: ++this.serial };
-    this.request = token;
-    this.busy = true;
-    this.elements.resultsPanel.hidden = false;
-    this.setStatus(t("search.searching"));
-    this.render();
+    const token = this.beginRequest(query, representation, scope, t("search.searching"));
     try {
       const value = await this.invoke<unknown>("search_current", {
         query,
@@ -305,13 +312,15 @@ export class SearchView {
       });
       if (!this.isCurrent(token)) return;
       const page = parseSearchPageValue(value, representation, query, scope, cursor);
-      this.history.push({ requestCursor: cursor, page });
-      this.currentIndex += 1;
+      this.putHistoryPage(cachedPageNumber, { requestCursor: cursor, page, bytes: estimateHistoryPageBytes(cursor, page) }, this.currentPageNumber);
+      if (!this.isCurrent(token)) return;
+      this.setCurrentPage(cachedPageNumber);
       this.setStatus(pageStatus(page, representation));
       this.renderPage();
     } catch (error) {
       if (!this.isCurrent(token)) return;
       this.setStatus(errorMessage(error), true);
+      this.renderPage();
       if (isGlobalError(error)) this.onError(error);
     } finally {
       if (this.isCurrent(token)) {
@@ -323,15 +332,22 @@ export class SearchView {
   }
 
   private showPrevious(): void {
-    if (!this.isOwner() || this.busy || this.currentIndex <= 0) return;
-    this.currentIndex -= 1;
+    if (!this.isOwner() || this.busy || this.currentPageNumber <= 0) return;
+    const targetPageNumber = this.currentPageNumber - 1;
     const scope = this.scope;
-    if (scope) this.elements.status.textContent = pageStatus(this.history[this.currentIndex].page, this.selectedRepresentation(scope));
-    this.renderPage();
+    if (this.history.has(targetPageNumber)) {
+      this.invalidatePageIntent();
+      this.setCurrentPage(targetPageNumber);
+      const current = this.currentHistoryPage();
+      if (scope && current) this.elements.status.textContent = pageStatus(current.page, this.selectedRepresentation(scope));
+      this.renderPage();
+      return;
+    }
+    void this.replayPrevious(targetPageNumber);
   }
 
   private renderPage(): void {
-    const current = this.history[this.currentIndex];
+    const current = this.currentHistoryPage();
     if (!current) {
       this.elements.results.replaceChildren();
       this.render();
@@ -347,13 +363,133 @@ export class SearchView {
       button.title = resultLabel(match);
       const resultEpoch = this.epoch;
       button.addEventListener("click", () => {
-        if (this.isOwner() && this.epoch === resultEpoch && this.history[this.currentIndex]?.page.matches[index] === match) this.onReveal(match);
+        if (this.isOwner() && this.epoch === resultEpoch && this.currentHistoryPage()?.page.matches[index] === match) this.onReveal(match);
       });
       fragment.append(button);
     });
     this.elements.results.replaceChildren(fragment);
     this.elements.resultsPanel.hidden = false;
     this.render();
+  }
+
+  private async replayPrevious(targetPageNumber: number): Promise<void> {
+    const scope = this.scope;
+    if (!scope || this.currentPageNumber <= targetPageNumber || this.busy) return;
+    const query = this.elements.query.value;
+    const representation = this.selectedRepresentation(scope);
+    const token = this.beginRequest(query, representation, scope, t("search.relocatingHistory"));
+    const seed = this.replaySeed(targetPageNumber);
+    let pageNumber = seed ? seed.pageNumber + 1 : 0;
+    let cursor = seed ? seed.entry.page.nextCursor : null;
+    try {
+      while (pageNumber <= targetPageNumber) {
+        if (!this.isCurrent(token)) return;
+        const requestCursor = cursor;
+        const value = await this.invoke<unknown>("search_current", {
+          query,
+          representation,
+          scopeId: scope.scopeId,
+          nodeId: scope.targetNodeId,
+          cursor: requestCursor,
+          limit: PAGE_SIZE,
+          sessionRevision: scope.sessionRevision
+        });
+        if (!this.isCurrent(token)) return;
+        const page = parseSearchPageValue(value, representation, query, scope, requestCursor);
+        this.putHistoryPage(pageNumber, { requestCursor, page, bytes: estimateHistoryPageBytes(requestCursor, page) }, this.currentPageNumber);
+        if (!this.isCurrent(token)) return;
+        if (pageNumber === targetPageNumber) {
+          this.setCurrentPage(targetPageNumber);
+          this.setStatus(pageStatus(page, representation));
+          this.renderPage();
+          return;
+        }
+        if (!page.hasMore || page.nextCursor === null) throw new Error(t("search.responseCursorStateInvalid"));
+        cursor = page.nextCursor;
+        pageNumber += 1;
+      }
+    } catch (error) {
+      if (!this.isCurrent(token)) return;
+      this.setStatus(errorMessage(error), true);
+      this.renderPage();
+      if (isGlobalError(error)) this.onError(error);
+    } finally {
+      if (this.isCurrent(token)) {
+        this.request = null;
+        this.busy = false;
+        this.render();
+      }
+    }
+  }
+
+  private beginRequest(query: string, representation: SearchRepresentation, scope: SearchScope, status: string): SearchRequestToken {
+    this.epoch += 1;
+    this.onIntentChange();
+    const token: SearchRequestToken = {
+      epoch: this.epoch,
+      serial: ++this.serial,
+      query,
+      representation,
+      scope: scopeKey(scope)
+    };
+    this.request = token;
+    this.busy = true;
+    this.elements.resultsPanel.hidden = false;
+    this.setStatus(status);
+    this.render();
+    return token;
+  }
+
+  private invalidatePageIntent(): void {
+    this.epoch += 1;
+    this.request = null;
+    this.onIntentChange();
+  }
+
+  private currentHistoryPage(): SearchHistoryPage | null {
+    return this.currentPageNumber < 0 ? null : this.history.get(this.currentPageNumber) ?? null;
+  }
+
+  private setCurrentPage(pageNumber: number): void {
+    const entry = this.history.get(pageNumber);
+    if (!entry) return;
+    this.history.delete(pageNumber);
+    this.history.set(pageNumber, entry);
+    this.currentPageNumber = pageNumber;
+    this.trimHistory(pageNumber);
+  }
+
+  private putHistoryPage(pageNumber: number, entry: SearchHistoryPage, protectedPageNumber: number): void {
+    const previous = this.history.get(pageNumber);
+    if (previous) this.historyBytes -= previous.bytes;
+    this.history.delete(pageNumber);
+    this.history.set(pageNumber, entry);
+    this.historyBytes += entry.bytes;
+    this.trimHistory(protectedPageNumber);
+  }
+
+  private trimHistory(protectedPageNumber: number): void {
+    while (this.history.size > MAX_HISTORY_PAGES || this.historyBytes > MAX_HISTORY_BYTES) {
+      let evictedPageNumber: number | undefined;
+      for (const pageNumber of this.history.keys()) {
+        if (pageNumber !== protectedPageNumber) {
+          evictedPageNumber = pageNumber;
+          break;
+        }
+      }
+      if (evictedPageNumber === undefined) break;
+      const entry = this.history.get(evictedPageNumber);
+      this.history.delete(evictedPageNumber);
+      if (entry) this.historyBytes -= entry.bytes;
+    }
+  }
+
+  private replaySeed(targetPageNumber: number): { pageNumber: number; entry: SearchHistoryPage } | null {
+    let seed: { pageNumber: number; entry: SearchHistoryPage } | null = null;
+    for (const [pageNumber, entry] of this.history) {
+      if (pageNumber < targetPageNumber && (!seed || pageNumber > seed.pageNumber)) seed = { pageNumber, entry };
+    }
+    return seed;
   }
 
   private showLocalError(message: string): void {
@@ -364,8 +500,9 @@ export class SearchView {
     this.elements.resultsPanel.hidden = false;
     this.setStatus(message, true);
     this.elements.results.replaceChildren();
-    this.history = [];
-    this.currentIndex = -1;
+    this.history.clear();
+    this.historyBytes = 0;
+    this.currentPageNumber = -1;
     this.onIntentChange();
     this.render();
   }
@@ -386,8 +523,8 @@ export class SearchView {
     this.elements.rawSource.disabled = !enabled || !this.rawEnabled;
     this.elements.submit.disabled = !enabled;
     if (scope && !scope.decodedEnabled && this.elements.decoded.checked) this.elements.rawSource.checked = true;
-    this.elements.previous.disabled = this.busy || this.currentIndex <= 0;
-    const current = this.history[this.currentIndex];
+    this.elements.previous.disabled = this.busy || this.currentPageNumber <= 0;
+    const current = this.currentHistoryPage();
     this.elements.next.disabled = this.busy || !current?.page.hasMore;
     this.elements.form.setAttribute("aria-busy", String(this.busy));
   }
@@ -397,7 +534,13 @@ export class SearchView {
   }
 
   private isCurrent(token: SearchRequestToken): boolean {
-    return this.owner() === "source" && this.request === token && token.epoch === this.epoch;
+    return this.owner() === "source"
+      && this.request === token
+      && token.epoch === this.epoch
+      && this.elements.query.value === token.query
+      && this.scope !== null
+      && scopeKey(this.scope) === token.scope
+      && this.selectedRepresentation(this.scope) === token.representation;
   }
 
   private owner(): "source" | "rendered" | null {
@@ -551,6 +694,22 @@ function pageStatus(page: SearchPage, representation: SearchRepresentation): str
   if (page.matches.length === 0) return t("search.noMatches", { representation: mode, suffix });
   if (page.matches.length === 1) return t("search.oneMatch", { representation: mode, suffix });
   return t("search.manyMatches", { representation: mode, count: page.matches.length, suffix });
+}
+
+function estimateHistoryPageBytes(requestCursor: SearchCursor | null, page: SearchPage): number {
+  let bytes = 512 + estimateSearchCursorBytes(requestCursor) + estimateSearchCursorBytes(page.nextCursor);
+  for (const match of page.matches) {
+    bytes += 128;
+    bytes += 8 * 6;
+    bytes += match.pathTruncated ? 8 : 0;
+    for (const segment of match.pathSegments) bytes += segment.length * 2 + 16;
+  }
+  return bytes;
+}
+
+function estimateSearchCursorBytes(cursor: SearchCursor | null): number {
+  if (!cursor) return 8;
+  return 128 + cursor.query.length * 2 + (cursor.field?.length ?? 0) * 2;
 }
 
 function errorMessage(error: unknown): string {
