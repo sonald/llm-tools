@@ -18,6 +18,8 @@ mutation 覆盖 invalid UTF-8、非法 escape、孤立 surrogate、duplicate key
 
 成功时输出 seed、iterations、max-input、accepted、rejected 摘要。成功不代表 parser 覆盖率、安全完整性或发布性能达标。
 
+2026-09-15 主代理独立执行上述 release 命令，进程 exit 0：`seed=0x534a565f46555a5f iterations=100000 max_input=65536 accepted=37169 rejected=62831`。成功解析的 37,169 个输入均通过下述树不变量检查，其余 62,831 个输入由 parser 明确拒绝；该结果仅覆盖此固定种子与输入上限。
+
 ## 不变量与失败重现
 
 成功 parse 后检查：
