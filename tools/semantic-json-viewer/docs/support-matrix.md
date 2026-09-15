@@ -28,13 +28,14 @@
 | Markdown | 自动渲染上限 2 MiB；显式继续渲染上限 32 MiB；链接显示为文本、图片为占位，raw HTML 不执行 | 已实现但安全 Native 五零证据未闭环：`src/content-viewer.ts`、`src/markdown-renderer.ts` |
 | HTML | HTML Preview 输入上限 512 KiB，输出上限 1 MiB；HTML 自动启发式检测上限 64 KiB | Core/浏览器路径已有边界；Native 五项零证据仍未闭环：`src/content-viewer.ts`、`src-tauri/src/html_sanitizer.rs`、`src-tauri/src/semantic_detection.rs` |
 | Nested JSON | 单层 2 MiB、累计 8 MiB；默认深度 5，UI 可选 1–10，变更时从嵌套根重新打开；`4a090e6` 的原 Native tabs FAIL 仍待复测 | `d9b6066`；独立 Content Viewer 144、Parsed Search 32 通过，Native 仍不完整：`docs/native-acceptance.md` |
+| 搜索历史 | Source / Rendered Search 各自最多保留 16 页并有估算字节上限；淘汰正文与游标，Previous 缺页可取消地重扫，不限制可访问的历史深度 | `5609b71`、`0ba8cb7`；独立 Source 英文 126/中文 8、Rendered 90 通过。单组件限额不代表共享 32 MiB 总预算已完成 |
 
 ## Entry hint、国际化与平台
 
 | 范围 | 当前行为 | 状态与证据 |
 | --- | --- | --- |
 | Event Stream hint | Core hint 和 summary 路径已提交；`f06d3dc` 已实现 Auto / Generic / Event UI，headless 25 项断言和 main 集成通过 | UI 已提交、Native 未验：`src-tauri/src/event_hint.rs`、`src/entry-list.ts`、`docs/native-acceptance.md` |
-| i18n | 壳、列表、Tree、Raw 和搜索组件已有中文资源；搜索组件独立英文 115/中文 8 浏览器检查通过。Viewer 提供的搜索说明、Viewer/Conversation 其余文案和部分错误仍未全量翻译 | `68b019b`；整体仍为部分/WIP，Native 实证见 `docs/native-acceptance.md` |
+| i18n | 壳、列表、Tree、Raw、搜索、Viewer 和 Conversation 已有中英文资源；源角色、路径、协议字段不翻译。底层错误原文与完整 Native 发布文案仍需最终审计 | `68b019b`、`9f643f4`、`23478b9`；独立 Conversation 英文 96/中文 10，Viewer 144、Parsed Search 32 及资源检查通过；Native 实证仍以 `docs/native-acceptance.md` 为准 |
 | macOS | 有 macOS arm64 Native 局部真实证据；`4a090e6` 的 Nested tabs 自动化修复已通过，但原 Native FAIL 尚未复测关闭 | 部分验收：`docs/native-acceptance.md` |
 | Linux | Linux 参考环境的 cold/warm、fresh 五轮、private-memory 和完整性能门槛尚未测 | 未验：`docs/performance-baseline.md` |
 | Windows | `320af83` 已补 FileSource 的平台读取分支；本机回归通过，但未进行 Windows 编译、运行或安全验收，不先列为已支持 | 未验：`src-tauri/src/file_source.rs` |
