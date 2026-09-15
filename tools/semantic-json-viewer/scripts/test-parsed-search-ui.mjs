@@ -56,6 +56,7 @@ function parseBrowserValue(output) {
 
 function browserTest() {
   return `(async () => {
+Object.defineProperty(globalThis,"navigator",{configurable:true,value:{language:"en-US"}});
 const {ContentViewer}=await import("/src/content-viewer.ts");
 let assertions=0;
 const check=(condition,message)=>{assertions+=1;if(!condition)throw new Error(message);};
@@ -190,7 +191,7 @@ vite.stdout.on("data",(chunk)=>{viteOutput+=chunk.toString();});
 vite.stderr.on("data",(chunk)=>{viteOutput+=chunk.toString();});
 try {
   await waitForPort(port,vite);
-  await browser(["open",`http://127.0.0.1:${port}/`]);
+  await browser(["open",`http://127.0.0.1:${port}/scripts/test-i18n-fixture.html`]);
   const output=await browser(["eval","-b",Buffer.from(browserTest()).toString("base64")]);
   const result=parseBrowserValue(output);
   if(!result.pass) throw new Error("Parsed search browser test did not pass.");

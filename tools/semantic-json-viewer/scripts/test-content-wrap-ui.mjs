@@ -60,6 +60,7 @@ async function browser(args) {
 
 function browserTest() {
   return `(async()=>{
+Object.defineProperty(globalThis,"navigator",{configurable:true,value:{language:"en-US"}});
 const {ContentViewer}=await import("/src/content-viewer.ts");
 const {TextLineView}=await import("/src/text-line-view.ts");
 let assertions=0;
@@ -559,7 +560,7 @@ vite.stdout.on("data", (chunk) => { viteOutput += chunk.toString(); });
 vite.stderr.on("data", (chunk) => { viteOutput += chunk.toString(); });
 try {
   await waitForPort(port, vite);
-  await browser(["open", `http://127.0.0.1:${port}/`]);
+  await browser(["open", `http://127.0.0.1:${port}/scripts/test-i18n-fixture.html`]);
   const output = await browser(["eval", "-b", Buffer.from(browserTest()).toString("base64")]);
   let result;
   try { result = JSON.parse(output.trim()); } catch {

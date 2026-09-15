@@ -73,7 +73,7 @@ assert.match(main, /setText\(filePath, summary\.path\)/);
 assert.match(main, /setText\(inspectorPath, summary\.path\)/);
 assert.doesNotMatch(main, /MutationObserver/);
 
-const localizedModules = ["entry-list.ts", "collection-list.ts", "tree-view.ts", "raw-view.ts"];
+const localizedModules = ["entry-list.ts", "collection-list.ts", "tree-view.ts", "raw-view.ts", "content-viewer.ts"];
 const moduleKeys = new Set();
 for (const fileName of localizedModules) {
   const source = await readFile(resolve(root, "src", fileName), "utf8");

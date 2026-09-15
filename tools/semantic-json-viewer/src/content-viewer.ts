@@ -114,7 +114,7 @@ function createCopyElements(): NonNullable<ContentViewerElements["copy"]> {
 function createNestedCopyElements(): { elements: TreeCopyElements; container: HTMLElement } {
   const container = document.createElement("div");
   container.className = "copy-actions nested-copy-actions";
-  container.setAttribute("aria-label", "Copy selected nested node");
+  container.setAttribute("aria-label", t("contentViewer.copySelectedNestedNode"));
   const button = (label: string): HTMLButtonElement => {
     const value = document.createElement("button");
     value.className = "secondary-button";
@@ -130,10 +130,10 @@ function createNestedCopyElements(): { elements: TreeCopyElements; container: HT
   container.append(status);
   return {
     elements: {
-      raw: button("Copy Raw"),
-      subtree: button("Copy JSON Subtree"),
-      decoded: button("Copy Decoded Value"),
-      path: button("Copy Path"),
+      raw: button(t("shell.copyRaw")),
+      subtree: button(t("shell.copyJsonSubtree")),
+      decoded: button(t("shell.copyDecodedValue")),
+      path: button(t("shell.copyPath")),
       status
     },
     container
@@ -145,7 +145,7 @@ function createStringMetricsElements(anchor: HTMLElement): StringMetricsElements
   if (!host) return null;
   const container = document.createElement("div");
   container.className = "content-viewer-string-metrics";
-  container.setAttribute("aria-label", "Decoded string metrics");
+  container.setAttribute("aria-label", t("contentViewer.decodedStringMetrics"));
   const dl = document.createElement("dl");
   const make = (key: string, label: string, title: string): HTMLElement => {
     const row = document.createElement("div");
@@ -159,9 +159,9 @@ function createStringMetricsElements(anchor: HTMLElement): StringMetricsElements
     dl.append(row);
     return dd;
   };
-  const bytes = make("decoded-bytes", "Decoded bytes", "Complete decoded string size in UTF-8 bytes.");
-  const characters = make("characters", "Unicode characters", "Unicode scalar values, not UTF-16 code units.");
-  const lines = make("lines", "Lines", "Empty string is one line; CRLF is one break; a terminal line break adds a trailing empty line.");
+  const bytes = make("decoded-bytes", t("contentViewer.decodedBytesMetric"), t("contentViewer.decodedBytesHelp"));
+  const characters = make("characters", t("contentViewer.unicodeCharactersMetric"), t("contentViewer.unicodeCharactersHelp"));
+  const lines = make("lines", t("contentViewer.linesMetric"), t("contentViewer.linesHelp"));
   container.append(dl);
   host.append(container);
   return { container, bytes, characters, lines };
@@ -293,13 +293,13 @@ const CODE_AUTO_RENDER_LIMIT_LINES = 20_000;
 const HTML_INPUT_LIMIT_BYTES = 512 * 1024;
 const HTML_OUTPUT_LIMIT_BYTES = 1024 * 1024;
 const DEFAULT_NESTED_MAX_DEPTH = 5;
-const MARKDOWN_OVER_LIMIT_NOTE = "Markdown rendering skipped because content exceeds 2 MiB.";
-const MARKDOWN_OVER_LIMIT_STATUS = "Markdown source exceeds 2 MiB; showing decoded source.";
-const MARKDOWN_HARD_LIMIT_NOTE = "Markdown rendering skipped because content exceeds 32 MiB.";
-const MARKDOWN_HARD_LIMIT_STATUS = "Markdown source exceeds 32 MiB; showing decoded source.";
-const HTML_PREVIEW_NOTE = "Isolated HTML Preview · Opaque origin · scripts, network, forms, navigation, file access and application IPC blocked.";
-const HTML_RENDER_FAILURE_NOTE = "Semantic rendering failed. Showing plain text instead.";
-const HTML_SIZE_LIMIT_NOTE = `HTML Preview disabled because content exceeds ${HTML_INPUT_LIMIT_BYTES / 1024} KiB.`;
+const MARKDOWN_OVER_LIMIT_NOTE = t("contentViewer.markdownOverLimitNote");
+const MARKDOWN_OVER_LIMIT_STATUS = t("contentViewer.markdownOverLimitStatus");
+const MARKDOWN_HARD_LIMIT_NOTE = t("contentViewer.markdownHardLimitNote");
+const MARKDOWN_HARD_LIMIT_STATUS = t("contentViewer.markdownHardLimitStatus");
+const HTML_PREVIEW_NOTE = t("contentViewer.htmlPreviewNote");
+const HTML_RENDER_FAILURE_NOTE = t("contentViewer.htmlRenderFailureNote");
+const HTML_SIZE_LIMIT_NOTE = t("contentViewer.htmlSizeLimitNote", { size: HTML_INPUT_LIMIT_BYTES / 1024 });
 const HTML_PREVIEW_CSP = "default-src 'none'; script-src 'none'; connect-src 'none'; img-src 'none'; media-src 'none'; font-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; style-src 'unsafe-inline';";
 
 export class ContentViewer {
@@ -438,7 +438,7 @@ export class ContentViewer {
         onError: (error) => this.handleSearchError(error),
         onProjectionUnavailable: () => {
           this.sourceSearch?.refresh();
-          this.setStatus("Rendered search is unavailable for this page; switch to Decoded Source.");
+          this.setStatus(t("contentViewer.renderedSearchUnavailable"));
         }
       })
       : null;
@@ -463,9 +463,9 @@ export class ContentViewer {
     this.elements.dialog.addEventListener("keydown", (event) => this.handleDialogKeydown(event));
     this.wrapElements?.wrap.addEventListener("click", () => this.setWrapMode("wrap"));
     this.wrapElements?.noWrap.addEventListener("click", () => this.setWrapMode("noWrap"));
-    this.copyRaw.addEventListener("click", () => void this.copyTarget("raw", "Copied Raw Lexeme"));
-    this.copyDecoded.addEventListener("click", () => void this.copyTarget("decoded", "Copied Decoded Value"));
-    this.copyMarkdown.addEventListener("click", () => void this.copyTarget("decoded", "Copied Markdown Source"));
+    this.copyRaw.addEventListener("click", () => void this.copyTarget("raw", t("contentViewer.copiedRawLexeme")));
+    this.copyDecoded.addEventListener("click", () => void this.copyTarget("decoded", t("contentViewer.copiedDecodedValue")));
+    this.copyMarkdown.addEventListener("click", () => void this.copyTarget("decoded", t("contentViewer.copiedMarkdownSource")));
     this.copyParsed.addEventListener("click", () => void this.copyParsedJson());
     this.renderAs?.addEventListener("change", () => void this.changeRenderAs());
     this.nestedDepthSelect?.addEventListener("change", () => void this.changeNestedDepth());
@@ -562,7 +562,7 @@ export class ContentViewer {
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
     this.elements.alert.hidden = true;
-    this.setStatus("Loading decoded source…");
+    this.setStatus(t("contentViewer.loadingDecodedSource"));
     this.renderMetadata();
     this.renderPaging();
     if (!this.elements.dialog.open) this.elements.dialog.showModal();
@@ -579,7 +579,7 @@ export class ContentViewer {
       });
       if (!this.isCurrent(generation, target)) return;
       const detection = validateDetection(detectionValue);
-      if (!detection) throw new Error("The string detection response was invalid.");
+      if (!detection) throw new Error(t("contentViewer.invalidDetectionResponse"));
       this.detection = detection;
       this.renderMetadata();
 
@@ -648,7 +648,7 @@ export class ContentViewer {
     const copyEpoch = this.copyEpoch;
     const generation = this.generation;
     this.copyBusy = true;
-    this.copyStatus.textContent = "Copying…";
+    this.copyStatus.textContent = t("contentViewer.copying");
     this.renderCopyControls();
     try {
       await this.invokeRequest("copy_node", {
@@ -662,7 +662,7 @@ export class ContentViewer {
     } catch (error) {
       if (!this.isCopyCurrent(copyEpoch, generation, target)) return;
       if (isGlobalError(error)) this.onSessionError(error);
-      else this.copyStatus.textContent = `Copy failed: ${errorMessage(error)}`;
+      else this.copyStatus.textContent = t("contentViewer.copyFailed", { message: errorMessage(error) });
     } finally {
       if (this.isCopyCurrent(copyEpoch, generation, target)) {
         this.copyBusy = false;
@@ -681,7 +681,7 @@ export class ContentViewer {
     const sessionRevision = frame.scope.sessionRevision;
     const nodeId = frame.scope.root.id;
     this.copyBusy = true;
-    this.copyStatus.textContent = "Copying…";
+    this.copyStatus.textContent = t("contentViewer.copying");
     this.renderCopyControls();
     try {
       await this.invokeRequest("copy_node", {
@@ -691,11 +691,11 @@ export class ContentViewer {
         format: "parsed"
       });
       if (!this.isCopyCurrent(copyEpoch, generation, target, scopeId, nodeId)) return;
-      this.copyStatus.textContent = "Copied Parsed JSON";
+      this.copyStatus.textContent = t("contentViewer.copiedParsedJson");
     } catch (error) {
       if (!this.isCopyCurrent(copyEpoch, generation, target, scopeId, nodeId)) return;
       if (isGlobalError(error)) this.onSessionError(error);
-      else this.copyStatus.textContent = `Copy failed: ${errorMessage(error)}`;
+      else this.copyStatus.textContent = t("contentViewer.copyFailed", { message: errorMessage(error) });
     } finally {
       if (this.isCopyCurrent(copyEpoch, generation, target, scopeId, nodeId)) {
         this.copyBusy = false;
@@ -813,7 +813,7 @@ export class ContentViewer {
     this.busy = true;
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
-    this.setStatus("Loading decoded source…");
+    this.setStatus(t("contentViewer.loadingDecodedSource"));
     this.renderMetadata();
     this.renderPaging();
     try {
@@ -827,7 +827,7 @@ export class ContentViewer {
       });
       if (!this.isReadCurrent(generation, target, intent)) return;
       const chunk = validateChunk(value, offset, rawSpanLength(target), expectedNextOffset, false, pageStartState);
-      if (!chunk) throw new Error("The decoded text response was invalid.");
+      if (!chunk) throw new Error(t("contentViewer.invalidDecodedResponse"));
       if (direction === "next") {
         this.offsets = this.offsets.slice(0, this.offsetIndex + 1);
         this.offsets.push(offset);
@@ -870,7 +870,7 @@ export class ContentViewer {
     this.busy = true;
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
-    this.setStatus("Loading raw lexeme…");
+    this.setStatus(t("contentViewer.loadingRawLexeme"));
     this.renderMetadata();
     this.renderPaging();
     try {
@@ -885,7 +885,7 @@ export class ContentViewer {
       const pageStartState = this.rawPageStartStates.get(offset)
         ?? (previous ? scanCodeLines(previous.text, previous.lineState) : { line: 1, previousWasCR: false });
       const chunk = normalizeRawChunk(value, target.spanStart + offset, target.spanStart, target.spanEnd, Math.min(TEXT_CHUNK_BYTES, end - offset), pageStartState);
-      if (!chunk) throw new Error("The raw lexeme response was invalid.");
+      if (!chunk) throw new Error(t("contentViewer.invalidRawResponse"));
       if (direction === "next") {
         this.rawPageOffsets = this.rawPageOffsets.slice(0, this.rawPageIndex + 1);
         this.rawPageOffsets.push(chunk.start);
@@ -915,7 +915,7 @@ export class ContentViewer {
     const target = this.target;
     const absoluteStart = target ? target.spanStart + chunk.start : chunk.start;
     this.elements.range.textContent = `[${absoluteStart}, ${absoluteStart + utf8ByteLength(chunk.text)})`;
-    this.setStatus("Raw lexeme ready");
+    this.setStatus(t("contentViewer.rawLexemeReady"));
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
@@ -1007,7 +1007,7 @@ export class ContentViewer {
         } else if (!parent && target.scopeId === null) {
           await this.openNestedRoot(target, generation);
         } else {
-          throw new Error("Nested JSON can only open from the current string scope.");
+          throw new Error(t("contentViewer.nestedScopeRequired"));
         }
       } else if (semanticType === "html") {
         await this.openHtml(target, generation);
@@ -1034,7 +1034,7 @@ export class ContentViewer {
       } else if (!parent) {
         await this.openNestedRoot(target, generation);
       } else {
-        throw new Error("Nested JSON can only open from the current string scope.");
+        throw new Error(t("contentViewer.nestedScopeRequired"));
       }
     } else if (selection === "html") {
       await this.openHtml(target, generation);
@@ -1059,7 +1059,7 @@ export class ContentViewer {
     });
     if (!this.isCurrent(generation, target)) return;
     const chunk = validateChunk(chunkValue, 0, rawSpanLength(target));
-    if (!chunk) throw new Error("The decoded text response was invalid.");
+    if (!chunk) throw new Error(t("contentViewer.invalidDecodedResponse"));
     this.installChunk(chunk, true);
     this.ordinaryRepresentation = "rendered";
     this.setStringVisible(true);
@@ -1135,8 +1135,8 @@ export class ContentViewer {
         this.renderOverride = previous;
         this.syncRenderAsSelect();
         this.elements.alert.hidden = false;
-        this.elements.alert.textContent = `Content could not be opened: ${errorMessage(error)}`;
-        this.setStatus("Nested JSON override failed");
+        this.elements.alert.textContent = t("contentViewer.contentOpenFailed", { message: errorMessage(error) });
+        this.setStatus(t("contentViewer.nestedOverrideFailed"));
         this.renderMetadata();
         this.renderPaging();
       }
@@ -1222,7 +1222,7 @@ export class ContentViewer {
     if (!parent || parent.kind !== "string" || target.scopeId !== parent.scope.scopeId || !this.detection) return false;
     this.nestedBusy = true;
     this.syncRenderAsSelect();
-    this.setStatus("Loading parsed nested JSON…");
+    this.setStatus(t("contentViewer.loadingParsedNestedJson"));
     this.renderPaging();
     const parentSnapshot = this.nestedTree?.snapshot() ?? parent.parentSnapshot;
     await this.openNestedJsonFrame(cloneTarget(target), parent, parentSnapshot, generation, this.detection, "nestedJson");
@@ -1246,7 +1246,7 @@ export class ContentViewer {
     this.setNestedVisible(true);
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
-    this.setStatus("Parsed nested JSON ready");
+    this.setStatus(t("contentViewer.parsedNestedJsonReady"));
     this.renderMetadata();
     this.renderPaging();
     focusNestedRoot(this.nestedElements?.parsedTree ?? null);
@@ -1282,7 +1282,7 @@ export class ContentViewer {
     this.elements.alert.hidden = true;
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
-    this.setStatus("Loading renderer…");
+    this.setStatus(t("contentViewer.loadingRenderer"));
     this.renderMetadata();
     this.renderPaging();
   }
@@ -1339,7 +1339,7 @@ export class ContentViewer {
       });
       if (!this.isCurrent(generation, target)) return null;
       const chunk = validateChunk(value, offset, rawSpanLength(target), undefined, false, lineState);
-      if (!chunk) throw new Error("The decoded text response was invalid.");
+      if (!chunk) throw new Error(t("contentViewer.invalidDecodedResponse"));
       const firstChunk = first ?? chunk;
       first = firstChunk;
       const byteLength = utf8ByteLength(chunk.text);
@@ -1360,7 +1360,7 @@ export class ContentViewer {
       if (!chunk.hasMore) {
         return { first: firstChunk, text: parts.join(""), overLimit: false, overLimitReason: null };
       }
-      if (chunk.nextOffset === null) throw new Error("The decoded text response was invalid.");
+      if (chunk.nextOffset === null) throw new Error(t("contentViewer.invalidDecodedResponse"));
       offset = chunk.nextOffset;
       lineState = nextLineState;
     }
@@ -1424,11 +1424,11 @@ export class ContentViewer {
         ? MARKDOWN_HARD_LIMIT_STATUS
         : MARKDOWN_OVER_LIMIT_STATUS);
     } else if (this.representation === "rendered") {
-      this.setStatus(this.renderMode === "code" ? "Rendered Code ready" : "Rendered Markdown ready");
+      this.setStatus(t(this.renderMode === "code" ? "contentViewer.renderedCodeReady" : "contentViewer.renderedMarkdownReady"));
     } else if (sourceChunk.text.length === 0 && !sourceChunk.hasMore) {
-      this.setStatus("Empty string");
+      this.setStatus(t("contentViewer.emptyString"));
     } else {
-      this.setStatus("Decoded source ready");
+      this.setStatus(t("contentViewer.decodedSourceReady"));
     }
     this.elements.range.textContent = `[${sourceChunk.start}, ${sourceChunk.start + utf8ByteLength(sourceChunk.text)})`;
     this.elements.dialog.removeAttribute("aria-busy");
@@ -1450,14 +1450,14 @@ export class ContentViewer {
       });
       if (!this.isCurrent(generation, target)) return false;
       const chunk = validateChunk(value, 0, rawSpanLength(target));
-      if (!chunk) throw new Error("The decoded text response was invalid.");
+      if (!chunk) throw new Error(t("contentViewer.invalidDecodedResponse"));
       this.installChunk(chunk, true);
       return true;
     }
     const requestedMaxDepth = this.nestedMaxDepth;
     this.nestedBusy = true;
     this.syncRenderAsSelect();
-    this.setStatus("Loading parsed nested JSON…");
+    this.setStatus(t("contentViewer.loadingParsedNestedJson"));
     this.renderPaging();
     try {
       const value = await this.invokeRequest<unknown>("open_nested_json", {
@@ -1474,8 +1474,8 @@ export class ContentViewer {
       if (!scope || scope.maxDepth !== requestedMaxDepth) {
         this.bestEffortCloseScope(value, target.revision);
         throw new Error(scope
-          ? `The nested JSON scope used maximum depth ${scope.maxDepth}; requested ${requestedMaxDepth}.`
-          : "The nested JSON scope response was invalid.");
+          ? t("contentViewer.nestedDepthMismatch", { actual: scope.maxDepth, requested: requestedMaxDepth })
+          : t("contentViewer.invalidNestedScopeResponse"));
       }
       this.disposeTextLineView();
       this.cleanupParsedPresentation();
@@ -1499,13 +1499,13 @@ export class ContentViewer {
         sessionRevision: scope.sessionRevision,
         scopeId: scope.scopeId,
         sourceSize: scope.parsedBytes,
-        ariaLabel: "Parsed nested JSON structure",
+        ariaLabel: t("contentViewer.parsedStructure"),
         scopeLabel: target.scopeLabel
       }, scope.root);
       this.setNestedVisible(true);
       this.elements.dialog.removeAttribute("aria-busy");
       this.elements.content.removeAttribute("aria-busy");
-      this.setStatus("Parsed nested JSON ready");
+        this.setStatus(t("contentViewer.parsedNestedJsonReady"));
       this.renderMetadata();
       this.renderPaging();
       return true;
@@ -1526,7 +1526,7 @@ export class ContentViewer {
     this.codeLanguageHint = null;
     this.semanticLimit = null;
     this.semanticLimitBytes = null;
-    this.setStatus("Loading isolated HTML Preview…");
+    this.setStatus(t("contentViewer.loadingHtmlPreview"));
     this.renderPaging();
     try {
       const value = await this.invokeRequest<unknown>("get_html_preview", {
@@ -1564,7 +1564,7 @@ export class ContentViewer {
       this.setHtmlVisible(true);
       this.elements.dialog.removeAttribute("aria-busy");
       this.elements.content.removeAttribute("aria-busy");
-      this.setStatus("HTML Preview ready");
+      this.setStatus(t("contentViewer.htmlPreviewReady"));
       this.renderMetadata();
       this.renderPaging();
       this.writeHtmlPreview(preview.html, generation, target);
@@ -1590,7 +1590,7 @@ export class ContentViewer {
     this.busy = true;
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
-    this.setStatus("Loading HTML Source…");
+    this.setStatus(t("contentViewer.loadingHtmlSource"));
     this.renderMetadata();
     this.renderPaging();
     const cached = this.decodedPages.get(0);
@@ -1608,7 +1608,7 @@ export class ContentViewer {
       });
       if (!this.isReadCurrent(generation, target, intent) || this.htmlRepresentation !== "source") return;
       const chunk = validateChunk(value, 0, rawSpanLength(target));
-      if (!chunk) throw new Error("The decoded text response was invalid.");
+      if (!chunk) throw new Error(t("contentViewer.invalidDecodedResponse"));
       this.installChunk(chunk, true);
     } catch (error) {
       if (!this.isReadCurrent(generation, target, intent)) return;
@@ -1627,7 +1627,7 @@ export class ContentViewer {
       if (!this.htmlSearchRoot && this.htmlPreview !== null) this.prepareHtmlSearchRoot(this.htmlPreview);
       this.elements.range.textContent = "—";
       this.setHtmlVisible(true);
-      this.setStatus("HTML Preview ready");
+      this.setStatus(t("contentViewer.htmlPreviewReady"));
       this.renderMetadata();
       this.renderPaging();
       this.writeHtmlPreview(this.htmlPreview, this.generation, this.target);
@@ -1702,7 +1702,7 @@ export class ContentViewer {
     this.nestedBusy = true;
     this.syncRenderAsSelect();
     this.elements.range.textContent = "—";
-    this.setStatus("Detecting nested string…");
+    this.setStatus(t("contentViewer.detectingNestedString"));
     this.renderPaging();
     let pushedFrame: NestedFrame | null = null;
     try {
@@ -1720,7 +1720,7 @@ export class ContentViewer {
         pathSegments: [...parent.source.pathSegments, ...target.pathSegments.slice(1)]
       });
       const detection = validateDetection(detectionValue);
-      if (!detection) throw new Error("The string detection response was invalid.");
+      if (!detection) throw new Error(t("contentViewer.invalidDetectionResponse"));
       const selection = this.overrides.get(renderOverrideKey(source)) ?? "auto";
       if (selection === "nestedJson" || selection === "auto" && detection.semanticType === "nestedJson") {
         pushedFrame = await this.openNestedJsonFrame(source, parent, parentSnapshot, generation, detection, selection);
@@ -1766,10 +1766,10 @@ export class ContentViewer {
       }
       this.renderMetadata();
       this.elements.alert.hidden = false;
-      this.elements.alert.textContent = `Content could not be opened: ${errorMessage(error)}`;
+      this.elements.alert.textContent = t("contentViewer.contentOpenFailed", { message: errorMessage(error) });
       this.setStatus(this.nestedRepresentation === "decoded"
-        ? "Decoded nested string ready"
-        : this.nestedRepresentation === "raw" ? "Raw nested lexeme ready" : "Parsed nested JSON ready");
+        ? t("contentViewer.decodedNestedStringReady")
+        : this.nestedRepresentation === "raw" ? t("contentViewer.rawNestedLexemeReady") : t("contentViewer.parsedNestedJsonReady"));
       this.renderPaging();
     }
   }
@@ -1782,7 +1782,7 @@ export class ContentViewer {
     detection: StringDetection,
     selection: RenderAs
   ): Promise<NestedFrame> {
-    this.setStatus("Loading parsed nested JSON…");
+    this.setStatus(t("contentViewer.loadingParsedNestedJson"));
     const value = await this.invokeRequest<unknown>("open_nested_json", {
       parentScopeId: parent.scope.scopeId,
       nodeId: source.nodeId,
@@ -1791,12 +1791,12 @@ export class ContentViewer {
     });
     if (generation !== this.generation || this.nestedFrames.at(-1) !== parent) {
       this.bestEffortCloseScope(value, parent.scope.sessionRevision);
-      throw new Error("The nested JSON request became stale.");
+      throw new Error(t("contentViewer.staleNestedRequest"));
     }
     const scope = validateNestedScope(value, source, parent.scope);
     if (!scope) {
       this.bestEffortCloseScope(value, parent.scope.sessionRevision);
-      throw new Error("The nested JSON scope response was invalid.");
+      throw new Error(t("contentViewer.invalidNestedScopeResponse"));
     }
     this.disposeTextLineView();
     this.cleanupParsedPresentation();
@@ -1823,12 +1823,12 @@ export class ContentViewer {
       sessionRevision: scope.sessionRevision,
       scopeId: scope.scopeId,
       sourceSize: scope.parsedBytes,
-      ariaLabel: "Parsed nested JSON structure",
+      ariaLabel: t("contentViewer.parsedStructure"),
       scopeLabel: source.scopeLabel
     }, scope.root);
     this.renderNestedBreadcrumb();
     this.setNestedVisible(true);
-    this.setStatus("Parsed nested JSON ready");
+    this.setStatus(t("contentViewer.parsedNestedJsonReady"));
     this.renderMetadata();
     this.renderPaging();
     focusNestedRoot(this.nestedElements?.parsedTree ?? null);
@@ -1850,7 +1850,7 @@ export class ContentViewer {
     this.nestedBusy = true;
     this.syncRenderAsSelect();
     this.elements.range.textContent = "—";
-    this.setStatus(frame.kind === "json" ? "Closing nested JSON…" : "Returning to parent…");
+    this.setStatus(t(frame.kind === "json" ? "contentViewer.closingNestedJson" : "contentViewer.returningToParent"));
     this.renderPaging();
     if (frame.kind === "string") {
       this.discardNestedFrame(frame);
@@ -1921,7 +1921,7 @@ export class ContentViewer {
       this.nestedTree?.restore(snapshot);
       if (!snapshot) this.setNestedTreeSession(parent);
       this.setNestedVisible(true);
-      this.setStatus("Parsed nested JSON ready");
+      this.setStatus(t("contentViewer.parsedNestedJsonReady"));
       return;
     }
     this.prepareRendererLoad(true);
@@ -1948,7 +1948,7 @@ export class ContentViewer {
     this.renderMetadata();
     this.renderPaging();
     if (representation === "parsed") {
-      this.setStatus("Parsed nested JSON ready");
+      this.setStatus(t("contentViewer.parsedNestedJsonReady"));
     } else {
       const frame = this.nestedFrames.at(-1);
       const state = frame ? textState(frame, representation) : null;
@@ -2006,7 +2006,7 @@ export class ContentViewer {
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
     this.renderNestedRange();
-    this.setStatus(representation === "decoded" ? "Loading decoded nested string…" : "Loading raw nested lexeme…");
+    this.setStatus(t(representation === "decoded" ? "contentViewer.loadingDecodedNestedString" : "contentViewer.loadingRawNestedLexeme"));
     this.renderMetadata();
     this.renderPaging();
     try {
@@ -2025,7 +2025,7 @@ export class ContentViewer {
       const chunk = representation === "raw"
         ? normalizeRawChunk(value, rawStart, frame.source.spanStart, frame.source.spanEnd, requestLength, pageStartState)
         : validateChunk(value, offset, boundary, undefined, true, pageStartState);
-      if (!chunk) throw new Error("The nested text response was invalid.");
+      if (!chunk) throw new Error(t("contentViewer.invalidNestedTextResponse"));
       if (direction === "next") {
         state.offsets = state.offsets.slice(0, state.offsetIndex + 1);
         state.offsets.push(chunk.start);
@@ -2038,13 +2038,13 @@ export class ContentViewer {
       this.contentReadBusy = false;
       this.nestedBusy = false;
       this.elements.alert.hidden = false;
-      this.elements.alert.textContent = `Content could not be opened: ${errorMessage(error)}`;
+      this.elements.alert.textContent = t("contentViewer.contentOpenFailed", { message: errorMessage(error) });
       if (errorCode(error) === "file_changed" || errorCode(error) === "stale_session") {
         this.handleFailure(error);
       } else {
         this.elements.dialog.removeAttribute("aria-busy");
         this.elements.content.removeAttribute("aria-busy");
-        this.setStatus("Unable to load nested text");
+        this.setStatus(t("contentViewer.unableLoadNestedText"));
         this.renderMetadata();
         this.renderPaging();
       }
@@ -2060,7 +2060,7 @@ export class ContentViewer {
     this.nestedBusy = false;
     this.elements.content.classList.remove("is-markdown");
     this.installTextChunk(chunk);
-    this.setStatus(representation === "decoded" ? "Decoded nested string ready" : "Raw nested lexeme ready");
+    this.setStatus(t(representation === "decoded" ? "contentViewer.decodedNestedStringReady" : "contentViewer.rawNestedLexemeReady"));
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
@@ -2263,7 +2263,7 @@ export class ContentViewer {
     else this.busy = true;
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
-    this.setStatus("Loading search match…");
+    this.setStatus(t("contentViewer.loadingSearchMatch"));
     this.renderMetadata();
     this.renderPaging();
     try {
@@ -2304,8 +2304,8 @@ export class ContentViewer {
         this.elements.dialog.removeAttribute("aria-busy");
         this.elements.content.removeAttribute("aria-busy");
         this.elements.alert.hidden = false;
-        this.elements.alert.textContent = `Search match could not be loaded: ${errorMessage(error)}`;
-        this.setStatus("Unable to load search match");
+        this.elements.alert.textContent = t("contentViewer.searchMatchLoadFailed", { message: errorMessage(error) });
+        this.setStatus(t("contentViewer.unableLoadSearchMatch"));
         this.renderMetadata();
         this.renderPaging();
       }
@@ -2327,7 +2327,7 @@ export class ContentViewer {
     this.busy = true;
     this.elements.dialog.setAttribute("aria-busy", "true");
     this.elements.content.setAttribute("aria-busy", "true");
-    this.setStatus("Loading rendered search match…");
+    this.setStatus(t("contentViewer.loadingRenderedSearchMatch"));
     this.renderMetadata();
     this.renderPaging();
     try {
@@ -2345,7 +2345,7 @@ export class ContentViewer {
         : this.codeLineCheckpoints.get(offset) ?? { line: 1, previousWasCR: false };
       if (!lineState) return;
       const chunk = validateChunk(value, offset, rawSpanLength(target), undefined, false, lineState);
-      if (!chunk) throw new Error("The rendered search source response was invalid.");
+      if (!chunk) throw new Error(t("contentViewer.invalidRenderedSearchResponse"));
       this.offsets = [chunk.start];
       this.offsetIndex = 0;
       this.nextOffset = chunk.nextOffset;
@@ -2370,7 +2370,7 @@ export class ContentViewer {
       this.busy = false;
       this.elements.dialog.removeAttribute("aria-busy");
       this.elements.content.removeAttribute("aria-busy");
-      this.setStatus("Rendered search match ready");
+      this.setStatus(t("contentViewer.renderedSearchMatchReady"));
       this.elements.alert.hidden = true;
       this.renderMetadata();
       this.renderPaging();
@@ -2390,8 +2390,8 @@ export class ContentViewer {
         this.elements.dialog.removeAttribute("aria-busy");
         this.elements.content.removeAttribute("aria-busy");
         this.elements.alert.hidden = false;
-        this.elements.alert.textContent = `Rendered search match could not be loaded: ${errorMessage(error)}`;
-        this.setStatus("Unable to load rendered search match");
+        this.elements.alert.textContent = t("contentViewer.renderedSearchMatchLoadFailed", { message: errorMessage(error) });
+        this.setStatus(t("contentViewer.unableLoadRenderedSearchMatch"));
         this.renderMetadata();
         this.renderPaging();
       }
@@ -2408,7 +2408,7 @@ export class ContentViewer {
     const anchorId = `sjv-html-search-${++this.htmlSearchAnchorSerial}`;
     const markup = rendered.serializeHighlightedMarkup(anchorId);
     if (markup === null || !this.isCurrent(generation, target) || this.sourceRevealEpoch !== intent) return;
-    this.setStatus("HTML rendered search match ready");
+    this.setStatus(t("contentViewer.htmlRenderedSearchMatchReady"));
     this.writeHtmlPreview(markup, generation, target, htmlSearchNavigation(anchorId));
     this.renderMetadata();
     this.renderPaging();
@@ -2436,9 +2436,9 @@ export class ContentViewer {
       });
       if (!this.isCurrent(generation, target) || this.sourceRevealEpoch !== intent) return null;
       const chunk = validateChunk(value, cursor, rawSpanLength(target), undefined, false, lineState);
-      if (!chunk || utf8ByteLength(chunk.text) > length) throw new Error("The code line checkpoint response was invalid.");
+      if (!chunk || utf8ByteLength(chunk.text) > length) throw new Error(t("contentViewer.invalidCodeCheckpointResponse"));
       const next = chunk.nextOffset;
-      if (next === null || next <= cursor || next > offset) throw new Error("The code line checkpoint response was invalid.");
+      if (next === null || next <= cursor || next > offset) throw new Error(t("contentViewer.invalidCodeCheckpointResponse"));
       lineState = scanCodeLines(chunk.text, lineState);
       cursor = next;
       this.codeLineCheckpoints.set(cursor, lineState);
@@ -2460,7 +2460,7 @@ export class ContentViewer {
     const sourceStart = match.sourceSpanStart;
     const sourceEnd = match.sourceSpanEnd;
     const requestLength = Math.min(TEXT_CHUNK_BYTES, sourceEnd - sourceStart);
-    if (match.field === "rawSource" || sourceStart >= sourceEnd || requestLength <= 0) throw new Error("The parsed search result is invalid.");
+    if (match.field === "rawSource" || sourceStart >= sourceEnd || requestLength <= 0) throw new Error(t("contentViewer.invalidParsedSearchResult"));
     const value = await this.invokeRequest<unknown>("read_raw_slice", {
       sourceStart,
       length: requestLength,
@@ -2469,7 +2469,7 @@ export class ContentViewer {
     });
     if (!this.isParsedRevealCurrent(frame, generation, revealEpoch, searchEpoch, query)) return;
     const peek = validateParsedSearchPeek(value, sourceStart, sourceEnd, requestLength);
-    if (!peek) throw new Error("The parsed search source response was invalid.");
+    if (!peek) throw new Error(t("contentViewer.invalidParsedSearchResponse"));
     this.parsedSearchPeek = { match, sourceStart: peek.start, sourceEnd: peek.end, text: peek.text, truncated: peek.end < sourceEnd };
     this.parsedSearchPeekBytes = utf8ByteLength(peek.text);
     this.trimTextCaches();
@@ -2479,7 +2479,7 @@ export class ContentViewer {
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
     this.renderParsedSearchPeek();
-    this.setStatus("Parsed source match ready");
+    this.setStatus(t("contentViewer.parsedSourceMatchReady"));
     this.renderMetadata();
     this.renderPaging();
   }
@@ -2505,7 +2505,7 @@ export class ContentViewer {
       return;
     }
     elements.panel.hidden = false;
-    elements.field.textContent = peek.match.field === "key" ? "Key" : "Value";
+    elements.field.textContent = peek.match.field === "key" ? t("contentViewer.fieldKey") : t("contentViewer.fieldValue");
     elements.node.textContent = peek.match.nodeId === null ? "—" : `#${peek.match.nodeId}`;
     elements.path.textContent = formatPath(peek.match.pathSegments, peek.match.pathTruncated);
     elements.sourceSpan.textContent = `[${peek.match.sourceSpanStart}, ${peek.match.sourceSpanEnd})`;
@@ -2513,8 +2513,8 @@ export class ContentViewer {
     elements.decodedRange.textContent = `[${peek.match.matchStart}, ${peek.match.matchEnd})`;
     elements.source.textContent = peek.text;
     elements.note.textContent = peek.truncated
-      ? "Only the first 128 KiB of this source token is shown; the decoded match range identifies the field text and does not infer escaped source bytes."
-      : "The shown source token identifies the field; the decoded match range does not infer escaped source bytes.";
+      ? t("contentViewer.parsedPeekTruncated")
+      : t("contentViewer.parsedPeekFull");
   }
 
   private clearParsedSearchPeek(): void {
@@ -2545,7 +2545,7 @@ export class ContentViewer {
     });
     if (!this.isRevealCurrent(generation, target, revealEpoch, searchEpoch, query, "decoded")) return;
     const chunk = validateChunk(value, match.matchStart, rawSpanLength(target));
-    if (!chunk) throw new Error("The decoded search result could not be loaded.");
+    if (!chunk) throw new Error(t("contentViewer.decodedSearchLoadFailed"));
     this.installSearchChunk(chunk, query, match.matchStart, false, "decoded");
   }
 
@@ -2563,7 +2563,7 @@ export class ContentViewer {
     });
     if (!this.isRevealCurrent(generation, target, revealEpoch, searchEpoch, query, "raw")) return;
     const chunk = normalizeRawChunk(value, sourceStart, target.spanStart, sourceEnd, requestLength);
-    if (!chunk) throw new Error("The raw search result could not be loaded.");
+    if (!chunk) throw new Error(t("contentViewer.rawSearchLoadFailed"));
     this.installSearchChunk(chunk, query, relativeStart, true, "raw");
   }
 
@@ -2603,7 +2603,7 @@ export class ContentViewer {
     const target = this.searchTarget();
     const rangeStart = raw && target ? target.spanStart + chunk.start : chunk.start;
     this.elements.range.textContent = `[${rangeStart}, ${rangeStart + utf8ByteLength(chunk.text)})`;
-    this.setStatus("Search match ready");
+    this.setStatus(t("contentViewer.searchMatchReady"));
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
@@ -2658,7 +2658,9 @@ export class ContentViewer {
     nested.breadcrumb.replaceChildren();
     for (const [index, frame] of this.nestedFrames.entries()) {
       const item = document.createElement("li");
-      const label = index === 0 ? formatPath(frame.source.pathSegments, frame.source.pathTruncated) : `Level ${frame.scope.depth}`;
+      const label = index === 0
+        ? formatPath(frame.source.pathSegments, frame.source.pathTruncated)
+        : t("contentViewer.breadcrumbLevel", { depth: frame.scope.depth });
       item.textContent = label;
       if (index === this.nestedFrames.length - 1) item.setAttribute("aria-current", "page");
       nested.breadcrumb.append(item);
@@ -2671,7 +2673,7 @@ export class ContentViewer {
       sessionRevision: frame.scope.sessionRevision,
       scopeId: frame.scope.scopeId,
       sourceSize: frame.scope.parsedBytes,
-      ariaLabel: "Parsed nested JSON structure",
+      ariaLabel: t("contentViewer.parsedStructure"),
       scopeLabel: frame.source.scopeLabel
     }, frame.scope.root);
   }
@@ -2681,7 +2683,7 @@ export class ContentViewer {
     const html = this.htmlElements;
     if (!nested && !html) return;
     if (html && this.renderMode === "html" && (this.htmlRepresentation === "source" || this.htmlRepresentation === "raw")) {
-      this.elements.content.setAttribute("aria-label", this.htmlRepresentation === "source" ? "Decoded Source" : "Raw Lexeme");
+      this.elements.content.setAttribute("aria-label", this.htmlRepresentation === "source" ? t("contentViewer.decodedSourceAria") : t("contentViewer.rawLexeme"));
       if (nested) {
         nested.sharedTextPanel.setAttribute("role", "tabpanel");
         nested.sharedTextPanel.setAttribute("aria-labelledby", html.sourceTab.id);
@@ -2696,12 +2698,12 @@ export class ContentViewer {
       nested.sharedTextPanel.setAttribute("role", "tabpanel");
       nested.sharedTextPanel.setAttribute("aria-labelledby", tab.id);
       nested.sharedTextPanel.removeAttribute("aria-label");
-      this.elements.content.setAttribute("aria-label", this.nestedRepresentation === "decoded" ? "Decoded String" : "Raw Lexeme");
+      this.elements.content.setAttribute("aria-label", this.nestedRepresentation === "decoded" ? t("contentViewer.decodedStringAria") : t("contentViewer.rawLexeme"));
     } else if (nested) {
       nested.sharedTextPanel.setAttribute("role", "region");
       nested.sharedTextPanel.removeAttribute("aria-labelledby");
-      nested.sharedTextPanel.setAttribute("aria-label", "Decoded source");
-      this.elements.content.setAttribute("aria-label", "Decoded source");
+      nested.sharedTextPanel.setAttribute("aria-label", t("contentViewer.decodedSourceAria"));
+      this.elements.content.setAttribute("aria-label", t("contentViewer.decodedSourceAria"));
     }
   }
 
@@ -2792,23 +2794,23 @@ export class ContentViewer {
     const representation = this.nestedRepresentation;
     if (!frame || representation === null) return;
     if (representation === "parsed") {
-      this.elements.range.textContent = `Parsed bytes [0, ${frame.scope.parsedBytes}) · depth ${frame.scope.depth}/${frame.scope.maxDepth}`;
+      this.elements.range.textContent = t("contentViewer.parsedRange", { bytes: frame.scope.parsedBytes, depth: frame.scope.depth, maxDepth: frame.scope.maxDepth });
       return;
     }
     const state = textState(frame, representation);
     const chunk = state.current;
     if (!chunk || this.nestedBusy) {
       this.elements.range.textContent = representation === "decoded"
-        ? `Decoded bytes [0, 0) of [0, ${frame.scope.parsedBytes})`
-        : `Parent scope bytes [${frame.source.spanStart}, ${frame.source.spanStart}) of [${frame.source.spanStart}, ${frame.source.spanEnd})`;
+        ? t("contentViewer.decodedEmptyRange", { bytes: frame.scope.parsedBytes })
+        : t("contentViewer.parentEmptyRange", { start: frame.source.spanStart, scopeStart: frame.source.spanStart, scopeEnd: frame.source.spanEnd });
       return;
     }
     const end = chunk.start + utf8ByteLength(chunk.text);
     if (representation === "decoded") {
-      this.elements.range.textContent = `Decoded bytes [${chunk.start}, ${end}) of [0, ${frame.scope.parsedBytes})`;
+      this.elements.range.textContent = t("contentViewer.decodedRange", { start: chunk.start, end, bytes: frame.scope.parsedBytes });
     } else {
       const absoluteStart = frame.source.spanStart + chunk.start;
-      this.elements.range.textContent = `Parent scope bytes [${absoluteStart}, ${absoluteStart + utf8ByteLength(chunk.text)}) of [${frame.source.spanStart}, ${frame.source.spanEnd})`;
+      this.elements.range.textContent = t("contentViewer.parentRange", { start: absoluteStart, end: absoluteStart + utf8ByteLength(chunk.text), scopeStart: frame.source.spanStart, scopeEnd: frame.source.spanEnd });
     }
   }
 
@@ -2899,8 +2901,8 @@ export class ContentViewer {
       return;
     }
     this.elements.alert.hidden = false;
-    this.elements.alert.textContent = `Content could not be opened: ${errorMessage(error)}`;
-    this.setStatus("Unable to load decoded source");
+    this.elements.alert.textContent = t("contentViewer.contentOpenFailed", { message: errorMessage(error) });
+    this.setStatus(t("contentViewer.unableLoadDecodedSource"));
     this.renderPaging();
   }
 
@@ -2964,11 +2966,11 @@ export class ContentViewer {
     const detection = this.detection;
     this.ensureStringMetrics(target);
     if (!target) {
-      this.elements.title.textContent = "Content Viewer";
+      this.elements.title.textContent = t("contentViewer.title");
       this.elements.scope.textContent = "—";
       this.elements.path.textContent = "—";
       this.elements.node.textContent = "—";
-      this.elements.spanLabel.textContent = "File-relative span";
+      this.elements.spanLabel.textContent = t("contentViewer.fileRelativeSpan");
       this.elements.span.textContent = "—";
       this.elements.semanticType.textContent = "—";
       this.elements.detectionSource.textContent = "—";
@@ -2979,43 +2981,43 @@ export class ContentViewer {
       this.syncRenderAsSelect();
       return;
     }
-    this.elements.title.textContent = "Content Viewer";
+    this.elements.title.textContent = t("contentViewer.title");
     this.elements.scope.textContent = target.scopeLabel;
     this.elements.path.textContent = formatPath(target.pathSegments, target.pathTruncated);
     this.elements.node.textContent = `#${target.nodeId}`;
     this.elements.spanLabel.textContent = target.scopeId !== null
-      ? "Nested-relative span"
-      : target.scopeLabel.startsWith("Entry") ? "Entry-relative span" : "File-relative span";
+      ? t("contentViewer.nestedRelativeSpan")
+      : target.scopeLabel.startsWith("Entry") ? t("contentViewer.entryRelativeSpan") : t("contentViewer.fileRelativeSpan");
     this.elements.span.textContent = `[${target.spanStart}, ${target.spanEnd})`;
     if (!detection) {
-      this.elements.semanticType.textContent = "Detecting…";
+      this.elements.semanticType.textContent = t("contentViewer.detecting");
       this.elements.detectionSource.textContent = "—";
       this.elements.plainReason.textContent = "—";
-      this.elements.representation.textContent = "Loading…";
+      this.elements.representation.textContent = t("contentViewer.loadingRenderer");
       this.elements.rendererNote.textContent = "";
       this.syncRenderAsSelect();
       return;
     }
     this.elements.semanticType.textContent = semanticTypeLabel(detection.semanticType);
-    this.elements.detectionSource.textContent = "Content-detected";
+    this.elements.detectionSource.textContent = t("contentViewer.contentDetected");
     this.elements.plainReason.textContent = detection.plainReason === null ? "—" : plainReasonLabel(detection.plainReason);
     this.elements.representation.textContent = this.nestedRepresentation !== null
       ? nestedRepresentationLabel(this.nestedRepresentation)
       : this.renderMode === "html"
-      ? this.htmlRepresentation === "preview" ? "Preview" : this.htmlRepresentation === "source" ? "Source" : this.htmlRepresentation === "raw" ? "Raw Lexeme" : "Loading…"
+      ? this.htmlRepresentation === "preview" ? t("contentViewer.preview") : this.htmlRepresentation === "source" ? t("contentViewer.source") : this.htmlRepresentation === "raw" ? t("contentViewer.rawLexeme") : t("contentViewer.loading")
       : this.ordinaryRepresentation === "raw"
-      ? "Raw Lexeme"
+      ? t("contentViewer.rawLexeme")
       : this.ordinaryRepresentation === "decoded"
-      ? "Decoded Source"
+      ? t("contentViewer.decodedSource")
       : this.renderMode === "plainText"
-      ? "Plain Text"
-      : this.representation === "rendered" ? "Rendered" : "Decoded Source";
+      ? t("contentViewer.plainText")
+      : this.representation === "rendered" ? t("contentViewer.rendered") : t("contentViewer.decodedSource");
     if (this.nestedRepresentation !== null) {
       const note = this.nestedRepresentation === "parsed"
-        ? "Parsed nested JSON tree."
-        : this.nestedRepresentation === "decoded" ? "Decoded nested JSON string."
-          : "Raw nested JSON lexeme.";
-      const override = this.renderOverride === "auto" ? "" : `User override: ${renderAsLabel(this.renderOverride)}`;
+        ? t("contentViewer.parsedNestedJsonTree")
+        : this.nestedRepresentation === "decoded" ? t("contentViewer.decodedNestedJsonString")
+          : t("contentViewer.rawNestedJsonLexeme");
+      const override = this.renderOverride === "auto" ? "" : t("contentViewer.userOverride", { value: renderAsLabel(this.renderOverride) });
       this.elements.rendererNote.textContent = override && note ? `${override}\n${note}` : override || note;
       this.renderNestedRange();
       this.syncRenderAsSelect();
@@ -3024,13 +3026,13 @@ export class ContentViewer {
     }
     let note = "";
     if (this.renderMode === "html" && this.htmlRepresentation === "raw") {
-      note = "Raw Lexeme.";
+      note = t("contentViewer.rawLexemeNote");
     } else if (this.renderMode === "html") {
       note = this.htmlNote;
     } else if (this.ordinaryRepresentation === "raw") {
-      note = "Raw Lexeme.";
+      note = t("contentViewer.rawLexemeNote");
     } else if (this.ordinaryRepresentation === "decoded" && this.semanticLimit === null && !this.markdownRenderFailed) {
-      note = "Decoded Source.";
+      note = t("contentViewer.decodedSourceNote");
     } else if (this.renderMode === "plainText") {
       note = "";
     } else if (this.renderMode === "markdown" && this.semanticLimit === "markdown") {
@@ -3038,21 +3040,21 @@ export class ContentViewer {
         ? MARKDOWN_HARD_LIMIT_NOTE
         : MARKDOWN_OVER_LIMIT_NOTE;
     } else if (this.renderMode === "code" && this.semanticLimit === "code") {
-      note = "Syntax highlighting disabled for large content.";
+      note = t("contentViewer.syntaxHighlightDisabled");
     } else if (this.renderMode === "code" && this.representation === "rendered") {
       note = codeRendererNote(this.codeRenderReason);
     } else if (this.renderMode === "markdown" && this.representation === "rendered") {
-      note = "Safe Markdown";
+      note = t("contentViewer.safeMarkdown");
     } else if (this.markdownRenderFailed) {
-      note = "Semantic rendering failed.\nShowing plain text instead.";
+      note = t("contentViewer.semanticRenderFailed");
     } else if (this.renderMode === "markdown") {
-      note = "Markdown rendering requires a complete source page; showing decoded source.";
+      note = t("contentViewer.markdownRequiresComplete");
     } else if (this.renderMode === "code") {
-      note = "Code rendering requires a complete source page; showing decoded source.";
+      note = t("contentViewer.codeRequiresComplete");
     } else if (this.renderMode !== "nestedJson") {
-      note = "Renderer is not available yet; showing decoded source.";
+      note = t("contentViewer.rendererUnavailable");
     }
-    const override = this.renderOverride === "auto" ? "" : `User override: ${renderAsLabel(this.renderOverride)}`;
+    const override = this.renderOverride === "auto" ? "" : t("contentViewer.userOverride", { value: renderAsLabel(this.renderOverride) });
     this.elements.rendererNote.textContent = override && note ? `${override}\n${note}` : override || note;
     this.syncRenderAsSelect();
     this.syncSourceSearch();
@@ -3085,7 +3087,7 @@ export class ContentViewer {
     }).then((value) => {
       if (epoch !== this.metricsEpoch || !this.isCurrentMetricsTarget(targetIdentity)) return;
       const metrics = validateStringMetrics(value);
-      if (!metrics) throw new Error("The string metrics response was invalid.");
+      if (!metrics) throw new Error(t("contentViewer.invalidMetricsResponse"));
       this.metrics = metrics;
       this.metricsState = "ready";
       this.renderStringMetrics();
@@ -3106,9 +3108,9 @@ export class ContentViewer {
     if (!elements) return;
     elements.container.hidden = this.metricsState === "hidden";
     const value = this.metricsState === "ready" && this.metrics ? this.metrics : null;
-    elements.bytes.textContent = value ? String(value.decodedBytes) : this.metricsState === "loading" ? "Loading…" : this.metricsState === "unavailable" ? "Unavailable" : "—";
-    elements.characters.textContent = value ? String(value.characterCount) : this.metricsState === "loading" ? "Loading…" : this.metricsState === "unavailable" ? "Unavailable" : "—";
-    elements.lines.textContent = value ? String(value.lineCount) : this.metricsState === "loading" ? "Loading…" : this.metricsState === "unavailable" ? "Unavailable" : "—";
+    elements.bytes.textContent = value ? String(value.decodedBytes) : this.metricsState === "loading" ? t("contentViewer.loading") : this.metricsState === "unavailable" ? t("contentViewer.unavailable") : "—";
+    elements.characters.textContent = value ? String(value.characterCount) : this.metricsState === "loading" ? t("contentViewer.loading") : this.metricsState === "unavailable" ? t("contentViewer.unavailable") : "—";
+    elements.lines.textContent = value ? String(value.lineCount) : this.metricsState === "loading" ? t("contentViewer.loading") : this.metricsState === "unavailable" ? t("contentViewer.unavailable") : "—";
   }
 
   private isCurrentMetricsTarget(target: ContentTarget): boolean {
@@ -3375,9 +3377,9 @@ function focusNestedBackOrParsed(elements: NestedViewerElements | null, depth: n
 }
 
 function nestedRepresentationLabel(value: "parsed" | "decoded" | "raw"): string {
-  if (value === "parsed") return "Parsed";
-  if (value === "decoded") return "Decoded String";
-  return "Raw Lexeme";
+  if (value === "parsed") return t("contentViewer.parsed");
+  if (value === "decoded") return t("contentViewer.decodedString");
+  return t("contentViewer.rawLexeme");
 }
 
 function validateDetection(value: unknown): StringDetection | undefined {
@@ -3424,7 +3426,7 @@ function htmlPreviewDocument(html: string, navigation = ""): string {
 }
 
 function htmlSearchNavigation(anchorId: string): string {
-  return `<nav id="sjv-html-search" aria-label="HTML search result"><a id="sjv-html-search-link" href="about:srcdoc#${anchorId}">Jump to matched text</a></nav>`;
+  return `<nav id="sjv-html-search" aria-label="${t("contentViewer.htmlSearchResult")}"><a id="sjv-html-search-link" href="about:srcdoc#${anchorId}">${t("contentViewer.jumpToMatchedText")}</a></nav>`;
 }
 
 function validateChunk(
@@ -3624,39 +3626,39 @@ function renderAsOption(value: RenderAs): string {
 }
 
 function renderAsLabel(value: RenderAs): string {
-  if (value === "auto") return "Auto";
-  if (value === "plainText") return "Plain Text";
-  if (value === "nestedJson") return "Nested JSON";
-  if (value === "html") return "HTML";
-  if (value === "code") return "Code Auto";
+  if (value === "auto") return t("contentViewer.auto");
+  if (value === "plainText") return t("contentViewer.plainText");
+  if (value === "nestedJson") return t("contentViewer.nestedJson");
+  if (value === "html") return t("contentViewer.html");
+  if (value === "code") return t("contentViewer.codeAuto");
   return value === "cpp" ? "C++" : value[0].toUpperCase() + value.slice(1);
 }
 
 function semanticTypeLabel(value: StringDetection["semanticType"]): string {
-  if (value === "plainText") return "Plain Text";
-  if (value === "nestedJson") return "Nested JSON";
-  if (value === "markdown") return "Markdown";
-  if (value === "html") return "HTML";
-  return "Code";
+  if (value === "plainText") return t("contentViewer.plainText");
+  if (value === "nestedJson") return t("contentViewer.nestedJson");
+  if (value === "markdown") return t("contentViewer.markdown");
+  if (value === "html") return t("contentViewer.html");
+  return t("contentViewer.code");
 }
 
 function plainReasonLabel(value: Exclude<StringDetection["plainReason"], null>): string {
-  if (value === "jsonParseFailed") return "Looks like JSON, but parsing failed.";
-  if (value === "sizeLimit") return "Automatic detection skipped because content exceeds 2 MiB.";
-  if (value === "depthLimit") return "Automatic nested JSON detection stopped at the maximum depth limit of 10.";
-  if (value === "cumulativeLimit") return "Automatic nested JSON detection stopped at the cumulative limit of 8 MiB.";
-  return "Plain Text fallback";
+  if (value === "jsonParseFailed") return t("contentViewer.plainReasonJsonParseFailed");
+  if (value === "sizeLimit") return t("contentViewer.plainReasonSizeLimit");
+  if (value === "depthLimit") return t("contentViewer.plainReasonDepthLimit");
+  if (value === "cumulativeLimit") return t("contentViewer.plainReasonCumulativeLimit");
+  return t("contentViewer.plainReasonFallback");
 }
 
 function codeRendererNote(reason: CodeRenderReason | null): string {
   if (reason === "sizeLimit" || reason === "lineLimit") {
-    return "Syntax highlighting disabled for large content.";
+    return t("contentViewer.syntaxHighlightDisabled");
   }
   if (reason === "timeLimit" || reason === "nodeLimit" || reason === "rendererError") {
-    return "Syntax highlighting unavailable; showing plain code.";
+    return t("contentViewer.syntaxHighlightUnavailable");
   }
-  if (reason === "generic") return "Generic Code";
-  return "Code";
+  if (reason === "generic") return t("contentViewer.genericCode");
+  return t("contentViewer.code");
 }
 
 function formatPath(segments: string[], truncated: boolean): string {
@@ -3664,7 +3666,7 @@ function formatPath(segments: string[], truncated: boolean): string {
     if (index === 0) return segment;
     return /^\[\d+\]$/.test(segment) ? `${result}${segment}` : `${result}.${segment}`;
   }, "") || "$";
-  return truncated ? `${path} · label truncated at end` : path;
+  return truncated ? `${path} · ${t("contentViewer.pathLabelTruncated")}` : path;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -3700,5 +3702,5 @@ function isTerminalCloseError(error: unknown): boolean {
 function errorMessage(error: unknown): string {
   if (isRecord(error) && typeof error.message === "string") return error.message;
   if (error instanceof Error) return error.message;
-  return "The decoded text request failed.";
+  return t("contentViewer.requestFailed");
 }

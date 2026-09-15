@@ -205,18 +205,18 @@
       <div class="content-viewer-shell">
         <header class="content-viewer-header">
           <div class="content-viewer-heading">
-            <h2 id="content-viewer-title">Content Viewer</h2>
-            <p id="content-viewer-description">Read-only decoded source for the selected string node.</p>
+            <h2 id="content-viewer-title" data-i18n="contentViewer.title">Content Viewer</h2>
+            <p id="content-viewer-description" data-i18n="contentViewer.description">Read-only decoded source for the selected string node.</p>
           </div>
           <label class="content-viewer-render-as" for="content-viewer-render-as">
-            <span>Render As</span>
-            <select id="content-viewer-render-as" aria-label="Render As">
-              <option value="auto">Auto</option>
-              <option value="plainText">Plain Text</option>
-              <option value="markdown">Markdown</option>
-              <option value="nestedJson">Nested JSON</option>
-              <option value="html">HTML</option>
-              <option value="code">Code Auto</option>
+            <span data-i18n="contentViewer.renderAs">Render As</span>
+            <select id="content-viewer-render-as" aria-label="Render As" data-i18n-aria-label="contentViewer.renderAs">
+              <option value="auto" data-i18n="contentViewer.auto">Auto</option>
+              <option value="plainText" data-i18n="contentViewer.plainText">Plain Text</option>
+              <option value="markdown" data-i18n="contentViewer.markdown">Markdown</option>
+              <option value="nestedJson" data-i18n="contentViewer.nestedJson">Nested JSON</option>
+              <option value="html" data-i18n="contentViewer.html">HTML</option>
+              <option value="code" data-i18n="contentViewer.codeAuto">Code Auto</option>
               <option value="python">Python</option>
               <option value="javascript">JavaScript</option>
               <option value="typescript">TypeScript</option>
@@ -231,116 +231,116 @@
               <option value="yaml">YAML</option>
             </select>
           </label>
-          <button class="secondary-button" id="content-viewer-close" type="button">Close</button>
+          <button class="secondary-button" id="content-viewer-close" type="button" data-i18n="contentViewer.close">Close</button>
         </header>
 
-        <section class="content-viewer-meta" aria-label="Content metadata">
+        <section class="content-viewer-meta" aria-label="Content metadata" data-i18n-aria-label="contentViewer.metadata">
           <dl>
-            <div><dt>Scope</dt><dd id="content-viewer-scope">—</dd></div>
-            <div><dt>Path</dt><dd id="content-viewer-path">—</dd></div>
-            <div><dt>Node</dt><dd id="content-viewer-node">—</dd></div>
-            <div><dt id="content-viewer-span-label">File-relative span</dt><dd id="content-viewer-span">—</dd></div>
-            <div><dt>Semantic type</dt><dd id="content-viewer-semantic-type">—</dd></div>
-            <div><dt>Detection source</dt><dd id="content-viewer-detection-source">—</dd></div>
-            <div><dt>Plain reason</dt><dd id="content-viewer-plain-reason">—</dd></div>
-            <div><dt>Representation</dt><dd id="content-viewer-representation">—</dd></div>
+            <div><dt data-i18n="contentViewer.scope">Scope</dt><dd id="content-viewer-scope">—</dd></div>
+            <div><dt data-i18n="contentViewer.path">Path</dt><dd id="content-viewer-path">—</dd></div>
+            <div><dt data-i18n="contentViewer.node">Node</dt><dd id="content-viewer-node">—</dd></div>
+            <div><dt id="content-viewer-span-label" data-i18n="contentViewer.fileRelativeSpan">File-relative span</dt><dd id="content-viewer-span">—</dd></div>
+            <div><dt data-i18n="contentViewer.semanticType">Semantic type</dt><dd id="content-viewer-semantic-type">—</dd></div>
+            <div><dt data-i18n="contentViewer.detectionSource">Detection source</dt><dd id="content-viewer-detection-source">—</dd></div>
+            <div><dt data-i18n="contentViewer.plainReason">Plain reason</dt><dd id="content-viewer-plain-reason">—</dd></div>
+            <div><dt data-i18n="contentViewer.representation">Representation</dt><dd id="content-viewer-representation">—</dd></div>
           </dl>
         </section>
 
-        <nav class="nested-navigation" id="content-viewer-nested-navigation" aria-label="Nested JSON navigation" hidden>
-          <button class="secondary-button" id="content-viewer-nested-back" type="button" aria-label="Back to parent nested JSON" aria-controls="content-viewer-parsed-panel" hidden>Back</button>
-          <ol id="content-viewer-nested-breadcrumbs" aria-label="Nested JSON breadcrumb"></ol>
+        <nav class="nested-navigation" id="content-viewer-nested-navigation" aria-label="Nested JSON navigation" data-i18n-aria-label="contentViewer.nestedNavigation" hidden>
+          <button class="secondary-button" id="content-viewer-nested-back" type="button" aria-label="Back to parent nested JSON" data-i18n-aria-label="contentViewer.backToParent" aria-controls="content-viewer-parsed-panel" hidden>Back</button>
+          <ol id="content-viewer-nested-breadcrumbs" aria-label="Nested JSON breadcrumb" data-i18n-aria-label="contentViewer.nestedBreadcrumb"></ol>
         </nav>
 
-        <div class="content-viewer-representations" id="content-viewer-string-representations" role="tablist" aria-label="String representations" hidden>
-          <button class="view-tab is-active" id="content-viewer-rendered-tab" type="button" role="tab" aria-selected="true" aria-controls="content-viewer-text-panel" tabindex="0">Rendered</button>
-          <button class="view-tab" id="content-viewer-decoded-source-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Decoded Source</button>
-          <button class="view-tab" id="content-viewer-string-raw-lexeme-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Raw Lexeme</button>
+        <div class="content-viewer-representations" id="content-viewer-string-representations" role="tablist" aria-label="String representations" data-i18n-aria-label="contentViewer.stringRepresentations" hidden>
+          <button class="view-tab is-active" id="content-viewer-rendered-tab" type="button" role="tab" aria-selected="true" aria-controls="content-viewer-text-panel" tabindex="0" data-i18n="contentViewer.rendered">Rendered</button>
+          <button class="view-tab" id="content-viewer-decoded-source-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1" data-i18n="contentViewer.decodedSource">Decoded Source</button>
+          <button class="view-tab" id="content-viewer-string-raw-lexeme-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1" data-i18n="contentViewer.rawLexeme">Raw Lexeme</button>
         </div>
 
-        <div class="nested-representations" id="content-viewer-representations" role="tablist" aria-label="Nested JSON representations" hidden>
-          <button class="view-tab is-active" id="content-viewer-parsed-tab" type="button" role="tab" aria-selected="true" aria-controls="content-viewer-parsed-panel" tabindex="0">Parsed</button>
-          <button class="view-tab" id="content-viewer-decoded-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Decoded String</button>
-          <button class="view-tab" id="content-viewer-raw-lexeme-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Raw Lexeme</button>
+        <div class="nested-representations" id="content-viewer-representations" role="tablist" aria-label="Nested JSON representations" data-i18n-aria-label="contentViewer.nestedRepresentations" hidden>
+          <button class="view-tab is-active" id="content-viewer-parsed-tab" type="button" role="tab" aria-selected="true" aria-controls="content-viewer-parsed-panel" tabindex="0" data-i18n="contentViewer.parsed">Parsed</button>
+          <button class="view-tab" id="content-viewer-decoded-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1" data-i18n="contentViewer.decodedString">Decoded String</button>
+          <button class="view-tab" id="content-viewer-raw-lexeme-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1" data-i18n="contentViewer.rawLexeme">Raw Lexeme</button>
         </div>
 
-        <div class="html-representations" id="content-viewer-html-representations" role="tablist" aria-label="HTML representations" hidden>
-          <button class="view-tab is-active" id="content-viewer-html-preview-tab" type="button" role="tab" aria-selected="true" aria-controls="content-viewer-html-preview-panel" tabindex="0">Preview</button>
-          <button class="view-tab" id="content-viewer-html-source-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Source</button>
-          <button class="view-tab" id="content-viewer-html-raw-lexeme-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1">Raw Lexeme</button>
+        <div class="html-representations" id="content-viewer-html-representations" role="tablist" aria-label="HTML representations" data-i18n-aria-label="contentViewer.htmlRepresentations" hidden>
+          <button class="view-tab is-active" id="content-viewer-html-preview-tab" type="button" role="tab" aria-selected="true" aria-controls="content-viewer-html-preview-panel" tabindex="0" data-i18n="contentViewer.preview">Preview</button>
+          <button class="view-tab" id="content-viewer-html-source-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1" data-i18n="contentViewer.source">Source</button>
+          <button class="view-tab" id="content-viewer-html-raw-lexeme-tab" type="button" role="tab" aria-selected="false" aria-controls="content-viewer-text-panel" tabindex="-1" data-i18n="contentViewer.rawLexeme">Raw Lexeme</button>
         </div>
 
-        <section class="content-viewer-search-panel" id="content-viewer-search-panel" aria-label="Search content viewer" hidden>
+        <section class="content-viewer-search-panel" id="content-viewer-search-panel" aria-label="Search content viewer" data-i18n-aria-label="contentViewer.searchPanel" hidden>
           <form class="scope-search-form" id="content-viewer-search" role="search" aria-describedby="content-viewer-search-description">
             <div class="scope-search-controls">
               <label class="scope-search-query" for="content-viewer-search-query">
-                <span>Search content</span>
-                <input id="content-viewer-search-query" name="query" type="search" autocomplete="off" spellcheck="false" />
+                  <span data-i18n="contentViewer.searchContent">Search content</span>
+                  <input id="content-viewer-search-query" name="query" type="search" autocomplete="off" spellcheck="false" placeholder="Search content" data-i18n-placeholder="contentViewer.searchContent" />
               </label>
               <fieldset class="scope-search-representation">
-                <legend>Search in</legend>
-                <label><input id="content-viewer-search-decoded" type="radio" name="content-viewer-representation" value="decoded" checked /> Decoded Source</label>
-                <label><input id="content-viewer-search-raw" type="radio" name="content-viewer-representation" value="rawSource" /> Raw Lexeme</label>
+                <legend data-i18n="contentViewer.searchIn">Search in</legend>
+                <label><input id="content-viewer-search-decoded" type="radio" name="content-viewer-representation" value="decoded" checked /> <span data-i18n="contentViewer.decodedSource">Decoded Source</span></label>
+                <label><input id="content-viewer-search-raw" type="radio" name="content-viewer-representation" value="rawSource" /> <span data-i18n="contentViewer.rawLexeme">Raw Lexeme</span></label>
               </fieldset>
-              <button class="primary-button scope-search-submit" id="content-viewer-search-submit" type="submit">Search</button>
+              <button class="primary-button scope-search-submit" id="content-viewer-search-submit" type="submit" data-i18n="shell.search">Search</button>
             </div>
-            <p class="scope-search-description" id="content-viewer-search-description">Search is available for the decoded string and raw lexeme.</p>
+            <p class="scope-search-description" id="content-viewer-search-description" data-i18n="contentViewer.searchDescription">Search is available for the decoded string and raw lexeme.</p>
           </form>
           <div class="scope-search-results-panel" id="content-viewer-search-results-panel" hidden>
             <div class="scope-search-status" id="content-viewer-search-status" role="status" aria-live="polite"></div>
-            <div class="scope-search-results" id="content-viewer-search-results" role="list" aria-label="Content Viewer search results"></div>
+            <div class="scope-search-results" id="content-viewer-search-results" role="list" aria-label="Content Viewer search results" data-i18n-aria-label="contentViewer.searchResults"></div>
             <div class="scope-search-footer">
-              <button class="secondary-button" id="content-viewer-search-prev" type="button">Previous page</button>
-              <button class="secondary-button" id="content-viewer-search-next" type="button">Next page</button>
+              <button class="secondary-button" id="content-viewer-search-prev" type="button" data-i18n="contentViewer.previousPage">Previous page</button>
+              <button class="secondary-button" id="content-viewer-search-next" type="button" data-i18n="contentViewer.nextPage">Next page</button>
             </div>
           </div>
         </section>
 
         <p class="content-viewer-renderer-note" id="content-viewer-renderer-note" role="note"></p>
-        <button class="secondary-button content-viewer-markdown-anyway" id="content-viewer-markdown-anyway" type="button" hidden>Render Markdown Anyway</button>
+        <button class="secondary-button content-viewer-markdown-anyway" id="content-viewer-markdown-anyway" type="button" hidden data-i18n="contentViewer.renderMarkdownAnyway">Render Markdown Anyway</button>
         <div class="content-viewer-alert" id="content-viewer-alert" role="alert" aria-live="assertive" hidden></div>
 
-        <section class="content-viewer-stage" aria-label="Content viewer output">
+        <section class="content-viewer-stage" aria-label="Content viewer output" data-i18n-aria-label="contentViewer.contentOutput">
           <div class="content-viewer-toolbar">
             <span class="content-viewer-range" id="content-viewer-range">—</span>
             <span class="content-viewer-status" id="content-viewer-status" role="status" aria-live="polite"></span>
             <span class="content-viewer-toolbar-spacer"></span>
-            <div class="content-viewer-wrap-controls" id="content-viewer-wrap-controls" role="group" aria-label="Text wrapping">
-              <button class="secondary-button" id="content-viewer-wrap" type="button" aria-pressed="true">Wrap</button>
-              <button class="secondary-button" id="content-viewer-no-wrap" type="button" aria-pressed="false">No Wrap</button>
+            <div class="content-viewer-wrap-controls" id="content-viewer-wrap-controls" role="group" aria-label="Text wrapping" data-i18n-aria-label="contentViewer.textWrapping">
+              <button class="secondary-button" id="content-viewer-wrap" type="button" aria-pressed="true" data-i18n="contentViewer.wrap">Wrap</button>
+              <button class="secondary-button" id="content-viewer-no-wrap" type="button" aria-pressed="false" data-i18n="contentViewer.noWrap">No Wrap</button>
             </div>
-            <div class="copy-actions content-viewer-copy-actions" aria-label="Copy content">
-              <button class="secondary-button" id="content-viewer-copy-raw" type="button">Copy Raw Lexeme</button>
-              <button class="secondary-button" id="content-viewer-copy-decoded" type="button">Copy Decoded Value</button>
-              <button class="secondary-button" id="content-viewer-copy-markdown" type="button" hidden>Copy Markdown Source</button>
-              <button class="secondary-button" id="content-viewer-copy-parsed" type="button" hidden>Copy Parsed JSON</button>
+            <div class="copy-actions content-viewer-copy-actions" aria-label="Copy content" data-i18n-aria-label="contentViewer.copyContent">
+              <button class="secondary-button" id="content-viewer-copy-raw" type="button" data-i18n="contentViewer.copyRawLexeme">Copy Raw Lexeme</button>
+              <button class="secondary-button" id="content-viewer-copy-decoded" type="button" data-i18n="contentViewer.copyDecodedValue">Copy Decoded Value</button>
+              <button class="secondary-button" id="content-viewer-copy-markdown" type="button" hidden data-i18n="contentViewer.copyMarkdownSource">Copy Markdown Source</button>
+              <button class="secondary-button" id="content-viewer-copy-parsed" type="button" hidden data-i18n="contentViewer.copyParsedJson">Copy Parsed JSON</button>
               <span class="copy-status" id="content-viewer-copy-status" role="status" aria-live="polite"></span>
             </div>
-            <button class="secondary-button" id="content-viewer-previous" type="button" aria-controls="content-viewer-content" disabled>Prev</button>
-            <button class="secondary-button" id="content-viewer-next" type="button" aria-controls="content-viewer-content" disabled>Next</button>
+            <button class="secondary-button" id="content-viewer-previous" type="button" aria-controls="content-viewer-content" disabled data-i18n="contentViewer.previous">Prev</button>
+            <button class="secondary-button" id="content-viewer-next" type="button" aria-controls="content-viewer-content" disabled data-i18n="contentViewer.next">Next</button>
           </div>
           <section class="nested-parsed-panel" id="content-viewer-parsed-panel" role="tabpanel" aria-labelledby="content-viewer-parsed-tab" hidden>
             <div class="nested-tree" id="content-viewer-parsed-tree"></div>
-            <section class="parsed-search-peek" id="content-viewer-parsed-search-peek" aria-label="Parsed source match" hidden>
-              <h3>Parsed source match</h3>
+            <section class="parsed-search-peek" id="content-viewer-parsed-search-peek" aria-label="Parsed source match" data-i18n-aria-label="contentViewer.parsedSourceMatch" hidden>
+              <h3 data-i18n="contentViewer.parsedSourceMatch">Parsed source match</h3>
               <dl>
-                <div><dt>Field</dt><dd id="content-viewer-parsed-search-peek-field">—</dd></div>
-                <div><dt>Node</dt><dd id="content-viewer-parsed-search-peek-node">—</dd></div>
-                <div><dt>Path</dt><dd id="content-viewer-parsed-search-peek-path">—</dd></div>
-                <div><dt>Source token span</dt><dd id="content-viewer-parsed-search-peek-source-span">—</dd></div>
-                <div><dt>Displayed range</dt><dd id="content-viewer-parsed-search-peek-displayed-range">—</dd></div>
-                <div><dt>Decoded match bytes</dt><dd id="content-viewer-parsed-search-peek-decoded-range">—</dd></div>
+                <div><dt data-i18n="contentViewer.field">Field</dt><dd id="content-viewer-parsed-search-peek-field">—</dd></div>
+                <div><dt data-i18n="contentViewer.node">Node</dt><dd id="content-viewer-parsed-search-peek-node">—</dd></div>
+                <div><dt data-i18n="contentViewer.path">Path</dt><dd id="content-viewer-parsed-search-peek-path">—</dd></div>
+                <div><dt data-i18n="contentViewer.sourceTokenSpan">Source token span</dt><dd id="content-viewer-parsed-search-peek-source-span">—</dd></div>
+                <div><dt data-i18n="contentViewer.displayedRange">Displayed range</dt><dd id="content-viewer-parsed-search-peek-displayed-range">—</dd></div>
+                <div><dt data-i18n="contentViewer.decodedMatchBytes">Decoded match bytes</dt><dd id="content-viewer-parsed-search-peek-decoded-range">—</dd></div>
               </dl>
               <pre id="content-viewer-parsed-search-peek-source" tabindex="0"></pre>
               <p id="content-viewer-parsed-search-peek-note" role="note"></p>
             </section>
           </section>
           <section class="content-viewer-html-preview-panel" id="content-viewer-html-preview-panel" role="tabpanel" aria-labelledby="content-viewer-html-preview-tab" hidden>
-            <iframe class="content-viewer-html-preview-frame" id="content-viewer-html-preview-frame" title="Isolated HTML preview" sandbox="" referrerpolicy="no-referrer"></iframe>
+            <iframe class="content-viewer-html-preview-frame" id="content-viewer-html-preview-frame" title="Isolated HTML preview" data-i18n-title="contentViewer.isolatedHtmlPreview" sandbox="" referrerpolicy="no-referrer"></iframe>
           </section>
-          <section class="content-viewer-text-panel" id="content-viewer-text-panel" role="region" aria-label="Decoded source">
+          <section class="content-viewer-text-panel" id="content-viewer-text-panel" role="region" aria-label="Decoded source" data-i18n-aria-label="contentViewer.decodedSourceAria">
             <div class="content-viewer-body">
-              <div class="content-viewer-content" id="content-viewer-content" tabindex="0" aria-label="Decoded source" aria-busy="false"></div>
+              <div class="content-viewer-content" id="content-viewer-content" tabindex="0" aria-label="Decoded source" data-i18n-aria-label="contentViewer.decodedSourceAria" aria-busy="false"></div>
             </div>
           </section>
         </section>

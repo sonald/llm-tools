@@ -57,6 +57,7 @@ function parseBrowserValue(output) {
 
 function browserTest() {
   return `(async()=>{
+Object.defineProperty(globalThis,"navigator",{configurable:true,value:{language:"en-US"}});
 const {ContentViewer}=await import("/src/content-viewer.ts");
 let assertions=0;const check=(value,message)=>{assertions+=1;if(!value)throw new Error(message);};
 const settle=async()=>{await Promise.resolve();await Promise.resolve();await new Promise((resolve)=>setTimeout(resolve,0));};
@@ -113,4 +114,4 @@ return {pass:true,assertions};
 const port=await freePort();
 const vite=spawn(process.execPath,[viteBin,"--host","127.0.0.1","--port",String(port)],{cwd:root,stdio:["ignore","pipe","pipe"]});
 let viteOutput="";vite.stdout.on("data",(chunk)=>{viteOutput+=chunk.toString();});vite.stderr.on("data",(chunk)=>{viteOutput+=chunk.toString();});
-try {await waitForPort(port,vite);await browser(["open",`http://127.0.0.1:${port}/`]);const result=parseBrowserValue(await browser(["eval","-b",Buffer.from(browserTest()).toString("base64")]));if(!result.pass)throw new Error("String metrics browser test did not pass.");console.log(`string-metrics-ui PASS (${result.assertions} assertions)`);}catch(error){throw new Error(`${error instanceof Error?error.message:String(error)}\n${viteOutput.slice(-4000)}`);}finally{await browser(["close"]).catch(()=>{});vite.kill("SIGTERM");}
+try {await waitForPort(port,vite);await browser(["open",`http://127.0.0.1:${port}/scripts/test-i18n-fixture.html`]);const result=parseBrowserValue(await browser(["eval","-b",Buffer.from(browserTest()).toString("base64")]));if(!result.pass)throw new Error("String metrics browser test did not pass.");console.log(`string-metrics-ui PASS (${result.assertions} assertions)`);}catch(error){throw new Error(`${error instanceof Error?error.message:String(error)}\n${viteOutput.slice(-4000)}`);}finally{await browser(["close"]).catch(()=>{});vite.kill("SIGTERM");}
