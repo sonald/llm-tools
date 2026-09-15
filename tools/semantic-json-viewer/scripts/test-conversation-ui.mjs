@@ -488,7 +488,7 @@ vite.stderr.on("data", (chunk) => { viteOutput += chunk.toString(); });
 
 try {
   await waitForPort(port, vite);
-  await browser(["open", `http://127.0.0.1:${port}/`]);
+  await browser(["open", `http://127.0.0.1:${port}/scripts/test-app-fixture.html?lang=en-US`]);
   const output = await browser(["eval", "-b", Buffer.from(browserTest()).toString("base64")]);
   let result;
   try {

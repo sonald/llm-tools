@@ -279,7 +279,7 @@ export class ConversationView {
     this.page = null;
     this.previousPages = [];
     this.loading = context !== null;
-    this.statusMessage = context ? "Finding direct conversation candidates…" : "";
+    this.statusMessage = context ? t("conversation.findingCandidates") : "";
     this.blockViewport = null;
     this.resetWindowElements();
     this.blockSummaries.clear();
@@ -321,7 +321,7 @@ export class ConversationView {
   private async discoverCandidates(context: ConversationContext, generation: number, startCursor = 0): Promise<void> {
     try {
       this.loading = true;
-      this.statusMessage = startCursor > 0 ? "Scanning more direct Conversation fields…" : "Finding direct conversation candidates…";
+      this.statusMessage = startCursor > 0 ? t("conversation.scanningCandidates") : t("conversation.findingCandidates");
       this.render();
       const scan = context.scopeRoot.kind === "array"
         ? { nodes: [context.scopeRoot], nextCursor: null }
@@ -340,9 +340,9 @@ export class ConversationView {
       this.candidateScanCursor = scan.nextCursor;
       this.candidates = candidates;
       this.statusMessage = scan.nextCursor !== null
-        ? "More direct fields are available; scan them before automatic selection."
+        ? t("conversation.moreDirectFields")
         : candidates.length === 0
-          ? "No supported direct Conversation candidate in this scope. Tree remains available."
+          ? t("conversation.noCandidate")
           : "";
       if (scan.nextCursor === null && candidates.length === 1 && candidates[0].kind !== "possible") {
         this.selectCandidate(candidates[0], false);
@@ -374,7 +374,7 @@ export class ConversationView {
       });
       if (!this.isCurrent(context, generation)) return { nodes: [], nextCursor: null };
       const page = validateChildrenPage(value, cursor, context.sourceSize);
-      if (!page) throw new Error("The direct Conversation candidate response was invalid.");
+      if (!page) throw new Error(t("conversation.invalidCandidateResponse"));
       for (const node of page.nodes) {
         if (node.kind === "array" && isCandidateField(node.label)) nodes.push(node);
       }
@@ -403,7 +403,7 @@ export class ConversationView {
     }
     if (!this.isCurrent(context, generation)) return null;
     const candidate = validateCandidate(value, node, context);
-    if (!candidate) throw new Error("The Conversation candidate response was invalid.");
+    if (!candidate) throw new Error(t("conversation.invalidCandidateResponse"));
     return candidate;
   }
 
@@ -422,7 +422,7 @@ export class ConversationView {
     this.requestGeneration += 1;
     this.loading = false;
     this.statusMessage = candidate.kind === "possible" && !confirmPossible
-      ? "This is a Possible Conversation. Confirm before rendering blocks."
+      ? t("conversation.possibleConfirmation")
       : "";
     this.render();
     if (candidate.kind !== "possible" || confirmPossible) void this.loadPage(null, "initial");
@@ -436,7 +436,7 @@ export class ConversationView {
     const requestGeneration = ++this.requestGeneration;
     const generation = this.generation;
     this.loading = true;
-    this.statusMessage = cursor ? "Loading Conversation blocks…" : "Loading Conversation blocks…";
+    this.statusMessage = t("conversation.loadingBlocks");
     this.render();
     try {
       const value = await this.invokeRequest<unknown>("get_conversation_blocks", {
@@ -450,7 +450,7 @@ export class ConversationView {
       });
       if (!this.isCurrentRequest(context, generation, requestGeneration)) return;
       const page = validatePage(value, context, candidate, this.style, cursor);
-      if (!page) throw new Error("The Conversation blocks response was invalid.");
+      if (!page) throw new Error(t("conversation.invalidBlocksResponse"));
       if (direction === "previous") {
         this.previousPages = this.previousPages.slice(0, -1);
       } else if (direction === "next") {
@@ -467,9 +467,9 @@ export class ConversationView {
       this.pendingAnchor = null;
       this.loading = false;
       this.statusMessage = page.blocks.length === 0 && page.hasMore
-        ? "This page contains no blocks; continue to scan the wrapper."
+        ? t("conversation.emptyPageContinue")
         : page.blocks.length === 0
-          ? "No Conversation blocks were found."
+          ? t("conversation.noBlocks")
           : "";
       this.render();
     } catch (error) {
@@ -546,7 +546,7 @@ export class ConversationView {
       const block = index === null ? null : this.page?.blocks[index] ?? null;
       const ref = cardRefKey ? this.toolCardRefs.get(cardRefKey) ?? null : null;
       if (!block || !ref) return;
-      const targetInfo = { ref, label: `${block.category} card source` };
+      const targetInfo = { ref, label: t("conversation.cardSourceLabel", { category: block.category }) };
       if (action === "card-raw") this.onRaw(targetInfo, actionElement);
       else if (action === "card-tree") this.onTree(targetInfo, actionElement);
       else void this.openContentIfString(ref, block, actionElement);
@@ -584,7 +584,7 @@ export class ConversationView {
     this.toolCardRequests.clear();
     this.toolCardRefs.clear();
     this.pendingAnchor = null;
-    this.statusMessage = "Style changed; restarting from the first Conversation block page.";
+    this.statusMessage = t("conversation.styleChanged");
     this.render();
     void this.loadPage(null, "initial");
   }
@@ -592,10 +592,10 @@ export class ConversationView {
   private wrapperTarget(): ConversationSourceTarget {
     const context = this.context;
     const candidate = this.selectedCandidate;
-    if (!context || !candidate) throw new Error("Conversation wrapper is unavailable.");
+    if (!context || !candidate) throw new Error(t("conversation.wrapperUnavailable"));
     return {
       ref: { nodeId: context.scopeRoot.id, spanStart: context.scopeRoot.spanStart, spanEnd: context.scopeRoot.spanEnd },
-      label: `${context.scopeLabel} Conversation wrapper`
+      label: t("conversation.wrapperLabel", { scopeLabel: context.scopeLabel })
     };
   }
 
@@ -619,7 +619,7 @@ export class ConversationView {
 
   private contentTarget(source: SourceRef): ContentTarget {
     const context = this.context;
-    if (!context) throw new Error("Conversation content is unavailable.");
+    if (!context) throw new Error(t("conversation.contentUnavailable"));
     return {
       revision: context.sessionRevision,
       nodeId: source.nodeId,
@@ -648,11 +648,11 @@ export class ConversationView {
       });
       if (!this.isCurrentProjection(context, generation, requestGeneration, pageIdentity, candidateId, style)) return;
       const node = validateNode(value, context.sourceSize);
-      if (!node) throw new Error("The Conversation content node response was invalid.");
+      if (!node) throw new Error(t("conversation.invalidContentNodeResponse"));
       if (node.kind === "string") {
         this.onContent(this.contentTarget(source), opener);
       } else {
-        this.onTree({ ref: source, label: `${block.category} structure` }, opener);
+        this.onTree({ ref: source, label: t("conversation.structureLabel", { category: block.category }) }, opener);
       }
     } catch (error) {
       if (!this.isCurrentProjection(context, generation, requestGeneration, pageIdentity, candidateId, style)) return;
@@ -663,9 +663,9 @@ export class ConversationView {
   }
 
   private sourceLabel(block: ConversationBlock, action: string): string {
-    if (action === "role") return `${block.role || "Unknown"} role source`;
-    if (action === "content") return `${block.category} content`;
-    return `${block.category} source`;
+    if (action === "role") return t("conversation.roleSourceLabel", { role: block.role || t("conversation.unknown") });
+    if (action === "content") return t("conversation.contentLabel", { category: block.category });
+    return t("conversation.sourceLabel", { category: block.category });
   }
 
   private render(): void {
@@ -677,16 +677,16 @@ export class ConversationView {
       return;
     }
     const shell = element("section", "conversation-shell");
-    shell.setAttribute("aria-label", `${context.scopeLabel} Conversation`);
+    shell.setAttribute("aria-label", t("conversation.scopeAria", { scopeLabel: context.scopeLabel }));
     const header = element("header", "conversation-header");
     const heading = element("div", "conversation-heading");
-    const kicker = element("span", "conversation-kicker", "Semantic projection");
-    const title = element("h3", "conversation-title", "Conversation");
+    const kicker = element("span", "conversation-kicker", t("conversation.kicker"));
+    const title = element("h3", "conversation-title", t("conversation.title"));
     heading.append(kicker, title);
     header.append(heading);
     if (this.selectedCandidate && this.page) {
       const wrapperActions = element("div", "conversation-wrapper-actions");
-      wrapperActions.append(this.actionButton("Raw wrapper", "wrapper-raw"), this.actionButton("Tree wrapper", "wrapper-tree"));
+      wrapperActions.append(this.actionButton(t("conversation.wrapperRaw"), "wrapper-raw"), this.actionButton(t("conversation.wrapperTree"), "wrapper-tree"));
       header.append(wrapperActions);
     }
     shell.append(header);
@@ -697,12 +697,12 @@ export class ConversationView {
     shell.append(status);
 
     if (this.loading && this.candidates.length === 0) {
-      shell.append(element("div", "conversation-empty", "Finding direct messages, conversation, or conversations arrays…"));
+      shell.append(element("div", "conversation-empty", t("conversation.loadingMessages")));
       this.installPanel(shell, focusIntent);
       return;
     }
     if (this.candidates.length === 0 && this.candidateScanCursor === null) {
-      shell.append(element("div", "conversation-empty", this.statusMessage || "No supported direct Conversation candidate in this scope."));
+      shell.append(element("div", "conversation-empty", this.statusMessage || t("conversation.noSupportedCandidate")));
       this.installPanel(shell, focusIntent);
       return;
     }
@@ -714,23 +714,23 @@ export class ConversationView {
     shell.append(this.renderProjectionControls());
     if (this.selectedCandidate.kind === "possible" && !this.possibleConfirmed) {
       const possible = element("div", "conversation-banner conversation-banner-possible");
-      possible.append(element("strong", "", "Possible Conversation"));
-      possible.append(element("span", "", "The structure resembles messages but does not meet the automatic threshold."));
-      possible.append(this.actionButton("Render as Conversation", "confirm", "primary-button"));
+      possible.append(element("strong", "", t("conversation.possibleTitle")));
+      possible.append(element("span", "", t("conversation.possibleDescription")));
+      possible.append(this.actionButton(t("conversation.renderAsConversation"), "confirm", "primary-button"));
       shell.append(possible);
       this.installPanel(shell, focusIntent);
       return;
     }
     if (this.selectedCandidate.kind === "mixed" && this.style === "generic") {
       const mixed = element("div", "conversation-banner conversation-banner-mixed");
-      mixed.append(element("strong", "", "Mixed conversation schema detected"));
-      mixed.append(element("span", "", "Generic keeps both ecosystems lossless. Choose a brand style explicitly when needed."));
+      mixed.append(element("strong", "", t("conversation.mixedTitle")));
+      mixed.append(element("span", "", t("conversation.mixedDescription")));
       shell.append(mixed);
     }
     if (this.page?.pageStart && (this.page.pageStart.messageIndex > 0 || this.page.pageStart.phase === "fields")) {
       const continuation = element("div", "conversation-banner conversation-banner-continuation");
-      continuation.append(element("strong", "", "Continuation page"));
-      continuation.append(element("span", "", `This page resumes at message ${this.page.pageStart.messageIndex + 1}; earlier blocks are on the previous page.`));
+      continuation.append(element("strong", "", t("conversation.continuationTitle")));
+      continuation.append(element("span", "", t("conversation.continuationDescription", { message: this.page.pageStart.messageIndex + 1 })));
       shell.append(continuation);
     }
     shell.append(this.renderPageControls());
@@ -797,24 +797,28 @@ export class ConversationView {
 
   private renderCandidateChooser(): HTMLElement {
     const wrapper = element("div", "conversation-candidate-chooser");
-    wrapper.append(element("h4", "", this.candidates.length > 1 ? "Choose a Conversation candidate" : "Conversation candidate"));
+    wrapper.append(element("h4", "", this.candidates.length > 1 ? t("conversation.chooseCandidate") : t("conversation.candidate")));
     const list = element("div", "conversation-candidate-list");
     for (const candidate of this.candidates) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "conversation-candidate";
       button.dataset.conversationCandidate = String(candidate.node.id);
-      button.setAttribute("aria-label", `Render ${candidate.node.label} as Conversation`);
+      button.setAttribute("aria-label", t("conversation.renderCandidate", { label: candidate.node.label }));
       const label = element("strong", "conversation-candidate-label", candidate.node.label);
       const kind = candidate.kind === "none" && candidate.ambiguousDuplicateField ? "generic" : candidate.kind;
       const ambiguity = candidate.ambiguousDuplicateField ? ` · ${t("conversation.ambiguousDuplicateField")}` : "";
-      const meta = element("span", "conversation-candidate-meta", `${kind}${ambiguity} · ${candidate.messageCount.toLocaleString()} messages · Node ${candidate.node.id}`);
+      const meta = element("span", "conversation-candidate-meta", t("conversation.candidateMeta", {
+        kind: `${kind}${ambiguity}`,
+        messageCount: candidate.messageCount.toLocaleString(),
+        nodeId: candidate.node.id
+      }));
       button.append(label, meta);
       list.append(button);
     }
     wrapper.append(list);
     if (this.candidateScanCursor !== null) {
-      wrapper.append(this.actionButton("Scan more direct fields", "scan-more", "secondary-button"));
+      wrapper.append(this.actionButton(t("conversation.scanMore"), "scan-more", "secondary-button"));
     }
     return wrapper;
   }
@@ -826,27 +830,31 @@ export class ConversationView {
       const selected = element("div", "conversation-selected-candidate");
       selected.append(element("strong", "", candidate.node.label));
       const selectedKind = candidate.kind === "none" && candidate.ambiguousDuplicateField ? "generic" : candidate.kind;
-      selected.append(element("span", "", `${selectedKind} · ${candidate.messageCount.toLocaleString()} messages`));
+      selected.append(element("span", "", t("conversation.candidateMeta", {
+        kind: selectedKind,
+        messageCount: candidate.messageCount.toLocaleString(),
+        nodeId: candidate.node.id
+      })));
       if (candidate.ambiguousDuplicateField) {
         const warning = element("span", "conversation-ambiguity", t("conversation.ambiguousDuplicateField"));
         warning.title = t("conversation.ambiguousDuplicateFieldSource");
         selected.append(warning);
       }
       controls.append(selected);
-      if (this.candidates.length > 1) controls.append(this.actionButton("Change candidate", "choose-candidate"));
+      if (this.candidates.length > 1) controls.append(this.actionButton(t("conversation.changeCandidate"), "choose-candidate"));
       if (this.candidateScanCursor !== null) {
-        const scanMore = this.actionButton("Scan more direct fields", "scan-more");
+        const scanMore = this.actionButton(t("conversation.scanMore"), "scan-more");
         scanMore.disabled = this.loading;
         controls.append(scanMore);
       }
     }
     const label = document.createElement("label");
     label.className = "conversation-style-control";
-    label.append(element("span", "", "Render as"));
+    label.append(element("span", "", t("conversation.renderAs")));
     const select = document.createElement("select");
     select.dataset.conversationStyle = "true";
-    select.setAttribute("aria-label", "Render Conversation as");
-    for (const option of [["generic", "Generic"], ["openai", "OpenAI-style"], ["anthropic", "Anthropic-style"]] as const) {
+    select.setAttribute("aria-label", t("conversation.renderAria"));
+    for (const option of [["generic", t("conversation.styleGeneric")], ["openai", t("conversation.styleOpenAI")], ["anthropic", t("conversation.styleAnthropic")]] as const) {
       const item = document.createElement("option");
       item.value = option[0];
       item.textContent = option[1];
@@ -860,14 +868,17 @@ export class ConversationView {
 
   private renderPageControls(bottom = false): HTMLElement {
     const nav = element("nav", bottom ? "conversation-page-controls conversation-page-controls-bottom" : "conversation-page-controls");
-    nav.setAttribute("aria-label", "Conversation pages");
-    const previous = this.actionButton("Previous", "previous");
-    const next = this.actionButton("Next", "next");
+    nav.setAttribute("aria-label", t("conversation.pagesAria"));
+    const previous = this.actionButton(t("conversation.previous"), "previous");
+    const next = this.actionButton(t("conversation.next"), "next");
     previous.disabled = this.loading || this.previousPages.length === 0;
     next.disabled = this.loading || !this.page?.hasMore;
     const label = element("span", "conversation-page-status", this.page
-      ? `${this.page.blocks.length} blocks · ${this.page.hasMore ? "more available" : "end of scope"}`
-      : this.loading ? "Loading…" : "No page loaded");
+      ? t("conversation.pageStatus", {
+        count: this.page.blocks.length,
+        availability: this.page.hasMore ? t("conversation.moreAvailable") : t("conversation.endOfScope")
+      })
+      : this.loading ? t("conversation.loadingPage") : t("conversation.noPageLoaded"));
     nav.append(previous, label, next);
     return nav;
   }
@@ -875,7 +886,7 @@ export class ConversationView {
   private renderBlockViewport(): HTMLElement {
     const viewport = element("div", "conversation-block-viewport");
     viewport.setAttribute("role", "list");
-    viewport.setAttribute("aria-label", "Conversation blocks");
+    viewport.setAttribute("aria-label", t("conversation.blocksAria"));
     viewport.tabIndex = 0;
     this.blockViewport = viewport;
     this.resetWindowElements();
@@ -909,7 +920,7 @@ export class ConversationView {
     if (blocks.length === 0) {
       if (this.windowPageIdentity !== pageIdentity || this.windowList !== null) {
         this.resetWindowElements();
-        viewport.replaceChildren(element("div", "conversation-empty", this.loading ? "Loading blocks…" : "No blocks on this page."));
+        viewport.replaceChildren(element("div", "conversation-empty", this.loading ? t("conversation.loadingBlocksPage") : t("conversation.noBlocksOnPage")));
         this.windowPageIdentity = pageIdentity;
       }
       return;
@@ -1098,11 +1109,11 @@ export class ConversationView {
     item.setAttribute("aria-posinset", String(index + 1));
     const heading = element("div", "conversation-block-heading");
     const title = block.kind === "message"
-      ? `Message · Node ${block.message?.nodeId ?? "unknown"}`
-      : block.kind === "system" ? "System section" : block.category;
+      ? t("conversation.messageTitle", { nodeId: block.message?.nodeId ?? t("conversation.unknown") })
+      : block.kind === "system" ? t("conversation.systemSection") : block.category;
     heading.append(element("strong", "conversation-block-title", title));
     if (block.kind !== "message" && block.message) {
-      heading.append(element("span", "conversation-message-owner", `Message Node ${block.message.nodeId}`));
+      heading.append(element("span", "conversation-message-owner", t("conversation.messageNodeOwner", { nodeId: block.message.nodeId })));
     }
     if (block.role) heading.append(element("span", "conversation-role", block.role));
     heading.append(element("span", "conversation-category", block.category));
@@ -1119,35 +1130,35 @@ export class ConversationView {
     } else if (inlineSource) {
       const summary = element("p", "conversation-block-summary", shouldInline
         ? this.blockSummary(block)
-        : "Summary loads when this block enters the viewport.");
+        : t("conversation.summaryPlaceholder"));
       item.append(summary);
       const inline = element("div", "conversation-inline-content");
       inline.dataset.conversationInlineNode = String(inlineSource.nodeId);
       item.append(inline);
       if (shouldInline) this.loadInlineContent(index, inline, inlineSource, summary, block.category === "redactedThinking");
-      else inline.append(element("p", "conversation-inline-placeholder", "Inline content loads when this block enters the viewport."));
+      else inline.append(element("p", "conversation-inline-placeholder", t("conversation.inlineContentPlaceholder")));
     } else {
       const summary = element("p", "conversation-block-summary", shouldInline
         ? this.blockSummary(block)
-        : "Summary loads when this block enters the viewport.");
+        : t("conversation.summaryPlaceholder"));
       item.append(summary);
       if (shouldInline && !block.ambiguousDuplicateField) this.loadBlockSummary(block, index);
     }
     if (isToolBlock(block)) {
       const card = element("section", "conversation-tool-card");
       card.dataset.conversationToolCard = String(index);
-      card.setAttribute("aria-label", `${block.category} details`);
+      card.setAttribute("aria-label", t("conversation.categoryDetails", { category: block.category }));
       item.append(card);
       if (shouldInline) queueMicrotask(() => this.loadToolCard(block, index, card));
-      else card.append(element("p", "conversation-tool-card-placeholder", "Tool details load when this block enters the viewport."));
+      else card.append(element("p", "conversation-tool-card-placeholder", t("conversation.toolDetailsPlaceholder")));
     }
     const actions = element("div", "conversation-block-actions");
     const source = this.sourceFor(block, "raw");
-    if (block.roleSource) actions.append(this.blockActionButton("Role source", "role", index));
+    if (block.roleSource) actions.append(this.blockActionButton(t("conversation.roleSource"), "role", index));
     if (source) {
-      actions.append(this.blockActionButton("Raw", "raw", index), this.blockActionButton("Tree", "tree", index));
+      actions.append(this.blockActionButton(t("conversation.raw"), "raw", index), this.blockActionButton(t("conversation.tree"), "tree", index));
       if ((isContentCategory(block.category) || inlineSource) && this.sourceFor(block, "content")) {
-        actions.append(this.blockActionButton("Open content", "content", index));
+        actions.append(this.blockActionButton(t("conversation.openContent"), "content", index));
       }
     }
     this.appendSpecializedRefs(actions, block, index);
@@ -1161,9 +1172,9 @@ export class ConversationView {
     const entries = Object.entries(refs) as Array<[string, SourceRef | null]>;
     for (const [name, ref] of entries) {
       if (!ref || name === "block" || name === "text" || name === "thinking" || name === "content") continue;
-      const button = this.blockActionButton(`${name} source`, "raw", index);
+      const button = this.blockActionButton(t("conversation.specializedSource", { name }), "raw", index);
       button.dataset.conversationRefKey = name;
-      button.title = `Source Node ${ref.nodeId}`;
+      button.title = t("conversation.sourceNodeTitle", { nodeId: ref.nodeId });
       actions.append(button);
     }
   }
@@ -1192,7 +1203,7 @@ export class ConversationView {
       this.toolCardStates.delete(index);
     }
     if (this.toolCardRequests.has(requestKey)) {
-      host.replaceChildren(element("p", "conversation-tool-card-placeholder", "Loading tool details…"));
+      host.replaceChildren(element("p", "conversation-tool-card-placeholder", t("conversation.loadingToolDetails")));
       return;
     }
     this.toolCardRequests.add(requestKey);
@@ -1214,7 +1225,7 @@ export class ConversationView {
           rows: [],
           callId: null,
           errorState: null,
-          reason: isSessionError(error) ? "The session changed while loading this tool block." : errorMessage(error)
+          reason: isSessionError(error) ? t("conversation.sessionChangedTool") : errorMessage(error)
         };
         this.toolCardStates.set(index, state);
         const liveHost = this.windowList?.querySelector<HTMLElement>(`[data-conversation-block-index="${index}"] .conversation-tool-card`);
@@ -1248,13 +1259,13 @@ export class ConversationView {
     if (block.category === "toolCall" || block.category === "toolUse") {
       const nameRef = block.openaiRefs?.name ?? block.anthropicRefs?.name;
       const callIdRef = block.openaiRefs?.callId ?? block.anthropicRefs?.id;
-      if (nameRef) await this.appendCardPayload("Name", nameRef, request, rows);
-      else rows.push({ label: "Name", value: "Unavailable", ref: null, mode: "status" });
-      if (callIdRef) callId = await this.appendCardPayload("Call ID", callIdRef, request, rows);
-      else rows.push({ label: "Call ID", value: "Unavailable", ref: null, mode: "status" });
+      if (nameRef) await this.appendCardPayload(t("conversation.name"), nameRef, request, rows);
+      else rows.push({ label: t("conversation.name"), value: t("conversation.unavailable"), ref: null, mode: "status" });
+      if (callIdRef) callId = await this.appendCardPayload(t("conversation.callId"), callIdRef, request, rows);
+      else rows.push({ label: t("conversation.callId"), value: t("conversation.unavailable"), ref: null, mode: "status" });
       const payloadRef = block.openaiRefs?.arguments ?? block.anthropicRefs?.input;
-      if (payloadRef) await this.appendCardPayload(block.category === "toolUse" ? "Input" : "Arguments", payloadRef, request, rows);
-      else rows.push({ label: block.category === "toolUse" ? "Input" : "Arguments", value: "Unavailable; original source is preserved below.", ref: block.source, mode: "status" });
+      if (payloadRef) await this.appendCardPayload(block.category === "toolUse" ? t("conversation.input") : t("conversation.arguments"), payloadRef, request, rows);
+      else rows.push({ label: block.category === "toolUse" ? t("conversation.input") : t("conversation.arguments"), value: t("conversation.unavailableSourceFallback"), ref: block.source, mode: "status" });
     } else {
       const anthropic = block.anthropicRefs;
       const openai = block.openaiRefs;
@@ -1265,28 +1276,28 @@ export class ConversationView {
       const sourceLabel = sourceNode?.label ?? "";
       if (explicitId || sourceLabel === "tool_call_id" || sourceLabel === "tool_use_id") {
         const idRef = explicitId ?? block.source;
-        if (idRef) callId = await this.appendCardPayload("Tool call ID", idRef, request, rows, sourceNode ?? undefined);
+        if (idRef) callId = await this.appendCardPayload(t("conversation.toolCallId"), idRef, request, rows, sourceNode ?? undefined);
       }
       const contentRef = anthropic?.content ?? openai?.text
         ?? (sourceLabel === "tool_call_id" || sourceLabel === "tool_use_id" ? null : block.source);
-      if (contentRef) await this.appendCardPayload("Result", contentRef, request, rows, contentRef.nodeId === sourceNode?.id ? sourceNode ?? undefined : undefined);
-      else rows.push({ label: "Result", value: "Unavailable; original source is preserved below.", ref: block.source, mode: "status" });
+      if (contentRef) await this.appendCardPayload(t("conversation.result"), contentRef, request, rows, contentRef.nodeId === sourceNode?.id ? sourceNode ?? undefined : undefined, true);
+      else rows.push({ label: t("conversation.result"), value: t("conversation.unavailableSourceFallback"), ref: block.source, mode: "status" });
     }
     const errorState = block.category === "toolResult" ? await this.cardErrorState(block, request) : null;
     return { status: "ready", rows, callId, errorState };
   }
 
   private async cardNode(ref: SourceRef, request: ToolCardRequest): Promise<NodeDto> {
-    if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+    if (!this.isCurrentToolProjection(request)) throw new Error(t("conversation.toolNoLongerVisible"));
     const value = await this.invokeRequest<unknown>("get_node_summary", {
       nodeId: ref.nodeId,
       sessionRevision: request.context.sessionRevision,
       scopeId: null
     });
-    if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+    if (!this.isCurrentToolProjection(request)) throw new Error(t("conversation.toolNoLongerVisible"));
     const node = validateNode(value, request.context.sourceSize);
     if (!node || node.id !== ref.nodeId || node.spanStart !== ref.spanStart || node.spanEnd !== ref.spanEnd) {
-      throw new Error("The tool card source summary response was invalid.");
+      throw new Error(t("conversation.toolCardSourceInvalid"));
     }
     return node;
   }
@@ -1296,7 +1307,8 @@ export class ConversationView {
     ref: SourceRef,
     request: ToolCardRequest,
     rows: ToolCardRow[],
-    knownNode?: NodeDto
+    knownNode?: NodeDto,
+    inspectResultTextBlocks = false
   ): Promise<string | null> {
     const node = knownNode ?? await this.cardNode(ref, request);
     if (node.kind === "string") {
@@ -1309,13 +1321,18 @@ export class ConversationView {
       const children = await this.cardChildren(ref, request);
       rows.push({
         label,
-        value: `${node.kind === "object" ? "Object" : "Array"} · ${node.childCount.toLocaleString()} ${node.kind === "object" ? "fields" : "items"}${children.hasMore ? " · first 32 shown" : ""}`,
+        value: t("conversation.structureSummary", {
+          kind: node.kind === "object" ? t("conversation.objectType") : t("conversation.arrayType"),
+          count: node.childCount.toLocaleString(),
+          unit: node.kind === "object" ? t("conversation.fieldsUnit") : t("conversation.itemsUnit"),
+          more: children.hasMore ? ` · ${t("conversation.firstShown")}` : ""
+        }),
         ref,
         mode: "structure",
         truncated: children.hasMore
       });
       for (const child of children.nodes) {
-        if (label === "Result" && child.kind === "object") {
+        if (inspectResultTextBlocks && child.kind === "object") {
           const textRow = await this.toolResultTextBlock(child, request);
           if (textRow) {
             rows.push(textRow);
@@ -1343,15 +1360,15 @@ export class ConversationView {
     let nestedRows: ToolCardRow[] | undefined;
     let readUnavailable = false;
     try {
-      if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+      if (!this.isCurrentToolProjection(request)) throw new Error(t("conversation.toolNoLongerVisible"));
       const metricsValue = await this.invokeRequest<unknown>("get_string_metrics", {
         nodeId: ref.nodeId,
         sessionRevision: request.context.sessionRevision,
         scopeId: null
       });
       const metrics = validateInlineMetrics(metricsValue);
-      if (!metrics) throw new Error("The tool card string metrics response was invalid.");
-      if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+      if (!metrics) throw new Error(t("conversation.toolCardStringMetricsInvalid"));
+      if (!this.isCurrentToolProjection(request)) throw new Error(t("conversation.toolNoLongerVisible"));
       const detectionValue = await this.invokeRequest<unknown>("get_string_detection", {
         nodeId: ref.nodeId,
         sessionRevision: request.context.sessionRevision,
@@ -1362,7 +1379,7 @@ export class ConversationView {
       if (detection?.semanticType === "nestedJson") {
         nestedRows = await this.nestedPreviewRow(ref, request);
       }
-      if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+      if (!this.isCurrentToolProjection(request)) throw new Error(t("conversation.toolNoLongerVisible"));
       if (metrics.decodedBytes === 0) {
         text = "";
         truncated = false;
@@ -1378,7 +1395,7 @@ export class ConversationView {
           scopeId: null
         });
         const chunk = validateInlineChunk(value, metrics.decodedBytes, length);
-        if (!chunk) throw new Error("The tool card decoded text response was invalid.");
+        if (!chunk) throw new Error(t("conversation.toolCardDecodedInvalid"));
         text = chunk.text;
         const readBytes = new TextEncoder().encode(chunk.text).byteLength;
         request.textBudgetRemaining = Math.max(0, request.textBudgetRemaining - readBytes);
@@ -1392,18 +1409,23 @@ export class ConversationView {
   }
 
   private async nestedPreviewRow(ref: SourceRef, request: ToolCardRequest): Promise<ToolCardRow[] | undefined> {
-    if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+    if (!this.isCurrentToolProjection(request)) throw new Error(t("conversation.toolNoLongerVisible"));
     const value = await this.invokeRequest<unknown>("preview_nested_json", {
       nodeId: ref.nodeId,
       maxDepth: 3,
       sessionRevision: request.context.sessionRevision
     });
-    if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+    if (!this.isCurrentToolProjection(request)) throw new Error(t("conversation.toolNoLongerVisible"));
     const preview = validateNestedPreview(value, request.context.sessionRevision);
-    if (!preview) throw new Error("The nested JSON preview response was invalid.");
+    if (!preview) throw new Error(t("conversation.nestedPreviewInvalid"));
     const rows: ToolCardRow[] = [{
-      label: "Nested JSON",
-      value: `${preview.root.kind === "object" ? "Object" : "Array"} · ${preview.root.childCount.toLocaleString()} fields/items${preview.hasMore ? " · first 32 shown" : ""}`,
+      label: t("conversation.nestedJson"),
+      value: t("conversation.structureSummary", {
+        kind: preview.root.kind === "object" ? t("conversation.objectType") : t("conversation.arrayType"),
+        count: preview.root.childCount.toLocaleString(),
+        unit: preview.root.kind === "object" ? t("conversation.fieldsUnit") : t("conversation.itemsUnit"),
+        more: preview.hasMore ? ` · ${t("conversation.firstShown")}` : ""
+      }),
       ref: null,
       mode: "structure",
       truncated: preview.hasMore
@@ -1421,7 +1443,7 @@ export class ConversationView {
   }
 
   private async cardChildren(ref: SourceRef, request: ToolCardRequest): Promise<CardChildren> {
-    if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+    if (!this.isCurrentToolProjection(request)) throw new Error(t("conversation.toolNoLongerVisible"));
     const value = await this.invokeRequest<unknown>("get_children", {
       nodeId: ref.nodeId,
       cursor: 0,
@@ -1429,11 +1451,11 @@ export class ConversationView {
       sessionRevision: request.context.sessionRevision,
       scopeId: null
     });
-    if (!this.isCurrentToolProjection(request)) throw new Error("Tool card is no longer visible.");
+    if (!this.isCurrentToolProjection(request)) throw new Error(t("conversation.toolNoLongerVisible"));
     const page = validateChildrenPage(value, 0, request.context.sourceSize);
-    if (!page) throw new Error("The tool card children response was invalid.");
+    if (!page) throw new Error(t("conversation.toolCardChildrenInvalid"));
     const nodes = page.nodes.filter((node) => refWithin(nodeRef(node), ref.spanStart, ref.spanEnd));
-    if (nodes.length !== page.nodes.length) throw new Error("The tool card children escaped its source scope.");
+    if (nodes.length !== page.nodes.length) throw new Error(t("conversation.toolCardScopeEscaped"));
     return { nodes: nodes.slice(0, TOOL_CHILD_LIMIT), hasMore: page.hasMore || nodes.length > TOOL_CHILD_LIMIT };
   }
 
@@ -1451,30 +1473,30 @@ export class ConversationView {
   private renderToolCard(host: HTMLElement, index: number, state: ToolCardState): void {
     host.replaceChildren();
     if (state.status === "loading") {
-      host.append(element("p", "conversation-tool-card-placeholder", "Loading tool details…"));
+      host.append(element("p", "conversation-tool-card-placeholder", t("conversation.loadingToolDetails")));
       return;
     }
     if (state.status === "unavailable") {
-      host.append(element("p", "conversation-tool-card-placeholder", state.reason || "Tool details unavailable; use Raw or Tree."));
+      host.append(element("p", "conversation-tool-card-placeholder", state.reason || t("conversation.toolDetailsUnavailable")));
       return;
     }
     const heading = element("div", "conversation-tool-card-heading");
-    heading.append(element("strong", "", "Tool details"));
+    heading.append(element("strong", "", t("conversation.toolDetails")));
     const block = this.page?.blocks[index];
     if (block) heading.append(element("span", "conversation-tool-card-kind", block.category));
-    if (state.errorState === "ok") heading.append(element("span", "conversation-tool-card-status is-ok", "is_error: false"));
-    if (state.errorState === "error") heading.append(element("span", "conversation-tool-card-status is-error", "is_error: true"));
-    if (state.errorState === "missing") heading.append(element("span", "conversation-tool-card-status", "is_error: missing"));
-    if (state.errorState === "invalid") heading.append(element("span", "conversation-tool-card-status is-error", "is_error: invalid"));
-    if (state.errorState === "unloaded") heading.append(element("span", "conversation-tool-card-status", "is_error: unavailable · first 32 fields"));
+    if (state.errorState === "ok") heading.append(element("span", "conversation-tool-card-status is-ok", t("conversation.errorFalse")));
+    if (state.errorState === "error") heading.append(element("span", "conversation-tool-card-status is-error", t("conversation.errorTrue")));
+    if (state.errorState === "missing") heading.append(element("span", "conversation-tool-card-status", t("conversation.errorMissing")));
+    if (state.errorState === "invalid") heading.append(element("span", "conversation-tool-card-status is-error", t("conversation.errorInvalid")));
+    if (state.errorState === "unloaded") heading.append(element("span", "conversation-tool-card-status", t("conversation.errorUnavailable")));
     host.append(heading);
     if (state.callId) {
       const related = this.loadedCallLabel(index, state.callId);
       host.append(element("p", "conversation-tool-card-relation", related?.status === "confirmed"
-        ? `Related call confirmed in loaded page: ${related.label}`
+        ? t("conversation.relatedConfirmed", { label: related.label })
         : related?.status === "ambiguous"
-          ? `Related call is ambiguous among loaded calls: ${related.label}`
-          : "Related call not confirmed in the loaded page."));
+          ? t("conversation.relatedAmbiguous", { label: related.label })
+          : t("conversation.relatedNotConfirmed")));
     }
     const rows = element("div", "conversation-tool-card-rows");
     this.clearToolCardRefs(index);
@@ -1483,19 +1505,19 @@ export class ConversationView {
       rowElement.append(element("span", "conversation-tool-card-label", row.label));
       const value = row.mode === "code" ? element("pre", "conversation-tool-card-value conversation-tool-card-code", row.value)
         : element("span", "conversation-tool-card-value", row.value);
-      if (row.truncated) value.append(element("span", "conversation-tool-card-truncated", " · partial"));
+      if (row.truncated) value.append(element("span", "conversation-tool-card-truncated", t("conversation.partial")));
       rowElement.append(value);
       if (row.ref) {
         const refKey = `${index}:${rowIndex}`;
         this.toolCardRefs.set(refKey, row.ref);
         const actions = element("span", "conversation-tool-card-actions");
-        const raw = this.blockActionButton("Raw", "card-raw", index);
+        const raw = this.blockActionButton(t("conversation.raw"), "card-raw", index);
         raw.dataset.conversationCardRef = refKey;
-        const tree = this.blockActionButton("Tree", "card-tree", index);
+        const tree = this.blockActionButton(t("conversation.tree"), "card-tree", index);
         tree.dataset.conversationCardRef = refKey;
         actions.append(raw, tree);
         if (row.mode === "plain" || row.mode === "code") {
-          const content = this.blockActionButton("Open content", "card-content", index);
+          const content = this.blockActionButton(t("conversation.openContent"), "card-content", index);
           content.dataset.conversationCardRef = refKey;
           actions.append(content);
         }
@@ -1554,16 +1576,16 @@ export class ConversationView {
     if (block.ambiguousDuplicateField) return t("conversation.ambiguousDuplicateFieldSource");
     const source = this.sourceFor(block, "raw");
     const preview = source ? this.blockSummaries.get(source.nodeId) : undefined;
-    if (preview) return `Source preview: ${preview}`;
-    if (block.kind === "system") return "System metadata is preserved before messages; use Raw for the wrapper source.";
-    if (block.category === "unknown") return "Unknown block preserved without schema-specific interpretation.";
+    if (preview) return t("conversation.sourcePreview", { preview });
+    if (block.kind === "system") return t("conversation.systemSummary");
+    if (block.category === "unknown") return t("conversation.unknownSummary");
     if (block.category === "content" || block.category === "text" || block.category === "thinking") {
-      return "Content is source-preserving and opens in Content Viewer when selected.";
+      return t("conversation.contentSummary");
     }
     if (block.category === "toolCall" || block.category === "toolUse" || block.category === "toolResult") {
-      return "Tool data is summarized here; every source reference remains available.";
+      return t("conversation.toolSummary");
     }
-    return "Source-preserving Conversation block.";
+    return t("conversation.genericSummary");
   }
 
   private inlineSourceFor(block: ConversationBlock): SourceRef | null {
@@ -1622,7 +1644,7 @@ export class ConversationView {
     }
     if (this.inlineRequests.has(requestKey)) {
       if (!existing) this.inlineStates.set(source.nodeId, { status: "loading" });
-      host.replaceChildren(element("p", "conversation-inline-placeholder", "Loading inline content…"));
+      host.replaceChildren(element("p", "conversation-inline-placeholder", t("conversation.inlineLoading")));
       return;
     }
     this.inlineRequests.add(requestKey);
@@ -1638,13 +1660,13 @@ export class ConversationView {
         });
         const summaryNode = validateNode(summaryValue, context.sourceSize);
         if (!summaryNode || summaryNode.id !== source.nodeId || summaryNode.spanStart !== source.spanStart || summaryNode.spanEnd !== source.spanEnd) {
-          throw new Error("The inline source summary response was invalid.");
+          throw new Error(t("conversation.inlineSourceInvalid"));
         }
         if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) return;
         summaryHost.textContent = summaryNode.valuePreview === null ? `${summaryNode.kind} Node ${summaryNode.id}` : summaryNode.valuePreview.slice(0, 240);
         this.blockSummaries.set(source.nodeId, summaryHost.textContent);
         if (summaryNode.kind !== "string") {
-          const state: InlineState = { status: "unavailable", opaque, reason: "Structured content stays source-preserving; use Tree or Open content." };
+          const state: InlineState = { status: "unavailable", opaque, reason: t("conversation.structuredContent") };
           this.inlineStates.set(source.nodeId, state);
           this.renderInlineState(host, state);
           return;
@@ -1656,7 +1678,7 @@ export class ConversationView {
           scopeId: null
         });
         const metrics = validateInlineMetrics(metricsValue);
-        if (!metrics) throw new Error("The inline string metrics response was invalid.");
+        if (!metrics) throw new Error(t("conversation.inlineMetricsInvalid"));
         if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) return;
         let detection: StringDetection | undefined;
         if (!opaque) {
@@ -1666,7 +1688,7 @@ export class ConversationView {
             scopeId: null
           });
           detection = validateInlineDetection(detectionValue) ?? undefined;
-          if (!detection) throw new Error("The inline string detection response was invalid.");
+          if (!detection) throw new Error(t("conversation.inlineDetectionInvalid"));
           if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) return;
         }
         const length = Math.min(INLINE_READ_BYTES, metrics.decodedBytes);
@@ -1690,7 +1712,7 @@ export class ConversationView {
         const state: InlineState = {
           status: "unavailable",
           opaque,
-          reason: isSessionError(error) ? "The session changed while loading this content." : errorMessage(error)
+          reason: isSessionError(error) ? t("conversation.sessionChangedContent") : errorMessage(error)
         };
         this.inlineStates.set(source.nodeId, state);
         this.renderInlineState(host, state);
@@ -1712,17 +1734,17 @@ export class ConversationView {
     this.renderedInlineStates.set(host, state);
     host.replaceChildren();
     if (state.status === "loading") {
-      host.append(element("p", "conversation-inline-placeholder", "Loading inline content…"));
+      host.append(element("p", "conversation-inline-placeholder", t("conversation.inlineLoading")));
       return;
     }
     if (state.status === "unavailable") {
-      host.append(element("p", "conversation-inline-placeholder", state.reason || "Inline content is unavailable; use Open content."));
+      host.append(element("p", "conversation-inline-placeholder", state.reason || t("conversation.inlineUnavailable")));
       return;
     }
     if (state.status === "partial") {
-      const note = element("p", "conversation-inline-partial", `${state.reason || "Partial source preview."} Use Open content for the complete value.`);
+      const note = element("p", "conversation-inline-partial", `${state.reason || t("conversation.partialSource")} ${t("conversation.completeValue")}`);
       const raw = element("pre", "conversation-inline-raw", state.text || "");
-      raw.setAttribute("aria-label", "Partial decoded source");
+      raw.setAttribute("aria-label", t("conversation.partialDecodedSourceAria"));
       host.append(note, raw);
       return;
     }
@@ -1745,7 +1767,7 @@ export class ConversationView {
       return;
     }
     const plain = element("pre", "conversation-inline-plain", text);
-    plain.setAttribute("aria-label", "Decoded Conversation content");
+    plain.setAttribute("aria-label", t("conversation.decodedContentAria"));
     host.append(plain);
   }
 
@@ -1763,7 +1785,7 @@ export class ConversationView {
     totalBytes: number
   ): Promise<{ text: string; hasMore: boolean }> {
     if (!this.isCurrentInlineHost(context, generation, requestGeneration, pageIdentity, candidateId, style, index, source, host)) {
-      throw new Error("Inline content is no longer visible.");
+      throw new Error(t("conversation.inlineNoLongerVisible"));
     }
     const chunkValue = await this.invokeRequest<unknown>("read_decoded_text", {
       nodeId: source.nodeId,
@@ -1773,7 +1795,7 @@ export class ConversationView {
       scopeId: null
     });
     const chunk = validateInlineChunk(chunkValue, totalBytes, length);
-    if (!chunk) throw new Error("The inline decoded text response was invalid.");
+    if (!chunk) throw new Error(t("conversation.inlineChunkInvalid"));
     return chunk;
   }
 
@@ -1827,7 +1849,11 @@ export class ConversationView {
   }
 
   private defaultStatus(context: ConversationContext): string {
-    return `${context.scopeLabel} · Node ${context.scopeRoot.id} · revision ${context.sessionRevision}`;
+    return t("conversation.defaultStatus", {
+      scopeLabel: context.scopeLabel,
+      nodeId: context.scopeRoot.id,
+      revision: context.sessionRevision
+    });
   }
 
   private isCurrent(context: ConversationContext, generation: number): boolean {
@@ -2168,5 +2194,5 @@ function isInvalidRequest(error: unknown): boolean {
 function errorMessage(error: unknown): string {
   const object = record(error);
   if (typeof object?.message === "string") return object.message;
-  return error instanceof Error ? error.message : "Conversation request failed.";
+  return error instanceof Error ? error.message : t("conversation.requestFailed");
 }
