@@ -470,14 +470,16 @@ export class RenderedSearch {
     this.cancelProjection();
     const ownsForm = this.isOwner();
     this.requestEpoch += 1;
+    this.clearHighlights();
     this.busy = false;
     this.mode = null;
     this.target = null;
     this.projection = null;
+    this.domRoot = null;
+    this.domSnapshot = [];
     this.history = [];
     this.currentIndex = -1;
     if (!ownsForm) return;
-    this.clearHighlights();
     this.elements.results.replaceChildren();
     this.elements.resultsPanel.hidden = true;
     this.setStatus("");
