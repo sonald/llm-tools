@@ -537,3 +537,4 @@ export const zhCN: MessageCatalog = {
   "raw.repLossy": "{subject}的有损 UTF-8 预览"
 };
   "search.relocatingHistory": "正在恢复搜索历史…",
+  "search.renderedRelocating": "正在重新定位历史渲染结果…",

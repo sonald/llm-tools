@@ -60,6 +60,14 @@ type RenderedSearchOptions = SearchViewElements & {
 
 type Page = { matches: RenderedMatch[]; hasMore: boolean; nextCursor: unknown | null };
 
+type SearchSnapshot = {
+  epoch: number;
+  mode: "dom" | "backend";
+  target: RenderedSearchTarget | null;
+  projection: RenderedProjection | null;
+  query: string;
+};
+
 type TextRestore = {
   original: Text;
   parent: Node | null;
@@ -69,6 +77,8 @@ type TextRestore = {
 
 const PAGE_SIZE = 50;
 const MAX_QUERY_BYTES = 4096;
+const MAX_HISTORY_PAGES = 16;
+const MAX_HISTORY_BYTES = 32 * 1024 * 1024;
 const MAX_PROJECTION_BYTES = 32 * 1024 * 1024;
 const PROJECTION_SEGMENT_BYTES = 128;
 const PROJECTION_TEXT_CHUNK_BYTES = 64 * 1024;
@@ -257,7 +267,8 @@ export class RenderedSearch {
   private projection: RenderedProjection | null = null;
   private target: RenderedSearchTarget | null = null;
   private mode: "dom" | "backend" | null = null;
-  private history: Page[] = [];
+  private history = new Map<number, Page>();
+  private historyBytes = 0;
   private currentIndex = -1;
   private requestEpoch = 0;
   private busy = false;
@@ -278,7 +289,7 @@ export class RenderedSearch {
     this.onProjectionUnavailable = options.onProjectionUnavailable ?? (() => undefined);
     this.elements.form.addEventListener("submit", (event) => { event.preventDefault(); if (this.isOwner()) void this.submit(); });
     this.elements.query.addEventListener("input", () => { if (this.isOwner()) this.invalidate(); });
-    this.elements.previous.addEventListener("click", () => { if (this.isOwner()) this.showPrevious(); });
+    this.elements.previous.addEventListener("click", () => { if (this.isOwner()) void this.showPrevious(); });
     this.elements.next.addEventListener("click", () => { if (this.isOwner()) void this.showNext(); });
     this.clear();
   }
@@ -344,7 +355,7 @@ export class RenderedSearch {
     } else {
       this.requestEpoch += 1;
       this.busy = true;
-      this.history = [];
+      this.clearHistory();
       this.currentIndex = -1;
       this.clearHighlights();
       this.mode = "dom";
@@ -477,7 +488,7 @@ export class RenderedSearch {
     this.projection = null;
     this.domRoot = null;
     this.domSnapshot = [];
-    this.history = [];
+    this.clearHistory();
     this.currentIndex = -1;
     if (!ownsForm) return;
     this.elements.results.replaceChildren();
@@ -497,7 +508,7 @@ export class RenderedSearch {
     if (!this.isOwner()) return;
     this.requestEpoch += 1;
     this.busy = false;
-    this.history = [];
+    this.clearHistory();
     this.currentIndex = -1;
     this.clearHighlights();
     this.elements.results.replaceChildren();
@@ -567,29 +578,32 @@ export class RenderedSearch {
     }
     this.requestEpoch += 1;
     const epoch = this.requestEpoch;
+    const snapshot = this.snapshot(epoch);
+    if (!snapshot) return;
     this.onIntentChange();
-    this.history = [];
+    this.clearHistory();
     this.currentIndex = -1;
     this.busy = true;
     this.elements.resultsPanel.hidden = false;
     this.setStatus(t("search.searchingRendered"));
     this.render();
     try {
-      const page = this.mode === "dom"
-        ? findDomPage(this.projection, query, 0)
-        : await this.searchBackend(query, null);
-      if (epoch !== this.requestEpoch) return;
-      this.history = [page];
+      const page = snapshot.mode === "dom"
+        ? findDomPage(snapshot.projection, snapshot.query, 0)
+        : await this.searchBackend(snapshot.query, null, snapshot.target);
+      if (!this.isSnapshotCurrent(snapshot)) return;
+      this.cachePage(0, page, new Set([0]));
+      if (!this.isSnapshotCurrent(snapshot)) return;
       this.currentIndex = 0;
       this.setStatus(pageStatus(page));
       this.renderPage();
     } catch (error) {
-      if (epoch !== this.requestEpoch) return;
+      if (!this.isSnapshotCurrent(snapshot)) return;
       this.setStatus(error instanceof Error ? error.message : t("search.renderedFailed"), true);
       this.elements.results.replaceChildren();
       if (isGlobalError(error)) this.onError(error);
     } finally {
-      if (epoch === this.requestEpoch) {
+      if (this.isSnapshotCurrent(snapshot)) {
         this.busy = false;
         this.render();
       }
@@ -598,53 +612,144 @@ export class RenderedSearch {
 
   private async showNext(): Promise<void> {
     if (!this.isOwner()) return;
-    const page = this.history[this.currentIndex];
+    const currentIndex = this.currentIndex;
+    const page = this.history.get(currentIndex);
     if (this.mode === null || this.busy || !page?.hasMore || page.nextCursor === null) return;
-    if (this.currentIndex + 1 < this.history.length) {
-      this.currentIndex += 1;
-      this.setStatus(pageStatus(this.history[this.currentIndex]));
-      this.renderPage();
-      return;
-    }
-    if (this.mode === "dom") {
-      const next = findDomPage(this.projection, this.elements.query.value, page.nextCursor);
-      this.history.push(next);
-      this.currentIndex += 1;
-      this.setStatus(pageStatus(next));
-      this.renderPage();
-      return;
-    }
-    const query = this.elements.query.value;
-    const epoch = ++this.requestEpoch;
+    this.requestEpoch += 1;
+    const epoch = this.requestEpoch;
     this.onIntentChange();
+    if (!this.isOwner() || this.mode === null || epoch !== this.requestEpoch || this.currentIndex !== currentIndex) return;
+    const currentPage = this.getCachedPage(currentIndex);
+    if (!currentPage?.hasMore || currentPage.nextCursor === null) return;
+    const nextIndex = currentIndex + 1;
+    const cached = this.getCachedPage(nextIndex);
+    if (cached) {
+      this.currentIndex = nextIndex;
+      this.setStatus(pageStatus(cached));
+      this.renderPage();
+      return;
+    }
+    const snapshot = this.snapshot(epoch);
+    if (!snapshot) return;
     this.busy = true;
     this.setStatus(t("search.searchingRendered"));
     this.render();
     try {
-      const next = await this.searchBackend(query, page.nextCursor);
-      if (epoch !== this.requestEpoch) return;
-      this.history.push(next);
-      this.currentIndex += 1;
+      const next = snapshot.mode === "dom"
+        ? findDomPage(snapshot.projection, snapshot.query, currentPage.nextCursor)
+        : await this.searchBackend(snapshot.query, currentPage.nextCursor, snapshot.target);
+      if (!this.isSnapshotCurrent(snapshot)) return;
+      this.cachePage(nextIndex, next, new Set([currentIndex, nextIndex]));
+      if (!this.isSnapshotCurrent(snapshot)) return;
+      this.currentIndex = nextIndex;
       this.setStatus(pageStatus(next));
       this.renderPage();
     } catch (error) {
-      if (epoch !== this.requestEpoch) return;
+      if (!this.isSnapshotCurrent(snapshot)) return;
       this.setStatus(error instanceof Error ? error.message : t("search.renderedFailed"), true);
       if (isGlobalError(error)) this.onError(error);
     } finally {
-      if (epoch === this.requestEpoch) { this.busy = false; this.render(); }
+      if (this.isSnapshotCurrent(snapshot)) { this.busy = false; this.render(); }
     }
   }
 
-  private showPrevious(): void {
+  private async showPrevious(): Promise<void> {
     if (!this.isOwner() || this.busy || this.currentIndex <= 0) return;
-    this.currentIndex -= 1;
-    this.setStatus(pageStatus(this.history[this.currentIndex]));
-    this.renderPage();
+    const currentIndex = this.currentIndex;
+    const targetIndex = currentIndex - 1;
+    this.requestEpoch += 1;
+    const epoch = this.requestEpoch;
+    this.onIntentChange();
+    if (!this.isOwner() || this.mode === null || epoch !== this.requestEpoch || this.currentIndex !== currentIndex) return;
+    const cached = this.getCachedPage(targetIndex);
+    if (cached) {
+      this.currentIndex = targetIndex;
+      this.setStatus(pageStatus(cached));
+      this.renderPage();
+      return;
+    }
+    const previousIndex = currentIndex;
+    const snapshot = this.snapshot(epoch);
+    if (!snapshot) return;
+    this.busy = true;
+    this.setStatus(t("search.renderedRelocating"));
+    this.render();
+    try {
+      const previous = await this.rescanPage(snapshot, targetIndex);
+      if (!this.isSnapshotCurrent(snapshot)) return;
+      this.cachePage(targetIndex, previous, new Set([previousIndex, targetIndex]));
+      if (!this.isSnapshotCurrent(snapshot)) return;
+      this.currentIndex = targetIndex;
+      this.setStatus(pageStatus(previous));
+      this.renderPage();
+    } catch (error) {
+      if (!this.isSnapshotCurrent(snapshot)) return;
+      this.setStatus(error instanceof Error ? error.message : t("search.renderedFailed"), true);
+      if (isGlobalError(error)) this.onError(error);
+    } finally {
+      if (this.isSnapshotCurrent(snapshot)) { this.busy = false; this.render(); }
+    }
   }
 
-  private async searchBackend(query: string, cursor: unknown | null): Promise<Page> {
-    const target = this.target;
+  private snapshot(epoch: number): SearchSnapshot | null {
+    if (!this.isOwner() || this.mode === null) return null;
+    return {
+      epoch,
+      mode: this.mode,
+      target: this.target,
+      projection: this.projection,
+      query: this.elements.query.value
+    };
+  }
+
+  private isSnapshotCurrent(snapshot: SearchSnapshot): boolean {
+    return snapshot.epoch === this.requestEpoch
+      && this.isOwner()
+      && this.mode === snapshot.mode
+      && sameRenderedTarget(this.target, snapshot.target)
+      && this.projection === snapshot.projection
+      && this.elements.query.value === snapshot.query;
+  }
+
+  private async rescanPage(snapshot: SearchSnapshot, targetIndex: number): Promise<Page> {
+    let predecessor = -1;
+    let cursor: unknown | null = snapshot.mode === "dom" ? 0 : null;
+    for (const index of this.history.keys()) {
+      if (index < targetIndex && index > predecessor) predecessor = index;
+    }
+    if (predecessor >= 0) {
+      const page = this.getCachedPage(predecessor);
+      if (!page || !page.hasMore || page.nextCursor === null) {
+        throw new Error(t("search.renderedFailed"));
+      }
+      cursor = page.nextCursor;
+    }
+    let page: Page | null = null;
+    // ponytail: a far previous-page miss may rescan linearly from the nearest cache predecessor;
+    // replace with a persistent cursor index only if this measured path becomes a bottleneck.
+    for (let index = predecessor + 1; index <= targetIndex; index += 1) {
+      if (!this.isSnapshotCurrent(snapshot)) throw new DOMException(t("search.renderedProjectionCancelled"), "AbortError");
+      const cached = this.getCachedPage(index);
+      if (cached) {
+        page = cached;
+      } else {
+        page = snapshot.mode === "dom"
+          ? await findDomPageAsync(snapshot.projection, snapshot.query, cursor, () => this.isSnapshotCurrent(snapshot))
+          : await this.searchBackend(snapshot.query, cursor, snapshot.target);
+        if (!this.isSnapshotCurrent(snapshot)) throw new DOMException(t("search.renderedProjectionCancelled"), "AbortError");
+        this.cachePage(index, page, new Set([this.currentIndex, index]));
+        if (!this.isSnapshotCurrent(snapshot)) throw new DOMException(t("search.renderedProjectionCancelled"), "AbortError");
+      }
+      cursor = page.nextCursor;
+      if (index < targetIndex && (!page.hasMore || page.nextCursor === null)) {
+        throw new Error(t("search.renderedFailed"));
+      }
+    }
+    if (!page) throw new Error(t("search.renderedFailed"));
+    return page;
+  }
+
+  private async searchBackend(query: string, cursor: unknown | null, target = this.target): Promise<Page> {
     if (!target) throw new Error(t("search.renderedTargetUnavailable"));
     const value = await this.invoke<unknown>("search_current", {
       query,
@@ -697,9 +802,45 @@ export class RenderedSearch {
     };
   }
 
+  private clearHistory(): void {
+    this.history.clear();
+    this.historyBytes = 0;
+  }
+
+  private getCachedPage(index: number): Page | null {
+    const page = this.history.get(index);
+    if (!page) return null;
+    this.history.delete(index);
+    this.history.set(index, page);
+    return page;
+  }
+
+  private cachePage(index: number, page: Page, protectedIndices: Set<number>): void {
+    this.history.delete(index);
+    this.history.set(index, page);
+    this.historyBytes = this.estimateHistoryBytes();
+    while (this.history.size > MAX_HISTORY_PAGES || this.historyBytes > MAX_HISTORY_BYTES) {
+      const victim = Array.from(this.history.keys()).find((candidate) => !protectedIndices.has(candidate));
+      if (victim === undefined) break;
+      this.history.delete(victim);
+      this.historyBytes = this.estimateHistoryBytes();
+    }
+  }
+
+  private estimateHistoryBytes(): number {
+    const seen = new Set<Page>();
+    let bytes = 0;
+    for (const page of this.history.values()) {
+      if (seen.has(page)) continue;
+      seen.add(page);
+      bytes += estimatePageBytes(page);
+    }
+    return bytes;
+  }
+
   private renderPage(): void {
     if (!this.isOwner()) return;
-    const page = this.history[this.currentIndex];
+    const page = this.getCachedPage(this.currentIndex);
     if (!page) { this.elements.results.replaceChildren(); this.render(); return; }
     const fragment = document.createDocumentFragment();
     page.matches.forEach((match, index) => {
@@ -709,7 +850,7 @@ export class RenderedSearch {
       button.textContent = match.label;
       button.title = match.label;
       button.addEventListener("click", () => {
-        if (!this.isOwner() || this.history[this.currentIndex]?.matches[index] !== match) return;
+        if (!this.isOwner() || this.history.get(this.currentIndex)?.matches[index] !== match) return;
         if (match.kind === "dom") this.highlight(match);
         this.onReveal(match);
       });
@@ -761,7 +902,7 @@ export class RenderedSearch {
 
   private showLocalError(message: string): void {
     this.requestEpoch += 1;
-    this.history = [];
+    this.clearHistory();
     this.currentIndex = -1;
     this.setStatus(message, true);
     this.elements.results.replaceChildren();
@@ -779,7 +920,7 @@ export class RenderedSearch {
     this.elements.query.disabled = this.mode === null || this.busy;
     this.elements.submit.disabled = this.mode === null || this.busy;
     this.elements.previous.disabled = this.busy || this.currentIndex <= 0;
-    this.elements.next.disabled = this.busy || !this.history[this.currentIndex]?.hasMore;
+    this.elements.next.disabled = this.busy || !this.history.get(this.currentIndex)?.hasMore;
     this.elements.form.setAttribute("aria-busy", String(this.busy));
   }
 
@@ -815,6 +956,33 @@ function sameNodes(left: Node[], right: Node[]): boolean {
   return left.length === right.length && left.every((node, index) => node === right[index]);
 }
 
+function sameRenderedTarget(left: RenderedSearchTarget | null, right: RenderedSearchTarget | null): boolean {
+  return left?.nodeId === right?.nodeId && left?.scopeId === right?.scopeId
+    && left?.sessionRevision === right?.sessionRevision && left?.scopeStart === right?.scopeStart
+    && left?.scopeEnd === right?.scopeEnd;
+}
+
+function estimatePageBytes(page: Page): number {
+  let bytes = 64 + estimateValueBytes(page.nextCursor);
+  for (const match of page.matches) {
+    bytes += 96 + match.label.length * 2;
+    if (!match.backend) continue;
+    bytes += 96 + match.backend.pathSegments.reduce((total, segment) => total + segment.length * 2 + 16, 0);
+  }
+  return bytes;
+}
+
+function estimateValueBytes(value: unknown): number {
+  if (value === null || value === undefined) return 8;
+  if (typeof value === "string") return value.length * 2 + 16;
+  if (typeof value === "number" || typeof value === "boolean") return 16;
+  try {
+    return (JSON.stringify(value)?.length ?? 0) * 2 + 32;
+  } catch {
+    return 256;
+  }
+}
+
 function findDomPage(projection: RenderedProjection | null, query: string, cursor: unknown): Page {
   if (!projection || !query) return { matches: [], hasMore: false, nextCursor: null };
   const startOffset = typeof cursor === "number" && Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0;
@@ -831,6 +999,38 @@ function findDomPage(projection: RenderedProjection | null, query: string, curso
     }
     matches.push({ kind: "dom", start, end, label: t("search.renderedVisible", { start, end }) });
     from = Math.max(end, start + 1);
+  }
+  return { matches, hasMore: nextCursor !== null, nextCursor };
+}
+
+async function findDomPageAsync(
+  projection: RenderedProjection | null,
+  query: string,
+  cursor: unknown,
+  isCurrent: () => boolean
+): Promise<Page> {
+  if (!projection || !query) return { matches: [], hasMore: false, nextCursor: null };
+  const startOffset = typeof cursor === "number" && Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0;
+  const matches: RenderedMatch[] = [];
+  let from = startOffset;
+  let nextCursor: number | null = null;
+  let iterations = 0;
+  while (true) {
+    if (!isCurrent()) throw new DOMException(t("search.renderedProjectionCancelled"), "AbortError");
+    const start = projection.text.indexOf(query, from);
+    if (start < 0) break;
+    const end = start + query.length;
+    if (matches.length === PAGE_SIZE) {
+      nextCursor = start;
+      break;
+    }
+    matches.push({ kind: "dom", start, end, label: t("search.renderedVisible", { start, end }) });
+    from = Math.max(end, start + 1);
+    iterations += 1;
+    if ((iterations & 0x1f) === 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      if (!isCurrent()) throw new DOMException(t("search.renderedProjectionCancelled"), "AbortError");
+    }
   }
   return { matches, hasMore: nextCursor !== null, nextCursor };
 }

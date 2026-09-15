@@ -75,14 +75,14 @@ const {ContentViewer}=await import("/src/content-viewer.ts");
 let assertions=0;
 const check=(condition,message)=>{assertions+=1;if(!condition)throw new Error(message);};
 const settle=async()=>{await Promise.resolve();await Promise.resolve();await new Promise((resolve)=>setTimeout(resolve,0));};
-const makeSearch=({invoke=async()=>({matches:[],hasMore:false,nextCursor:null}),onReveal=()=>{},onError=()=>{}}={})=>{
+const makeSearch=({invoke=async()=>({matches:[],hasMore:false,nextCursor:null}),onReveal=()=>{},onError=()=>{},onIntentChange=()=>{}}={})=>{
   const host=document.createElement("div");
   host.innerHTML='<section id="panel"><form id="form" role="search"><label>Query <input id="query" type="search"></label><fieldset><label><input id="decoded" type="radio" name="representation" checked>Decoded</label><label><input id="raw" type="radio" name="representation">Raw</label></fieldset><button id="submit" type="submit">Search</button><p id="description"></p></form><div id="results-panel"><div id="status"></div><div id="results"></div><button id="previous" type="button">Previous</button><button id="next" type="button">Next</button></div></section>';
   document.body.append(host);
   const q=(id)=>{const element=id==="dialog"?host.querySelector("dialog"):host.querySelector("#"+id);if(id==="content"&&element)element.className="content-viewer-content";return element;};
   const elements={form:q("form"),query:q("query"),decoded:q("decoded"),rawSource:q("raw"),submit:q("submit"),description:q("description"),panel:q("panel"),resultsPanel:q("results-panel"),status:q("status"),results:q("results"),previous:q("previous"),next:q("next")};
   check(Object.entries(elements).every(([,element])=>element!==null),"Rendered test search fixture missing element: "+Object.entries(elements).filter(([,element])=>element===null).map(([id])=>id).join(","));
-  const view=new RenderedSearch({...elements,invoke,onReveal,onError,onIntentChange:()=>{}});
+  const view=new RenderedSearch({...elements,invoke,onReveal,onError,onIntentChange});
   return {host,elements,view};
 };
 
@@ -281,6 +281,100 @@ manySearch.elements.next.click();
 check(manySearch.elements.results.querySelectorAll("button").length===7&&manySearch.elements.previous.disabled===false,"Rendered DOM Next did not continue from its bounded cursor");
 manySearch.elements.previous.click();
 check(manySearch.elements.results.querySelectorAll("button").length===50,"Rendered DOM Previous did not restore the first result page");
+
+let navigationIntent=0;
+let delayedReveal=null;
+let revealCommitted=0;
+const navigation=makeSearch({
+  invoke:async(command,args)=>{
+    const page=typeof args.cursor==="object"&&args.cursor!==null?Math.floor(args.cursor.byteOffset/100):0;
+    const hasMore=page<2;
+    return {matches:[{nodeId:10,field:"value",pathSegments:["$","message"],pathTruncated:false,sourceSpanStart:page*100+1,sourceSpanEnd:page*100+21,matchStart:5,matchEnd:11}],hasMore,nextCursor:hasMore?{kind:"decoded",nodeId:10,field:"value",byteOffset:(page+1)*100,query:"needle",sessionRevision:3,scopeId:null,targetNodeId:10}:null};
+  },
+  onIntentChange:()=>{navigationIntent+=1;},
+  onReveal:()=>{const intent=navigationIntent;delayedReveal=()=>{if(intent===navigationIntent)revealCommitted+=1;};}
+});
+navigation.view.activate("backend",{nodeId:10,scopeId:null,sessionRevision:3,scopeStart:0,scopeEnd:100000},null,"Search historical rendered pages.");
+navigation.elements.query.value="needle";
+navigation.elements.form.requestSubmit();
+await settle();
+navigation.elements.next.click();
+await settle();
+navigation.elements.next.click();
+await settle();
+check(navigation.view.currentIndex===2&&navigation.view.history.size<=16,"Rendered backend navigation did not retain absolute page indices in a bounded cache");
+navigation.elements.results.querySelector("button")?.click();
+const intentBeforePrevious=navigationIntent;
+navigation.elements.previous.click();
+await settle();
+check(navigation.view.currentIndex===1&&navigationIntent>intentBeforePrevious,"Returning to a cached rendered page did not invalidate the previous reveal intent");
+delayedReveal?.();
+check(revealCommitted===0,"A delayed rendered reveal committed after cached-page navigation");
+navigation.host.remove();
+
+const manyPagesRoot=document.createElement("div");
+manyPagesRoot.textContent=Array.from({length:851},() => "x").join(" ");
+document.body.append(manyPagesRoot);
+const manyPages=makeSearch();
+manyPages.view.activate("dom",null,await projectRenderedText(manyPagesRoot),"Search more than sixteen rendered pages.");
+manyPages.elements.query.value="x";
+manyPages.elements.form.requestSubmit();
+await settle();
+for(let page=0;page<16;page+=1){manyPages.elements.next.click();await settle();}
+check(manyPages.view.currentIndex===16&&manyPages.view.history.size<=16&&manyPages.view.historyBytes<=32*1024*1024,"Rendered history exceeded its sixteen-page or 32 MiB bound");
+for(let page=16;page>0;page-=1){manyPages.elements.previous.click();await settle();}
+check(manyPages.view.currentIndex===0&&manyPages.elements.results.querySelectorAll("button").length===50,"Rendered Previous did not rescan an evicted page from the nearest available predecessor");
+manyPages.elements.next.click();
+await settle();
+check(manyPages.view.currentIndex===1&&manyPages.elements.results.querySelectorAll("button").length===50,"Rendered Next did not resume from the cached page after a historical rescan");
+manyPages.host.remove();
+manyPagesRoot.remove();
+
+const longRescanRoot=document.createElement("div");
+longRescanRoot.textContent="x ".repeat(200000);
+document.body.append(longRescanRoot);
+const longRescan=makeSearch();
+longRescan.view.activate("dom",null,await projectRenderedText(longRescanRoot),"Cancel a long historical rendered rescan.");
+longRescan.elements.query.value="x";
+longRescan.elements.form.requestSubmit();
+await settle();
+const initialLongPage=longRescan.view.history.get(0);
+check(initialLongPage!==undefined,"Long historical rescan fixture did not create its root page");
+longRescan.view.history.clear();
+longRescan.view.history.set(2000,{matches:initialLongPage.matches,hasMore:true,nextCursor:0});
+longRescan.view.historyBytes=0;
+longRescan.view.currentIndex=2000;
+longRescan.view.renderPage();
+longRescan.elements.previous.click();
+await Promise.resolve();
+check(longRescan.view.busy===true,"Historical rendered rescan did not expose a cancellable busy state");
+longRescan.elements.query.value="y";
+longRescan.elements.query.dispatchEvent(new Event("input",{bubbles:true}));
+await settle();
+check(longRescan.view.busy===false&&longRescan.view.currentIndex===-1&&longRescan.elements.resultsPanel.hidden,"Cancelled long rendered rescan repopulated historical results");
+longRescan.host.remove();
+longRescanRoot.remove();
+
+let failHistoricalRoot=false;
+const failingHistory=makeSearch({invoke:async(command,args)=>{
+  const page=typeof args.cursor==="object"&&args.cursor!==null?Math.floor(args.cursor.byteOffset/100):0;
+  if(failHistoricalRoot&&args.cursor===null) throw new Error("historical page unavailable");
+  const hasMore=page<20;
+  return {matches:[{nodeId:10,field:"value",pathSegments:["$","message"],pathTruncated:false,sourceSpanStart:page*100+1,sourceSpanEnd:page*100+21,matchStart:5,matchEnd:11}],hasMore,nextCursor:hasMore?{kind:"decoded",nodeId:10,field:"value",byteOffset:(page+1)*100,query:"needle",sessionRevision:3,scopeId:null,targetNodeId:10}:null};
+}});
+failingHistory.view.activate("backend",{nodeId:10,scopeId:null,sessionRevision:3,scopeStart:0,scopeEnd:100000},null,"Preserve the current page when history relocation fails.");
+failingHistory.elements.query.value="needle";
+failingHistory.elements.form.requestSubmit();
+await settle();
+for(let page=0;page<16;page+=1){failingHistory.elements.next.click();await settle();}
+for(let page=16;page>1;page-=1){failingHistory.elements.previous.click();await settle();}
+check(failingHistory.view.currentIndex===1&&failingHistory.elements.results.querySelectorAll("button").length===1,"Historical failure fixture did not reach page one with page zero evicted");
+const failingPageBefore=failingHistory.elements.results.textContent;
+failHistoricalRoot=true;
+failingHistory.elements.previous.click();
+await settle();
+check(failingHistory.view.currentIndex===1&&failingHistory.elements.results.textContent===failingPageBefore&&failingHistory.elements.status.getAttribute("role")==="alert","Failed historical relocation replaced the current rendered page");
+failingHistory.host.remove();
 
 const code=document.createElement("div");
 code.append(renderCode("const value = \\"你好\\";","javascript").fragment);
