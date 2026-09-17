@@ -911,7 +911,7 @@ if(pendingContentReads.has(120)) {
 await settle();
 check(content.elements.search.decoded.checked&&content.elements.string.decodedTab.classList.contains("is-active")&&content.elements.search.query.value==="raw","Decoded search radio did not switch the Content Viewer tab while retaining the query; decoded="+content.elements.search.decoded.checked+" raw="+content.elements.search.rawSource.checked+" active="+content.elements.string.representations.querySelector(".is-active")?.id+" query="+content.elements.search.query.value+" status="+content.elements.status.textContent);
 const boundedViewer=makeContentViewer(()=>Promise.resolve());
-const boundedFrame={scope:{scopeId:null,sessionRevision:contentTarget.revision},decoded:{offsets:[0],offsetIndex:0,nextOffset:null,current:null,pages:new Map()},raw:{offsets:[0],offsetIndex:0,nextOffset:null,current:null,pages:new Map()},source:contentTarget,kind:"json"};
+const boundedFrame={scope:{scopeId:null,sessionRevision:contentTarget.revision},decoded:{offsets:[0],offsetIndex:0,nextOffset:null,current:null,pages:new Map(),pageStartStates:new Map([[0,{line:1,previousWasCR:false}]])},raw:{offsets:[0],offsetIndex:0,nextOffset:null,current:null,pages:new Map(),pageStartStates:new Map([[0,{line:1,previousWasCR:false}]])},source:contentTarget,kind:"json"};
 boundedViewer.viewer.nestedFrames=[boundedFrame];
 for(let index=0;index<300;index++) boundedViewer.viewer.cacheNestedPage(boundedFrame,"decoded",{start:index*131072,text:"N".repeat(131072),hasMore:true,nextOffset:(index+1)*131072,lineState:{line:1,previousWasCR:false}});
 check(boundedFrame.decoded.pages.size<=256,"Nested search pages exceeded the shared 32 MiB text cache");

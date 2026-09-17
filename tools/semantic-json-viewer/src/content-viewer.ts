@@ -225,6 +225,7 @@ type ContentViewerOptions = {
   onSessionError?: (error: unknown) => void;
   onClose?: (restoreFocus: boolean) => void;
   projectionBudget?: ProjectionBudget;
+  textCacheBudgetBytes?: number;
 };
 
 type NestedScope = {
@@ -245,6 +246,7 @@ type TextState = {
   nextOffset: number | null;
   current: TextChunk | null;
   pages: Map<number, TextChunk>;
+  pageStartStates: Map<number, CodeLineState>;
 };
 
 type HtmlPreviewResult = {
@@ -310,6 +312,7 @@ export class ContentViewer {
   private readonly onSessionError: (error: unknown) => void;
   private readonly onClose: ((restoreFocus: boolean) => void) | undefined;
   private readonly projectionBudget: ProjectionBudget;
+  private readonly textCacheBudgetBytes: number;
   private generation = 0;
   private ignoredDialogCloseEvents = 0;
   private target: ContentTarget | null = null;
@@ -369,6 +372,8 @@ export class ContentViewer {
   private semanticLimitBytes: number | null = null;
   private readonly decodedPages = new Map<number, TextChunk>();
   private decodedPageCacheBytes = 0;
+  private readonly textCacheRecency = new Map<string, number>();
+  private textCacheClock = 0;
   private readonly codeLineCheckpoints = new Map<number, CodeLineState>();
   private readonly closedScopeIds = new Set<string>();
   private readonly closingScopes = new Map<string, Promise<void>>();
@@ -396,6 +401,11 @@ export class ContentViewer {
     this.onSessionError = options.onSessionError ?? (() => undefined);
     this.onClose = options.onClose;
     this.projectionBudget = options.projectionBudget ?? new ProjectionBudget();
+    const requestedTextCacheBudget = options.textCacheBudgetBytes;
+    this.textCacheBudgetBytes = typeof requestedTextCacheBudget === "number"
+      && Number.isSafeInteger(requestedTextCacheBudget) && requestedTextCacheBudget > 0
+      ? requestedTextCacheBudget
+      : TEXT_PAGE_CACHE_BYTES;
     this.nestedElements = options.elements.nested ?? null;
     this.htmlElements = options.elements.html ?? null;
     this.stringElements = options.elements.string ?? null;
@@ -802,6 +812,7 @@ export class ContentViewer {
     const intent = ++this.sourceRevealEpoch;
     const cached = this.decodedPages.get(offset);
     if (cached) {
+      this.touchTextCache(this.decodedCacheKey(offset));
       if (direction === "next") {
         this.offsets = this.offsets.slice(0, this.offsetIndex + 1);
         this.offsets.push(offset);
@@ -864,6 +875,7 @@ export class ContentViewer {
     if (offset < start || offset > end || direction !== "initial" && offset === end) return;
     const cached = this.rawPages.get(offset);
     if (cached) {
+      this.touchTextCache(this.rawCacheKey(offset));
       if (direction === "next") {
         this.rawPageOffsets = this.rawPageOffsets.slice(0, this.rawPageIndex + 1);
         this.rawPageOffsets.push(offset);
@@ -933,70 +945,152 @@ export class ContentViewer {
 
   private cacheRawPage(chunk: TextChunk): void {
     const previous = this.rawPages.get(chunk.start);
-    if (previous) this.rawCacheBytes -= utf8ByteLength(previous.text);
+    const key = this.rawCacheKey(chunk.start);
+    if (previous) {
+      this.rawCacheBytes -= textCacheEntryBytes(previous);
+      this.textCacheRecency.delete(key);
+    }
     this.rawPages.set(chunk.start, chunk);
     this.rawPageStartStates.set(chunk.start, chunk.lineState);
     if (chunk.nextOffset !== null) this.rawPageStartStates.set(chunk.nextOffset, scanCodeLines(chunk.text, chunk.lineState));
-    this.rawCacheBytes += utf8ByteLength(chunk.text);
+    this.rawCacheBytes += textCacheEntryBytes(chunk);
+    this.touchTextCache(key);
     this.trimTextCaches();
   }
 
   private cacheNestedPage(frame: NestedFrame, representation: "decoded" | "raw", chunk: TextChunk): void {
     const state = textState(frame, representation);
     const previous = state.pages.get(chunk.start);
-    if (previous) this.nestedPageCacheBytes -= utf8ByteLength(previous.text);
+    const key = this.nestedCacheKey(frame, representation, chunk.start);
+    if (previous) {
+      this.nestedPageCacheBytes -= textCacheEntryBytes(previous);
+      this.textCacheRecency.delete(key);
+    }
     state.pages.set(chunk.start, chunk);
-    this.nestedPageCacheBytes += utf8ByteLength(chunk.text);
+    state.pageStartStates.set(chunk.start, chunk.lineState);
+    if (chunk.nextOffset !== null) state.pageStartStates.set(chunk.nextOffset, scanCodeLines(chunk.text, chunk.lineState));
+    this.nestedPageCacheBytes += textCacheEntryBytes(chunk);
+    this.touchTextCache(key);
     this.trimTextCaches();
   }
 
-  private clearNestedPageCache(state: TextState): void {
-    for (const chunk of state.pages.values()) this.nestedPageCacheBytes -= utf8ByteLength(chunk.text);
+  private clearNestedPageCache(frame: NestedFrame, state: TextState): void {
+    for (const [start, chunk] of state.pages) {
+      this.nestedPageCacheBytes -= textCacheEntryBytes(chunk);
+      this.textCacheRecency.delete(this.nestedCacheKey(frame, state === frame.decoded ? "decoded" : "raw", start));
+    }
     state.pages.clear();
+    state.pageStartStates.clear();
     this.nestedPageCacheBytes = Math.max(0, this.nestedPageCacheBytes);
   }
 
   private discardNestedFrame(frame: NestedFrame): void {
-    this.clearNestedPageCache(frame.decoded);
-    this.clearNestedPageCache(frame.raw);
+    this.clearNestedPageCache(frame, frame.decoded);
+    this.clearNestedPageCache(frame, frame.raw);
   }
 
   private trimTextCaches(): void {
-    while (this.decodedPageCacheBytes + this.rawCacheBytes + this.nestedPageCacheBytes + this.parsedSearchPeekBytes > TEXT_PAGE_CACHE_BYTES) {
-      if (this.decodedPages.size > 1) {
-        const oldest = this.decodedPages.keys().next().value;
-        if (typeof oldest === "number") {
-          const page = this.decodedPages.get(oldest);
-          this.decodedPages.delete(oldest);
-          if (page) this.decodedPageCacheBytes -= utf8ByteLength(page.text);
-          continue;
-        }
-      }
-      if (this.rawPages.size > 1) {
-        const oldest = this.rawPages.keys().next().value;
-        if (typeof oldest === "number") {
-          const page = this.rawPages.get(oldest);
-          this.rawPages.delete(oldest);
-          if (page) this.rawCacheBytes -= utf8ByteLength(page.text);
-          continue;
-        }
-      }
-      let evicted = false;
-      for (const frame of this.nestedFrames) {
-        for (const state of [frame.decoded, frame.raw]) {
-          if (state.pages.size <= 1) continue;
-          const oldest = state.pages.keys().next().value;
-          if (typeof oldest !== "number") continue;
-          const page = state.pages.get(oldest);
-          state.pages.delete(oldest);
-          if (page) this.nestedPageCacheBytes -= utf8ByteLength(page.text);
-          evicted = true;
-          break;
-        }
-        if (evicted) break;
-      }
-      if (!evicted) break;
+    while (this.textCacheBytes() > this.textCacheBudgetBytes) {
+      const oldest = this.oldestEvictableTextCacheKey();
+      if (!oldest || !this.removeTextCacheKey(oldest)) break;
     }
+  }
+
+  private textCacheBytes(): number {
+    return this.decodedPageCacheBytes + this.rawCacheBytes + this.nestedPageCacheBytes + this.parsedSearchPeekBytes;
+  }
+
+  private decodedCacheKey(start: number): string {
+    return "decoded:" + start;
+  }
+
+  private rawCacheKey(start: number): string {
+    return "raw:" + start;
+  }
+
+  private nestedCacheKey(frame: NestedFrame, representation: "decoded" | "raw", start: number): string {
+    return "nested:" + frame.scope.sessionRevision + ":" + frame.scope.scopeId + ":" + representation + ":" + start;
+  }
+
+  private touchTextCache(key: string): void {
+    this.textCacheClock += 1;
+    this.textCacheRecency.set(key, this.textCacheClock);
+  }
+
+  private oldestEvictableTextCacheKey(): string | null {
+    let oldestKey: string | null = null;
+    let oldestRecency = Number.POSITIVE_INFINITY;
+    const consider = (key: string): void => {
+      if (this.isProtectedTextCacheKey(key)) return;
+      const recency = this.textCacheRecency.get(key) ?? 0;
+      if (recency < oldestRecency) {
+        oldestRecency = recency;
+        oldestKey = key;
+      }
+    };
+    for (const start of this.decodedPages.keys()) consider(this.decodedCacheKey(start));
+    for (const start of this.rawPages.keys()) consider(this.rawCacheKey(start));
+    for (const frame of this.nestedFrames) {
+      for (const [representation, state] of [["decoded", frame.decoded], ["raw", frame.raw]] as const) {
+        for (const start of state.pages.keys()) consider(this.nestedCacheKey(frame, representation, start));
+      }
+    }
+    return oldestKey;
+  }
+
+  private isProtectedTextCacheKey(key: string): boolean {
+    if (this.parsedSearchPeek !== null && key === "parsed-search-peek") return true;
+    const frame = this.nestedFrames.at(-1);
+    if (frame && (this.nestedRepresentation === "decoded" || this.nestedRepresentation === "raw")) {
+      const state = textState(frame, this.nestedRepresentation);
+      const current = state.current;
+      if (current && key === this.nestedCacheKey(frame, this.nestedRepresentation, current.start)) return true;
+    }
+    if (this.nestedRepresentation === null) {
+      const decodedIsActive = this.ordinaryRepresentation === "decoded"
+        || this.ordinaryRepresentation === "rendered" && this.renderMode === "plainText"
+        || this.renderMode === "code" && this.semanticLimit === "code"
+        || this.htmlRepresentation === "source";
+      if (decodedIsActive && this.offsetIndex >= 0) {
+        const current = this.offsets[this.offsetIndex];
+        if (current !== undefined && key === this.decodedCacheKey(current)) return true;
+      }
+      if ((this.ordinaryRepresentation === "raw" || this.htmlRepresentation === "raw") && this.rawPageIndex >= 0) {
+        const current = this.rawPageOffsets[this.rawPageIndex];
+        if (current !== undefined && key === this.rawCacheKey(current)) return true;
+      }
+    }
+    return false;
+  }
+
+  private removeTextCacheKey(key: string): boolean {
+    for (const [start, page] of this.decodedPages) {
+      if (key !== this.decodedCacheKey(start)) continue;
+      this.decodedPages.delete(start);
+      this.decodedPageCacheBytes = Math.max(0, this.decodedPageCacheBytes - textCacheEntryBytes(page));
+      this.textCacheRecency.delete(key);
+      return true;
+    }
+    for (const [start, page] of this.rawPages) {
+      if (key !== this.rawCacheKey(start)) continue;
+      this.rawPages.delete(start);
+      this.rawCacheBytes = Math.max(0, this.rawCacheBytes - textCacheEntryBytes(page));
+      this.textCacheRecency.delete(key);
+      return true;
+    }
+    for (const frame of this.nestedFrames) {
+      for (const [representation, state] of [["decoded", frame.decoded], ["raw", frame.raw]] as const) {
+        for (const [start, page] of state.pages) {
+          if (key !== this.nestedCacheKey(frame, representation, start)) continue;
+          state.pages.delete(start);
+          if (state.current === page) state.current = null;
+          this.nestedPageCacheBytes = Math.max(0, this.nestedPageCacheBytes - textCacheEntryBytes(page));
+          this.textCacheRecency.delete(key);
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   private async renderSelection(target: ContentTarget, generation: number, selection: RenderAs): Promise<void> {
@@ -1959,7 +2053,9 @@ export class ContentViewer {
     } else {
       const frame = this.nestedFrames.at(-1);
       const state = frame ? textState(frame, representation) : null;
-      if (state?.current) this.installNestedChunk(frame!, representation, state.current);
+      if (state?.current && state.pages.get(state.current.start) === state.current) {
+        this.installNestedChunk(frame!, representation, state.current);
+      }
       else void this.readNestedPage("initial");
     }
   }
@@ -1999,6 +2095,7 @@ export class ContentViewer {
     }
     const cached = state.pages.get(offset);
     if (cached) {
+      this.touchTextCache(this.nestedCacheKey(frame, representation, offset));
       if (direction === "next") {
         state.offsets = state.offsets.slice(0, state.offsetIndex + 1);
         state.offsets.push(offset);
@@ -2027,7 +2124,7 @@ export class ContentViewer {
         : { sourceStart: rawStart, length: requestLength, sessionRevision: frame.scope.sessionRevision, scopeId: frame.source.scopeId });
       if (!this.isReadCurrent(generation, frame.source, intent) || this.nestedFrames.at(-1) !== frame || this.nestedRepresentation !== representation) return;
       const previous = direction === "next" ? state.current : undefined;
-      const pageStartState = state.pages.get(offset)?.lineState
+      const pageStartState = state.pageStartStates.get(offset)
         ?? (previous ? scanCodeLines(previous.text, previous.lineState) : { line: 1, previousWasCR: false });
       const chunk = representation === "raw"
         ? normalizeRawChunk(value, rawStart, frame.source.spanStart, frame.source.spanEnd, requestLength, pageStartState)
@@ -2478,7 +2575,9 @@ export class ContentViewer {
     const peek = validateParsedSearchPeek(value, sourceStart, sourceEnd, requestLength);
     if (!peek) throw new Error(t("contentViewer.invalidParsedSearchResponse"));
     this.parsedSearchPeek = { match, sourceStart: peek.start, sourceEnd: peek.end, text: peek.text, truncated: peek.end < sourceEnd };
-    this.parsedSearchPeekBytes = utf8ByteLength(peek.text);
+    this.parsedSearchPeekBytes = textCacheStringBytes(peek.text);
+    this.textCacheRecency.delete("parsed-search-peek");
+    this.touchTextCache("parsed-search-peek");
     this.trimTextCaches();
     this.contentReadBusy = false;
     this.nestedBusy = false;
@@ -2527,6 +2626,7 @@ export class ContentViewer {
   private clearParsedSearchPeek(): void {
     this.parsedSearchPeek = null;
     this.parsedSearchPeekBytes = 0;
+    this.textCacheRecency.delete("parsed-search-peek");
     const elements = this.parsedSearchPeekElements;
     if (elements) {
       elements.field.textContent = "—";
@@ -2588,7 +2688,7 @@ export class ContentViewer {
     const frame = this.nestedFrames.at(-1);
     if (frame && this.nestedRepresentation === representation) {
       const state = textState(frame, representation);
-      this.clearNestedPageCache(state);
+      this.clearNestedPageCache(frame, state);
       state.offsets = [chunk.start];
       state.offsetIndex = 0;
       state.nextOffset = chunk.nextOffset;
@@ -2761,12 +2861,15 @@ export class ContentViewer {
 
   private cacheDecodedPage(chunk: TextChunk): void {
     const previous = this.decodedPages.get(chunk.start);
+    const key = this.decodedCacheKey(chunk.start);
     if (previous) {
-      this.decodedPageCacheBytes -= utf8ByteLength(previous.text);
+      this.decodedPageCacheBytes -= textCacheEntryBytes(previous);
       this.decodedPages.delete(chunk.start);
+      this.textCacheRecency.delete(key);
     }
     this.decodedPages.set(chunk.start, chunk);
-    this.decodedPageCacheBytes += utf8ByteLength(chunk.text);
+    this.decodedPageCacheBytes += textCacheEntryBytes(chunk);
+    this.touchTextCache(key);
     this.trimTextCaches();
   }
 
@@ -2778,11 +2881,13 @@ export class ContentViewer {
   }
 
   private clearDecodedPages(): void {
+    for (const start of this.decodedPages.keys()) this.textCacheRecency.delete(this.decodedCacheKey(start));
     this.decodedPages.clear();
     this.decodedPageCacheBytes = 0;
   }
 
   private clearRawPages(): void {
+    for (const start of this.rawPages.keys()) this.textCacheRecency.delete(this.rawCacheKey(start));
     this.rawPages.clear();
     this.rawPageStartStates.clear();
     this.rawPageOffsets = [];
@@ -3311,7 +3416,14 @@ function cloneTarget(target: ContentTarget): ContentTarget {
 }
 
 function newTextState(): TextState {
-  return { offsets: [0], offsetIndex: 0, nextOffset: null, current: null, pages: new Map() };
+  return {
+    offsets: [0],
+    offsetIndex: 0,
+    nextOffset: null,
+    current: null,
+    pages: new Map(),
+    pageStartStates: new Map([[0, { line: 1, previousWasCR: false }]])
+  };
 }
 
 function textState(frame: NestedFrame, representation: "decoded" | "raw"): TextState {
@@ -3512,6 +3624,15 @@ function safeOffset(value: unknown): number | undefined {
 
 function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
+}
+
+function textCacheStringBytes(value: string): number {
+  // Conservative UTF-16 owner estimate; this is not WebView heap accounting.
+  return value.length * 2 + 128;
+}
+
+function textCacheEntryBytes(chunk: TextChunk): number {
+  return textCacheStringBytes(chunk.text);
 }
 
 function ensureCodeLineMarkers(source: HTMLElement, starts: number[]): HTMLElement[] {
