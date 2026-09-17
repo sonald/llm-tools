@@ -937,25 +937,55 @@ function renderError(): void {
   }
 
   const titles: Record<string, string> = {
+    no_session: t("main.errorNoSessionTitle"),
     invalid_json: t("main.invalidJson"),
     unsupported_encoding: t("main.unsupportedEncoding"),
     unsupported_framing: t("main.unsupportedFraming"),
     unsupported_format: t("main.unsupportedFormat"),
     mode_choice_required: t("main.chooseFileMode"),
-    file_changed: t("main.fileChangedOnDisk")
+    file_changed: t("main.fileChangedOnDisk"),
+    stale_session: t("main.errorStaleSessionTitle"),
+    invalid_request: t("main.errorInvalidRequestTitle"),
+    not_found: t("main.errorNotFoundTitle"),
+    open_failed: t("shell.openFailed"),
+    internal: t("main.errorInternalTitle"),
+    clipboard_failed: t("main.errorClipboardTitle")
   };
-  setText(errorTitle, titles[error.code] ?? t("shell.openFailed"));
+  const localizedTitle = Object.prototype.hasOwnProperty.call(titles, error.code) ? titles[error.code] : t("shell.openFailed");
+  setText(errorTitle, localizedTitle);
   setText(errorMessage, error.message);
   if (error.parseError) {
     const parse = error.parseError;
-    setText(errorDetails, t("main.parseErrorDetails", {
+    const parseDetails = t("main.parseErrorDetails", {
       line: parse.line,
       column: parse.column,
       byteOffset: parse.byteOffset,
       message: parseErrorMessage(parse)
-    }));
+    });
+    const guidance = errorGuidance(error.code);
+    setText(errorDetails, guidance ? t("main.errorGuidanceWithDiagnostic", { guidance, diagnostic: parseDetails }) : parseDetails);
   } else {
-    setText(errorDetails, "");
+    const guidance = errorGuidance(error.code);
+    setText(errorDetails, guidance ? t("main.errorGuidanceWithDiagnostic", { guidance, diagnostic: error.message }) : "");
+  }
+}
+
+function errorGuidance(code: string): string | null {
+  switch (code) {
+    case "no_session": return t("main.errorNoSession");
+    case "file_changed": return t("main.errorFileChanged");
+    case "stale_session": return t("main.errorStaleSession");
+    case "invalid_request": return t("main.errorInvalidRequest");
+    case "not_found": return t("main.errorNotFound");
+    case "open_failed": return t("main.errorOpenFailed");
+    case "invalid_json": return t("main.errorInvalidJson");
+    case "unsupported_encoding": return t("main.errorUnsupportedEncoding");
+    case "unsupported_framing": return t("main.errorUnsupportedFraming");
+    case "unsupported_format": return t("main.errorUnsupportedFormat");
+    case "mode_choice_required": return t("main.errorModeChoiceRequired");
+    case "internal": return t("main.errorInternal");
+    case "clipboard_failed": return t("main.errorClipboard");
+    default: return null;
   }
 }
 
