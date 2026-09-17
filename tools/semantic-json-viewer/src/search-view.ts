@@ -1,4 +1,5 @@
 import { t } from "./i18n";
+import { ProjectionBudget } from "./projection-budget";
 
 export type SearchRepresentation = "decoded" | "rawSource";
 export type SearchField = "key" | "value" | "rawSource";
@@ -64,6 +65,7 @@ type SearchViewOptions = SearchViewElements & {
   invoke: Invoke;
   onReveal: (match: SearchMatch) => void;
   onError: (error: unknown) => void;
+  projectionBudget?: ProjectionBudget;
   onIntentChange?: () => void;
   onRepresentationChange?: (representation: SearchRepresentation) => void;
 };
@@ -94,6 +96,7 @@ export class SearchView {
   private readonly invoke: Invoke;
   private readonly onReveal: (match: SearchMatch) => void;
   private readonly onError: (error: unknown) => void;
+  private readonly projectionBudget: ProjectionBudget;
   private readonly onIntentChange: () => void;
   private readonly onRepresentationChange: ((representation: SearchRepresentation) => void) | undefined;
   private rawEnabled = true;
@@ -101,6 +104,7 @@ export class SearchView {
   private history = new Map<number, SearchHistoryPage>();
   private historyBytes = 0;
   private currentPageNumber = -1;
+  private restoreAttemptedPageNumber: number | null = null;
   private epoch = 0;
   private serial = 0;
   private request: SearchRequestToken | null = null;
@@ -111,6 +115,7 @@ export class SearchView {
     this.invoke = options.invoke;
     this.onReveal = options.onReveal;
     this.onError = options.onError;
+    this.projectionBudget = options.projectionBudget ?? new ProjectionBudget();
     this.onIntentChange = options.onIntentChange ?? (() => undefined);
     this.onRepresentationChange = options.onRepresentationChange;
     this.elements.form.addEventListener("submit", (event) => {
@@ -126,12 +131,17 @@ export class SearchView {
   }
 
   setScope(scope: SearchScope | null): void {
+    const ownerBefore = this.owner();
     const changed = scopeKey(this.scope) !== scopeKey(scope);
     this.scope = scope;
     if (scope?.enabled && this.owner() !== "rendered") this.setOwner("source");
     else if (!scope?.enabled && this.owner() === "source") this.setOwner(null);
+    if (ownerBefore !== "source" && this.owner() === "source") this.restoreAttemptedPageNumber = null;
     if (changed) this.resetResults(true, true);
-    else this.render();
+    else {
+      this.render();
+      this.restoreMissingCurrentPage();
+    }
   }
 
   clear(): void {
@@ -188,6 +198,8 @@ export class SearchView {
     if (this.owner() !== "rendered") {
       if (this.scope) this.setOwner("source");
       this.render();
+      this.restoreAttemptedPageNumber = null;
+      this.restoreMissingCurrentPage();
     }
   }
 
@@ -218,9 +230,7 @@ export class SearchView {
     const ownsForm = this.owner() !== "rendered";
     this.epoch += 1;
     this.request = null;
-    this.history.clear();
-    this.historyBytes = 0;
-    this.currentPageNumber = -1;
+    this.clearHistory();
     this.busy = false;
     if (ownsForm) {
       if (clearQuery) this.elements.query.value = "";
@@ -244,9 +254,7 @@ export class SearchView {
     }
     const representation = this.selectedRepresentation(scope);
     const requestCursor = null;
-    this.history.clear();
-    this.historyBytes = 0;
-    this.currentPageNumber = -1;
+    this.clearHistory();
     const token = this.beginRequest(query, representation, scope, t("search.searching"));
     try {
       const value = await this.invoke<unknown>("search_current", {
@@ -260,7 +268,14 @@ export class SearchView {
       });
       if (!this.isCurrent(token)) return;
       const page = parseSearchPageValue(value, representation, query, scope);
-      this.putHistoryPage(0, { requestCursor, page, bytes: estimateHistoryPageBytes(requestCursor, page) }, this.currentPageNumber);
+      const cached = this.putHistoryPage(0, { requestCursor, page, bytes: estimateHistoryPageBytes(requestCursor, page) }, this.currentPageNumber, () => this.isCurrent(token));
+      if (!this.isCurrent(token)) return;
+      if (!cached) {
+        this.setStatus(t("search.projectionBudgetExceeded"), true);
+        this.elements.results.replaceChildren();
+        this.elements.resultsPanel.hidden = false;
+        return;
+      }
       if (!this.isCurrent(token)) return;
       this.setCurrentPage(0);
       this.setStatus(pageStatus(page, representation));
@@ -312,7 +327,13 @@ export class SearchView {
       });
       if (!this.isCurrent(token)) return;
       const page = parseSearchPageValue(value, representation, query, scope, cursor);
-      this.putHistoryPage(cachedPageNumber, { requestCursor: cursor, page, bytes: estimateHistoryPageBytes(cursor, page) }, this.currentPageNumber);
+      const cached = this.putHistoryPage(cachedPageNumber, { requestCursor: cursor, page, bytes: estimateHistoryPageBytes(cursor, page) }, this.currentPageNumber, () => this.isCurrent(token));
+      if (!this.isCurrent(token)) return;
+      if (!cached) {
+        this.setStatus(t("search.projectionBudgetExceeded"), true);
+        this.renderPage();
+        return;
+      }
       if (!this.isCurrent(token)) return;
       this.setCurrentPage(cachedPageNumber);
       this.setStatus(pageStatus(page, representation));
@@ -396,7 +417,11 @@ export class SearchView {
         });
         if (!this.isCurrent(token)) return;
         const page = parseSearchPageValue(value, representation, query, scope, requestCursor);
-        this.putHistoryPage(pageNumber, { requestCursor, page, bytes: estimateHistoryPageBytes(requestCursor, page) }, this.currentPageNumber);
+        const cached = this.putHistoryPage(pageNumber, { requestCursor, page, bytes: estimateHistoryPageBytes(requestCursor, page) }, this.currentPageNumber, () => this.isCurrent(token));
+        if (!this.isCurrent(token)) return;
+        if (!cached) {
+          throw new Error(t("search.projectionBudgetExceeded"));
+        }
         if (!this.isCurrent(token)) return;
         if (pageNumber === targetPageNumber) {
           this.setCurrentPage(targetPageNumber);
@@ -455,17 +480,44 @@ export class SearchView {
     if (!entry) return;
     this.history.delete(pageNumber);
     this.history.set(pageNumber, entry);
+    this.projectionBudget.touch(entry);
     this.currentPageNumber = pageNumber;
     this.trimHistory(pageNumber);
   }
 
-  private putHistoryPage(pageNumber: number, entry: SearchHistoryPage, protectedPageNumber: number): void {
+  private putHistoryPage(pageNumber: number, entry: SearchHistoryPage, protectedPageNumber: number, stillCurrent?: () => boolean): boolean {
     const previous = this.history.get(pageNumber);
-    if (previous) this.historyBytes -= previous.bytes;
-    this.history.delete(pageNumber);
+    let protectedEntry = previous ?? entry;
+    if (!this.projectionBudget.admit(
+      entry,
+      entry.bytes,
+      () => this.evictBudgetPage(entry),
+      () => this.owner() !== "source" || this.currentHistoryPage() !== protectedEntry
+    )) return false;
+    if (stillCurrent && !stillCurrent()) {
+      this.projectionBudget.release(entry);
+      return false;
+    }
+    if (previous && this.history.get(pageNumber) === previous) {
+      this.projectionBudget.release(previous);
+      this.historyBytes -= previous.bytes;
+      this.history.delete(pageNumber);
+    }
     this.history.set(pageNumber, entry);
+    protectedEntry = entry;
     this.historyBytes += entry.bytes;
     this.trimHistory(protectedPageNumber);
+    return true;
+  }
+
+  private evictBudgetPage(entry: SearchHistoryPage): void {
+    for (const [pageNumber, cached] of this.history) {
+      if (cached !== entry) continue;
+      this.history.delete(pageNumber);
+      this.historyBytes -= entry.bytes;
+      if (pageNumber === this.currentPageNumber && this.owner() !== "source") this.restoreAttemptedPageNumber = null;
+      return;
+    }
   }
 
   private trimHistory(protectedPageNumber: number): void {
@@ -480,7 +532,10 @@ export class SearchView {
       if (evictedPageNumber === undefined) break;
       const entry = this.history.get(evictedPageNumber);
       this.history.delete(evictedPageNumber);
-      if (entry) this.historyBytes -= entry.bytes;
+      if (entry) {
+        this.projectionBudget.release(entry);
+        this.historyBytes -= entry.bytes;
+      }
     }
   }
 
@@ -492,6 +547,66 @@ export class SearchView {
     return seed;
   }
 
+  private restoreMissingCurrentPage(): void {
+    if (!this.isOwner() || !this.scope?.enabled || this.busy || this.currentPageNumber < 0
+      || this.currentHistoryPage() || this.restoreAttemptedPageNumber === this.currentPageNumber) return;
+    this.restoreAttemptedPageNumber = this.currentPageNumber;
+    void this.restoreCurrentPage();
+  }
+
+  private async restoreCurrentPage(): Promise<void> {
+    const scope = this.scope;
+    const targetPageNumber = this.currentPageNumber;
+    if (!scope || targetPageNumber < 0 || this.currentHistoryPage() || this.busy) return;
+    const query = this.elements.query.value;
+    const representation = this.selectedRepresentation(scope);
+    const token = this.beginRequest(query, representation, scope, t("search.relocatingHistory"));
+    const seed = this.replaySeed(targetPageNumber);
+    let pageNumber = seed ? seed.pageNumber + 1 : 0;
+    let cursor = seed ? seed.entry.page.nextCursor : null;
+    try {
+      while (pageNumber <= targetPageNumber) {
+        if (!this.isCurrent(token)) return;
+        const requestCursor = cursor;
+        const value = await this.invoke<unknown>("search_current", {
+          query,
+          representation,
+          scopeId: scope.scopeId,
+          nodeId: scope.targetNodeId,
+          cursor: requestCursor,
+          limit: PAGE_SIZE,
+          sessionRevision: scope.sessionRevision
+        });
+        if (!this.isCurrent(token)) return;
+        const page = parseSearchPageValue(value, representation, query, scope, requestCursor);
+        const cached = this.putHistoryPage(pageNumber, { requestCursor, page, bytes: estimateHistoryPageBytes(requestCursor, page) }, targetPageNumber, () => this.isCurrent(token));
+        if (!this.isCurrent(token)) return;
+        if (!cached) throw new Error(t("search.projectionBudgetExceeded"));
+        if (pageNumber === targetPageNumber) {
+          this.setCurrentPage(targetPageNumber);
+          this.restoreAttemptedPageNumber = null;
+          this.setStatus(pageStatus(page, representation));
+          this.renderPage();
+          return;
+        }
+        if (!page.hasMore || page.nextCursor === null) throw new Error(t("search.responseCursorStateInvalid"));
+        cursor = page.nextCursor;
+        pageNumber += 1;
+      }
+    } catch (error) {
+      if (!this.isCurrent(token)) return;
+      this.setStatus(errorMessage(error), true);
+      this.renderPage();
+      if (isGlobalError(error)) this.onError(error);
+    } finally {
+      if (this.isCurrent(token)) {
+        this.request = null;
+        this.busy = false;
+        this.render();
+      }
+    }
+  }
+
   private showLocalError(message: string): void {
     this.epoch += 1;
     this.request = null;
@@ -500,9 +615,7 @@ export class SearchView {
     this.elements.resultsPanel.hidden = false;
     this.setStatus(message, true);
     this.elements.results.replaceChildren();
-    this.history.clear();
-    this.historyBytes = 0;
-    this.currentPageNumber = -1;
+    this.clearHistory();
     this.onIntentChange();
     this.render();
   }
@@ -510,6 +623,14 @@ export class SearchView {
   private setStatus(message: string, alert = false): void {
     this.elements.status.textContent = message;
     this.elements.status.setAttribute("role", alert ? "alert" : "status");
+  }
+
+  private clearHistory(): void {
+    for (const entry of this.history.values()) this.projectionBudget.release(entry);
+    this.history.clear();
+    this.historyBytes = 0;
+    this.currentPageNumber = -1;
+    this.restoreAttemptedPageNumber = null;
   }
 
   private render(): void {

@@ -370,6 +370,7 @@ const searchView = new SearchView({
   previous: searchPrevious,
   next: searchNext,
   invoke,
+  projectionBudget,
   onReveal: handleSearchReveal,
   onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
 });

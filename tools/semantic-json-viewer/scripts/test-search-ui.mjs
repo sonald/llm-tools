@@ -66,6 +66,11 @@ async function browser(args) {
   }
 }
 
+async function waitForAppReady(expectedLanguage) {
+  const expression = `document.documentElement.dataset.testAppReady === "true" && document.documentElement.lang === ${JSON.stringify(expectedLanguage)}`;
+  await browser(["wait", "--fn", expression]);
+}
+
 function parseBrowserValue(output) {
   try {
     return JSON.parse(output);
@@ -80,6 +85,7 @@ function browserTest() {
   return `(async () => {
 Object.defineProperty(globalThis,"navigator",{configurable:true,value:{language:"en-US"}});
 const {SearchView}=await import("/src/search-view.ts");
+const {ProjectionBudget}=await import("/src/projection-budget.ts");
 const {CollectionList}=await import("/src/collection-list.ts");
 const {RawView,MAX_ENTRY_BYTES}=await import("/src/raw-view.ts");
 const {ContentViewer}=await import("/src/content-viewer.ts");
@@ -91,12 +97,12 @@ const page=(overrides={})=>({matches:[],hasMore:false,nextCursor:null,...overrid
 const decodedMatch=(overrides={})=>({nodeId:4,field:"value",pathSegments:["$","message"],pathTruncated:false,sourceSpanStart:20,sourceSpanEnd:42,matchStart:0,matchEnd:6,...overrides});
 const decodedCursor=(overrides={})=>({kind:"decoded",nodeId:4,field:"value",byteOffset:6,query:"needle",sessionRevision:7,scopeId:null,targetNodeId:null,...overrides});
 const rawCursor=(overrides={})=>({kind:"rawSource",byteOffset:6,query:"needle",sessionRevision:7,scopeId:null,targetNodeId:null,...overrides});
-const makeSearch=(invoke,onReveal=()=>{},onError=()=>{})=>{
+const makeSearch=(invoke,onReveal=()=>{},onError=()=>{},viewOptions={})=>{
   const host=document.createElement("div");
   host.innerHTML='<section id="test-search-panel"><form id="test-search" role="search" aria-describedby="test-search-description"><label>Query <input id="test-query" name="query" type="search"></label><fieldset><legend>Search in</legend><label><input id="test-decoded" type="radio" name="representation" value="decoded" checked> Decoded</label><label><input id="test-raw" type="radio" name="representation" value="rawSource"> Raw Source</label><button id="test-submit" type="submit">Search</button><p id="test-search-description"></p></form><div id="test-results-panel"><div id="test-status" role="status"></div><div id="test-results" role="list"></div><button id="test-prev" type="button">Previous page</button><button id="test-next" type="button">Next page</button></div></section>';
   document.body.append(host);
   const el={form:host.querySelector("form"),query:host.querySelector("#test-query"),decoded:host.querySelector("#test-decoded"),rawSource:host.querySelector("#test-raw"),submit:host.querySelector("#test-submit"),description:host.querySelector("#test-search-description"),panel:host.querySelector("#test-search-panel"),resultsPanel:host.querySelector("#test-results-panel"),status:host.querySelector("#test-status"),results:host.querySelector("#test-results"),previous:host.querySelector("#test-prev"),next:host.querySelector("#test-next")};
-  const view=new SearchView({...el,invoke,onReveal,onError});
+  const view=new SearchView({...el,invoke,onReveal,onError,...viewOptions});
   return {host,el,view};
 };
 
@@ -456,6 +462,76 @@ check(nextFailure.el.status.textContent.includes("next page failed"),"failed Nex
 nextFailure.el.results.querySelector("button")?.click();
 check(nextFailureReveal?.pathSegments?.at(-1)==="p0","failed Next request did not rebuild the preserved page result action");
 nextFailure.host.remove();
+
+const sharedSearchBudget=new ProjectionBudget(1200);
+const budgetPage={matches:[decodedMatch()],hasMore:false,nextCursor:null};
+const budgetA=makeSearch(async()=>budgetPage,()=>{},()=>{}, {projectionBudget:sharedSearchBudget});
+const budgetB=makeSearch(async()=>budgetPage,()=>{},()=>{}, {projectionBudget:sharedSearchBudget});
+budgetA.view.setScope(scope());
+budgetA.el.query.value="needle";
+budgetA.el.form.requestSubmit();
+await settle();
+check(budgetA.view.cachedPageCount===1&&sharedSearchBudget.usedBytes===budgetA.view.cachedHistoryBytes,"shared Search budget did not account the current page");
+budgetB.view.setScope(scope());
+budgetB.el.query.value="needle";
+budgetB.el.form.requestSubmit();
+await settle();
+check(budgetB.view.cachedPageCount===0&&budgetA.view.cachedPageCount===1&&budgetB.el.status.textContent.includes("32 MiB")&&sharedSearchBudget.usedBytes===budgetA.view.cachedHistoryBytes,"current Search page was evicted or budget overflow was hidden");
+budgetA.el.form.dataset.searchOwner="rendered";
+budgetB.el.form.requestSubmit();
+await settle();
+check(budgetA.view.cachedPageCount===0&&budgetB.view.cachedPageCount===1&&sharedSearchBudget.usedBytes===budgetB.view.cachedHistoryBytes,"a non-source Search owner was not evictable across SearchView instances");
+budgetA.host.remove();
+budgetB.host.remove();
+
+let releaseBudgetCancellation;
+const cancelledBudget=new ProjectionBudget(1200);
+const budgetCancellation=makeSearch(()=>new Promise((resolve)=>{releaseBudgetCancellation=resolve;}),()=>{},()=>{}, {projectionBudget:cancelledBudget});
+budgetCancellation.view.setScope(scope());
+budgetCancellation.el.query.value="needle";
+budgetCancellation.el.form.requestSubmit();
+await Promise.resolve();
+budgetCancellation.view.setScope(null);
+releaseBudgetCancellation(budgetPage);
+await settle();
+check(cancelledBudget.usedBytes===0&&budgetCancellation.view.cachedPageCount===0,"cancelled Source Search left projection budget bytes behind");
+budgetCancellation.host.remove();
+
+let releaseBudgetAdmission;
+const admissionBudget=new ProjectionBudget(1200);
+const admissionCancellation=makeSearch(()=>new Promise((resolve)=>{releaseBudgetAdmission=resolve;}),()=>{},()=>{}, {projectionBudget:admissionBudget});
+admissionCancellation.view.setScope(scope());
+admissionCancellation.el.query.value="needle";
+const evictedBudgetEntry={};
+check(admissionBudget.admit(evictedBudgetEntry,752,()=>admissionCancellation.view.setScope(null)),"test setup could not admit the external projection");
+admissionCancellation.el.form.requestSubmit();
+await Promise.resolve();
+releaseBudgetAdmission(budgetPage);
+await settle();
+check(admissionBudget.usedBytes===0&&admissionCancellation.view.cachedPageCount===0,"stale budget admission was written after owner invalidation");
+admissionCancellation.host.remove();
+
+const restoreBudget=new ProjectionBudget(1200);
+const restoreA=makeSearch(async()=>budgetPage,()=>{},()=>{}, {projectionBudget:restoreBudget});
+const restoreB=makeSearch(async()=>budgetPage,()=>{},()=>{}, {projectionBudget:restoreBudget});
+restoreA.view.setScope(scope());
+restoreA.el.query.value="needle";
+restoreA.el.form.requestSubmit();
+await settle();
+restoreB.view.setScope(scope());
+restoreB.el.query.value="needle";
+restoreB.el.form.requestSubmit();
+await settle();
+restoreA.el.form.dataset.searchOwner="rendered";
+restoreB.el.form.requestSubmit();
+await settle();
+restoreB.view.setScope(null);
+delete restoreA.el.form.dataset.searchOwner;
+restoreA.view.setScope(scope());
+await settle();
+check(restoreA.view.cachedPageCount===1&&restoreA.el.results.textContent.includes("message"),"evicted current Search page did not restore on source-owner return");
+restoreA.host.remove();
+restoreB.host.remove();
 
 let releaseQueryChange;
 const queryCancellation=makeSearch(()=>new Promise((resolve)=>{releaseQueryChange=resolve;}));
@@ -835,7 +911,7 @@ if(pendingContentReads.has(120)) {
 await settle();
 check(content.elements.search.decoded.checked&&content.elements.string.decodedTab.classList.contains("is-active")&&content.elements.search.query.value==="raw","Decoded search radio did not switch the Content Viewer tab while retaining the query; decoded="+content.elements.search.decoded.checked+" raw="+content.elements.search.rawSource.checked+" active="+content.elements.string.representations.querySelector(".is-active")?.id+" query="+content.elements.search.query.value+" status="+content.elements.status.textContent);
 const boundedViewer=makeContentViewer(()=>Promise.resolve());
-const boundedFrame={decoded:{offsets:[0],offsetIndex:0,nextOffset:null,current:null,pages:new Map()},raw:{offsets:[0],offsetIndex:0,nextOffset:null,current:null,pages:new Map()},source:contentTarget,kind:"json"};
+const boundedFrame={scope:{scopeId:null,sessionRevision:contentTarget.revision},decoded:{offsets:[0],offsetIndex:0,nextOffset:null,current:null,pages:new Map()},raw:{offsets:[0],offsetIndex:0,nextOffset:null,current:null,pages:new Map()},source:contentTarget,kind:"json"};
 boundedViewer.viewer.nestedFrames=[boundedFrame];
 for(let index=0;index<300;index++) boundedViewer.viewer.cacheNestedPage(boundedFrame,"decoded",{start:index*131072,text:"N".repeat(131072),hasMore:true,nextOffset:(index+1)*131072,lineState:{line:1,previousWasCR:false}});
 check(boundedFrame.decoded.pages.size<=256,"Nested search pages exceeded the shared 32 MiB text cache");
@@ -900,11 +976,13 @@ vite.stderr.on("data", (chunk) => { viteOutput += chunk.toString(); });
 try {
   await waitForPort(port, vite);
   await browser(["open", `http://127.0.0.1:${port}/scripts/test-app-fixture.html`]);
+  await waitForAppReady("en");
   const output = await browser(["eval", "-b", Buffer.from(browserTest()).toString("base64")]);
   const result = parseBrowserValue(output);
   if (!result.pass) throw new Error("Search UI browser test did not pass.");
   console.log(`search-ui PASS (${result.assertions} assertions)`);
   await browser(["open", `http://127.0.0.1:${port}/scripts/test-app-fixture.html?lang=zh-CN`]);
+  await waitForAppReady("zh-CN");
   const localeOutput = await browser(["eval", "-b", Buffer.from(browserLocaleTest()).toString("base64")]);
   const localeResult = parseBrowserValue(localeOutput);
   if (!localeResult.pass) throw new Error("Search UI locale browser test did not pass.");

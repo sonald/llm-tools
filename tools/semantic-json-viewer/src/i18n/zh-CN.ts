@@ -550,6 +550,7 @@ export const zhCN: MessageCatalog = {
   "search.queryTooLong": "搜索查询超过 4096 字节限制。",
   "search.searching": "正在搜索…",
   "search.relocatingHistory": "正在恢复搜索历史…",
+  "search.projectionBudgetExceeded": "共享的 32 MiB 投影预算已满，当前搜索历史不可用；请缩小查询范围或重试。",
   "search.openFileDescription": "打开文件以搜索当前范围。",
   "search.failed": "搜索失败。",
   "search.responseInvalid": "搜索响应无效。",

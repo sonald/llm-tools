@@ -548,6 +548,7 @@ export const en = {
   "search.queryTooLong": "Search query exceeds the 4096-byte limit.",
   "search.searching": "Searching…",
   "search.relocatingHistory": "Restoring search history…",
+  "search.projectionBudgetExceeded": "Search history is unavailable within the shared 32 MiB projection budget; narrow the query or retry.",
   "search.openFileDescription": "Open a file to search its current scope.",
   "search.failed": "Search failed.",
   "search.responseInvalid": "The search response is invalid.",
