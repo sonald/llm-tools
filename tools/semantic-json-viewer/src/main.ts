@@ -326,6 +326,7 @@ const contentViewer = new ContentViewer({
     }
   },
   invoke,
+  projectionBudget,
   onSessionError: (error) => handleCurrentSessionAsyncError(ipcError(error)),
   onClose: (restoreFocus) => {
     if (restoreFocus) focusContentViewerFallback();

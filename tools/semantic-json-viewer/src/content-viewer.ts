@@ -12,6 +12,7 @@ import { SearchView, type SearchMatch, type SearchViewElements } from "./search-
 import { RenderedSearch, type RenderedMatch, type RenderedSearchTarget } from "./rendered-search";
 import { TextLineView, type TextLineHighlight } from "./text-line-view";
 import { t } from "./i18n";
+import { ProjectionBudget } from "./projection-budget";
 
 export type ContentTarget = {
   revision: number;
@@ -223,6 +224,7 @@ type ContentViewerOptions = {
   invoke?: typeof invoke;
   onSessionError?: (error: unknown) => void;
   onClose?: (restoreFocus: boolean) => void;
+  projectionBudget?: ProjectionBudget;
 };
 
 type NestedScope = {
@@ -307,6 +309,7 @@ export class ContentViewer {
   private readonly invokeRequest: typeof invoke;
   private readonly onSessionError: (error: unknown) => void;
   private readonly onClose: ((restoreFocus: boolean) => void) | undefined;
+  private readonly projectionBudget: ProjectionBudget;
   private generation = 0;
   private ignoredDialogCloseEvents = 0;
   private target: ContentTarget | null = null;
@@ -392,6 +395,7 @@ export class ContentViewer {
     this.invokeRequest = options.invoke ?? invoke;
     this.onSessionError = options.onSessionError ?? (() => undefined);
     this.onClose = options.onClose;
+    this.projectionBudget = options.projectionBudget ?? new ProjectionBudget();
     this.nestedElements = options.elements.nested ?? null;
     this.htmlElements = options.elements.html ?? null;
     this.stringElements = options.elements.string ?? null;
@@ -421,6 +425,7 @@ export class ContentViewer {
       ? new SearchView({
         ...options.elements.search,
         invoke: this.invokeRequest,
+        projectionBudget: this.projectionBudget,
         onReveal: (match) => void this.revealSearchMatch(match),
         onError: (error) => this.handleSearchError(error),
         onIntentChange: () => this.cancelContentRead(),
@@ -433,6 +438,7 @@ export class ContentViewer {
       ? new RenderedSearch({
         ...options.elements.search,
         invoke: this.invokeRequest,
+        projectionBudget: this.projectionBudget,
         onReveal: (match) => void this.revealRenderedMatch(match),
         onIntentChange: () => this.handleRenderedIntentChange(),
         onError: (error) => this.handleSearchError(error),
@@ -632,6 +638,7 @@ export class ContentViewer {
     this.setStringVisible(false);
     this.setHtmlVisible(false);
     this.sourceSearch?.clear();
+    this.renderedSearch?.clear();
     this.elements.alert.hidden = true;
     this.elements.dialog.removeAttribute("aria-busy");
     this.elements.content.removeAttribute("aria-busy");
