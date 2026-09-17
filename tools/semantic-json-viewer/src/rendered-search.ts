@@ -6,6 +6,7 @@ import {
   type SearchViewElements
 } from "./search-view";
 import { t } from "./i18n";
+import { ProjectionBudget } from "./projection-budget";
 
 export type RenderedSearchTarget = {
   nodeId: number;
@@ -55,6 +56,7 @@ type RenderedSearchOptions = SearchViewElements & {
   onReveal: (match: RenderedMatch) => void;
   onIntentChange: () => void;
   onError: (error: unknown) => void;
+  projectionBudget?: ProjectionBudget;
   onProjectionUnavailable?: (error: unknown) => void;
 };
 
@@ -67,6 +69,8 @@ type SearchSnapshot = {
   projection: RenderedProjection | null;
   query: string;
 };
+
+type ProjectionAdmission = "admitted" | "rejected" | "stale";
 
 type TextRestore = {
   original: Text;
@@ -263,6 +267,7 @@ export class RenderedSearch {
   private readonly onReveal: (match: RenderedMatch) => void;
   private readonly onIntentChange: () => void;
   private readonly onError: (error: unknown) => void;
+  private readonly projectionBudget: ProjectionBudget;
   private readonly onProjectionUnavailable: (error: unknown) => void;
   private projection: RenderedProjection | null = null;
   private target: RenderedSearchTarget | null = null;
@@ -286,6 +291,7 @@ export class RenderedSearch {
     this.onReveal = options.onReveal;
     this.onIntentChange = options.onIntentChange;
     this.onError = options.onError;
+    this.projectionBudget = options.projectionBudget ?? new ProjectionBudget();
     this.onProjectionUnavailable = options.onProjectionUnavailable ?? (() => undefined);
     this.elements.form.addEventListener("submit", (event) => { event.preventDefault(); if (this.isOwner()) void this.submit(); });
     this.elements.query.addEventListener("input", () => { if (this.isOwner()) this.invalidate(); });
@@ -301,16 +307,30 @@ export class RenderedSearch {
   get query(): string { return this.elements.query.value; }
 
   activate(mode: "dom" | "backend", target: RenderedSearchTarget | null, projection: RenderedProjection | null, description: string): void {
-    const sameTarget = this.target?.nodeId === target?.nodeId && this.target?.scopeId === target?.scopeId
-      && this.target?.sessionRevision === target?.sessionRevision && this.target?.scopeStart === target?.scopeStart
-      && this.target?.scopeEnd === target?.scopeEnd;
+    const sameTarget = sameRenderedTarget(this.target, target);
     if (this.mode === mode && sameTarget) {
       this.target = target;
-      if (projection) {
+      if (projection && projection !== this.projection) {
+        const epoch = this.projectionEpoch;
+        this.setOwner("rendered");
+        if (this.projection) this.projectionBudget.release(this.projection);
+        this.projection = null;
+        const admission = this.admitProjection(projection, () => epoch === this.projectionEpoch
+          && this.isOwner() && this.mode === mode && sameRenderedTarget(this.target, target));
+        if (admission !== "admitted") {
+          if (admission === "rejected") {
+            const error = new Error(t("search.projectionBudgetExceeded"));
+            this.clear();
+            this.onProjectionUnavailable(error);
+          }
+          return;
+        }
         this.projection = projection;
         this.domRoot = projection.root;
         this.domSnapshot = Array.from(projection.root.childNodes);
         this.projectionPending = false;
+      } else if (this.projection) {
+        this.touchProjection();
       }
       this.setOwner("rendered");
       this.elements.description.textContent = description;
@@ -321,9 +341,9 @@ export class RenderedSearch {
     this.clear(true);
     this.mode = mode;
     this.target = target;
-    this.projection = projection;
-    this.domRoot = projection?.root ?? null;
-    this.domSnapshot = projection ? Array.from(projection.root.childNodes) : [];
+    this.projection = null;
+    this.domRoot = null;
+    this.domSnapshot = [];
     this.projectionPending = false;
     this.elements.panel.hidden = false;
     this.setOwner("rendered");
@@ -335,6 +355,22 @@ export class RenderedSearch {
     this.elements.rawSource.checked = false;
     this.elements.rawSource.disabled = true;
     this.elements.form.setAttribute("aria-busy", "false");
+    if (projection) {
+      const epoch = this.projectionEpoch;
+      const admission = this.admitProjection(projection, () => epoch === this.projectionEpoch
+        && this.isOwner() && this.mode === mode && sameRenderedTarget(this.target, target));
+      if (admission !== "admitted") {
+        if (admission === "rejected") {
+          const error = new Error(t("search.projectionBudgetExceeded"));
+          this.clear();
+          this.onProjectionUnavailable(error);
+        }
+        return;
+      }
+      this.projection = projection;
+      this.domRoot = projection.root;
+      this.domSnapshot = Array.from(projection.root.childNodes);
+    }
     this.render();
   }
 
@@ -343,6 +379,7 @@ export class RenderedSearch {
     const snapshot = Array.from(root.childNodes);
     if (sameTarget && this.domRoot === root && sameNodes(snapshot, this.domSnapshot)
       && (this.projection !== null || this.projectionPending)) {
+      if (this.projection) this.touchProjection();
       this.elements.description.textContent = description;
       this.elements.panel.hidden = false;
       this.setOwner("rendered");
@@ -350,6 +387,7 @@ export class RenderedSearch {
       return;
     }
     this.cancelProjection();
+    if (this.projection) this.projectionBudget.release(this.projection);
     if (!sameTarget) {
       this.activate("dom", target, null, description);
     } else {
@@ -381,6 +419,17 @@ export class RenderedSearch {
     this.projectionAbort = controller;
     void projectRenderedText(root, { signal: controller.signal }).then((projection) => {
       if (epoch !== this.projectionEpoch || controller.signal.aborted || this.mode !== "dom" || this.domRoot !== root || !this.isOwner()) return;
+      const admission = this.admitProjection(projection, () => epoch === this.projectionEpoch && !controller.signal.aborted && this.mode === "dom" && this.domRoot === root && this.isOwner());
+      if (admission !== "admitted") {
+        if (admission === "stale") return;
+        this.projectionPending = false;
+        this.projectionAbort = null;
+        this.busy = false;
+        const error = new Error(t("search.projectionBudgetExceeded"));
+        this.clear();
+        this.onProjectionUnavailable(error);
+        return;
+      }
       this.projection = projection;
       this.domSnapshot = Array.from(root.childNodes);
       this.projectionPending = false;
@@ -401,6 +450,7 @@ export class RenderedSearch {
   async reprojectDom(root: HTMLElement): Promise<void> {
     if (!this.isOwner() || (this.mode !== "dom" && this.mode !== "backend")) return;
     this.cancelProjection();
+    if (this.projection) this.projectionBudget.release(this.projection);
     this.projection = null;
     this.projectionPending = true;
     this.busy = true;
@@ -411,6 +461,17 @@ export class RenderedSearch {
     try {
       const projection = await projectRenderedText(root, { signal: controller.signal });
       if (epoch !== this.projectionEpoch || controller.signal.aborted || !this.isOwner() || (this.mode !== "dom" && this.mode !== "backend")) return;
+      const admission = this.admitProjection(projection, () => epoch === this.projectionEpoch && !controller.signal.aborted && this.isOwner() && (this.mode === "dom" || this.mode === "backend"));
+      if (admission !== "admitted") {
+        if (admission === "stale") return;
+        this.projectionPending = false;
+        this.projectionAbort = null;
+        this.busy = false;
+        const error = new Error(t("search.projectionBudgetExceeded"));
+        this.clear();
+        this.onProjectionUnavailable(error);
+        return;
+      }
       this.clearHighlights();
       this.projection = projection;
       this.domRoot = root;
@@ -431,21 +492,46 @@ export class RenderedSearch {
 
   refresh(projection: RenderedProjection | null): void {
     if (!this.isOwner()) return;
+    const target = this.target;
+    const mode = this.mode;
+    this.cancelProjection();
+    const epoch = this.projectionEpoch;
     this.clearHighlights();
-    this.projection = projection;
-    this.domRoot = projection?.root ?? null;
-    this.domSnapshot = projection ? Array.from(projection.root.childNodes) : [];
+    if (this.projection) this.projectionBudget.release(this.projection);
+    this.projection = null;
+    this.domRoot = null;
+    this.domSnapshot = [];
+    this.clearHistory();
+    this.currentIndex = -1;
+    if (projection) {
+      const admission = this.admitProjection(projection, () => epoch === this.projectionEpoch
+        && this.isOwner() && this.mode === mode
+        && sameRenderedTarget(this.target, target) && this.projection === null);
+      if (admission !== "admitted") {
+        if (admission === "rejected") {
+          const error = new Error(t("search.projectionBudgetExceeded"));
+          this.clear();
+          this.onProjectionUnavailable(error);
+        }
+        return;
+      }
+      this.projection = projection;
+      this.domRoot = projection.root;
+      this.domSnapshot = Array.from(projection.root.childNodes);
+    }
     this.projectionPending = false;
     if (this.mode === "dom" && !this.busy) this.render();
   }
 
   highlightRange(start: number, end: number): void {
     if (!this.isOwner() || !this.projection) return;
+    this.touchProjection();
     this.highlight({ kind: "dom", start, end, label: t("search.renderedVisible", { start, end }) });
   }
 
   highlightSourceRange(start: number, end: number): void {
     if (!this.isOwner() || !this.projection || start >= end) return;
+    this.touchProjection();
     let projectedStart: number | null = null;
     let projectedEnd: number | null = null;
     for (const segment of this.projection.segments) {
@@ -470,6 +556,7 @@ export class RenderedSearch {
 
   serializeHighlightedMarkup(anchorId: string): string | null {
     if (!this.isOwner() || !this.projection || this.marks.length === 0 || !/^sjv-html-search-\d+$/.test(anchorId)) return null;
+    this.touchProjection();
     this.marks.forEach((mark, index) => {
       mark.removeAttribute("id");
       if (index === 0) mark.id = anchorId;
@@ -477,11 +564,38 @@ export class RenderedSearch {
     return this.projection.root.innerHTML;
   }
 
+  private admitProjection(projection: RenderedProjection, stillCurrent: () => boolean): ProjectionAdmission {
+    const bytes = estimateProjectionBytes(projection);
+    if (!this.projectionBudget.admit(
+      projection,
+      bytes,
+      () => this.evictProjection(projection),
+      () => true
+    )) return "rejected";
+    if (!stillCurrent()) {
+      this.projectionBudget.release(projection);
+      return "stale";
+    }
+    return "admitted";
+  }
+
+  private touchProjection(): void {
+    if (this.projection) this.projectionBudget.touch(this.projection);
+  }
+
+  private evictProjection(projection: RenderedProjection): void {
+    if (this.projection !== projection) return;
+    const ownsForm = this.isOwner();
+    this.clear();
+    if (ownsForm) this.onProjectionUnavailable(new Error(t("search.projectionBudgetExceeded")));
+  }
+
   clear(keepQuery = true): void {
     this.cancelProjection();
     const ownsForm = this.isOwner();
     this.requestEpoch += 1;
     this.clearHighlights();
+    if (this.projection) this.projectionBudget.release(this.projection);
     this.busy = false;
     this.mode = null;
     this.target = null;
@@ -535,6 +649,7 @@ export class RenderedSearch {
 
   highlight(match: RenderedMatch): void {
     if (!this.isOwner() || match.kind !== "dom" || !this.projection) return;
+    this.touchProjection();
     this.clearHighlights();
     const ranges = new Map<Text, Array<{ start: number; end: number }>>();
     for (const segment of this.projection.segments) {
@@ -586,13 +701,16 @@ export class RenderedSearch {
     this.busy = true;
     this.elements.resultsPanel.hidden = false;
     this.setStatus(t("search.searchingRendered"));
+    if (snapshot.mode === "dom" && this.projection) this.touchProjection();
     this.render();
     try {
       const page = snapshot.mode === "dom"
         ? findDomPage(snapshot.projection, snapshot.query, 0)
         : await this.searchBackend(snapshot.query, null, snapshot.target);
       if (!this.isSnapshotCurrent(snapshot)) return;
-      this.cachePage(0, page, new Set([0]));
+      if (!this.cachePage(0, page, new Set([0]), () => this.isSnapshotCurrent(snapshot))) {
+        throw new Error(t("search.projectionBudgetExceeded"));
+      }
       if (!this.isSnapshotCurrent(snapshot)) return;
       this.currentIndex = 0;
       this.setStatus(pageStatus(page));
@@ -639,7 +757,9 @@ export class RenderedSearch {
         ? findDomPage(snapshot.projection, snapshot.query, currentPage.nextCursor)
         : await this.searchBackend(snapshot.query, currentPage.nextCursor, snapshot.target);
       if (!this.isSnapshotCurrent(snapshot)) return;
-      this.cachePage(nextIndex, next, new Set([currentIndex, nextIndex]));
+      if (!this.cachePage(nextIndex, next, new Set([currentIndex, nextIndex]), () => this.isSnapshotCurrent(snapshot))) {
+        throw new Error(t("search.projectionBudgetExceeded"));
+      }
       if (!this.isSnapshotCurrent(snapshot)) return;
       this.currentIndex = nextIndex;
       this.setStatus(pageStatus(next));
@@ -677,7 +797,9 @@ export class RenderedSearch {
     try {
       const previous = await this.rescanPage(snapshot, targetIndex);
       if (!this.isSnapshotCurrent(snapshot)) return;
-      this.cachePage(targetIndex, previous, new Set([previousIndex, targetIndex]));
+      if (!this.cachePage(targetIndex, previous, new Set([previousIndex, targetIndex]), () => this.isSnapshotCurrent(snapshot))) {
+        throw new Error(t("search.projectionBudgetExceeded"));
+      }
       if (!this.isSnapshotCurrent(snapshot)) return;
       this.currentIndex = targetIndex;
       this.setStatus(pageStatus(previous));
@@ -737,7 +859,9 @@ export class RenderedSearch {
           ? await findDomPageAsync(snapshot.projection, snapshot.query, cursor, () => this.isSnapshotCurrent(snapshot))
           : await this.searchBackend(snapshot.query, cursor, snapshot.target);
         if (!this.isSnapshotCurrent(snapshot)) throw new DOMException(t("search.renderedProjectionCancelled"), "AbortError");
-        this.cachePage(index, page, new Set([this.currentIndex, index]));
+        if (!this.cachePage(index, page, new Set([this.currentIndex, index]), () => this.isSnapshotCurrent(snapshot))) {
+          throw new Error(t("search.projectionBudgetExceeded"));
+        }
         if (!this.isSnapshotCurrent(snapshot)) throw new DOMException(t("search.renderedProjectionCancelled"), "AbortError");
       }
       cursor = page.nextCursor;
@@ -803,6 +927,7 @@ export class RenderedSearch {
   }
 
   private clearHistory(): void {
+    for (const page of this.history.values()) this.projectionBudget.release(page);
     this.history.clear();
     this.historyBytes = 0;
   }
@@ -812,18 +937,52 @@ export class RenderedSearch {
     if (!page) return null;
     this.history.delete(index);
     this.history.set(index, page);
+    this.projectionBudget.touch(page);
     return page;
   }
 
-  private cachePage(index: number, page: Page, protectedIndices: Set<number>): void {
+  private cachePage(index: number, page: Page, protectedIndices: Set<number>, stillCurrent: () => boolean): boolean {
+    if (!stillCurrent()) return false;
+    const bytes = estimatePageBytes(page);
+    if (!this.projectionBudget.admit(
+      page,
+      bytes,
+      () => this.evictBudgetPage(page),
+      () => this.canEvictBudgetPage(page)
+    )) return false;
+    if (!stillCurrent()) {
+      this.projectionBudget.release(page);
+      return false;
+    }
+    const previous = this.history.get(index);
+    if (previous && previous !== page) this.projectionBudget.release(previous);
     this.history.delete(index);
     this.history.set(index, page);
     this.historyBytes = this.estimateHistoryBytes();
     while (this.history.size > MAX_HISTORY_PAGES || this.historyBytes > MAX_HISTORY_BYTES) {
       const victim = Array.from(this.history.keys()).find((candidate) => !protectedIndices.has(candidate));
       if (victim === undefined) break;
+      const victimPage = this.history.get(victim);
       this.history.delete(victim);
+      if (victimPage) this.projectionBudget.release(victimPage);
       this.historyBytes = this.estimateHistoryBytes();
+    }
+    return true;
+  }
+
+  private canEvictBudgetPage(page: Page): boolean {
+    for (const [index, cached] of this.history) {
+      if (cached === page) return index !== this.currentIndex || !this.isOwner();
+    }
+    return true;
+  }
+
+  private evictBudgetPage(page: Page): void {
+    for (const [index, cached] of this.history) {
+      if (cached !== page) continue;
+      this.history.delete(index);
+      this.historyBytes = this.estimateHistoryBytes();
+      return;
     }
   }
 
@@ -970,6 +1129,10 @@ function estimatePageBytes(page: Page): number {
     bytes += 96 + match.backend.pathSegments.reduce((total, segment) => total + segment.length * 2 + 16, 0);
   }
   return bytes;
+}
+
+function estimateProjectionBytes(projection: RenderedProjection): number {
+  return projection.text.length * 2 + projection.segments.length * 128;
 }
 
 function estimateValueBytes(value: unknown): number {
