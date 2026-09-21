@@ -122,6 +122,23 @@
 - `invalid-utf8.json`（7 B）：文件级编码错误并进入 Raw-only，Tree/Decoded search 禁用。Lossy 为 `{"x":�}`；Hex 为 `7b 22 78 22 3a ff 7d`，文件范围 `[0,7)`。没有把有损替换内容作为有效 JSON 解析。
 - 以上固定 F-07 行为已观察；不扩展为所有编码边界或 F-00 路由全量 PASS。
 
+### 2026-09-21 F-00 固定路由矩阵
+
+同一 `index-CPNlsFas.js` 构建，逐个通过 Native 文件选择器打开 `routing` 生成器输入，核对实际文件名和模式：
+
+| 固定输入 | Native 结果 |
+| --- | --- |
+| `pretty.json`（73 B） | Document，结构已加载 |
+| `one-line.json`（33 B） | Document，结构已加载 |
+| `one-line.jsonl`（25 B） | Entry，1/1 条有效，源范围 `[0,24)` |
+| `unknown-extension-single-json`（57 B） | Document，结构已加载 |
+| `unknown-extension-jsonl`（18 B） | Entry，2/2 条有效，源范围 `[0,8)`、`[9,17)` |
+| `concatenated-json`（4 B） | 明确“不支持的封装格式”，保留前一文件与修订版本 12 |
+| `json-text-sequence`（8 B） | 明确“不支持的封装格式”，保留前一文件与修订版本 12 |
+| `pretty-printed-records.jsonl`（69 B） | Entry，8/8 个非空物理行均为无效 JSON，不合并为两个 pretty 记录 |
+
+上述 F-00 固定样本路由 PASS；只证明这些固定输入，不代替扩展名/大文件抽样边界、无损复制或安全验收。打开有效文件后先前拒绝提示清除。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
@@ -143,7 +160,7 @@
 
 ## 尚未验收
 
-- 其他 F-00/F-07 固定输入的完整 Native 路由矩阵。
+- F-00 固定路由矩阵已验证，额外路由边界及 F-07 未列出的编码路径仍以各自证据为准。
 - Code 超限窗口：上述行数/字节大小降级、分页、末行搜索已 Native 验证；其余完整 F-01 矩阵仍待验收。
 - F6 Auto/Generic/Event：上述固定正例/负例及选择保持已 Native 验证；其他完整矩阵以各自记录为准。
 - F-11 Native 五项零证据（脚本、网络、IPC、top navigation、宿主 DOM）。
