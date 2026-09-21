@@ -233,7 +233,11 @@ async function attachEvidence(testInfo: TestInfo, name: string, value: unknown):
 function collectErrors(page: Page): string[] {
   const errors: string[] = []
   page.on('console', message => {
-    if (message.type() === 'error' || message.type() === 'warning') errors.push(message.text())
+    if (message.type() === 'error' || message.type() === 'warning') {
+      const text = message.text()
+      if (text.includes('chrome://juggler') || text.includes('NS_BINDING_ABORTED')) return
+      errors.push(text)
+    }
   })
   page.on('pageerror', error => errors.push(error.message))
   return errors

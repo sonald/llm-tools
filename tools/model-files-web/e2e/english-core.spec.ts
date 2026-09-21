@@ -6,7 +6,11 @@ test.use({ locale: 'en-US' })
 test('runs the core repository and tokenizer entry points in English', async ({ page }) => {
   const errors: string[] = []
   page.on('console', message => {
-    if (message.type() === 'error' || message.type() === 'warning') errors.push(message.text())
+    if (message.type() === 'error' || message.type() === 'warning') {
+      const text = message.text()
+      if (text.includes('chrome://juggler') || text.includes('NS_BINDING_ABORTED')) return
+      errors.push(text)
+    }
   })
   page.on('pageerror', error => errors.push(error.message))
   const requests = await installFixtureRoutes(page)
