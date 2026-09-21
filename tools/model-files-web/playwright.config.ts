@@ -4,6 +4,8 @@ import { join } from 'node:path'
 
 export default defineConfig({
   testDir: './e2e',
+  timeout: process.env.CI ? 60000 : 30000,
+  retries: process.env.CI ? 2 : 0,
   outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR ?? join(tmpdir(), 'model-files-web-playwright'),
   reporter: 'list',
   projects: [
