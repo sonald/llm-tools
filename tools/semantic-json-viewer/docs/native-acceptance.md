@@ -38,6 +38,16 @@
 - 新发现：Viewer 主要文案已中文，但搜索说明仍出现 `Search parsed JSON keys and values.` / `Search the decoded source.` / `Search the raw lexeme.` / `Search the visible rendered text.`，因此完整 Native i18n 尚未通过。
 - 此轮没有验证 Code 的两种超限输入、F-11 五零或全部 F-00–F-12；生成器内的 22,050 行和超过 1 MiB 单行 Code 仅为下一轮准备，不能记为 PASS。
 
+### 2026-09-21 搜索文案与 Code 降级复测
+
+- 新构建前端 `index-BCTHVp7n.js`，bundle 内可执行文件 SHA-256 `be24fffe7b3576a622caafa6638466fe1adcea071f484e513e386261ea199a05`；退出旧实例后启动新 `.app`。
+- 上一轮发现的 Parsed / Decoded / Raw / Rendered 搜索说明均在 Native 中显示中文，分别为“搜索解析后的 JSON 键和值。”“搜索解码源文本。”“搜索原始词法单元。”“搜索可见的渲染文本。”。这些已观察到的英文说明问题关闭；不据此推断未走到的所有文案路径均通过。
+- 同一 `native-regressions.json` 的 `$.code`：506,979 B、22,050 行，Native 自动检测为 Code，显示禁用高亮提示和带行号文本。首块 `[0,131072)`，下一块 `[131072,262144)` 的首行号为 6059，与源文本换行数核对一致。
+- 在 Native Rendered 搜索中查找 `row22049`，得到 1 个匹配；点击后显示 `[506962,506979)`、`row22049 = 22049;` 和行号 22050。该末行定位与源文本核对一致。
+- `$.codeOneLine`：1,048,593 B、1 行，Auto 为 Plain Text；手动选 JavaScript 后显示用户覆盖和禁用高亮提示。翻到第二块 `[131072,262144)`，NoWrap 保持行号 1；继续翻到末块 `[1048576,1048593)`，显示 15 个 `x` 与 `";`，行号仍为 1，Next 禁用。截图和 AX 均已观察。
+- 文件操作前后 SHA-256 均为 `3360fbf4f2c7ad813d370c06dcfa057efc062861290868cd1ebc4c688b014f76`，这批只读流程未修改输入。
+- 自动化补充：i18n 153 static / 126 main / 299 view keys、Parsed Search 32 项通过；Tauri app bundle 构建成功。未将这些检查替代上述 Native 操作。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
@@ -55,15 +65,15 @@
 ## 回归关闭与未闭环问题
 
 - Nested 重复 tabs：已由上方 2026-09-21 新构建的短/长子串复测关闭；保留历史记录，不回写旧 bundle 为 PASS。
-- Native i18n：2026-09-21 Viewer 主要文案已中文，但搜索说明仍有英文；不把局部中文标签升级为全量通过。
+- Native i18n：2026-09-21 发现的四种搜索说明已修复并原生复测；其他未走到的文案路径仍不视为全量通过。
 
 ## 尚未验收
 
 - 其他 F-00/F-07 固定输入的完整 Native 路由矩阵。
-- Code 超限窗口的 Native 真实流程（`ace1f24` 自动化已通过，Native 未测）。
+- Code 超限窗口：上述行数/字节大小降级、分页、末行搜索已 Native 验证；其余完整 F-01 矩阵仍待验收。
 - F6 Auto/Generic/Event UI 的 Native 真实流程（`f06d3dc` headless/main 集成已通过，Native 未测）。
 - F-11 Native 五项零证据（脚本、网络、IPC、top navigation、宿主 DOM）。
 - F-09/F-10 在 Linux 参考环境的 fresh 五轮、cold/warm、private-memory 和完整应用门槛：用户确认待远程环境提供后验证，不阻塞当前项目，仍不标为通过。
 - 其他未列出的 F-01 至 F-12 最终 Native/UI 与发布证据。
 
-因此，本台账的结论是：Nested 重复 tabs 已复测关闭，Native i18n 仍有缺口，且还有多项未验；整体保持 `INCOMPLETE`，不标记 F-00 至 F-12 全 PASS。
+因此，本台账的结论是：已观察到的 Nested 重复 tabs 和搜索说明英文问题已复测关闭，Code 两种超限降级已获得局部证据，仍有多项未验；整体保持 `INCOMPLETE`，不标记 F-00 至 F-12 全 PASS。

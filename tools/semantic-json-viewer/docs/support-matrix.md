@@ -27,7 +27,7 @@
 | Collection / Conversation / Plain | Collection 窗口、Conversation block 窗口和 Plain text line window 已有实现及局部证据；不据此宣称所有列表或 Code 窗口都已虚拟化 | 部分证据：`src/collection-list.ts`、`src/conversation-view.ts`、`src/text-line-view.ts`、`docs/native-acceptance.md` |
 | Collection page cache | 当前挂载的两页为活动窗口，其他保留页接入 main 共享 ProjectionBudget；仍最多保留三页。先移出新活动窗口的缓存账目，再准入旧页，淘汰不清除选中 ordinal，回访按 cursor 重读 | `test-search-ui.mjs` 英文 144 / 中文 8 项通过（含共享压力、活动页切换与跨文件迟到预取），构建通过；`memoryUsage` 分列缓存页和活动页的估算，非实际 heap |
 | Content text cache | Decoded / Raw / Nested 共用 32 MiB 文本预算，跨缓存 LRU；可见页保留，已淘汰页按偏移重读，Nested CRLF 检查点与正文分离 | `1f96dd0`；独立文本压力 18、真实 CRLF 重读 8 项及构建通过；估算 UTF-16 正文和条目开销，不等于 WebView heap 测量；导航元数据按 §8.6 不计入缓存限额，全应用统计仍未完成 |
-| Code | 支持 Python、JavaScript、TypeScript、Rust、C、C++、Java、Go、Shell、SQL、JSON、YAML；自动猜语言上限 256 KiB，高亮上限为 1 MiB 或 20,000 行，超限退回 Plain Code window | `ace1f24` 已实现超限窗口；独立 wrap 90、Rendered 61 自动化通过，Native 尚未验收：`src/code-renderer.ts`、`src/content-viewer.ts` |
+| Code | 支持 Python、JavaScript、TypeScript、Rust、C、C++、Java、Go、Shell、SQL、JSON、YAML；自动猜语言上限 256 KiB，高亮上限为 1 MiB 或 20,000 行，超限退回 Plain Code window | `ace1f24`；2026-09-21 Native 已验证 22,050 行降级、连续行号/末行搜索及 1,048,593 B 单行降级/分页/NoWrap；并非所有语种与完整 F-01 均已验：`docs/native-acceptance.md` |
 | Markdown | 自动渲染上限 2 MiB；显式继续渲染上限 32 MiB；链接显示为文本、图片为占位，raw HTML 不执行 | 已实现但安全 Native 五零证据未闭环：`src/content-viewer.ts`、`src/markdown-renderer.ts` |
 | HTML | HTML Preview 输入上限 512 KiB，输出上限 1 MiB；HTML 自动启发式检测上限 64 KiB。离开 Preview 时释放隐藏 iframe 正文、搜索 DOM 和预览字符串；返回时重新获取净化预览，保留 Source 页缓存 | HTML Rendered 30 项、Content Viewer 144 项及安全套件 1773 项通过；浏览器 HAR hostile/http-hostile/data 请求均为 0。Native 五项零证据仍未闭环：`src/content-viewer.ts`、`src-tauri/src/html_sanitizer.rs`、`src-tauri/src/semantic_detection.rs` |
 | Nested JSON | 单层 2 MiB、累计 8 MiB；默认深度 5，UI 可选 1–10，变更时从嵌套根重新打开；旧 Native 重复 tabs 问题已于 2026-09-21 通过短/长子串返回路径复测关闭 | `d9b6066`；Content Viewer 144、Parsed Search 32 通过；Native 已验证返回选择、标签互斥及小值复制，但完整 F-02 尚未完成：`docs/native-acceptance.md` |
@@ -43,7 +43,7 @@ Conversation 分页历史现在最多保存 16 个游标检查点；更早的 Pr
 | Event Stream hint | Core hint 和 summary 路径已提交；`f06d3dc` 已实现 Auto / Generic / Event UI，headless 25 项断言和 main 集成通过 | UI 已提交、Native 未验：`src-tauri/src/event_hint.rs`、`src/entry-list.ts`、`docs/native-acceptance.md` |
 | i18n | 壳、列表、Tree、Raw、搜索、Viewer 和 Conversation 已有中英文资源；源角色、路径、协议字段不翻译。底层错误原文与完整 Native 发布文案仍需最终审计 | `68b019b`、`9f643f4`、`23478b9`；独立 Conversation 英文 96/中文 10，Viewer 144、Parsed Search 32 及资源检查通过；Native 实证仍以 `docs/native-acceptance.md` 为准 |
 | Main IPC 错误 | 稳定 code 的标题/操作说明本地化，原始 diagnostic 保留；`invalid_json` 继续使用共享 parse formatter，未知 code 回退原文 | `87987b1`；真实 Main 英文 4、中文 8 通过，Native 错误入口仍未验 |
-| macOS | macOS arm64 新构建已真实启动并复测 Nested 返回、表示切换及复制；旧重复 tabs FAIL 已关闭，搜索说明仍有英文待修复 | 部分验收，不是 F-00–F-12 全 PASS：`docs/native-acceptance.md` |
+| macOS | macOS arm64 新构建已真实启动并复测 Nested 返回、表示切换、复制和 Code 超限；旧重复 tabs 与已发现的英文搜索说明均已复测关闭 | 部分验收，不是 F-00–F-12 全 PASS：`docs/native-acceptance.md` |
 | Linux | Linux 功能、安全及参考环境 cold/warm、fresh 五轮、private-memory 尚未验；等待用户提供远程环境后验证 | 2026-09-21 用户确认延后且不阻塞当前项目；已知依赖风险仍见 `docs/security-report.md`，不标为已支持/已通过 |
 | Windows | `320af83` 已补 FileSource 的平台读取分支；本机回归通过，但未进行 Windows 编译、运行或安全验收，不先列为已支持 | 未验：`src-tauri/src/file_source.rs` |
 
