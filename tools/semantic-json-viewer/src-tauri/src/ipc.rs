@@ -45,17 +45,31 @@ enum OpenSession {
 
 struct NestedScope {
     scope_id: u64,
-    tree: TreeDocument,
+    tree: Option<TreeDocument>,
+    source: Vec<u8>,
+    tree_bytes: usize,
+    last_used: u64,
     depth: u8,
     max_depth: u8,
     cumulative_bytes: usize,
     budget: NestedBudget,
 }
 
+impl NestedScope {
+    fn tree(&self) -> &TreeDocument {
+        self.tree
+            .as_ref()
+            .expect("nested scope materialized before access")
+    }
+}
+
+const NESTED_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
 #[derive(Default)]
 struct NestedScopes {
     next_scope_id: u64,
     scopes: Vec<NestedScope>,
+    clock: u64,
 }
 
 impl NestedScopes {
@@ -63,11 +77,59 @@ impl NestedScopes {
         Self {
             next_scope_id: 1,
             scopes: Vec::new(),
+            clock: 0,
         }
     }
 
     fn find(&self, scope_id: u64) -> Option<&NestedScope> {
         self.scopes.iter().find(|scope| scope.scope_id == scope_id)
+    }
+
+    fn materialize(&mut self, scope_id: u64) -> Result<(), IpcError> {
+        self.clock = self.clock.saturating_add(1);
+        let scope = self
+            .scopes
+            .iter_mut()
+            .find(|scope| scope.scope_id == scope_id)
+            .ok_or_else(|| nested_scope_not_found(scope_id))?;
+        if scope.tree.is_none() {
+            let tree = TreeDocument::from_bytes(scope.source.clone())
+                .map_err(|_| internal("retained nested JSON could not be reparsed"))?;
+            scope.tree_bytes = tree
+                .retained_capacity()
+                .total_capacity_bytes
+                .saturating_add(std::mem::size_of::<TreeDocument>());
+            scope.tree = Some(tree);
+        }
+        scope.last_used = self.clock;
+        Ok(())
+    }
+
+    /// Retained buffer capacities plus tree headers: (cache storage, active scope).
+    /// Replay sources are included, even after their parsed arena is evicted.
+    fn retained_capacity(&self) -> (usize, usize) {
+        let Some((active, parents)) = self.scopes.split_last() else {
+            return (0, 0);
+        };
+        let bytes = |scope: &NestedScope| scope.source.capacity().saturating_add(scope.tree_bytes);
+        (parents.iter().map(bytes).sum(), bytes(active))
+    }
+
+    fn trim_cache(&mut self) {
+        while self.retained_capacity().0 > NESTED_CACHE_BYTES {
+            let parent_count = self.scopes.len().saturating_sub(1);
+            let victim = self.scopes[..parent_count]
+                .iter_mut()
+                .filter(|scope| scope.tree.is_some())
+                .min_by_key(|scope| scope.last_used);
+            let Some(scope) = victim else {
+                break;
+            };
+            scope.tree = None;
+            scope.tree_bytes = 0;
+        }
+        // Replay sources sum to at most the existing 8 MiB nested-input limit.
+        debug_assert!(self.retained_capacity().0 <= NESTED_CACHE_BYTES);
     }
 
     fn clear(&mut self) {
@@ -91,6 +153,10 @@ impl NestedScopes {
             .position(|scope| scope.scope_id == scope_id)
             .ok_or_else(|| nested_scope_not_found(scope_id))?;
         self.scopes.truncate(position);
+        if let Some(parent_id) = self.scopes.last().map(|scope| scope.scope_id) {
+            self.materialize(parent_id)?;
+        }
+        self.trim_cache();
         Ok(())
     }
 }
@@ -1258,7 +1324,7 @@ fn get_root_node_scoped_inner(
 ) -> Result<NodeDto, IpcError> {
     with_session_scope(state, scope_id, session_revision, |session, scope| {
         if let Some(scope) = scope {
-            return Ok(node_dto(scope.tree.root()));
+            return Ok(node_dto(scope.tree().root()));
         }
         match session {
             OpenSession::Document(session) => session.root().map(node_dto).map_err(session_error),
@@ -1291,7 +1357,7 @@ fn get_node_summary_scoped_inner(
 ) -> Result<NodeDto, IpcError> {
     with_session_scope(state, scope_id, session_revision, |session, scope| {
         let node = if let Some(scope) = scope {
-            scope.tree.node(node_id)
+            scope.tree().node(node_id)
         } else {
             match session {
                 OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
@@ -1332,7 +1398,7 @@ fn get_children_scoped_inner(
 ) -> Result<NodePageDto, IpcError> {
     with_session_scope(state, scope_id, session_revision, |session, scope| {
         let parent = if let Some(scope) = scope {
-            scope.tree.node(node_id)
+            scope.tree().node(node_id)
         } else {
             match session {
                 OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
@@ -1352,7 +1418,7 @@ fn get_children_scoped_inner(
             return Err(invalid_request("invalid cursor or limit"));
         }
         let page = if let Some(scope) = scope {
-            scope.tree.children(node_id, cursor, limit)
+            scope.tree().children(node_id, cursor, limit)
         } else {
             match session {
                 OpenSession::Document(session) => session.children(node_id, cursor, limit),
@@ -1389,7 +1455,7 @@ fn read_raw_slice_scoped_inner(
 ) -> Result<TextChunkDto, IpcError> {
     with_session_scope(state, scope_id, session_revision, |session, scope| {
         let chunk = if let Some(scope) = scope {
-            scope.tree.read_raw_text(source_start, length)
+            scope.tree().read_raw_text(source_start, length)
         } else {
             match session {
                 OpenSession::Document(session) => session.read_raw_text(source_start, length),
@@ -1551,7 +1617,7 @@ fn read_decoded_text_scoped_inner(
 ) -> Result<TextChunkDto, IpcError> {
     with_session_scope(state, scope_id, session_revision, |session, scope| {
         let node = if let Some(scope) = scope {
-            scope.tree.node(node_id)
+            scope.tree().node(node_id)
         } else {
             match session {
                 OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
@@ -1571,7 +1637,7 @@ fn read_decoded_text_scoped_inner(
             return Err(invalid_request("node does not contain decoded text"));
         }
         let chunk = if let Some(scope) = scope {
-            scope.tree.read_decoded_text(node_id, offset, length)
+            scope.tree().read_decoded_text(node_id, offset, length)
         } else {
             match session {
                 OpenSession::Document(session) => {
@@ -1812,7 +1878,7 @@ fn copy_node_text_for_session(
     format: CopyFormatDto,
 ) -> Result<String, IpcError> {
     if let Some(scope) = scope {
-        return copy_tree_node(&scope.tree, node_id, format);
+        return copy_tree_node(scope.tree(), node_id, format);
     }
 
     match session {
@@ -1990,7 +2056,7 @@ fn search_current_inner(
             if let Some(node_id) = request.node_id {
                 ensure_search_target(session, Some(scope), node_id)?;
             }
-            let page = scope.tree.search(request.clone()).map_err(search_error)?;
+            let page = scope.tree().search(request.clone()).map_err(search_error)?;
             if !session.is_current() {
                 return Err(file_changed());
             }
@@ -2211,7 +2277,7 @@ fn ensure_search_target(
     node_id: usize,
 ) -> Result<(), IpcError> {
     let node = if let Some(scope) = scope {
-        scope.tree.node(node_id)
+        scope.tree().node(node_id)
     } else {
         match session {
             OpenSession::Document(session) => session.node(node_id).map_err(session_error)?,
@@ -2428,13 +2494,15 @@ fn get_string_detection_scoped_inner(
     with_session_scope(state, scope_id, session_revision, |session, scope| {
         let detection = if let Some(scope) = scope {
             let node = scope
-                .tree
+                .tree()
                 .node(node_id)
                 .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
             if node.kind != JsonKind::String {
                 return Err(invalid_request("node does not contain decoded text"));
             }
-            scope.tree.detect_string_with_budget(node_id, scope.budget)
+            scope
+                .tree()
+                .detect_string_with_budget(node_id, scope.budget)
         } else {
             match session {
                 OpenSession::Document(session) => {
@@ -2489,7 +2557,7 @@ fn get_string_metrics_scoped_inner(
     with_session_scope(state, scope_id, session_revision, |session, scope| {
         let metrics = if let Some(scope) = scope {
             scope
-                .tree
+                .tree()
                 .string_metrics(node_id)
                 .ok_or_else(|| invalid_request("node does not contain decoded text"))?
         } else {
@@ -2546,14 +2614,14 @@ fn get_html_preview_scoped_inner(
         };
         let decoded = if let Some(scope) = scope {
             let node = scope
-                .tree
+                .tree()
                 .node(node_id)
                 .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
             if node.kind != JsonKind::String {
                 return Err(invalid_request("node does not contain decoded HTML"));
             }
             let Some(decoded) = scope
-                .tree
+                .tree()
                 .decoded_text_limited(node_id, html_sanitizer::MAX_INPUT_BYTES)
             else {
                 return size_limited();
@@ -2750,146 +2818,165 @@ fn open_nested_json_inner(
     session_revision: u64,
 ) -> Result<NestedScopeDto, IpcError> {
     let mut guard = lock_session(state)?;
-    if guard.revision != session_revision {
-        return Err(stale_session());
-    }
-    let session = guard.session.as_ref().ok_or_else(no_session)?;
-    if !session.is_current() {
-        return Err(file_changed());
-    }
-    if parent_scope_id.is_some() && max_depth.is_some() {
-        return Err(invalid_request(
-            "maxDepth is only valid for a root nested scope",
-        ));
-    }
-    let mut max_depth = max_depth.unwrap_or(5);
-    if !(1..=HARD_MAX_DEPTH).contains(&max_depth) {
-        return Err(invalid_request("maxDepth must be between 1 and 10"));
-    }
-
-    let (parent_depth, parent_cumulative_bytes) = match parent_scope_id {
-        Some(scope_id) => {
-            let scope = guard
-                .nested
-                .find(scope_id)
-                .ok_or_else(|| nested_scope_not_found(scope_id))?;
-            max_depth = scope.max_depth;
-            (scope.depth, scope.cumulative_bytes)
+    let result = (|| {
+        if guard.revision != session_revision {
+            return Err(stale_session());
         }
-        None => (0, 0),
-    };
-    let depth = parent_depth
-        .checked_add(1)
-        .ok_or_else(|| internal("nested JSON depth overflow"))?;
-    if depth > max_depth {
-        return Err(invalid_request("nested JSON depth limit reached"));
-    }
-    let materialize_limit =
-        MAX_INPUT_BYTES.min(MAX_CUMULATIVE_BYTES.saturating_sub(parent_cumulative_bytes));
+        if !guard.session.as_ref().ok_or_else(no_session)?.is_current() {
+            return Err(file_changed());
+        }
+        if parent_scope_id.is_some() && max_depth.is_some() {
+            return Err(invalid_request(
+                "maxDepth is only valid for a root nested scope",
+            ));
+        }
+        let mut max_depth = max_depth.unwrap_or(5);
+        if !(1..=HARD_MAX_DEPTH).contains(&max_depth) {
+            return Err(invalid_request("maxDepth must be between 1 and 10"));
+        }
+        if let Some(scope_id) = parent_scope_id {
+            guard.nested.materialize(scope_id)?;
+        }
+        let session = guard.session.as_ref().ok_or_else(no_session)?;
 
-    let (parsed_bytes, cumulative_bytes, decoded) = match parent_scope_id {
-        Some(scope_id) => {
-            let scope = guard
-                .nested
-                .find(scope_id)
-                .ok_or_else(|| nested_scope_not_found(scope_id))?;
-            let node = scope
-                .tree
-                .node(node_id)
-                .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
-            if node.kind != JsonKind::String {
-                return Err(invalid_request("node does not contain decoded text"));
+        let (parent_depth, parent_cumulative_bytes) = match parent_scope_id {
+            Some(scope_id) => {
+                let scope = guard
+                    .nested
+                    .find(scope_id)
+                    .ok_or_else(|| nested_scope_not_found(scope_id))?;
+                max_depth = scope.max_depth;
+                (scope.depth, scope.cumulative_bytes)
             }
-            materialize_nested_value(
-                scope.tree.decoded_text_limited(node_id, materialize_limit),
-                scope.tree.decoded_text_len(node_id),
-                parent_cumulative_bytes,
-            )?
+            None => (0, 0),
+        };
+        let depth = parent_depth
+            .checked_add(1)
+            .ok_or_else(|| internal("nested JSON depth overflow"))?;
+        if depth > max_depth {
+            return Err(invalid_request("nested JSON depth limit reached"));
         }
-        None => match session {
-            OpenSession::Document(session) => {
-                let node = session
+        let materialize_limit =
+            MAX_INPUT_BYTES.min(MAX_CUMULATIVE_BYTES.saturating_sub(parent_cumulative_bytes));
+
+        let (parsed_bytes, cumulative_bytes, decoded) = match parent_scope_id {
+            Some(scope_id) => {
+                let scope = guard
+                    .nested
+                    .find(scope_id)
+                    .ok_or_else(|| nested_scope_not_found(scope_id))?;
+                let node = scope
+                    .tree()
                     .node(node_id)
-                    .map_err(session_error)?
                     .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
                 if node.kind != JsonKind::String {
                     return Err(invalid_request("node does not contain decoded text"));
                 }
                 materialize_nested_value(
-                    session
-                        .decoded_text_limited(node_id, materialize_limit)
-                        .map_err(session_error)?,
-                    session.decoded_text_len(node_id).map_err(session_error)?,
+                    scope
+                        .tree()
+                        .decoded_text_limited(node_id, materialize_limit),
+                    scope.tree().decoded_text_len(node_id),
                     parent_cumulative_bytes,
                 )?
             }
-            OpenSession::Entry(session) => {
-                require_selected(session)?;
-                let node = session
-                    .selected_node(node_id)
-                    .map_err(session_error)?
-                    .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
-                if node.kind != JsonKind::String {
-                    return Err(invalid_request("node does not contain decoded text"));
+            None => match session {
+                OpenSession::Document(session) => {
+                    let node = session
+                        .node(node_id)
+                        .map_err(session_error)?
+                        .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+                    if node.kind != JsonKind::String {
+                        return Err(invalid_request("node does not contain decoded text"));
+                    }
+                    materialize_nested_value(
+                        session
+                            .decoded_text_limited(node_id, materialize_limit)
+                            .map_err(session_error)?,
+                        session.decoded_text_len(node_id).map_err(session_error)?,
+                        parent_cumulative_bytes,
+                    )?
                 }
-                materialize_nested_value(
-                    session
-                        .selected_decoded_text_limited(node_id, materialize_limit)
-                        .map_err(session_error)?,
-                    session
-                        .selected_decoded_text_len(node_id)
-                        .map_err(session_error)?,
-                    parent_cumulative_bytes,
-                )?
-            }
-            OpenSession::RawDocument { .. } => {
-                return Err(invalid_request(
-                    "command is unavailable for a raw-only document session",
-                ));
-            }
-        },
-    };
+                OpenSession::Entry(session) => {
+                    require_selected(session)?;
+                    let node = session
+                        .selected_node(node_id)
+                        .map_err(session_error)?
+                        .ok_or_else(|| not_found(format!("node {node_id} was not found")))?;
+                    if node.kind != JsonKind::String {
+                        return Err(invalid_request("node does not contain decoded text"));
+                    }
+                    materialize_nested_value(
+                        session
+                            .selected_decoded_text_limited(node_id, materialize_limit)
+                            .map_err(session_error)?,
+                        session
+                            .selected_decoded_text_len(node_id)
+                            .map_err(session_error)?,
+                        parent_cumulative_bytes,
+                    )?
+                }
+                OpenSession::RawDocument { .. } => {
+                    return Err(invalid_request(
+                        "command is unavailable for a raw-only document session",
+                    ));
+                }
+            },
+        };
 
-    let tree = TreeDocument::from_bytes(decoded)
-        .map_err(|_| invalid_request("node is not parseable nested JSON"))?;
-    if !matches!(tree.root().kind, JsonKind::Object | JsonKind::Array) {
-        return Err(invalid_request("node is not parseable nested JSON"));
-    }
-    if !session.is_current() {
-        return Err(file_changed());
-    }
+        let decoded = decoded.into_boxed_slice().into_vec();
+        let tree = TreeDocument::from_bytes(decoded.clone())
+            .map_err(|_| invalid_request("node is not parseable nested JSON"))?;
+        if !matches!(tree.root().kind, JsonKind::Object | JsonKind::Array) {
+            return Err(invalid_request("node is not parseable nested JSON"));
+        }
+        if !session.is_current() {
+            return Err(file_changed());
+        }
 
-    let scope_id = guard.nested.next_scope_id;
-    let next_scope_id = scope_id
-        .checked_add(1)
-        .ok_or_else(|| internal("nested scope id overflow"))?;
-    let budget = NestedBudget::from_parts(depth, max_depth, cumulative_bytes);
-    let dto = NestedScopeDto {
-        scope_id,
-        parent_scope_id,
-        source_node_id: node_id,
-        root: node_dto(tree.root()),
-        depth,
-        max_depth,
-        parsed_bytes,
-        cumulative_bytes,
-        session_revision,
-    };
-    if let Some(parent_scope_id) = parent_scope_id {
-        guard.nested.truncate_after(parent_scope_id)?;
-    } else {
-        guard.nested.clear();
-    }
-    guard.nested.next_scope_id = next_scope_id;
-    guard.nested.scopes.push(NestedScope {
-        scope_id,
-        tree,
-        depth,
-        max_depth,
-        cumulative_bytes,
-        budget,
-    });
-    Ok(dto)
+        let scope_id = guard.nested.next_scope_id;
+        let next_scope_id = scope_id
+            .checked_add(1)
+            .ok_or_else(|| internal("nested scope id overflow"))?;
+        let budget = NestedBudget::from_parts(depth, max_depth, cumulative_bytes);
+        let dto = NestedScopeDto {
+            scope_id,
+            parent_scope_id,
+            source_node_id: node_id,
+            root: node_dto(tree.root()),
+            depth,
+            max_depth,
+            parsed_bytes,
+            cumulative_bytes,
+            session_revision,
+        };
+        if let Some(parent_scope_id) = parent_scope_id {
+            guard.nested.truncate_after(parent_scope_id)?;
+        } else {
+            guard.nested.clear();
+        }
+        guard.nested.next_scope_id = next_scope_id;
+        guard.nested.clock = guard.nested.clock.saturating_add(1);
+        let last_used = guard.nested.clock;
+        let tree_bytes = tree
+            .retained_capacity()
+            .total_capacity_bytes
+            .saturating_add(std::mem::size_of::<TreeDocument>());
+        guard.nested.scopes.push(NestedScope {
+            scope_id,
+            tree: Some(tree),
+            source: decoded,
+            tree_bytes,
+            last_used,
+            depth,
+            max_depth,
+            cumulative_bytes,
+            budget,
+        });
+        Ok(dto)
+    })();
+    guard.nested.trim_cache();
+    result
 }
 
 fn close_nested_scope_inner(
@@ -3002,7 +3089,7 @@ fn with_session_scope<T>(
     session_revision: u64,
     operation: impl FnOnce(&OpenSession, Option<&NestedScope>) -> Result<T, IpcError>,
 ) -> Result<T, IpcError> {
-    let guard = lock_session(state)?;
+    let mut guard = lock_session(state)?;
     let session = guard.session.as_ref().ok_or_else(no_session)?;
     if guard.revision != session_revision {
         return Err(stale_session());
@@ -3010,6 +3097,10 @@ fn with_session_scope<T>(
     if !session.is_current() {
         return Err(file_changed());
     }
+    if let Some(scope_id) = scope_id {
+        guard.nested.materialize(scope_id)?;
+    }
+    let session = guard.session.as_ref().ok_or_else(no_session)?;
     let scope = scope_id.map(|scope_id| {
         guard
             .nested
@@ -3020,7 +3111,13 @@ fn with_session_scope<T>(
         Some(scope) => Some(scope?),
         None => None,
     };
-    operation(session, scope)
+    let result = if session.is_current() {
+        operation(session, scope)
+    } else {
+        Err(file_changed())
+    };
+    guard.nested.trim_cache();
+    result
 }
 
 fn with_entry_session<T>(
@@ -8201,6 +8298,126 @@ mod tests {
         assert_eq!(scope.cumulative_bytes, scope.parsed_bytes);
         assert_eq!(scope.root.kind, "object");
 
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn nested_parent_trees_obey_cache_budget_and_rebuild_without_changing_identity() {
+        const COUNT: usize = 450_000;
+        let dense = |child: &str| {
+            format!(
+                "[{}{}]",
+                "0,".repeat(COUNT),
+                serde_json::to_string(child).unwrap()
+            )
+        };
+        let inner = dense("{}");
+        let outer = dense(&inner);
+        let path = temp_path("ipc-nested-cache-budget");
+        fs::write(&path, serde_json::to_string(&outer).unwrap()).unwrap();
+        let state = AppState::default();
+        let file = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        let revision = file.session_revision;
+        let first =
+            open_nested_json_inner(&state, None, file.root.unwrap().id, None, revision).unwrap();
+        let first_child = get_children_scoped_inner(
+            &state,
+            first.root.id,
+            COUNT,
+            1,
+            Some(first.scope_id),
+            revision,
+        )
+        .unwrap()
+        .nodes[0]
+            .id;
+        let second =
+            open_nested_json_inner(&state, Some(first.scope_id), first_child, None, revision)
+                .unwrap();
+        let second_child = get_children_scoped_inner(
+            &state,
+            second.root.id,
+            COUNT,
+            1,
+            Some(second.scope_id),
+            revision,
+        )
+        .unwrap()
+        .nodes[0]
+            .id;
+        let third =
+            open_nested_json_inner(&state, Some(second.scope_id), second_child, None, revision)
+                .unwrap();
+        {
+            let guard = state.session.lock().unwrap();
+            let (cached, active) = guard.nested.retained_capacity();
+            eprintln!("Nested retained bytes after eviction: cached={cached}, active={active}");
+            assert!(
+                cached <= 64 * 1024 * 1024,
+                "inactive Nested trees exceed 64 MiB: {cached}"
+            );
+            assert!(active > 0);
+            assert!(
+                guard.nested.scopes[0].tree.is_none(),
+                "oldest parent should be evicted"
+            );
+            assert!(
+                guard.nested.scopes[1].tree.is_some(),
+                "recent parent should remain cached"
+            );
+        }
+        let restored =
+            get_node_summary_scoped_inner(&state, first.root.id, Some(first.scope_id), revision)
+                .unwrap();
+        assert_eq!(restored.id, first.root.id);
+        assert_eq!(restored.span_start, first.root.span_start);
+        assert_eq!(restored.span_end, first.root.span_end);
+        assert_eq!(restored.child_count, COUNT + 1);
+        {
+            let guard = state.session.lock().unwrap();
+            assert!(guard.nested.scopes[0].tree.is_some());
+            assert!(
+                guard.nested.scopes[1].tree.is_none(),
+                "re-reading the older parent must update LRU order"
+            );
+            assert!(guard.nested.retained_capacity().0 <= NESTED_CACHE_BYTES);
+        }
+        get_node_summary_scoped_inner(&state, second.root.id, Some(second.scope_id), revision)
+            .unwrap();
+        let error =
+            open_nested_json_inner(&state, Some(first.scope_id), first.root.id, None, revision)
+                .unwrap_err();
+        assert_eq!(error.code, "invalid_request");
+        {
+            let guard = state.session.lock().unwrap();
+            assert_eq!(
+                guard.nested.scopes.len(),
+                3,
+                "failed navigation must preserve the scope chain"
+            );
+            assert!(
+                guard.nested.retained_capacity().0 <= NESTED_CACHE_BYTES,
+                "error path must also trim a reparsed parent"
+            );
+        }
+        let raw =
+            read_raw_slice_scoped_inner(&state, 0, 7, Some(first.scope_id), revision).unwrap();
+        assert_eq!(raw.text, "[0,0,0,");
+        close_nested_scope_inner(&state, third.scope_id, revision).unwrap();
+        let second_restored =
+            get_node_summary_scoped_inner(&state, second_child, Some(second.scope_id), revision)
+                .unwrap();
+        assert_eq!(second_restored.id, second_child);
+        assert_eq!(second_restored.kind, "string");
+        {
+            let guard = state.session.lock().unwrap();
+            assert_eq!(guard.nested.scopes.len(), 2);
+            assert!(
+                guard.nested.scopes[1].tree.is_some(),
+                "returning to a parent must restore its active tree"
+            );
+            assert!(guard.nested.retained_capacity().0 <= NESTED_CACHE_BYTES);
+        }
         fs::remove_file(path).unwrap();
     }
 

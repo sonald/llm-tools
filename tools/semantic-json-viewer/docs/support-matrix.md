@@ -22,6 +22,7 @@
 
 | 范围 | 当前行为 | 状态与证据 |
 | --- | --- | --- |
+| Core Nested cache | 活动 scope 与非活动祖先树分开统计；祖先树及其重建源文本计入 64 MiB 缓存，超额按 LRU 丢弃解析树、按原文本重建，scope ID / NodeId / span 不变；返回父层时恢复其活动树 | Rust 319 项通过；两个 450,000-element 祖先树的压力回归覆盖淘汰、反向访问、错误路径清理和返回。容量测量见 `docs/performance-baseline.md`，不代表 Native/private-memory 已验收 |
 | EntryList / Tree | Entry 与 Tree child IPC page 均为 200；Entry 按实测行高挂载视口窗口，Tree 按 35px 行高挂载窗口。主 Tree 与 Nested Tree 的离屏值预览接入共享 LRU，视口/Inspector 使用中的值另计；返回快照不保留值正文，恢复后按 NodeId 重读 | Entry 43；Tree 48 浏览器检查通过，Native 未验。Tree 的 ID、类型、路径标签、跨度、父子/展开状态与行索引按 §8.6 用户确认口径作为导航数据单独估算；`memoryUsage` 分列缓存、活动值和导航，不是实际 heap 测量 |
 | Collection / Conversation / Plain | Collection 窗口、Conversation block 窗口和 Plain text line window 已有实现及局部证据；不据此宣称所有列表或 Code 窗口都已虚拟化 | 部分证据：`src/collection-list.ts`、`src/conversation-view.ts`、`src/text-line-view.ts`、`docs/native-acceptance.md` |
 | Collection page cache | 当前挂载的两页为活动窗口，其他保留页接入 main 共享 ProjectionBudget；仍最多保留三页。先移出新活动窗口的缓存账目，再准入旧页，淘汰不清除选中 ordinal，回访按 cursor 重读 | `test-search-ui.mjs` 英文 144 / 中文 8 项通过（含共享压力、活动页切换与跨文件迟到预取），构建通过；`memoryUsage` 分列缓存页和活动页的估算，非实际 heap |

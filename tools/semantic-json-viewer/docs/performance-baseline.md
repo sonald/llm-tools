@@ -157,6 +157,16 @@ npm run benchmark:core -- --scenario document --path "$tmpdir/benchmark.json" --
 
 ## 未测与后续门槛
 
+### 2026-09-21 Nested 祖先解析缓存压力回归
+
+- 测试：`cargo test --lib nested_parent_trees_obey_cache_budget_and_rebuild_without_changing_identity -- --nocapture`。
+- 输入为嵌套三层 JSON：前两层各有 450,000 个数字元素，末项分别为下一层的 JSON 字符串；每层及累计输入均在既有 2 MiB / 8 MiB 限额内。
+- 修改前，两棵非活动祖先树的 buffer capacity 合计 `112,335,168 B`，超过 64 MiB；该断言实际失败。
+- 实现 LRU 后，缓存 retained capacity（包含重建源文本及 tree header）为 `58,194,712 B`，活动最内层 scope 为 `276 B`。访问被淘汰的祖先会重建并更新 LRU，Raw 字节、NodeId、span 不变；失败请求同样回收超额缓存，关闭子层后恢复父树。
+- 定向回归及完整 Rust `319/319` 通过。这是单一合成输入的容量回归，不是实际 private heap、峰值、全应用 RAM 或 Linux 性能 PASS。
+
+### 仍未测
+
 - 未测 Tauri/WebView 端到端首屏、5 轮 full-app、RAM、LRU/inputmapping、RSS/live/peak 和完整应用私有工作集；本页的 retained capacity 仅是分项 buffer 观测。
 - Linux x86_64（至少 8 logical cores、16 GiB、NVMe）尚待验证。
 - 9/9、9/14 及后续功能/压力记录都只反映固定或合成输入分布下的 Core 行为；不能外推到其他数据分布，也不能替代 spec §18 的最终性能验收。
