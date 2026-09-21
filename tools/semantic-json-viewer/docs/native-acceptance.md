@@ -183,6 +183,8 @@
 - `primitiveStrings.number` Node 7 `[305,310)` 的 `123` 保持 Plain Text，显示 3 字节、1 行，没有自动创建嵌套数值 scope。
 - 本轮 Content Viewer 打开时 CUA AX 只返回空 HTML 容器，但截图与真实点击可用；以上弹窗内容由截图核验，关闭后外层 AX 恢复。未将此观察宣称为辅助功能全通过，需区分 WebKit/CUA 暴露问题与产品可访问性。
 
+AX 后续定位：精确绑定 release 路径仍复现该状态（debug/release 同 bundle ID 会造成按 ID 绑定歧义，后续使用完整路径）。Tab 可将焦点移至弹窗标签，Escape 关闭并恢复原 Node 7 焦点；代码使用原生 `dialog.showModal()`，未给整个页面设置 `aria-hidden`/`inert`。正常退出并启动同一 release，以 96 B `lossless-strings.json` 首次打开 Viewer，AX 完整列出标题、关闭按钮、表示标签、搜索、复制和正文。说明不是所有弹窗都缺少语义标签；触发条件仍未定位，未据此盲改 ARIA，也未宣布该间歇现象已修复。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
