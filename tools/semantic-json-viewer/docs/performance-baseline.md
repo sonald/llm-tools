@@ -99,7 +99,7 @@
 
 - 临时 fixture：`/tmp/sjv-dense-entry-memory-20260914.jsonl`；首 Entry 为 `600,000` 个 `0` 的数组，raw `1,200,001 B`，另有后续 20 个 `{}`；21 entries 均为 `Valid`，首 Entry 未达到 16 MiB oversized 阈值。
 - 首 active Tree retained capacity：source `2,097,152 B`、nodes `67,200,112 B`、children `8,388,608 B`、ObjectKey `0 B`、decoded checkpoints `0 B`，total `77,685,872 B`（约 `74.09 MiB`）；index `768 B`。
-- 这是容量预算边界的单次压力证据，不替代固定 benchmark。64 MiB 是否包含 active selected Tree 尚待用户决策；在决策前不将其标为 cache gate PASS，也不据此误标 oversized。
+- 这是容量预算边界的单次压力证据，不替代固定 benchmark。2026-09-21 用户确认 64 MiB 仅约束可淘汰缓存，active selected Tree 单独统计（spec §8.6）。因此该合法 Entry 不误标 oversized；活动树容量仍纳入 §18 全应用内存，不能据此将全应用内存或缓存 gate 标为 PASS。
 
 ## 9507a4d F-12 10,000-message Core benchmark（warm）
 
