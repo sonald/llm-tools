@@ -69,6 +69,8 @@ Vite 官方公告将 6.4.3 列为 Windows 路径绕过问题的修复版本：[G
 
 ## 尚未闭环
 
+2026-09-21 Native 观测准备：`npm run tauri -- build --debug --bundles app` 成功，使用 `target/debug/bundle/macos/Semantic JSON Viewer.app` 启动独立 debug 产物（前端仍为 `index-CPNlsFas.js`），未修改生产 CSP、iframe sandbox 或权限。通过原生右键 Inspect Element 打开实际 WKWebView 的 Web Inspector，AX 与截图确认 Elements / Console / Network 可用。尚未在该构建执行 F-11 payload，因此这只是观测入口准备，不新增五零 PASS，也不将 debug 构建冒称 release 验收。
+
 1. 当前构建的 F-11 Native 五零：脚本、网络、IPC、top navigation、宿主 DOM，需真实 Tauri/WebView 证据。
 2. Linux `glib 0.18.5` 的 unsound 警告处理及上游维护依赖跟踪；至少在对应平台发布前复查，不能仅靠本机测试关闭。
 3. Linux 参考环境性能/内存及功能、安全验证：2026-09-21 用户确认待远程环境提供后进行，不阻塞当前项目，已知风险继续跟踪。其他声明支持平台仍需各自验证；本机 arm64 编译不等于跨平台通过。
