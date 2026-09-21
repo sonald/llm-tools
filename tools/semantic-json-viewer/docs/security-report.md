@@ -65,6 +65,8 @@ Vite 官方公告将 6.4.3 列为 Windows 路径绕过问题的修复版本：[G
 
 依赖链由 `cargo tree --locked --target x86_64-unknown-linux-gnu -i glib --depth 4` 核实。`--target aarch64-apple-darwin -i glib` 无结果，只能证明该依赖不在本机目标图中，不能替代 Native 安全验收。临时工具和数据库可重建；发布前应重新审计，不能永久复用本次数据库快照。
 
+补充静态检查：在本应用及锁定的 Tauri / tauri-runtime / tauri-runtime-wry / tao / wry / muda / GTK / GIO / WebKit / GDK / ATK / Cairo / Pango / Soup / JavaScriptCore 和相关宏源码中检索 `VariantStrIter`、`array_iter_str`，仅在 glib 自身找到定义、导出、文档示例和测试；其 `impl_get` 仍包含公告所述的不可变输出指针写入。此结果未发现这些源码中的直接生产调用，但不是对所有生成代码、构建配置或 Linux 二进制的全程序可达性证明，故不忽略或关闭该警告，也不为消除审计输出而盲目替换不兼容的 glib 版本。
+
 ## 尚未闭环
 
 1. 当前构建的 F-11 Native 五零：脚本、网络、IPC、top navigation、宿主 DOM，需真实 Tauri/WebView 证据。
