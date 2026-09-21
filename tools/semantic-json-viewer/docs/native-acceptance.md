@@ -185,6 +185,8 @@
 
 AX 后续定位：精确绑定 release 路径仍复现该状态（debug/release 同 bundle ID 会造成按 ID 绑定歧义，后续使用完整路径）。Tab 可将焦点移至弹窗标签，Escape 关闭并恢复原 Node 7 焦点；代码使用原生 `dialog.showModal()`，未给整个页面设置 `aria-hidden`/`inert`。正常退出并启动同一 release，以 96 B `lossless-strings.json` 首次打开 Viewer，AX 完整列出标题、关闭按钮、表示标签、搜索、复制和正文。说明不是所有弹窗都缺少语义标签；触发条件仍未定位，未据此盲改 ARIA，也未宣布该间歇现象已修复。
 
+后续对照：在干净 release 实例中对 `lossless-strings.json` 的 escaped Node 1 连续执行三轮 Escape→重新打开，三轮 AX 均包含内容查看器、关闭按钮和 `A😀` 正文，未复现“重复打开即丢 AX”的假设。保留间歇观察，不据此修改弹窗实现或宣称问题已修复。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
