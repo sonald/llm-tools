@@ -164,8 +164,10 @@
 - 使用现有 benchmark generator 在 `/tmp/sjv-native-20260921.NVTxYx` 生成 `large.jsonl`（1,073,741,824 B，4,228,181 rows）及 `large.json`（104,857,600 B，419,528 rows），未覆盖文件。
 - release `index-CPNlsFas.js` 通过 Native 文件选择器打开 1 GiB JSONL，完成 4,228,181 / 4,228,181 索引。Go to Entry 末条得到文件 `[1073741460,1073741823)`，Raw 条目相对 `[0,363)`，包含 `BENCHMARK_TAIL_SENTINEL_4228180`。
 - 跳转中间第 2,114,091 条得到 `[534648510,534648764)`，Raw `sequence=2114090`；再回首条得到 `[0,230)`，Raw `sequence=0`。跳转以实际选中行和 Raw 结果核验，不把点击尝试视为成功。
-- 随后打开 100 MiB JSON，Native 显示 Document、104,857,600 B、结构已加载。该生成器输入是包含 records 的根对象，不是顶层 Collection，不能据此宣称百万元素根数组已验。
+- 随后打开 100 MiB JSON，Native 显示 Document、104,857,600 B、结构已加载。该生成器输入是包含 items 的根对象，不是顶层 Collection，不能据此宣称百万元素根数组已验。
 - 准备进一步读取 Raw/Tree 时 CUA 明确报告 Mac 锁屏、自动解锁失败，故这部分未执行。本轮不提供精确首屏计时、全应用内存或 Linux 性能 PASS。
+
+锁屏后准备：现有 `generate-collection-fixture.mjs` 生成 `million-items.json`，1,000,000 个元素、6,888,891 B，SHA-256 `f60417708b2a0c4b8c7b4c1979b46c2569b3b1ddb9e9d209ab1f8d4b0538286d`。独立检查确认全部元素依次为 0–999999，尚未 Native 打开。根范围修复后的 Main 错误恢复/本地化浏览器回归英文 4、中文 8 项通过；不作为锁屏期间的 Native 证据。
 
 ### 历史 Native 操作证据（2026-09-14）
 
