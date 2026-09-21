@@ -68,6 +68,13 @@
 - 点击结果文本的“原始”按钮，进入 `toolResult 卡片源 · Node 53`，Raw 从字节 1890 开始显示 `"status: ready"` 与相邻未知字段。直接检查输入确认该字符串词法范围为 `[1890,1905)`，与 Native 跳转起点一致。
 - 截图仍看到结果子字段路径 `Result.[0].text`；后续源码检查确认 `toolResultTextBlock` 硬编码了标签，已改用现有 `conversation.result` 翻译，保留源字段 `text` 和数组索引不变。TypeScript/生产构建与 i18n 检查通过；本轮尚未重启新 Native 构建复测，不关闭该 Native 文案问题。Anthropic system-string 变体、完整 unknown/source 矩阵及其他未操作路径仍待验收。
 
+### 2026-09-21 Anthropic string-system 与结果标签修复复测
+
+- `f6d25c3` 后重新执行 `npm run tauri -- build --bundles app` 成功；通过原生菜单退出旧实例，再从完整 bundle 路径启动。前端 `index-XsCYNr2b.js`，可执行文件 SHA-256 `4804cca31acca9e2563c9921e3a1c0443c9eb8634d92d4dd1c51ad6631d72f82`。
+- 原生文件选择器打开 `anthropic-system-string.json`，2,198 B，SHA-256 `05d27d7993f4ccade1c4d77ff5ec15fb7e1c3541838f1eae7101db3122e07f6b`。自动显示 Anthropic 风格、3 条消息、16 个块；顶层 system 文本可见，未被当成第四条普通消息。
+- 实际滚动加载 thinking、redactedThinking、普通文本、`lookup_status` / `toolu_lookup`、对象输入 `query=status`；结果显示 `is_error=false`、已确认关联 `block 10`、`status: ready`，未知字段源卡仍在。
+- AX 与截图均显示“结果.[0].text”，先前硬编码 `Result` 的 Native 文案问题关闭。此结论只覆盖已观察标签与上述固定输入，不代表完整 F-04 或全量 i18n 通过。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
