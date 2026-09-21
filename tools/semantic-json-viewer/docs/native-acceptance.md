@@ -146,6 +146,13 @@
 - 在实际 WKWebView 的 Web Inspector 执行只读 `document.querySelectorAll("article.conversation-block").length`，返回 24。初次宽泛的 `[data-conversation-block-index]` 查询返回 105，因为内部动作按钮也带此属性，不能当作块数。未安装任何探针。
 - 这是首屏/往返分页和当前 DOM 窗口的 Native 证据，不证明全部 572 页浏览或完整应用内存曲线；Core 全遍历证据仍见 performance-baseline.md，F-12 未由这一快照升级为最终全量 PASS。
 
+### 2026-09-21 F-08 重复键、数字原文与子树复制
+
+- 使用仓库 `fixtures/tree-document.json`，Native debug 构建 `index-CPNlsFas.js`。Tree 根显示 6 个子节点，`duplicate` Node 826 为 `first`，`duplicate#2` Node 827 为 `second`，两次出现均独立保留。
+- `bigInteger` Node 828 的预览完整为 `922337203685477580712345`，源范围 `[11481,11505)`；`exponent` Node 829 显示 `-1.234e+567890`，范围 `[11522,11536)`。直接读取文件对应字节切片一致，没有浮点转换后的数值替代原文。
+- 选择 Node 827、点 Copy JSON Subtree，再粘贴到应用搜索输入，得到带引号的 `"second"`；切 Raw 仍为 Node 827、`[11454,11462)`，显示同一原文，与文件切片一致。该 fixture 操作后无 git diff。
+- 这是重复键、数值词法保留和单值子树复制的 Native 证据；不替代未走到的完整 F-08 转义、emoji、特殊空白及复合子树复制矩阵。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
