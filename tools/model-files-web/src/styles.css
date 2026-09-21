@@ -286,6 +286,8 @@ mark.find-match.current {
 }
 .inspected-image {
   display: block;
+  min-width: 16px;
+  min-height: 16px;
   transition: transform 0.1s ease-out;
 }
 .inspected-image.fit {

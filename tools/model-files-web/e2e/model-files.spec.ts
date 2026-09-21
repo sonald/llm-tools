@@ -1,4 +1,6 @@
 import { Buffer } from 'node:buffer'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import {
   crossRepositoryModelId,
@@ -1211,6 +1213,7 @@ test('dispatches local Python and PDF readers safely', async ({ page }, testInfo
   const csp = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content')
   expect(csp).toContain("object-src 'none'")
   expect(csp).toContain('frame-src blob:')
+  expect(csp).toContain("img-src 'self' data: blob:")
 
   await page.getByRole('button', { name: /^reader\.py/ }).click()
   const sourceReader = page.locator('.source-reader')
@@ -2102,6 +2105,31 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
     await page.screenshot({ path: darkScreenshot })
     await testInfo.attach('dark-mode', { path: darkScreenshot, contentType: 'image/png' })
   }
+  expect(errors).toEqual([])
+})
+
+test('renders image files and verifies blob url within CSP without console errors', async ({ page }, testInfo) => {
+  const errors = collectErrors(page)
+  const dir = testInfo.outputPath('image-test-fixture')
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, 'logo.png'), Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+    0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+    0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+  ]))
+  await writeFile(join(dir, 'icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5"/></svg>')
+  await page.goto('/')
+  await page.getByLabel('选择本地目录').setInputFiles(dir)
+  await page.getByRole('button', { name: /^logo\.png/ }).click()
+  await expect(page.locator('.inspected-image')).toBeVisible()
+  await expect(page.getByText('1 × 1 像素')).toBeVisible()
+  await page.getByRole('button', { name: /^icon\.svg/ }).click()
+  await expect(page.locator('.inspected-image')).toBeVisible()
+  await page.getByRole('button', { name: '原文' }).click()
+  await expect(page.locator('.source-reader')).toContainText('<svg')
   expect(errors).toEqual([])
 })
 
