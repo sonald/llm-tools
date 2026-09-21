@@ -1,6 +1,6 @@
 # Semantic JSON Viewer 安全报告
 
-日期：2026-09-21。结论：**部分验证，Native 发布安全验收未完成**。
+日期：2026-09-21。结论：**已有安全自动化及 Native 基本恶意样本验证；未声称完整五零计数证明**。用户确认严格 Native 零网络/零 IPC 计数不阻塞首版，防护要求不变。
 
 本报告记录已检查的代码边界、实际测试与缺失证据；不是渗透测试证明，也不是“零漏洞”声明。人工标注集按用户确认不阻塞首版，不影响安全要求。
 
@@ -67,7 +67,11 @@ Vite 官方公告将 6.4.3 列为 Windows 路径绕过问题的修复版本：[G
 
 补充静态检查：在本应用及锁定的 Tauri / tauri-runtime / tauri-runtime-wry / tao / wry / muda / GTK / GIO / WebKit / GDK / ATK / Cairo / Pango / Soup / JavaScriptCore 和相关宏源码中检索 `VariantStrIter`、`array_iter_str`，仅在 glib 自身找到定义、导出、文档示例和测试；其 `impl_get` 仍包含公告所述的不可变输出指针写入。此结果未发现这些源码中的直接生产调用，但不是对所有生成代码、构建配置或 Linux 二进制的全程序可达性证明，故不忽略或关闭该警告，也不为消除审计输出而盲目替换不兼容的 glib 版本。
 
-## 尚未闭环
+## Native 观测与后续验证边界
+
+### Native debug Markdown 基本检查（2026-09-21）
+
+实际打开 `security-markdown.json`（2,236 B），由 Tree 双击 `$.data` Node 2，文件范围 `[36,2180)`、解码 2,025 B / 50 行，自动识别 Markdown。AX 与截图确认标题、列表和引用正常渲染；原始 script/iframe/form/img/style/event-handler HTML 均显示为文本，javascript/data URI 链接显示为普通文字，远程/data URI 图片显示 `[image: …]` 占位，围栏中的 script 保持字面内容。没有安装消息/IPC 探针，没有修改 CSP/sandbox。此检查与上述安全自动化共同作为用户调整后首版基本安全证据，不冒称全量计数证明。
 
 ### Native debug HTML 自动预览观测（2026-09-21）
 
@@ -75,7 +79,7 @@ Vite 官方公告将 6.4.3 列为 Windows 路径绕过问题的修复版本：[G
 - Web Inspector 的 Network 在打开文件前清空；进入 Preview 前有 2 条 `about:srcdoc` 基线，进入后共 4 条，均为 `about:srcdoc`，0 redirects，未观察到攻击样本外部域名请求。这是 Network 面板观测，不是全进程网络抓包。
 - 通过 Console 只读查询实际 iframe：`content-viewer-html-preview-frame` 的 sandbox 属性为空字符串，srcdoc 包含上述严格 CSP；宿主 `data-f11-parent-probe` 为 null，顶层 URL 仍为 `tauri://localhost`。读取动作没有注入攻击脚本或修改隔离策略。
 - Console 的 1 error / 1 warning 在 Preview 之前已存在：文件选择器首次调用 `ipc://localhost/plugin%3Adialog%7Copen` 被主 CSP 拒绝，Tauri 随后回退 postMessage，文件正常打开。不能把这条基线警告误报为 payload IPC，也不能据此宣称应用零错误。
-- 尚未安装消息/IPC 计数探针、验证全部交互触发或 Markdown payload；以上不升级为完整 F-11 五零 PASS。debug 构建 SHA-256 为 `d64619a7b80b697991275f2c0215477a36e8cb5e83c761fc3af79bcc1eb1cb53`。
+- 未安装消息/IPC 计数探针，未验证全部交互触发；Markdown 基本检查见上节。以上不升级为完整 F-11 五零 PASS。debug 构建 SHA-256 为 `d64619a7b80b697991275f2c0215477a36e8cb5e83c761fc3af79bcc1eb1cb53`。
 
 2026-09-21 Native 观测准备：`npm run tauri -- build --debug --bundles app` 成功，使用 `target/debug/bundle/macos/Semantic JSON Viewer.app` 启动独立 debug 产物（前端仍为 `index-CPNlsFas.js`），未修改生产 CSP、iframe sandbox 或权限。通过原生右键 Inspect Element 打开实际 WKWebView 的 Web Inspector，AX 与截图确认 Elements / Console / Network 可用。尚未在该构建执行 F-11 payload，因此这只是观测入口准备，不新增五零 PASS，也不将 debug 构建冒称 release 验收。
 
