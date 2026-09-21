@@ -11,9 +11,9 @@
 | 本地 `.json` | 按根节点路由：根 array 为 Collection，其他根类型为 Document；pretty 或 one-line 不改变此规则 | 已实现：`src-tauri/src/file_route.rs` 的 `path_kind`、`route_json`、`mode_for_root` |
 | `.jsonl` / `.ndjson` | 明确扩展名直接进入 Entry；Entry 列表按非空物理行浏览 | 已实现：`src-tauri/src/file_route.rs`、`src/entry-list.ts` |
 | 未知扩展 | 自动判断时，`≤128 MiB` 先尝试完整 JSON；更大输入只取有界 JSONL 样本，至少 2 条且需达到 90% 合法行。`128 MiB` 是自动路由分支阈值，不是 JSON 文件大小上限；显式 Document 选择可走完整读取 | 已实现但需遵守边界：`src-tauri/src/file_route.rs` (`FULL_PARSE_LIMIT_BYTES`、`SAMPLE_SIZE_LIMIT`、`detects_jsonl`) |
-| framing | RS framing 有专门拒绝；串接 JSON 在 Unknown 路由有专门检测，显式 `.json` 为 Invalid JSON，`.jsonl` 为坏 Entry，不能称为所有扩展名统一文件级拒绝 | 已实现：`src-tauri/src/file_route.rs`；F00/F07 固定输入生成器见 `fixtures/generate-raw-document-fixtures.mjs` |
+| framing | RS framing 有专门拒绝；串接 JSON 在 Unknown 路由有专门检测，显式 `.json` 为 Invalid JSON，`.jsonl` 为坏 Entry，不能称为所有扩展名统一文件级拒绝 | 已实现；2026-09-21 F-00 八份固定输入已 Native 验证，包括 Unknown 串接/RS 拒绝与旧会话保留；见 `docs/native-acceptance.md` |
 | 显式拒绝 | `jsonc`、`json5`、`gz`、`zst` 拒绝，不解压。YAML/XML 没有 parser，但其扩展名属于 unknown，不是一律按扩展名拒绝 | 已实现的路由边界：`src-tauri/src/file_route.rs`；v0.1 排除项见 `docs/spec.md` §24 |
-| 编码 | UTF-8 和 UTF-8 BOM 支持；UTF-16/UTF-32 BOM 文件级拒绝；坏 UTF-8 `.json` 可保留为 Raw-only；坏 JSONL 行保留 Lossy Text/Hex，前部样本中坏行超过 20% 时给 warning | 已实现，Native 完整矩阵尚未验：`src-tauri/src/file_route.rs`、`src-tauri/src/jsonl_entry.rs`、`src-tauri/src/jsonl_session.rs`、`src-tauri/src/ipc.rs` |
+| 编码 | UTF-8 和 UTF-8 BOM 支持；UTF-16/UTF-32 BOM 文件级拒绝；坏 UTF-8 `.json` 可保留为 Raw-only；坏 JSONL 行保留 Lossy Text/Hex，前部样本中坏行超过 20% 时给 warning | Native 已验证 UTF-8 BOM 偏移、UTF-16 拒绝、坏 JSON 文档 Raw-only、1/10 坏行隔离与 3/10 警告及后续有效行。未扩展为 UTF-32 等全部边界通过；见 `docs/native-acceptance.md` |
 | 大 Entry | Entry 大于 16 MiB 不解析，保留有界 Raw 预览与位置能力 | 已实现：`src-tauri/src/jsonl_entry.rs` (`MAX_ENTRY_BYTES`)、`src-tauri/src/jsonl_session.rs` |
 | 无损 JSON | duplicate key occurrence、原始 span、超大整数、exponent、转义和 emoji 均保留；Copy 从原始 span 读取 | 已实现：`src-tauri/src/json.rs`、`src-tauri/src/tree.rs`、`src-tauri/src/ipc.rs`；局部 Native 证据见 `docs/native-acceptance.md` |
 | Schema 重复字段 | 消息、包装对象及已支持的专用子对象按实际依赖检查重复 key；显示歧义提示并保留完整 Raw/Tree source，不继续专用渲染 | `4754220`、`8919672`、`bb8cf6d`；独立 Core 318、Conversation UI 96 通过，Native 未验 |
@@ -28,7 +28,7 @@
 | Collection page cache | 当前挂载的两页为活动窗口，其他保留页接入 main 共享 ProjectionBudget；仍最多保留三页。先移出新活动窗口的缓存账目，再准入旧页，淘汰不清除选中 ordinal，回访按 cursor 重读 | `test-search-ui.mjs` 英文 144 / 中文 8 项通过（含共享压力、活动页切换与跨文件迟到预取），构建通过；`memoryUsage` 分列缓存页和活动页的估算，非实际 heap |
 | Content text cache | Decoded / Raw / Nested 共用 32 MiB 文本预算，跨缓存 LRU；可见页保留，已淘汰页按偏移重读，Nested CRLF 检查点与正文分离 | `1f96dd0`；独立文本压力 18、真实 CRLF 重读 8 项及构建通过；估算 UTF-16 正文和条目开销，不等于 WebView heap 测量；导航元数据按 §8.6 不计入缓存限额，全应用统计仍未完成 |
 | Code | 支持 Python、JavaScript、TypeScript、Rust、C、C++、Java、Go、Shell、SQL、JSON、YAML；自动猜语言上限 256 KiB，高亮上限为 1 MiB 或 20,000 行，超限退回 Plain Code window | `ace1f24`；2026-09-21 Native 已验证 22,050 行降级、连续行号/末行搜索及 1,048,593 B 单行降级/分页/NoWrap；并非所有语种与完整 F-01 均已验：`docs/native-acceptance.md` |
-| Markdown | 自动渲染上限 2 MiB；显式继续渲染上限 32 MiB；链接显示为文本、图片为占位，raw HTML 不执行 | 已实现但安全 Native 五零证据未闭环：`src/content-viewer.ts`、`src/markdown-renderer.ts` |
+| Markdown | 自动渲染上限 2 MiB；显式继续渲染上限 32 MiB；链接显示为文本、图片为占位，raw HTML 不执行 | Native debug 恶意样本基本检查通过；严格 Native 零网络/零 IPC 计数按用户确认不阻塞首版，未安装探针；安全自动化与观测边界见 `docs/security-report.md` |
 | HTML | HTML Preview 输入上限 512 KiB，输出上限 1 MiB；HTML 自动启发式检测上限 64 KiB。离开 Preview 时释放隐藏 iframe 正文、搜索 DOM 和预览字符串；返回时重新获取净化预览，保留 Source 页缓存 | HTML Rendered 30 项、Content Viewer 144 项及安全套件 1773 项通过；浏览器 HAR hostile/http-hostile/data 请求均为 0。Native 五项零证据仍未闭环：`src/content-viewer.ts`、`src-tauri/src/html_sanitizer.rs`、`src-tauri/src/semantic_detection.rs` |
 | Nested JSON | 单层 2 MiB、累计 8 MiB；默认深度 5，UI 可选 1–10，变更时从嵌套根重新打开；旧 Native 重复 tabs 问题已于 2026-09-21 通过短/长子串返回路径复测关闭 | `d9b6066`；Content Viewer 144、Parsed Search 32 通过；Native 已验证返回选择、标签互斥及小值复制，但完整 F-02 尚未完成：`docs/native-acceptance.md` |
 | 搜索历史 | Source / Rendered Search 各自最多保留 16 页并有估算字节上限；淘汰正文与游标，Previous 缺页可取消地重扫，不限制可访问的历史深度 | `5609b71`、`ba99a6b`、`47653aa`；Source 英文 133/中文 8、Rendered 113 通过，同目标重入已关闭；`af42714` 将 Viewer 内部 Source/Rendered 接入 main 同一 ProjectionBudget，独立跨组件压力 8 项通过 |
@@ -38,11 +38,13 @@ Conversation 分页历史现在最多保存 16 个游标检查点；更早的 Pr
 
 ## Entry hint、国际化与平台
 
+Collection 根数组会话入口已由 `8e341e7` 补齐：未选 Item 时以根范围识别，选择 Item 后可返回根；Tree/Raw/Search 与当前范围一致。Native 已验证 79% Possible 显式确认、80% 自动 Generic、普通数组负例、分页至 unknown 记录、跨 Item 根搜索与 Raw 来源。10,000-message 固定输入的首屏/往返分页及实际 24 个块容器已在 Native debug 验证；该 DOM 快照不替代完整内存曲线。
+
 | 范围 | 当前行为 | 状态与证据 |
 | --- | --- | --- |
 | Event Stream hint | Core hint 和 summary 路径已提交；`f06d3dc` 已实现 Auto / Generic / Event UI | 2026-09-21 Native F-06A/B 固定正负例通过；Auto/Generic/Event 摘要切换保持 10 条边界、选中 Entry 2 及其 Raw 来源，不自动组装 Session：`docs/native-acceptance.md` |
 | i18n | 壳、列表、Tree、Raw、搜索、Viewer 和 Conversation 已有中英文资源；源角色、路径、协议字段不翻译。底层错误原文与完整 Native 发布文案仍需最终审计 | `68b019b`、`9f643f4`、`23478b9`；独立 Conversation 英文 96/中文 10，Viewer 144、Parsed Search 32 及资源检查通过；Native 实证仍以 `docs/native-acceptance.md` 为准 |
-| Main IPC 错误 | 稳定 code 的标题/操作说明本地化，原始 diagnostic 保留；`invalid_json` 继续使用共享 parse formatter，未知 code 回退原文 | `87987b1`；真实 Main 英文 4、中文 8 通过，Native 错误入口仍未验 |
+| Main IPC 错误 | 稳定 code 的标题/操作说明本地化，原始 diagnostic 保留；`invalid_json` 继续使用共享 parse formatter，未知 code 回退原文 | `87987b1`；Main 英文 4、中文 8 通过；Native 已验证不支持编码/封装格式的中文标题与说明、原始英文 diagnostic 以及拒绝后旧会话保留 |
 | macOS | macOS arm64 新构建已真实启动并复测 Nested 返回、表示切换、复制和 Code 超限；旧重复 tabs 与已发现的英文搜索说明均已复测关闭 | 部分验收，不是 F-00–F-12 全 PASS：`docs/native-acceptance.md` |
 | Linux | Linux 功能、安全及参考环境 cold/warm、fresh 五轮、private-memory 尚未验；等待用户提供远程环境后验证 | 2026-09-21 用户确认延后且不阻塞当前项目；已知依赖风险仍见 `docs/security-report.md`，不标为已支持/已通过 |
 | Windows | `320af83` 已补 FileSource 的平台读取分支；本机回归通过，但未进行 Windows 编译、运行或安全验收，不先列为已支持 | 未验：`src-tauri/src/file_source.rs` |
