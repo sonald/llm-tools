@@ -462,6 +462,7 @@ export class ContentViewer {
     nestedCopy?.container && this.nestedElements?.parsedPanel.prepend(nestedCopy.container);
     this.nestedTree = this.nestedElements
       ? new TreeView({
+        projectionBudget: this.projectionBudget,
         panel: this.nestedElements.parsedTree,
         viewport: this.nestedElements.parsedPanel,
         tab: this.nestedElements.parsedTab,

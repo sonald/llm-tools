@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ContentTarget } from "./content-viewer";
 
 import { t } from "./i18n";
+import { ProjectionBudget } from "./projection-budget";
 
 export type TreeMode = "document" | "collection" | "entry" | "nested";
 
@@ -34,6 +35,9 @@ export type TreeSession = {
 
 type NodeRecord = {
   node: NodeDto;
+  previewLoaded: boolean;
+  previewLoading: boolean;
+  previewError: string | null;
   parentId: number | null;
   children: number[];
   expanded: boolean;
@@ -89,6 +93,7 @@ type TreeViewOptions = {
   onError: (error: unknown) => void;
   invoke?: typeof invoke;
   copy?: TreeCopyElements;
+  projectionBudget?: ProjectionBudget;
 };
 
 export type FocusKey = number | `load:${number}` | `retry:${number}` | null;
@@ -101,9 +106,11 @@ export type TreeViewSnapshot = {
   focusKey: FocusKey;
   scrollTop: number;
   scrollLeft: number;
+  navigationBytes: number;
   records: Array<{
     id: number;
     node: NodeDto;
+    previewLoaded: boolean;
     parentId: number | null;
     children: number[];
     expanded: boolean;
@@ -131,6 +138,10 @@ export class TreeView {
   private readonly onError: (error: unknown) => void;
   private readonly invokeRequest: typeof invoke;
   private readonly copy: TreeViewOptions["copy"];
+  private readonly projectionBudget: ProjectionBudget;
+  private readonly cachedValues = new Set<NodeRecord>();
+  private activeValues = new Set<NodeRecord>();
+  private readonly pendingValues = new Set<NodeRecord>();
   private session: TreeSession | null = null;
   private generation = 0;
   private rootId: number | null = null;
@@ -163,6 +174,7 @@ export class TreeView {
     this.onError = options.onError;
     this.invokeRequest = options.invoke ?? invoke;
     this.copy = options.copy;
+    this.projectionBudget = options.projectionBudget ?? new ProjectionBudget();
     this.viewport.classList.add("tree-viewport");
     this.viewport.addEventListener("scroll", () => this.handleViewportScroll(), { passive: true });
     this.resizeObserver = typeof ResizeObserver === "undefined"
@@ -196,7 +208,7 @@ export class TreeView {
       : null;
     this.selectedId = null;
     this.focusKey = root?.id ?? null;
-    this.records.clear();
+    this.clearRecords();
     this.logicalRowsDirty = true;
     if (root) this.records.set(root.id, this.newRecord(root, null));
     this.viewport.scrollTop = 0;
@@ -221,9 +233,11 @@ export class TreeView {
       focusKey: this.focusKey,
       scrollTop: this.viewport.scrollTop,
       scrollLeft: this.viewport.scrollLeft,
+      navigationBytes: this.memoryUsage.currentNavigationBytes,
       records: Array.from(this.records.entries()).map(([id, record]) => ({
         id,
-        node: { ...record.node },
+        node: { ...record.node, valuePreview: null },
+        previewLoaded: record.previewLoaded && record.node.valuePreview === null,
         parentId: record.parentId,
         children: record.children.slice(),
         expanded: record.expanded,
@@ -252,11 +266,14 @@ export class TreeView {
     this.focusKey = snapshot.focusKey;
     const restoreScrollTop = Math.max(0, snapshot.scrollTop ?? 0);
     const restoreScrollLeft = Math.max(0, snapshot.scrollLeft ?? 0);
-    this.records.clear();
+    this.clearRecords();
     this.logicalRowsDirty = true;
     for (const saved of snapshot.records) {
       this.records.set(saved.id, {
         node: { ...saved.node },
+        previewLoaded: saved.previewLoaded,
+        previewLoading: false,
+        previewError: null,
         parentId: saved.parentId,
         children: saved.children.slice(),
         expanded: saved.expanded,
@@ -294,7 +311,7 @@ export class TreeView {
     this.rootError = null;
     this.selectedId = null;
     this.focusKey = null;
-    this.records.clear();
+    this.clearRecords();
     this.logicalRowsDirty = true;
     this.onStringSelection(null);
     this.tab.disabled = true;
@@ -358,7 +375,7 @@ export class TreeView {
     this.rootError = null;
     this.selectedId = null;
     this.focusKey = null;
-    this.records.clear();
+    this.clearRecords();
     this.logicalRowsDirty = true;
     this.renderLoading();
     try {
@@ -469,6 +486,9 @@ export class TreeView {
         const child = this.records.get(node.id);
         if (child) {
           child.node = node;
+          child.previewLoaded = true;
+          child.previewError = null;
+          this.pendingValues.add(child);
           child.parentId = record.node.id;
         } else {
           this.records.set(node.id, this.newRecord(node, record.node.id));
@@ -550,6 +570,10 @@ export class TreeView {
     if (!item) return;
     const record = this.records.get(Number(item.dataset.nodeId));
     if (!record) return;
+    if (record.previewError !== null) {
+      record.previewError = null;
+      void this.loadValue(record);
+    }
     const doubleClick = event instanceof MouseEvent && event.detail === 2;
     if (!doubleClick && target.closest(".tree-disclosure") && record.node.childCount > 0) {
       this.focusKey = record.node.id;
@@ -601,6 +625,12 @@ export class TreeView {
     }
     const record = this.records.get(row.id);
     if (!record) return;
+    if (event.key === "Enter" && record.previewError !== null) {
+      event.preventDefault();
+      record.previewError = null;
+      void this.loadValue(record);
+      return;
+    }
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
@@ -799,6 +829,7 @@ export class TreeView {
       : null;
     this.ensureLogicalRows();
     const [start, end] = this.visibleRange(this.logicalRows.length);
+    this.updateValueWindow(start, end);
     const top = document.createElement("div");
     top.className = "tree-virtual-spacer";
     top.setAttribute("aria-hidden", "true");
@@ -918,8 +949,9 @@ export class TreeView {
     children.textContent = t("tree.childrenCount", { count: node.childCount });
     const value = document.createElement("span");
     value.className = "tree-value";
-    value.textContent = node.valuePreview ?? "—";
-    if (node.valueHasMore) {
+    value.textContent = record.previewLoaded ? node.valuePreview ?? "—" : record.previewError ?? "…";
+    if (record.previewError !== null) value.title = t("tree.retryValue");
+    if (node.valueHasMore && record.previewLoaded) {
       value.textContent += ` · ${t("tree.truncated")}`;
       if (node.kind === "string") {
         value.classList.add("tree-value-openable");
@@ -1142,9 +1174,125 @@ export class TreeView {
     item.focus({ preventScroll: true });
   }
 
-  private newRecord(node: NodeDto, parentId: number | null): NodeRecord {
+  get memoryUsage(): { cachedValueBytes: number; activeValueBytes: number; currentNavigationBytes: number; navigationBytes: number } {
+    // Conservative UTF-16/structure estimates, not JavaScript heap measurements.
+    const valueBytes = (records: Iterable<NodeRecord>): number => {
+      let bytes = 0;
+      for (const record of records) bytes += this.valueBytes(record);
+      return bytes;
+    };
+    let currentNavigationBytes = this.logicalRows.length * 64;
+    for (const record of this.records.values()) {
+      currentNavigationBytes += 256 + record.node.label.length * 2 + record.children.length * 8
+        + (record.error?.length ?? 0) * 2 + (record.previewError?.length ?? 0) * 2;
+    }
     return {
+      cachedValueBytes: valueBytes(this.cachedValues),
+      activeValueBytes: valueBytes(this.activeValues),
+      currentNavigationBytes,
+      navigationBytes: currentNavigationBytes + (this.narrowRestoreSnapshot?.navigationBytes ?? 0)
+    };
+  }
+
+  private valueBytes(record: NodeRecord): number {
+    return record.node.valuePreview === null ? 0 : record.node.valuePreview.length * 2 + 64;
+  }
+
+  private clearRecords(): void {
+    for (const record of this.cachedValues) this.projectionBudget.release(record);
+    this.cachedValues.clear();
+    this.activeValues.clear();
+    this.pendingValues.clear();
+    this.records.clear();
+    this.logicalRows = [];
+    this.logicalRowsDirty = true;
+  }
+
+  private cacheValue(record: NodeRecord): void {
+    if (this.activeValues.has(record) || this.valueBytes(record) === 0) return;
+    const evict = (): void => {
+      this.cachedValues.delete(record);
+      record.node = { ...record.node, valuePreview: null };
+      record.previewLoaded = false;
+      if (this.records.get(record.node.id) === record) {
+        const value = this.panel.querySelector<HTMLElement>(`[data-node-id="${record.node.id}"] .tree-value`);
+        if (value) value.textContent = "…";
+        if (this.selectedId === record.node.id) this.renderInspector(record.node);
+      }
+    };
+    const admitted = this.projectionBudget.admit(record, this.valueBytes(record), evict);
+    if (this.records.get(record.node.id) !== record) {
+      this.projectionBudget.release(record);
+      return;
+    }
+    if (admitted) this.cachedValues.add(record);
+    else evict();
+  }
+
+  private updateValueWindow(start: number, end: number): void {
+    const next = new Set<NodeRecord>();
+    if (this.viewport.getClientRects().length > 0 && !this.panel.closest("[hidden]")) {
+      for (let index = start; index < end; index += 1) {
+        const row = this.logicalRows[index];
+        if (row.kind === "node") next.add(this.records.get(row.id)!);
+      }
+      const selected = this.selectedId === null ? undefined : this.records.get(this.selectedId);
+      if (selected) next.add(selected);
+    }
+    for (const record of this.activeValues) if (!next.has(record)) this.pendingValues.add(record);
+    this.activeValues = next;
+    for (const record of next) {
+      this.projectionBudget.release(record);
+      this.cachedValues.delete(record);
+      this.pendingValues.delete(record);
+    }
+    const pending = Array.from(this.pendingValues);
+    this.pendingValues.clear();
+    for (const record of pending) this.cacheValue(record);
+    for (const record of next) void this.loadValue(record);
+  }
+
+  private async loadValue(record: NodeRecord): Promise<void> {
+    const session = this.session;
+    if (!session || record.previewLoaded || record.previewLoading || record.previewError !== null) return;
+    const generation = this.generation;
+    record.previewLoading = true;
+    try {
+      const value = await this.invokeRequest<unknown>("get_node_summary", {
+        nodeId: record.node.id, sessionRevision: session.sessionRevision, scopeId: session.scopeId
+      });
+      if (!this.isCurrent(generation, session) || this.records.get(record.node.id) !== record) return;
+      const node = validateNodeDto(value, session.sourceSize);
+      if (!node || node.id !== record.node.id || node.spanStart !== record.node.spanStart
+        || node.spanEnd !== record.node.spanEnd || node.kind !== record.node.kind
+        || node.childCount !== record.node.childCount || node.label !== record.node.label
+        || node.labelHasMore !== record.node.labelHasMore) throw new Error(t("tree.requestedNodeInvalid"));
+      record.node = node;
+      record.previewLoaded = true;
+      record.previewLoading = false;
+      this.cacheValue(record);
+    } catch (error) {
+      if (!this.isCurrent(generation, session) || this.records.get(record.node.id) !== record) return;
+      record.previewLoading = false;
+      if (this.isGlobalError(error)) {
+        this.clear();
+        this.onError(error);
+        return;
+      }
+      record.previewError = errorMessage(error);
+    }
+    if (this.activeValues.has(record)) {
+      this.renderWindow();
+      if (this.selectedId === record.node.id) this.renderInspector(record.node);
+    }
+  }
+
+  private newRecord(node: NodeDto, parentId: number | null): NodeRecord {
+    const record: NodeRecord = {
       node,
+      previewLoaded: true,
+      previewLoading: false,
+      previewError: null,
       parentId,
       children: [],
       expanded: false,
@@ -1154,6 +1302,8 @@ export class TreeView {
       nextCursor: null,
       error: null
     };
+    if (node.valuePreview !== null) this.pendingValues.add(record);
+    return record;
   }
 
   private contentTarget(record: NodeRecord): ContentTarget {

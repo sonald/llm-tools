@@ -334,6 +334,7 @@ const contentViewer = new ContentViewer({
 });
 
 const treeView = new TreeView({
+  projectionBudget,
   panel: treePanel,
   tab: treeTab,
   inspector: nodeInspector,
@@ -552,7 +553,8 @@ function handleEntrySelectionBusy(busy: boolean): void {
 }
 
 function handleTreeSelection(node: NodeDto): void {
-  rawView.setScope(node);
+  // Raw navigation needs the identity/span, not a retained Tree value body.
+  rawView.setScope({ ...node, valuePreview: null });
 }
 
 function handleConversationRaw(target: { ref: { nodeId: number; spanStart: number; spanEnd: number }; label: string }): void {

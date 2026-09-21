@@ -636,6 +636,7 @@ export const en = {
   "tree.returnToScope": "Return to scope Tree",
   "tree.loadingChildren": "Loading children…",
   "tree.retryLoadingChildren": "Retry loading children",
+  "tree.retryValue": "Click or press Enter to retry loading this value",
   "tree.retryLoadingChildrenDetail": "Retry loading children · {message}",
   "tree.loadMoreChildren": "Load more children · from {cursor}",
   "tree.truncated": "truncated",

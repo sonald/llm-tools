@@ -47,7 +47,7 @@ async function browser(args) {
   const result = await execFileAsync("agent-browser", ["--session", session, ...args], {
     cwd: root,
     maxBuffer: 8 * 1024 * 1024
-  });
+  }).catch((error) => { throw new Error(error.stderr || error.message); });
   return result.stdout.trim();
 }
 
@@ -64,7 +64,7 @@ function browserTest() {
     "const root=node(1,'array','$',600);",
     "const calls=[];",
     "const page=(cursor)=>{const count=Math.min(200,600-cursor);return {nodes:Array.from({length:count},(_,index)=>node(10+cursor+index,'number','['+(cursor+index)+']')),hasMore:cursor+count<600,nextCursor:cursor+count<600?cursor+count:null};};",
-    "const tree=new TreeView({panel:fixture.panel,viewport:fixture.host,tab:fixture.tab,inspector:null,fields:null,onSelection:()=>{},onStringSelection:()=>{},onStringOpen:()=>{},onError:(error)=>{throw error;},invoke:async(command,args)=>{calls.push({command,args});if(command==='get_node_summary')return node(9000,'string','uncached');if(command!=='get_children')throw new Error('unexpected Tree command');return page(args.cursor);}});",
+    "const tree=new TreeView({panel:fixture.panel,viewport:fixture.host,tab:fixture.tab,inspector:null,fields:null,onSelection:()=>{},onStringSelection:()=>{},onStringOpen:()=>{},onError:(error)=>{throw error;},invoke:async(command,args)=>{calls.push({command,args});if(command==='get_node_summary')return args.nodeId===9000?node(9000,'string','uncached'):node(args.nodeId,'number','['+(args.nodeId-10)+']');if(command!=='get_children')throw new Error('unexpected Tree command');return page(args.cursor);}});",
     "tree.setSession({mode:'document',sessionRevision:1,scopeId:null,sourceSize:100000,ariaLabel:'JSON structure'},root);",
     "await settle();",
     "fixture.panel.querySelector('.tree-disclosure').click();",
@@ -94,7 +94,7 @@ function browserTest() {
     "check(calls.length===cachedCalls&&fixture.panel.querySelector('[data-return-scope-tree]')===null,'cached focusNode narrowed or requested a summary');",
     "check(fixture.panel.querySelector('[data-node-id=\\'210\\']')?.getAttribute('aria-selected')==='true','cached focusNode did not select target');",
     "fixture.host.scrollTop=0;fixture.host.dispatchEvent(new Event('scroll'));await settle();const activeCached=fixture.panel.querySelector('[data-node-id=\\'22\\']');check(activeCached!==null,'resize target row was not mounted');activeCached.focus();const resizeScroll=fixture.host.scrollTop;fixture.host.style.height='35px';await settle();await settle();",
-    "const resizedRoot=fixture.panel.querySelector('.tree-root');check(document.activeElement===resizedRoot&&resizedRoot?.tabIndex===0&&fixture.host.scrollTop===resizeScroll,'resize-only unmounted focus did not transfer focus to a tabbable Tree root or changed scroll');",
+    "await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));const resizedRoot=fixture.panel.querySelector('.tree-root');check(document.activeElement===resizedRoot&&resizedRoot?.tabIndex===0&&fixture.host.scrollTop===resizeScroll,'resize-only unmounted focus did not transfer focus to a tabbable Tree root or changed scroll');",
     "resizedRoot?.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));await settle();check(document.activeElement?.dataset.nodeId==='211','Tree-root keyboard fallback did not continue from the retained logical focus key');",
     "fixture.host.style.height='140px';fixture.host.scrollTop=0;fixture.host.dispatchEvent(new Event('scroll'));await settle();const outside=document.createElement('button');document.body.append(outside);outside.focus();check(fixture.panel.querySelector('.tree-root')?.tabIndex===0,'offscreen logical focus did not leave a Tree root tab stop');outside.remove();",
     "const savedScroll=fixture.host.scrollTop;",
@@ -114,7 +114,7 @@ function browserTest() {
     "retry.focus();retry.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await settle();await settle();",
     "check(attempts===2&&retryFixture.panel.querySelector('[data-node-id=\\'2\\']')!==null,'retry keyboard action did not reload children');",
     "const nestedFixture=hostFor(120);",
-    "const nestedTree=new TreeView({panel:nestedFixture.panel,viewport:nestedFixture.host,tab:nestedFixture.tab,inspector:null,fields:null,onSelection:()=>{},onStringSelection:()=>{},onStringOpen:()=>{},onError:(error)=>{throw error;},invoke:async(command)=>command==='get_children'?{nodes:[node(2)],hasMore:false,nextCursor:null}:Promise.reject(new Error('unexpected nested command'))});",
+    "const nestedTree=new TreeView({panel:nestedFixture.panel,viewport:nestedFixture.host,tab:nestedFixture.tab,inspector:null,fields:null,onSelection:()=>{},onStringSelection:()=>{},onStringOpen:()=>{},onError:(error)=>{throw error;},invoke:async(command,args)=>command==='get_children'?{nodes:[node(2)],hasMore:false,nextCursor:null}:command==='get_node_summary'?node(args.nodeId):Promise.reject(new Error('unexpected nested command'))});",
     "nestedTree.setSession({mode:'nested',sessionRevision:3,scopeId:7,sourceSize:100,ariaLabel:'Nested'},node(1,'object','$',1));",
     "nestedFixture.panel.querySelector('.tree-disclosure').click();await settle();await settle();",
     "nestedFixture.host.scrollTop=35;const snapshot=nestedTree.snapshot();check(snapshot.scrollTop===35,'snapshot did not record outer scroll');nestedFixture.host.scrollTop=0;nestedTree.restore(snapshot);await settle();",
@@ -124,6 +124,22 @@ function browserTest() {
     "staleTree.setSession({mode:'document',sessionRevision:4,scopeId:null,sourceSize:100,ariaLabel:'stale'},node(1,'object','$',1));staleFixture.panel.querySelector('.tree-disclosure').click();await settle();",
     "staleTree.setSession({mode:'document',sessionRevision:5,scopeId:null,sourceSize:100,ariaLabel:'fresh'},node(50,'object','$',0));release?.({nodes:[node(2)],hasMore:false,nextCursor:null});await settle();",
     "check(staleFixture.panel.querySelector('[data-node-id=\\'2\\']')===null&&staleFixture.panel.querySelector('[data-node-id=\\'50\\']')!==null,'late stale response mutated fresh Tree');",
+    "const {ProjectionBudget}=await import('/src/projection-budget.ts');",
+    "const budget=new ProjectionBudget(1024);const budgetFixture=hostFor(140);const previewReads=[];",
+    "const previewNode=(id)=>({...node(id,'string','['+(id-10)+']'),valuePreview:'value-'+id+'x'.repeat(150)});",
+    "let delayedPreview=null;let delayPreviews=false;",
+    "const budgetTree=new TreeView({panel:budgetFixture.panel,viewport:budgetFixture.host,tab:budgetFixture.tab,projectionBudget:budget,inspector:null,fields:null,onSelection:()=>{},onStringSelection:()=>{},onStringOpen:()=>{},onError:(error)=>{throw error;},invoke:async(command,args)=>{if(command==='get_children')return {nodes:Array.from({length:200},(_,i)=>previewNode(10+i)),hasMore:false,nextCursor:null};if(command==='get_node_summary'){previewReads.push(args.nodeId);if(delayPreviews)return new Promise(resolve=>{delayedPreview=()=>resolve(previewNode(args.nodeId));});return previewNode(args.nodeId);}throw new Error('unexpected budget command');}});",
+    "budgetTree.setSession({mode:'document',sessionRevision:80,scopeId:null,sourceSize:100000,ariaLabel:'Budget'},node(1,'array','$',200));budgetFixture.panel.querySelector('.tree-disclosure').click();await settle();await settle();",
+    "check(budgetTree.memoryUsage.cachedValueBytes<=1024&&budgetTree.memoryUsage.cachedValueBytes>0,'Tree values were not accounted within the shared cache budget');",
+    "check(budgetTree.memoryUsage.navigationBytes>0&&budgetTree.memoryUsage.activeValueBytes>0,'Tree did not separately account active values and navigation');",
+    "const budgetSnapshot=budgetTree.snapshot();check(budgetSnapshot.records.every(record=>record.node.valuePreview===null),'Tree snapshot retained cached value bodies');",
+    "budgetFixture.host.scrollTop=3500;budgetFixture.host.dispatchEvent(new Event('scroll'));await settle();await settle();check(previewReads.length>0&&budget.usedBytes<=1024,'Scrolling did not reread evicted values within budget');",
+    "await budgetTree.focusNode(100,100,101);await settle();check(budgetFixture.panel.querySelector('[data-node-id=\\'100\\'] .tree-value')?.textContent===previewNode(100).valuePreview&&budgetTree.snapshot().selectedId===100,'Evicted value selection lost content or NodeId');",
+    "budgetTree.setSession({mode:'document',sessionRevision:81,scopeId:null,sourceSize:100000,ariaLabel:'Small'},node(2,'object','$'));budgetTree.restore(budgetSnapshot);await settle();await settle();check(budgetTree.snapshot().records.length===201&&budgetTree.snapshot().records[0].expanded&&budgetFixture.panel.querySelector('[data-node-id=\\'10\\'] .tree-value')?.textContent===previewNode(10).valuePreview,'Restoring navigation snapshot lost expanded children or failed to reread visible values');",
+    "const external={};budgetFixture.panel.hidden=true;budgetTree.renderWindow();check(budgetTree.memoryUsage.activeValueBytes===0,'Hidden Tree retained active value bodies');budget.admit(external,1024,()=>{});check(budgetTree.memoryUsage.cachedValueBytes===0&&!budgetFixture.panel.textContent.includes('value-'),'External pressure left hidden Tree value bodies in records or DOM');",
+    "budgetTree.clear();check(budget.usedBytes===1024,'Clearing Tree released another consumer cache');budget.release(external);check(budget.usedBytes===0,'Clearing Tree did not release cache ledger entries');",
+    "budgetFixture.panel.hidden=false;budgetTree.restore(budgetSnapshot);await settle();await settle();delayPreviews=true;budgetFixture.host.scrollTop=3500;budgetFixture.host.dispatchEvent(new Event('scroll'));await settle();check(delayedPreview!==null,'Stale-value test did not issue a preview read');budgetTree.setSession({mode:'document',sessionRevision:82,scopeId:null,sourceSize:100000,ariaLabel:'Fresh'},node(2,'object','$'));delayedPreview();await settle();check(budgetTree.snapshot().rootId===2&&budget.usedBytes===0&&!budgetFixture.panel.textContent.includes('value-'),'Late value response repopulated the replacement Tree or budget');budgetTree.clear();",
+    "delayPreviews=false;const normalInvoke=budgetTree.invokeRequest;budgetTree.invokeRequest=async(command,args)=>{if(command==='get_node_summary'&&args.nodeId===10)throw new Error('preview unavailable');return normalInvoke(command,args);};budgetTree.restore(budgetSnapshot);await settle();await settle();check(budgetFixture.panel.querySelector('[data-node-id=\\'10\\'] .tree-value')?.textContent==='preview unavailable','Failed value reload was not visible and retryable');budgetTree.invokeRequest=normalInvoke;budgetFixture.panel.querySelector('[data-node-id=\\'10\\']').click();await settle();await settle();check(budgetFixture.panel.querySelector('[data-node-id=\\'10\\'] .tree-value')?.textContent===previewNode(10).valuePreview,'Retry did not restore the failed value preview');budgetTree.clear();check(budgetTree.memoryUsage.navigationBytes===0&&budgetTree.memoryUsage.activeValueBytes===0&&budget.usedBytes===0,'Tree clear retained navigation or active/cache bodies');",
     "return {pass:true,assertions,visibleLimit};",
     "})()"
   ].join("\n");

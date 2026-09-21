@@ -638,6 +638,7 @@ export const zhCN: MessageCatalog = {
   "tree.returnToScope": "返回范围树视图",
   "tree.loadingChildren": "正在加载子节点…",
   "tree.retryLoadingChildren": "重试加载子节点",
+  "tree.retryValue": "点击或按 Enter 重试加载此值",
   "tree.retryLoadingChildrenDetail": "重试加载子节点 · {message}",
   "tree.loadMoreChildren": "加载更多子节点 · 起始位置 {cursor}",
   "tree.truncated": "已截断",
