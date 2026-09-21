@@ -39,6 +39,7 @@ const manyInvalidUtf8Entries = Buffer.concat(
 );
 
 const fixtures = new Map([
+  ["lossless-strings.json", Buffer.from('{\r\n\t"escaped" : "\\u0041\\ud83d\\ude00",\r\n  "literal": "A😀",\r\n  "spaces": "  keep\\tspace  "\r\n}\r\n')],
   ["invalid-json.json", Buffer.from("{")],
   ["long-invalid-json.json", longInvalidJson],
   ["invalid-utf8.json", Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0xff, 0x7d])],
@@ -182,7 +183,7 @@ try {
 
 if (read("record-sequence.json")[0] !== 0x1e) fail("record-sequence.json lacks its RS framing byte");
 
-for (const name of ["pretty.json", "one-line.json", "unknown-extension-single-json", "utf8.json", "utf8-bom.json"]) {
+for (const name of ["lossless-strings.json", "pretty.json", "one-line.json", "unknown-extension-single-json", "utf8.json", "utf8-bom.json"]) {
   expectJsonDocument(read(name), name);
 }
 if (nonEmptyLines(read("pretty.json")).length <= 1) fail("pretty.json is not pretty-printed");

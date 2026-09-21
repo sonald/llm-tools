@@ -153,6 +153,12 @@
 - 选择 Node 827、点 Copy JSON Subtree，再粘贴到应用搜索输入，得到带引号的 `"second"`；切 Raw 仍为 Node 827、`[11454,11462)`，显示同一原文，与文件切片一致。该 fixture 操作后无 git diff。
 - 这是重复键、数值词法保留和单值子树复制的 Native 证据；不替代未走到的完整 F-08 转义、emoji、特殊空白及复合子树复制矩阵。
 
+### 2026-09-21 Unicode 转义与字面 emoji
+
+- 现有 Raw fixture 生成器增加 `lossless-strings.json`（96 B）：CRLF、缩进 tab、Unicode 转义、字面 emoji 和带空白字符串。生成器 19 份输入自检通过；本次输出位于 `/tmp/sjv-native-20260921.NVTxYx/lossless`，未覆盖旧 fixture。
+- Native Tree 显示 escaped Node 1 `[16,36)` 和 literal Node 2 `[52,59)` 均为 `A😀`。选择 escaped，Copy Decoded 后粘贴到应用搜索框，得到 `A😀`。
+- 切 Raw 仍定位 Node 1 `[16,36)`，显示带引号的 `\u0041\ud83d\ude00` 原始转义；未重新序列化成字面 emoji。输入中的 CRLF/空白为固定测试素材，尚未通过 Native 多行剪贴板逐字节比较，不把单行复制结果扩展为该证明。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
