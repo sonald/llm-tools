@@ -1722,7 +1722,22 @@ export class ContentViewer {
     if (this.renderMode !== "html" || this.busy) return;
     if (!preserveSearch) this.sourceRevealEpoch += 1;
     if (representation === "preview") {
-      if (this.htmlPreviewUnavailable || this.htmlPreview === null || !this.htmlElements) return;
+      if (this.htmlPreviewUnavailable || !this.htmlElements) return;
+      if (this.htmlPreview === null) {
+        const target = this.target;
+        if (!target) return;
+        if (!preserveSearch) this.sourceSearch?.invalidate();
+        this.busy = true;
+        this.htmlRepresentation = "preview";
+        this.clearContent();
+        this.elements.range.textContent = "—";
+        this.elements.dialog.setAttribute("aria-busy", "true");
+        this.elements.content.setAttribute("aria-busy", "true");
+        this.setHtmlVisible(true);
+        this.renderMetadata();
+        void this.openHtml(target, this.generation);
+        return;
+      }
       this.disposeTextLineView();
       this.htmlRepresentation = "preview";
       this.htmlNote = HTML_PREVIEW_NOTE;
@@ -2819,9 +2834,15 @@ export class ContentViewer {
     const html = this.htmlElements;
     if (!html) return;
     const visible = active && this.renderMode === "html" && this.htmlRepresentation !== null;
+    if (!visible || this.htmlRepresentation !== "preview") {
+      const hadSearchRoot = this.htmlSearchRoot !== null;
+      this.htmlPreview = null;
+      this.clearHtmlPreviewFrame();
+      if (hadSearchRoot) this.renderedSearch?.clear();
+    }
     html.representations.hidden = !visible;
     html.previewPanel.hidden = !visible || this.htmlRepresentation !== "preview";
-    html.previewTab.disabled = !visible || this.htmlPreviewUnavailable || this.htmlPreview === null;
+    html.previewTab.disabled = !visible || this.htmlPreviewUnavailable;
     html.sourceTab.disabled = !visible;
     const tabs = [html.previewTab, html.sourceTab, ...(html.rawTab ? [html.rawTab] : [])];
     const activeTab = this.htmlRepresentation === "preview" ? html.previewTab

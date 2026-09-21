@@ -99,6 +99,7 @@ const invoke=async(command,args)=>{
   if(command==="get_string_detection") return {semanticType:"html",detectionSource:"contentDetected",plainReason:null};
   if(command==="get_html_preview") return {html:safeHtml,reason:null};
   if(command==="read_decoded_text") return {start:args.offset,text:safeHtml,hasMore:false,nextOffset:null};
+  if(command==="read_raw_slice") return {start:args.sourceStart,text:"x".repeat(args.length),hasMore:false,nextOffset:null};
   throw new Error("unexpected HTML command "+command);
 };
 const viewer=makeViewer(invoke);
@@ -149,6 +150,13 @@ check(viewer.elements.html.previewFrame.srcdoc!==markedSrcdoc&&!viewer.elements.
 viewer.elements.html.sourceTab.click();
 await settle();
 check(viewer.elements.search.decoded.checked&&!viewer.elements.search.query.disabled,"switching from HTML Preview to Source did not restore Source search ownership");
+check(viewer.viewer.htmlPreview===null&&viewer.viewer.htmlSearchRoot===null&&viewer.elements.html.previewFrame.srcdoc==="","Source tab retained inactive HTML body, search DOM or iframe content");
+check(!viewer.elements.html.previewTab.disabled,"Releasing inactive HTML made Preview inaccessible");
+viewer.elements.html.previewTab.click();await settle();await settle();
+check(calls.filter(call=>call.command==="get_html_preview").length===2&&viewer.elements.html.previewFrame.srcdoc.includes("Content-Security-Policy")&&viewer.elements.search.form.dataset.searchOwner==="rendered","Returning to Preview did not rebuild a safe searchable projection");
+await submitQuery("你好");check(viewer.elements.search.results.querySelectorAll("button").length===1,"Rebuilt HTML preview lost Rendered search");
+viewer.elements.html.rawTab.click();await settle();
+check(viewer.viewer.htmlPreview===null&&viewer.viewer.htmlSearchRoot===null&&viewer.elements.html.previewFrame.srcdoc===""&&viewer.elements.search.rawSource.checked,"Raw tab retained inactive HTML or lost Source search ownership");
 viewer.viewer.clear(false);
 viewer.host.remove();
 
@@ -187,9 +195,8 @@ try {
   const probeCode='(()=>{const host=document.createElement("div");host.id="html-anchor-probe";host.style.cssText="position:fixed;left:8px;top:8px;z-index:2147483647;background:white";host.innerHTML=\'<iframe id="html-anchor-probe-frame" sandbox=""></iframe>\';document.body.append(host);const frame=host.querySelector("#html-anchor-probe-frame");frame.style.cssText="width:420px;height:140px;border:1px solid";frame.srcdoc=\'<!doctype html><head><meta http-equiv="Content-Security-Policy" content="default-src \\\'none\\\'; script-src \\\'none\\\'; connect-src \\\'none\\\'; img-src \\\'none\\\'; media-src \\\'none\\\'; font-src \\\'none\\\'; frame-src \\\'none\\\'; object-src \\\'none\\\'; form-action \\\'none\\\'; base-uri \\\'none\\\'; style-src \\\'unsafe-inline\\\';"><style>body{margin:0;font:16px sans-serif}nav{height:30px;background:#eee}#target:target{background:red;color:white}#spacer{height:900px}</style></head><body><nav><a id="jump" href="about:srcdoc#target">Jump to matched text</a></nav><div id="spacer"></div><p id="target">target</p></body>\';return {hostUrl:location.href,sandbox:frame.getAttribute("sandbox"),csp:frame.srcdoc.includes("Content-Security-Policy")}})()';
   const probe=parseBrowserValue(await browser(["eval","-b",Buffer.from(probeCode).toString("base64")]));
   await browser(["wait","500"]);
-  const boxText=await browser(["get","box","#html-anchor-probe-frame"]);
-  const box=Object.fromEntries(["x","y","width","height"].map((key)=>[key,Number(boxText.match(new RegExp(`^${key}:\\s*([0-9.]+)$`,"m"))?.[1]??NaN)]));
-  if (!Number.isFinite(box.x)||!Number.isFinite(box.y)) throw new Error(`HTML anchor probe did not return a frame box: ${boxText}`);
+  const box=parseBrowserValue(await browser(["eval",'(()=>{const rect=document.querySelector("#html-anchor-probe-frame").getBoundingClientRect();return {x:rect.x,y:rect.y,width:rect.width,height:rect.height}})()']));
+  if (!Number.isFinite(box.x)||!Number.isFinite(box.y)||box.width<=0||box.height<=0) throw new Error("HTML anchor probe did not have a visible frame box");
   const hostUrlBefore=await browser(["get","url"]);
   const clickX=Math.round(box.x+24);
   const clickY=Math.round(box.y+16);

@@ -503,7 +503,7 @@ const fallback=makeViewer();
 const fallbackViewer=new ContentViewer({elements:fallback.elements,invoke:async(command)=>command==="get_string_detection"?{semanticType:"markdown",detectionSource:"contentDetected",plainReason:null}:{start:0,text:fallbackSource,hasMore:false,nextOffset:null}});
 await fallbackViewer.open({revision:1,nodeId:1,spanStart:0,spanEnd:new TextEncoder().encode(fallbackSource).byteLength,scopeLabel:"Document",pathSegments:["$","content"],pathTruncated:false});
 check(fallback.elements.representation.textContent==="Decoded Source","fallback representation is not Decoded Source");
-check(fallback.elements.rendererNote.textContent==="Semantic rendering failed.\\nShowing plain text instead.","fallback note is not exact");
+check(fallback.elements.rendererNote.textContent.split(nl).join(" ")==="Semantic rendering failed. Showing plain text instead.","fallback note is not exact");
 const fallbackRows=fallback.elements.content.querySelectorAll(".text-line-view-row");
 check(fallbackRows.length<5001&&fallbackRows[0]?.textContent.startsWith("fallback0"),"fallback did not preserve a bounded source window");
 check(!fallback.elements.content.classList.contains("is-markdown"),"fallback left markdown class installed");
@@ -605,7 +605,7 @@ const fallbackLargeViewer=new ContentViewer({elements:fallbackLargeParts.element
 await withStableRenderClock(()=>fallbackLargeViewer.open({revision:20,nodeId:200,spanStart:0,spanEnd:fallbackLargeSource.length,scopeId:null,scopeLabel:"Document",pathSegments:["$","fallback-large"],pathTruncated:false},fallbackLargeParts.elements.close));
 check(fallbackLargePages.length>1&&fallbackLargeCalls.filter((call)=>call.command==="read_decoded_text").length===fallbackLargePages.length,"large Markdown fallback did not collect all pages");
 check(fallbackLargeParts.elements.representation.textContent==="Decoded Source"&&fallbackLargeParts.elements.content.querySelectorAll(".text-line-view-row").length<1000&&fallbackLargeParts.elements.content.textContent.startsWith("fallback-0"),"failed Markdown render did not retain a bounded source page");
-check(fallbackLargeParts.elements.next.disabled===false&&fallbackLargeParts.elements.rendererNote.textContent==="Semantic rendering failed."+nl+"Showing plain text instead.","failed Markdown render lost paging or fallback note");
+check(fallbackLargeParts.elements.next.disabled===false&&fallbackLargeParts.elements.rendererNote.textContent.split(nl).join(" ")==="Semantic rendering failed. Showing plain text instead.","failed Markdown render lost paging or fallback note");
 fallbackLargeViewer.close();
 fallbackLargeParts.dialog.remove();
 
@@ -1734,11 +1734,11 @@ check(htmlCalls.filter((call)=>call.command==="read_decoded_text").length===1,"H
   const htmlCallsAfterSource=htmlCalls.length;
   htmlParts.elements.html.previewTab.click();
   await settle();
-  check(htmlCalls.length===htmlCallsAfterSource&&htmlParts.elements.html.previewFrame.srcdoc.includes("safe preview"),"switching HTML Source to Preview repeated IPC or lost preview");
+  check(htmlCalls.length===htmlCallsAfterSource+1&&htmlCalls.at(-1).command==="get_html_preview"&&htmlParts.elements.html.previewFrame.srcdoc.includes("safe preview")&&htmlParts.elements.html.previewFrame.srcdoc.includes(expectedCsp),"switching HTML Source to Preview did not safely reread the released preview");
   check(htmlParts.elements.range.textContent==="—","HTML Preview retained the Source range");
   htmlParts.elements.html.sourceTab.click();
   await settle();
-  check(htmlCalls.length===htmlCallsAfterSource&&htmlParts.elements.content.textContent===htmlSourceA,"switching HTML Preview to Source did not use its page cache");
+  check(htmlCalls.length===htmlCallsAfterSource+1&&htmlParts.elements.content.textContent===htmlSourceA&&htmlParts.elements.html.previewFrame.srcdoc==="","switching HTML Preview to Source did not keep the source cache and release the preview");
   check(htmlParts.elements.range.textContent==="[0, "+new TextEncoder().encode(htmlSourceA).byteLength+")","switching HTML Preview to Source did not restore the Source range");
 htmlParts.elements.next.click();
 await settle();
@@ -1772,10 +1772,10 @@ const singleHtmlRange="[0, "+new TextEncoder().encode(singleHtmlSource).byteLeng
 check(singleHtmlParts.elements.content.textContent===singleHtmlSource&&singleHtmlParts.elements.range.textContent===singleHtmlRange,"single-page HTML Source did not load its terminal page");
 singleHtmlParts.elements.html.previewTab.click();
 await settle();
-check(singleHtmlCalls.length===singleHtmlCallsAfterSource&&singleHtmlParts.elements.html.previewFrame.srcdoc.includes("single-page preview"),"single-page HTML Source to Preview repeated IPC or lost Preview");
+check(singleHtmlCalls.length===singleHtmlCallsAfterSource+1&&singleHtmlCalls.at(-1).command==="get_html_preview"&&singleHtmlParts.elements.html.previewFrame.srcdoc.includes("single-page preview"),"single-page HTML Source to Preview did not reread the released preview");
 singleHtmlParts.elements.html.sourceTab.click();
 await settle();
-check(singleHtmlCalls.length===singleHtmlCallsAfterSource&&singleHtmlParts.elements.content.textContent===singleHtmlSource&&singleHtmlParts.elements.range.textContent===singleHtmlRange,"single-page HTML Preview to Source did not restore cached text and range");
+check(singleHtmlCalls.length===singleHtmlCallsAfterSource+1&&singleHtmlParts.elements.content.textContent===singleHtmlSource&&singleHtmlParts.elements.range.textContent===singleHtmlRange,"single-page HTML Preview to Source did not restore cached text and range");
 singleHtmlViewer.close();
 await settle();
 singleHtmlParts.dialog.remove();
