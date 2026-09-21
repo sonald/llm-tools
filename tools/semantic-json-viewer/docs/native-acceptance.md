@@ -176,6 +176,13 @@
 - 打开已校验的 `million-items.json`，进入 Collection、共 1,000,000 项。Go to Item 999999 定位尾项，Enter 选择后显示选中项目 999,999；Raw 为 Node 1000000、`[6888884,6888890)`、原文 `999999`。
 - 上述锁屏前未执行的操作已补验；未以可用性冒烟测试替代正式性能时延或内存指标。
 
+### Nested 数组与普通文本回退补验
+
+- release `index-CPNlsFas.js`，固定 `nested-json.json`：`$.data.arrayString` Node 3、外层 `[133,197)` 自动进入 Nested JSON，解析后根数组 `[0,54)` 有 3 项；展开可见 object `[1,32)`、false `[33,38)`、`array scalar` `[39,53)`。
+- `invalidJsonLooking` Node 4 `[225,237)` 自动保持 Plain Text，提示“看起来像 JSON，但解析失败。”，显示原始解码内容 `{"a":1,}`，没有静默修复尾逗号。
+- `primitiveStrings.number` Node 7 `[305,310)` 的 `123` 保持 Plain Text，显示 3 字节、1 行，没有自动创建嵌套数值 scope。
+- 本轮 Content Viewer 打开时 CUA AX 只返回空 HTML 容器，但截图与真实点击可用；以上弹窗内容由截图核验，关闭后外层 AX 恢复。未将此观察宣称为辅助功能全通过，需区分 WebKit/CUA 暴露问题与产品可访问性。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
