@@ -1746,7 +1746,7 @@ export class ConversationView {
     const textRef = nodeRef(textNode);
     const value = await this.cardStringValue(textRef, textNode, request);
     return {
-      label: `Result.${child.label}.text`,
+      label: `${t("conversation.result")}.${child.label}.text`,
       value: value.text,
       ref: textRef,
       mode: value.mode,

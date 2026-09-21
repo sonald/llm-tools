@@ -66,7 +66,7 @@
 - 原生文件选择器打开 `anthropic-system-blocks.json`：2,454 B，SHA-256 `02df7dcf8b3763bff0137a9d733e62cb732ca6e4d3d2401a6103a42017b568f9`。自动选择 Anthropic 风格，显示 3 条消息、17 个块，system 数组及文本单独呈现。
 - 滚动后加载 thinking 文本、`opaque-redacted-content`、普通文本、`lookup_status` / `toolu_lookup` 及对象输入 `query=status`。工具结果显示 `is_error=false`、已确认关联 `block 11`、数组结果中的 `status: ready`；未知消息字段仍有独立源卡。
 - 点击结果文本的“原始”按钮，进入 `toolResult 卡片源 · Node 53`，Raw 从字节 1890 开始显示 `"status: ready"` 与相邻未知字段。直接检查输入确认该字符串词法范围为 `[1890,1905)`，与 Native 跳转起点一致。
-- 截图仍看到结果子字段路径 `Result.[0].text`；这是待检查的本地化残留，不将 Native i18n 标为完整通过。Anthropic system-string 变体、完整 unknown/source 矩阵及其他未操作路径仍待验收。
+- 截图仍看到结果子字段路径 `Result.[0].text`；后续源码检查确认 `toolResultTextBlock` 硬编码了标签，已改用现有 `conversation.result` 翻译，保留源字段 `text` 和数组索引不变。TypeScript/生产构建与 i18n 检查通过；本轮尚未重启新 Native 构建复测，不关闭该 Native 文案问题。Anthropic system-string 变体、完整 unknown/source 矩阵及其他未操作路径仍待验收。
 
 ### 历史 Native 操作证据（2026-09-14）
 
