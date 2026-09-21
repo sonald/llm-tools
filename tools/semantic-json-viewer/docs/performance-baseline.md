@@ -4,6 +4,23 @@
 
 ## 测试边界
 
+### 2026-09-21 release 万条会话生命周期采样
+
+退出 debug/Inspector 后记录 WebKit 进程基线，再启动 release `index-CPNlsFas.js`（可执行 SHA-256 `151b4846e5566fa71d3c2c0d465831a8a04630e9245ea8a7c6a9697f4613d209`）。新增主进程 83782、GPU 83786、WebContent 83787、Networking 83788；本轮最后正常退出应用，四个 PID 均消失。以启动/退出差分支持本轮归属，没有计入既存 WebKit 进程。
+
+使用 `footprint -p … --noCategories -f bytes`，单位 B：
+
+| 状态 | 主进程 | WebContent | GPU | Networking | Summary Footprint |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 空应用 | 36439120 | 40829888 | 15319832 | 6095352 | 98405664 |
+| 10,000-message 首屏 | 63030400 | 66995208 | 18793384 | 5997048 | 154537512 |
+| Next 20 次 | 52954240 | 72467464 | 19792952 | 5931512 | 150867640 |
+| Previous 20 次 | 52823168 | 75662368 | 21300280 | 6619640 | 156126928 |
+
+Native 从第 1 页前进到“第 350 条消息继续”，再跨过 16 页游标缓存边界返回第一页，恢复 system Node 9、Previous 禁用。输入为既有 2,282,927 B / 10,000-message fixture。本轮稳定态样本约 144–149 MiB，没有随 20 页历史线性增加；不是遍历全部 572 页的证明。
+
+这是单轮 macOS warm、真实 release 四进程 physical footprint，**不是 Linux private-memory 指标或同步峰值曲线**。各进程 peak 分别为主进程 63,440,000、WebContent 165,921,800、GPU 145,638,312、Networking 8,290,808 B；它们可能发生在不同时刻，不能相加宣称整应用峰值。未安装 JS/IPC 探针，未 root 提权。正式 Linux fresh 五轮与 cold/private 测量仍延期。
+
 ### 2026-09-21 Native 采样方法核对（非性能 PASS）
 
 当前 debug 主进程由完整 bundle 可执行路径确认，`footprint -p 74143 --noCategories -f bytes` 返回 `phys_footprint=53,249,344 B`、`peak=78,824,792 B`。此时已操作多份输入且开过 Web Inspector，不是干净 release 基线，也不包含 WebView。
