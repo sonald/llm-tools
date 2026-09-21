@@ -30,7 +30,7 @@
 | Code | 支持 Python、JavaScript、TypeScript、Rust、C、C++、Java、Go、Shell、SQL、JSON、YAML；自动猜语言上限 256 KiB，高亮上限为 1 MiB 或 20,000 行，超限退回 Plain Code window | `ace1f24` 已实现超限窗口；独立 wrap 90、Rendered 61 自动化通过，Native 尚未验收：`src/code-renderer.ts`、`src/content-viewer.ts` |
 | Markdown | 自动渲染上限 2 MiB；显式继续渲染上限 32 MiB；链接显示为文本、图片为占位，raw HTML 不执行 | 已实现但安全 Native 五零证据未闭环：`src/content-viewer.ts`、`src/markdown-renderer.ts` |
 | HTML | HTML Preview 输入上限 512 KiB，输出上限 1 MiB；HTML 自动启发式检测上限 64 KiB。离开 Preview 时释放隐藏 iframe 正文、搜索 DOM 和预览字符串；返回时重新获取净化预览，保留 Source 页缓存 | HTML Rendered 30 项、Content Viewer 144 项及安全套件 1773 项通过；浏览器 HAR hostile/http-hostile/data 请求均为 0。Native 五项零证据仍未闭环：`src/content-viewer.ts`、`src-tauri/src/html_sanitizer.rs`、`src-tauri/src/semantic_detection.rs` |
-| Nested JSON | 单层 2 MiB、累计 8 MiB；默认深度 5，UI 可选 1–10，变更时从嵌套根重新打开；`4a090e6` 的原 Native tabs FAIL 仍待复测 | `d9b6066`；独立 Content Viewer 144、Parsed Search 32 通过，Native 仍不完整：`docs/native-acceptance.md` |
+| Nested JSON | 单层 2 MiB、累计 8 MiB；默认深度 5，UI 可选 1–10，变更时从嵌套根重新打开；旧 Native 重复 tabs 问题已于 2026-09-21 通过短/长子串返回路径复测关闭 | `d9b6066`；Content Viewer 144、Parsed Search 32 通过；Native 已验证返回选择、标签互斥及小值复制，但完整 F-02 尚未完成：`docs/native-acceptance.md` |
 | 搜索历史 | Source / Rendered Search 各自最多保留 16 页并有估算字节上限；淘汰正文与游标，Previous 缺页可取消地重扫，不限制可访问的历史深度 | `5609b71`、`ba99a6b`、`47653aa`；Source 英文 133/中文 8、Rendered 113 通过，同目标重入已关闭；`af42714` 将 Viewer 内部 Source/Rendered 接入 main 同一 ProjectionBudget，独立跨组件压力 8 项通过 |
 | Conversation Projection | Conversation 内联/工具投影与主搜索、Viewer 搜索、Tree 离屏值、Collection 非活动页共享 ProjectionBudget；以 ledger/条目估算非 WebView 实际 heap，不宣称 WebView 私有堆 | `e229e0f`、`af42714`；ledger 15、Conversation 10 的独立回归通过；上述消费者已共用账本，仍需完整生命周期与全应用内存验收，不据此宣称 §18 已达标 |
 
@@ -43,8 +43,8 @@ Conversation 分页历史现在最多保存 16 个游标检查点；更早的 Pr
 | Event Stream hint | Core hint 和 summary 路径已提交；`f06d3dc` 已实现 Auto / Generic / Event UI，headless 25 项断言和 main 集成通过 | UI 已提交、Native 未验：`src-tauri/src/event_hint.rs`、`src/entry-list.ts`、`docs/native-acceptance.md` |
 | i18n | 壳、列表、Tree、Raw、搜索、Viewer 和 Conversation 已有中英文资源；源角色、路径、协议字段不翻译。底层错误原文与完整 Native 发布文案仍需最终审计 | `68b019b`、`9f643f4`、`23478b9`；独立 Conversation 英文 96/中文 10，Viewer 144、Parsed Search 32 及资源检查通过；Native 实证仍以 `docs/native-acceptance.md` 为准 |
 | Main IPC 错误 | 稳定 code 的标题/操作说明本地化，原始 diagnostic 保留；`invalid_json` 继续使用共享 parse formatter，未知 code 回退原文 | `87987b1`；真实 Main 英文 4、中文 8 通过，Native 错误入口仍未验 |
-| macOS | 有 macOS arm64 Native 局部真实证据；`4a090e6` 的 Nested tabs 自动化修复已通过，但原 Native FAIL 尚未复测关闭 | 部分验收：`docs/native-acceptance.md` |
-| Linux | Linux 参考环境的 cold/warm、fresh 五轮、private-memory 和完整性能门槛尚未测 | 未验：`docs/performance-baseline.md` |
+| macOS | macOS arm64 新构建已真实启动并复测 Nested 返回、表示切换及复制；旧重复 tabs FAIL 已关闭，搜索说明仍有英文待修复 | 部分验收，不是 F-00–F-12 全 PASS：`docs/native-acceptance.md` |
+| Linux | Linux 功能、安全及参考环境 cold/warm、fresh 五轮、private-memory 尚未验；等待用户提供远程环境后验证 | 2026-09-21 用户确认延后且不阻塞当前项目；已知依赖风险仍见 `docs/security-report.md`，不标为已支持/已通过 |
 | Windows | `320af83` 已补 FileSource 的平台读取分支；本机回归通过，但未进行 Windows 编译、运行或安全验收，不先列为已支持 | 未验：`src-tauri/src/file_source.rs` |
 
 ## 明确排除（v0.1）

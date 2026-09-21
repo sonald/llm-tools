@@ -1,6 +1,6 @@
 # Semantic JSON Viewer Native 验收证据台账
 
-> 状态：部分 Native 真实验收证据；不是 F-00 至 F-12 全部通过，也不是发布 PASS。以下记录来自 2026-09-14 的真实 Tauri 应用操作；未把 Core benchmark、截图缺失或 AX 的部分窗口误判为完整 UI 证据。
+> 状态：部分 Native 真实验收证据；不是 F-00 至 F-12 全部通过，也不是发布 PASS。以下按 2026-09-14 / 2026-09-21 的具体构建分别记录真实 Tauri 操作；未把 Core benchmark 或 AX 的部分窗口误判为完整 UI 证据。
 
 ## 构建与证据边界
 
@@ -28,7 +28,17 @@
 - 先前 `/tmp/sjv-lines-native-20260914.json` 与 `/tmp/sjv-code-virtual-native-20260914.json` 已不存在，不能假定旧临时输入仍可复用。后续 UI 复测需先核对实际输入，且须等用户确认当前桌面可操作。
 - 已用仓库 `generate-semantic-fixtures.mjs` / `generate-security-fixtures.mjs` 生成 `/tmp/sjv-native-20260921.NVTxYx/{semantic,security}`，两组生成器自检通过；这些是合成验收输入，不替代 §13 的真实人工标注集，也不证明 UI 已通过。
 
-### 历史 Native 操作证据
+### 2026-09-21 新构建 Native 复测（局部 PASS）
+
+- `npm run tauri -- build --bundles app` 成功；通过原生菜单退出旧实例后，用完整 `.app` 路径启动新实例。前端为 `index-BW2GIGS7.js`，bundle 内 `Contents/MacOS/semantic-json-viewer` 的 SHA-256 为 `6637a60724bb35f66bdcc44fef2f655fb090cd3e36013deaeb7005b6af659fcd`。
+- 所有操作均走原生文件选择器、Tree、Viewer、真实点击/键盘及系统粘贴，不是浏览器 mock。CUA AX 与截图观察到应用正常打开，当前 Mac 可操作。
+- 小输入 `semantic/nested-json.json`：25,137 B，SHA-256 `b0b9815139855dd6a17de41675ccec217a767b89d0e970ed4aa2d131715ce450`。`$.data.objectString` 的 Node 2、文件范围 `[34,112)`；Decoded 68 B、Raw 78 B。分别点击 Native CopyDecoded / CopyRaw 后粘贴至查看器搜索框，完整文本与输入文件预期一致，Raw 保留引号及转义。
+- 长输入由 `fixtures/generate-native-regression-fixture.mjs` 生成在 `/tmp/sjv-native-20260921.NVTxYx/native-regressions.json`：2,221,703 B，SHA-256 `3360fbf4f2c7ad813d370c06dcfa057efc062861290868cd1ebc4c688b014f76`。`$.nested` Node 2 文件范围 `[600025,644042)`，解码为 42,413 B。
+- 进入 `$.nested.nestedText`，Native 显示解码 40,798 B、35,198 Unicode scalars、800 行，nested-relative `[14,42412)`；返回父树后仍选中该 Node 1。再切 Decoded / Raw，截图和 AX 均只有一组嵌套表示标签，没有普通 String 标签并存。Decoded 范围 `[0,42413)`，Raw 父范围 `[600025,644042)`。**旧 Nested 重复 tabs FAIL 在此同类长子串路径复测关闭。**
+- 新发现：Viewer 主要文案已中文，但搜索说明仍出现 `Search parsed JSON keys and values.` / `Search the decoded source.` / `Search the raw lexeme.` / `Search the visible rendered text.`，因此完整 Native i18n 尚未通过。
+- 此轮没有验证 Code 的两种超限输入、F-11 五零或全部 F-00–F-12；生成器内的 22,050 行和超过 1 MiB 单行 Code 仅为下一轮准备，不能记为 PASS。
+
+### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
 | --- | --- | --- |
@@ -42,10 +52,10 @@
 | F00 单行 JSONL | `/tmp/sjv-f00-f07-5qH2m6/one-line.jsonl`，`25 B`、一条记录；Entry 模式选择 entry 1，span `[0,24)`；中文 Raw 复制 `24 B` 一致 | PASS |
 | Collection | `fixtures/tree-collection.json`，`124 B`；Go 3 后 Enter 选择零基项目 3；Raw Node 13、span `[108,121)`，显示原文 `"scalar item"`。截图确认 4 条实际可见；AX 只列部分内容，不能据此否定 DOM | PASS |
 
-## 已知未闭环 FAIL
+## 回归关闭与未闭环问题
 
-- 从 Nested 子字符串 Back 回父树后，在 Decoded / Raw 切换中，普通 String 的 tabs 与 Nested tabs 同时可见。这是已观察到的真实 UI FAIL；`4a090e6` 的自动化修复已通过，但原 Native FAIL 尚未重新启动应用复测，当前仍未关闭。
-- 中文壳、Tree、Entry、Collection、Raw 标签已实见；Viewer、Conversation 仍为英文，错误文案翻译待接。这是发布 i18n 未完成项，不把局部中文标签升级为全量通过。
+- Nested 重复 tabs：已由上方 2026-09-21 新构建的短/长子串复测关闭；保留历史记录，不回写旧 bundle 为 PASS。
+- Native i18n：2026-09-21 Viewer 主要文案已中文，但搜索说明仍有英文；不把局部中文标签升级为全量通过。
 
 ## 尚未验收
 
@@ -53,7 +63,7 @@
 - Code 超限窗口的 Native 真实流程（`ace1f24` 自动化已通过，Native 未测）。
 - F6 Auto/Generic/Event UI 的 Native 真实流程（`f06d3dc` headless/main 集成已通过，Native 未测）。
 - F-11 Native 五项零证据（脚本、网络、IPC、top navigation、宿主 DOM）。
-- F-09/F-10 在 Linux 参考环境的 fresh 五轮、cold/warm、private-memory 和完整应用门槛。
+- F-09/F-10 在 Linux 参考环境的 fresh 五轮、cold/warm、private-memory 和完整应用门槛：用户确认待远程环境提供后验证，不阻塞当前项目，仍不标为通过。
 - 其他未列出的 F-01 至 F-12 最终 Native/UI 与发布证据。
 
-因此，本台账的结论是：上述单项 Native 证据按表记录，存在一个已知未关闭 FAIL，且仍有多项未验；整体保持 `INCOMPLETE`，不标记 F-00 至 F-12 全 PASS。
+因此，本台账的结论是：Nested 重复 tabs 已复测关闭，Native i18n 仍有缺口，且还有多项未验；整体保持 `INCOMPLETE`，不标记 F-00 至 F-12 全 PASS。
