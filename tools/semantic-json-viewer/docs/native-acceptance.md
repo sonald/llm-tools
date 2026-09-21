@@ -84,6 +84,12 @@
 - `generic-non-conversation.json`（390 B，SHA-256 `11da688afe5df2cc1b1e2e19d98cafd675ec726e94f704311e7925b463634601`）：打开为 Collection、共 3 项；选择项目 0（源字节 `[4,114)`）后提示“当前范围没有受支持的直接会话候选项。树视图仍可用。”，未投影为对话消息。
 - 原生文件选择器的点击曾落到其他行；用键盘选择、核对 selected 文件名后确认打开，且以应用实际文件名为证据。误开的 OpenAI 文件不计入 Generic 验收。79% / 80% 边界输入和完整来源矩阵仍待 Native 验证，F-05 不标全量 PASS。
 
+### 2026-09-21 F-05 根数组入口缺口（FAIL）
+
+- 同一 `index-XsCYNr2b.js` Native 构建，通过文件选择器确认并打开 `generic-threshold-80.json`（7,953 B）。应用显示 Collection、100 项、未选项目，主面板仅提示选择项目，没有根数组会话候选或 Generic 投影。
+- 这不是 80% 阈值 PASS。§15.1 要求根节点本身为 message-like array 时运行 Adapter；当前 `main.ts` 的 `currentConversationContext()` 在 Collection 未选 Item 时返回 null，`renderSummary()` 因此只显示空阅读器。Core 的根数组识别/投影测试不能覆盖这个真实 UI 入口缺口。
+- 待修复：在保留 Collection Item 导航的同时提供根数组会话入口，并验证从根会话进入 Item 后能回到根；完成后重测 79% Possible / 80% Generic、普通数组及来源/搜索范围。不得通过给输入添加包装对象绕过该缺口。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
