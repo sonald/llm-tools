@@ -20,6 +20,16 @@
 
 ## 已实证项目
 
+### 2026-09-21 构建准备（非 Native UI 验收）
+
+- 源码：`d774f76d0f18fe5faf7f8bf89da97b68bb8f03db`，构建前工作区干净。
+- `npm run tauri -- build --no-bundle` exit 0，产物为 `src-tauri/target/release/semantic-json-viewer`（Mach-O arm64），SHA-256 `6a382ea6970ad2b8799fa2215e9e12692ea8afb56e482b55cdc1cbfb9a1a65db`。
+- 前端为 `index-lGNVQAp4.js`，SHA-256 `e692af9836a5e44b0e52b8783b1097da2095a46e346fa6ba969a29640cdaf2b1`。本次只编译，不重新打包、不启动、不替换此前 `.app`，所以不新增 Native PASS。
+- 先前 `/tmp/sjv-lines-native-20260914.json` 与 `/tmp/sjv-code-virtual-native-20260914.json` 已不存在，不能假定旧临时输入仍可复用。后续 UI 复测需先核对实际输入，且须等用户确认当前桌面可操作。
+- 已用仓库 `generate-semantic-fixtures.mjs` / `generate-security-fixtures.mjs` 生成 `/tmp/sjv-native-20260921.NVTxYx/{semantic,security}`，两组生成器自检通过；这些是合成验收输入，不替代 §13 的真实人工标注集，也不证明 UI 已通过。
+
+### 历史 Native 操作证据
+
 | 项目 | 真实输入与操作 | 结果 |
 | --- | --- | --- |
 | 长文本与指标 | `/tmp/sjv-lines-native-20260914.json`，`1,042,415 B`；plain 外层 span `[9, 523771)`；decoded `505270 B`、`442270` scalars、`9246` lines | PASS |
