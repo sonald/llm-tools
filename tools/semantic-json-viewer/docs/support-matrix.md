@@ -40,7 +40,7 @@ Conversation 分页历史现在最多保存 16 个游标检查点；更早的 Pr
 
 | 范围 | 当前行为 | 状态与证据 |
 | --- | --- | --- |
-| Event Stream hint | Core hint 和 summary 路径已提交；`f06d3dc` 已实现 Auto / Generic / Event UI，headless 25 项断言和 main 集成通过 | UI 已提交、Native 未验：`src-tauri/src/event_hint.rs`、`src/entry-list.ts`、`docs/native-acceptance.md` |
+| Event Stream hint | Core hint 和 summary 路径已提交；`f06d3dc` 已实现 Auto / Generic / Event UI | 2026-09-21 Native F-06A/B 固定正负例通过；Auto/Generic/Event 摘要切换保持 10 条边界、选中 Entry 2 及其 Raw 来源，不自动组装 Session：`docs/native-acceptance.md` |
 | i18n | 壳、列表、Tree、Raw、搜索、Viewer 和 Conversation 已有中英文资源；源角色、路径、协议字段不翻译。底层错误原文与完整 Native 发布文案仍需最终审计 | `68b019b`、`9f643f4`、`23478b9`；独立 Conversation 英文 96/中文 10，Viewer 144、Parsed Search 32 及资源检查通过；Native 实证仍以 `docs/native-acceptance.md` 为准 |
 | Main IPC 错误 | 稳定 code 的标题/操作说明本地化，原始 diagnostic 保留；`invalid_json` 继续使用共享 parse formatter，未知 code 回退原文 | `87987b1`；真实 Main 英文 4、中文 8 通过，Native 错误入口仍未验 |
 | macOS | macOS arm64 新构建已真实启动并复测 Nested 返回、表示切换、复制和 Code 超限；旧重复 tabs 与已发现的英文搜索说明均已复测关闭 | 部分验收，不是 F-00–F-12 全 PASS：`docs/native-acceptance.md` |

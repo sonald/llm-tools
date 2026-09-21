@@ -48,6 +48,16 @@
 - 文件操作前后 SHA-256 均为 `3360fbf4f2c7ad813d370c06dcfa057efc062861290868cd1ebc4c688b014f76`，这批只读流程未修改输入。
 - 自动化补充：i18n 153 static / 126 main / 299 view keys、Parsed Search 32 项通过；Tauri app bundle 构建成功。未将这些检查替代上述 Native 操作。
 
+### 2026-09-21 Event Stream 与 OpenAI 来源入口
+
+本轮沿用 `index-BCTHVp7n.js` / `be24fffe…` 的 Native 构建，通过原生文件选择器加载固定输入。
+
+- **F-06A 正例 PASS**：`event-stream-positive.jsonl`，668 B，SHA-256 `674cb6efd6ac2c968c86143908c471cb19969c8338f42261a7c868eceee02037`。Auto 下 10 条 Entry 显示事件时间/类型；切 Generic 后附加事件字段消失，边界与条目数不变。
+- 跳转条目 2 得到源文件 `[92,181)`，再切 Event，仍选中条目 2、修订版本仍为 3、总数仍为 10。Raw 显示条目相对 `[0,89)`，内容为 `event-1` / `positive-1` / `tool_call` / `2026-01-01T00:00:01Z` 的原始 JSON，与源文件对应切片一致。
+- **F-06B 负例 PASS**：`event-stream-training-negative.jsonl`，610 B，SHA-256 `bb811027e4b964e5f5cccb64a069189831f21c3a22e496c28e26884bfedbc58a`。新文件摘要模式恢复 Auto，10 条 Entry 均无事件摘要，未沿用上一个文件的 Event override。两份文件操作后哈希不变。
+- 初次辅助功能菜单点击未切换选项；刷新状态后，通过原生菜单 End/Return 确认 Event 才得到上述结果。未将操作尝试当作通过，也未据此修改产品代码。
+- **F-03 局部证据**：`openai-conversation.json`，2,482 B，SHA-256 `c88210a5f839223bc482f09c82abb8a9dd43027356bfa624a413ea2839baaf5e`，自动显示 OpenAI 风格、6 条消息、24 个块；滚动后加载 `lookup_status` 的字符串参数与嵌套 `query=status`，以及 `echo_value` 的对象参数 `value=source-preserving`。`arguments 源`（Node 37）进入 Raw，从文件偏移 1268 显示原始带转义参数及相邻未知字段；切回 Semantic 保留工具卡片阅读位置。未因此把全部 OpenAI/Anthropic/Generic 矩阵标为通过。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
@@ -71,7 +81,7 @@
 
 - 其他 F-00/F-07 固定输入的完整 Native 路由矩阵。
 - Code 超限窗口：上述行数/字节大小降级、分页、末行搜索已 Native 验证；其余完整 F-01 矩阵仍待验收。
-- F6 Auto/Generic/Event UI 的 Native 真实流程（`f06d3dc` headless/main 集成已通过，Native 未测）。
+- F6 Auto/Generic/Event：上述固定正例/负例及选择保持已 Native 验证；其他完整矩阵以各自记录为准。
 - F-11 Native 五项零证据（脚本、网络、IPC、top navigation、宿主 DOM）。
 - F-09/F-10 在 Linux 参考环境的 fresh 五轮、cold/warm、private-memory 和完整应用门槛：用户确认待远程环境提供后验证，不阻塞当前项目，仍不标为通过。
 - 其他未列出的 F-01 至 F-12 最终 Native/UI 与发布证据。
