@@ -112,6 +112,16 @@
 - 随后选择第三条，恢复有效状态和 Tree，Raw 显示 `{"id":3}`、条目相对 `[0,8)`，Inspector 源文件范围 `[11,19)`。无效行没有阻断后续有效记录。
 - 本轮未验证超过 20% 坏行警告、UTF BOM 或完整 F-00/F-07 路由矩阵，保持局部证据。
 
+### 2026-09-21 编码警告、BOM 与 Raw-only 文档
+
+沿用 `index-CPNlsFas.js` 和 `routing` 固定输入，经 Native 文件选择器打开：
+
+- `many-invalid-utf8.jsonl`（70 B）：前 3 条无效、后 7 条有效，10/10 条；Inspector 显示“部分条目不是有效的 UTF-8。文件仍以字节安全模式打开。”，状态栏显示编码警告。选择第四条仍可在 Raw 读取 `{"id":4}`。
+- `utf16-bom.json`（6 B）：文件级“不支持的编码”拒绝，提供转换为 UTF-8 的说明；先前 `many-invalid-utf8.jsonl` 和第四条选择保留，未将 UTF-16 当成新有效文档。
+- `utf8-bom.json`（27 B）：成功进入 Document，Raw 根范围 `[3,26)`，显示 `{"encoding":"utf8-bom"}`；偏移保留三字节 BOM，先前错误/编码警告清除。
+- `invalid-utf8.json`（7 B）：文件级编码错误并进入 Raw-only，Tree/Decoded search 禁用。Lossy 为 `{"x":�}`；Hex 为 `7b 22 78 22 3a ff 7d`，文件范围 `[0,7)`。没有把有损替换内容作为有效 JSON 解析。
+- 以上固定 F-07 行为已观察；不扩展为所有编码边界或 F-00 路由全量 PASS。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
