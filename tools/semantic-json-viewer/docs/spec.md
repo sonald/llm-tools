@@ -1191,9 +1191,11 @@ Code detection 可以结合：
 
 # 13. 检测质量合同
 
+v0.1 范围调整（2026-09-21 用户确认）：真实人工标注集及依赖它的统计指标不作为首版发布阻塞项。先通过功能 fixture、Source/手动覆盖路径与安全验收，在真实使用中收集反馈并持续改进。以下数据集规模和指标保留为后续质量目标；未测必须明确标为未测，不记为 PASS，也不自动收集或上传用户文件。
+
 ## 13.1 标注集
 
-发布前建立不少于 500 条 string 的人工标注集，类别包括：
+后续随真实使用反馈逐步积累人工标注集，建议目标为不少于 500 条 string，类别包括：
 
 - Plain Text。
 - Markdown。
@@ -1237,7 +1239,7 @@ A 中 semantic type 判断正确的数量
 A 的总数量
 ```
 
-发布门槛：
+后续质量目标（不阻塞 v0.1）：
 
 ```text
 Overall non-Plain Precision ≥ 97%
@@ -1261,7 +1263,7 @@ eligible 指：
 - 不是 Ambiguous。
 - 未被 schema 或用户 override 强制渲染。
 
-发布门槛：
+后续质量目标（不阻塞 v0.1）：
 
 ```text
 Markdown Recall ≥ 70%
@@ -1279,7 +1281,7 @@ All Eligible Labeled Non-Plain
 ≥ 70%
 ```
 
-因此，把全部内容都回退为 Plain Text 无法通过验收。
+因此，把全部内容都回退为 Plain Text 无法满足后续覆盖率目标。
 
 ## 13.4 Plain Text 误伤
 
@@ -1289,7 +1291,7 @@ All Eligible Labeled Non-Plain
 Plain Text 被自动识别为 Nested JSON / Code / HTML
 ```
 
-发布门槛：
+后续质量目标（不阻塞 v0.1）：
 
 ```text
 结构型误判率 ≤ 2%
@@ -2332,10 +2334,8 @@ v0.1 Release 必须同时满足：
 
 ## 检测
 
-- Overall Precision ≥ 97%。
-- Overall Coverage ≥ 70%。
-- 各类别 Recall 达到 §13.3。
-- 结构型 Plain Text 误判 ≤ 2%。
+- 检测功能 fixture、Source 查看与手动覆盖路径通过。
+- §13 的真实人工标注集与 precision / recall / coverage / 误伤率目标不阻塞 v0.1；未测如实列为后续工作，按真实使用反馈改进。
 
 ## 性能
 
