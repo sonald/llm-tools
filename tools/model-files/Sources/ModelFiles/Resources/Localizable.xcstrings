@@ -3540,19 +3540,19 @@
         }
       }
     },
-    "另一仓库…": {
+    "选择另一仓库…": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Another repository…"
+            "value": "Select another repository…"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "另一仓库…"
+            "value": "选择另一仓库…"
           }
         }
       }

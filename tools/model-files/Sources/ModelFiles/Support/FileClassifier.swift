@@ -6,9 +6,22 @@ enum FileClassifier {
         "h5", "msgpack", "tflite", "pb"
     ]
 
+    static let imageExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "tiff", "tif", "avif"
+    ]
+
     static func isGGUFFileName(_ name: String) -> Bool {
         let lowercasedName = name.lowercased()
         return lowercasedName.hasSuffix(".gguf") || lowercasedName.hasSuffix(".gguf_file")
+    }
+
+    static func isImageFileName(_ name: String) -> Bool {
+        let ext = URL(fileURLWithPath: name).pathExtension.lowercased()
+        return imageExtensions.contains(ext)
+    }
+
+    static func isSVGFileName(_ name: String) -> Bool {
+        URL(fileURLWithPath: name).pathExtension.lowercased() == "svg"
     }
 
     static func syntaxLanguage(for path: String) -> String? {

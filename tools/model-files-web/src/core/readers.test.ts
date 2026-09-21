@@ -12,7 +12,7 @@ import {
   validatePdfData,
   visibleRows,
 } from './readers.ts'
-import type { RepositorySnapshot } from './huggingface.ts'
+import { imageMimeType, isImagePath, type RepositorySnapshot } from './huggingface.ts'
 
 const snapshot: RepositorySnapshot = {
   source: 'huggingface',
@@ -113,4 +113,29 @@ test('rejects NUL bytes in strict text', () => {
 test('validates PDF data by its first five signature bytes', () => {
   validatePdfData(new TextEncoder().encode('%PDF-1.7').buffer)
   assert.throws(() => validatePdfData(new TextEncoder().encode('not a pdf').buffer), /PDF/)
+})
+
+test('identifies image files and maps their mime types', () => {
+  assert.equal(isImagePath('assets/diagram.svg'), true)
+  assert.equal(isImagePath('images/logo.png'), true)
+  assert.equal(isImagePath('photo.JPEG'), true)
+  assert.equal(isImagePath('banner.webp'), true)
+  assert.equal(isImagePath('anim.gif'), true)
+  assert.equal(isImagePath('icon.ico'), true)
+  assert.equal(isImagePath('bitmap.bmp'), true)
+  assert.equal(isImagePath('photo.avif'), true)
+  assert.equal(isImagePath('config.json'), false)
+  assert.equal(isImagePath('model.safetensors'), false)
+  assert.equal(isImagePath('doc.pdf'), false)
+
+  assert.equal(imageMimeType('diagram.svg'), 'image/svg+xml')
+  assert.equal(imageMimeType('logo.png'), 'image/png')
+  assert.equal(imageMimeType('photo.jpg'), 'image/jpeg')
+  assert.equal(imageMimeType('photo.jpeg'), 'image/jpeg')
+  assert.equal(imageMimeType('banner.webp'), 'image/webp')
+  assert.equal(imageMimeType('anim.gif'), 'image/gif')
+  assert.equal(imageMimeType('icon.ico'), 'image/x-icon')
+  assert.equal(imageMimeType('bitmap.bmp'), 'image/bmp')
+  assert.equal(imageMimeType('photo.avif'), 'image/avif')
+  assert.equal(imageMimeType('other.xyz'), 'application/octet-stream')
 })

@@ -6,6 +6,7 @@ enum StructuredInspectionFormat: Sendable, Equatable {
     case imatrix
     case jinja
     case pdf
+    case image
 
     var title: String {
         switch self {
@@ -14,6 +15,7 @@ enum StructuredInspectionFormat: Sendable, Equatable {
         case .imatrix: "Imatrix"
         case .jinja: "Jinja"
         case .pdf: "PDF"
+        case .image: "Image"
         }
     }
 
@@ -24,6 +26,7 @@ enum StructuredInspectionFormat: Sendable, Equatable {
         case .imatrix: String(localized: "正在读取 Imatrix 数据…")
         case .jinja: String(localized: "正在读取 Jinja 源码…")
         case .pdf: String(localized: "正在读取 PDF 文档…")
+        case .image: String(localized: "正在读取图片…")
         }
     }
 }
@@ -98,12 +101,19 @@ struct JinjaDocument: Sendable, Equatable {
     let source: String
 }
 
+struct ImageDocument: Sendable, Equatable {
+    let data: Data
+    let isSVG: Bool
+    let sourceText: String?
+}
+
 enum InspectionDocument: Sendable {
     case safetensors(SafetensorsOverview, headerByteCount: Int)
     case gguf(GGUFOverview, downloadedByteCount: Int)
     case imatrix(IMatrixOverview)
     case jinja(JinjaDocument)
     case pdf(Data)
+    case image(ImageDocument)
     case generic(Data)
 
     var perspectives: [InspectionPerspective] {
@@ -116,6 +126,8 @@ enum InspectionDocument: Sendable {
             [.overview, .source, .playground]
         case .pdf:
             [.overview]
+        case let .image(document):
+            document.isSVG ? [.overview, .source] : [.overview]
         case .generic:
             [.overview, .fields, .raw]
         }
@@ -128,6 +140,7 @@ enum InspectionDocument: Sendable {
         case .imatrix: "Imatrix DAT"
         case .jinja: "Jinja"
         case .pdf: "PDF"
+        case let .image(document): document.isSVG ? "SVG" : "Image"
         case .generic: nil
         }
     }
@@ -142,6 +155,8 @@ enum InspectionDocument: Sendable {
             String(localized: "读取了完整的 \(Int64(overview.byteCount).formattedByteCount) legacy imatrix 文件；只解析，不执行。")
         case let .pdf(data):
             String(localized: "读取了完整的 \(Int64(data.count).formattedByteCount) PDF，使用系统 PDFKit 本地预览。")
+        case let .image(document):
+            String(localized: "读取了完整的 \(Int64(document.data.count).formattedByteCount) 图片数据，在本地直接渲染。")
         case .jinja, .generic:
             nil
         }
@@ -157,6 +172,10 @@ extension RepositoryFile {
         name.lowercased() == "tokenizer.json" || isSentencePieceModel
     }
 
+    var isImage: Bool {
+        FileClassifier.isImageFileName(name)
+    }
+
     var structuredInspectionFormat: StructuredInspectionFormat? {
         let lowercasedName = name.lowercased()
         if lowercasedName.hasSuffix(".safetensors") { return .safetensors }
@@ -166,6 +185,7 @@ extension RepositoryFile {
             return .imatrix
         }
         if lowercasedName.hasSuffix(".pdf") { return .pdf }
+        if FileClassifier.isImageFileName(lowercasedName) { return .image }
         if FileClassifier.syntaxLanguage(for: lowercasedName) != nil { return nil }
         if category == .templates { return .jinja }
         return nil

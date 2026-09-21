@@ -324,6 +324,55 @@ final class RepositoryAccessTests: XCTestCase {
         }
     }
 
+    func testServiceRoutesImageAndSVGFiles() async throws {
+        let svgString = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\"><circle cx=\"5\" cy=\"5\" r=\"5\"/></svg>"
+        let svgData = Data(svgString.utf8)
+        let svgAccess = RecordingRepositoryAccess(data: svgData)
+        let svgService = RepositoryService(makeAccess: { _ in svgAccess })
+        let svg = RepositoryFile(
+            path: "diagram.svg",
+            size: Int64(svgData.count),
+            revision: nil,
+            contentHash: nil,
+            category: FileClassifier.category(for: "diagram.svg")
+        )
+        let svgSnapshot = RepositorySnapshot(location: svgAccess.location, version: .live, files: [svg])
+
+        guard case let .image(svgDoc) = try await svgService.inspectFile(svg, from: svgSnapshot) else {
+            return XCTFail("Expected SVG inspection document")
+        }
+        XCTAssertTrue(svgDoc.isSVG)
+        XCTAssertEqual(svgDoc.sourceText, svgString)
+        XCTAssertEqual(svgDoc.data, svgData)
+
+        let pngBytes: [UInt8] = [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+            0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+            0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+            0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+            0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
+        ]
+        let pngData = Data(pngBytes)
+        let pngAccess = RecordingRepositoryAccess(data: pngData)
+        let pngService = RepositoryService(makeAccess: { _ in pngAccess })
+        let png = RepositoryFile(
+            path: "logo.png",
+            size: Int64(pngData.count),
+            revision: nil,
+            contentHash: nil,
+            category: FileClassifier.category(for: "logo.png")
+        )
+        let pngSnapshot = RepositorySnapshot(location: pngAccess.location, version: .live, files: [png])
+
+        guard case let .image(pngDoc) = try await pngService.inspectFile(png, from: pngSnapshot) else {
+            return XCTFail("Expected PNG inspection document")
+        }
+        XCTAssertFalse(pngDoc.isSVG)
+        XCTAssertNil(pngDoc.sourceText)
+        XCTAssertEqual(pngDoc.data, pngData)
+    }
+
     func testServiceKeepsSentencePieceInspectionLightweight() async throws {
         let data = Data([0x0A, 0x01, 0xFF, 0x00])
         let access = RecordingRepositoryAccess(data: data)

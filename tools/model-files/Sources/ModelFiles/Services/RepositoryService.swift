@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import PDFKit
 
@@ -30,6 +31,7 @@ struct RepositoryService: Sendable {
         case invalidGGUF(String)
         case invalidIMatrix(String)
         case invalidPDF
+        case invalidImage
         case ggufMetadataTooLarge
         case missingFileSize
         case invalidUTF8
@@ -80,6 +82,8 @@ struct RepositoryService: Sendable {
                 String(localized: "Imatrix 无效：\(message)")
             case .invalidPDF:
                 String(localized: "PDF 文件无效或无法由系统 PDFKit 打开。")
+            case .invalidImage:
+                String(localized: "无法解析图片文件。")
             case .ggufMetadataTooLarge:
                 String(localized: "GGUF metadata 与 tensor 目录超过 32 MB 安全上限。")
             case .missingFileSize:
@@ -276,6 +280,17 @@ struct RepositoryService: Sendable {
             let data = try await loadReadableFile(file, access: access)
             guard PDFDocument(data: data) != nil else { throw ServiceError.invalidPDF }
             return .pdf(data)
+        case .image:
+            let data = try await loadReadableFile(file, access: access)
+            let isSVG = FileClassifier.isSVGFileName(file.name)
+            var sourceText: String?
+            if isSVG {
+                sourceText = String(data: data, encoding: .utf8)
+            }
+            guard isSVG || NSImage(data: data) != nil else {
+                throw ServiceError.invalidImage
+            }
+            return .image(ImageDocument(data: data, isSVG: isSVG, sourceText: sourceText))
         case nil:
             guard !file.isBlocked else { throw ServiceError.blockedWeight }
             let data = try await loadReadableFile(file, access: access)

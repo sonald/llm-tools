@@ -67,10 +67,15 @@ actor PrismCodeHighlighter {
         for root in roots {
             var directory = root
             for _ in 0..<5 {
-                let script = directory.appendingPathComponent("textual_Textual.bundle/prism-bundle.js")
-                let path = script.path
-                if seen.insert(path).inserted, fileManager.fileExists(atPath: path) {
-                    return script
+                let candidates = [
+                    directory.appendingPathComponent("textual_Textual.bundle/Contents/Resources/prism-bundle.js"),
+                    directory.appendingPathComponent("textual_Textual.bundle/prism-bundle.js"),
+                ]
+                for script in candidates {
+                    let path = script.path
+                    if seen.insert(path).inserted, fileManager.fileExists(atPath: path) {
+                        return script
+                    }
                 }
                 let parent = directory.deletingLastPathComponent()
                 if parent.path == directory.path { break }

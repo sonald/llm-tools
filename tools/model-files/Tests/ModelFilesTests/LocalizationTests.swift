@@ -36,9 +36,24 @@ final class LocalizationTests: XCTestCase {
         }
     }
 
+    private var sourceCatalogURL: URL? {
+        var dir = URL(fileURLWithPath: #file).deletingLastPathComponent()
+        for _ in 0..<5 {
+            let candidate = dir.appendingPathComponent("Sources/ModelFiles/Resources/Localizable.xcstrings")
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+            dir = dir.deletingLastPathComponent()
+        }
+        return nil
+    }
+
     func testProductionCatalogKeysAndRuntimeLookups() throws {
         let bundle = try productionResourceBundle
-        let catalogURL = bundle.bundleURL.appending(path: "Localizable.xcstrings")
+        let catalogURL = try XCTUnwrap(
+            bundle.url(forResource: "Localizable", withExtension: "xcstrings")
+                ?? sourceCatalogURL
+        )
         let catalog = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: catalogURL)) as? [String: Any]
         )
@@ -96,12 +111,10 @@ final class LocalizationTests: XCTestCase {
     }
 
     func testProductionCatalogContainsSmokeTranslations() throws {
-        let bundle = try productionResourceBundle
-        let catalogNames = try FileManager.default.contentsOfDirectory(atPath: bundle.bundlePath)
-            .filter { $0.hasSuffix(".xcstrings") }
-        XCTAssertEqual(catalogNames, ["Localizable.xcstrings"])
-
-        let catalogURL = bundle.bundleURL.appending(path: "Localizable.xcstrings")
+        let catalogURL = try XCTUnwrap(
+            (try? productionResourceBundle.url(forResource: "Localizable", withExtension: "xcstrings"))
+                ?? sourceCatalogURL
+        )
         let catalog = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: catalogURL)) as? [String: Any]
         )

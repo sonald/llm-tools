@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   formatBytes,
+  imageMimeType,
+  isImagePath,
   isImatrixPath,
   loadLocalDirectory,
   loadHttpsSource,
@@ -66,7 +68,7 @@ import {
   type TokenizerVocabularyEntry,
   type VocabularyDiffScope,
 } from './core/tokenizer.ts'
-import { PdfInspection, SourceInspection, TextInspection } from './Readers.tsx'
+import { ImageInspection, PdfInspection, SourceInspection, TextInspection } from './Readers.tsx'
 import { TemplateWorkbench } from './TemplateWorkbench.tsx'
 import { formatNumber, translate as t, type MessageKey } from './i18n.ts'
 
@@ -92,6 +94,7 @@ type Inspection =
   | { kind: 'gguf'; file: RepositoryFile; summary: GGUFPrefix; bytesRead: number }
   | { kind: 'imatrix'; file: RepositoryFile; summary: ImatrixSummary; bytesRead: number }
   | { kind: 'pdf'; file: RepositoryFile; data: ArrayBuffer; bytesRead: number }
+  | { kind: 'image'; file: RepositoryFile; data: ArrayBuffer; mimeType: string; isSvg: boolean; textContent?: string; bytesRead: number }
   | { kind: 'source'; file: RepositoryFile; content: string; language: string; bytesRead: number }
   | { kind: 'tokenizer'; file: RepositoryFile }
   | {
@@ -332,6 +335,22 @@ export default function App() {
         const data = await readWholeFile(activeSnapshot, file, controller.signal)
         validatePdfData(data)
         next = { kind: 'pdf', file, data, bytesRead: data.byteLength }
+      } else if (isImagePath(file.path)) {
+        const data = await readWholeFile(activeSnapshot, file, controller.signal)
+        const isSvg = lower.endsWith('.svg')
+        let textContent: string | undefined
+        if (isSvg) {
+          try { textContent = decodeStrictText(data) } catch { /* ignore */ }
+        }
+        next = {
+          kind: 'image',
+          file,
+          data,
+          mimeType: imageMimeType(file.path),
+          isSvg,
+          textContent,
+          bytesRead: data.byteLength,
+        }
       } else if (lower.endsWith('.jinja')) {
         const data = await readWholeFile(activeSnapshot, file, controller.signal, 64 * 1024)
         next = {
@@ -790,6 +809,17 @@ function Detail({
         {inspection.kind === 'gguf' && snapshot !== null ? <GGUFInspection inspection={inspection} snapshot={snapshot} /> : null}
         {inspection.kind === 'imatrix' ? <ImatrixInspection inspection={inspection} /> : null}
         {inspection.kind === 'pdf' ? <PdfInspection data={inspection.data} bytesRead={inspection.bytesRead} /> : null}
+        {inspection.kind === 'image' ? (
+          <ImageInspection
+            key={file.path}
+            file={file}
+            data={inspection.data}
+            mimeType={inspection.mimeType}
+            isSvg={inspection.isSvg}
+            textContent={inspection.textContent}
+            bytesRead={inspection.bytesRead}
+          />
+        ) : null}
         {inspection.kind === 'source' && snapshot !== null ? (
           <SourceInspection
             key={`${snapshotIdentity(snapshot)}/${file.path}`}
@@ -2585,6 +2615,9 @@ function formatName(file: RepositoryFile): string {
   if (file.path.split('/').at(-1)?.toLocaleLowerCase() === 'tokenizer.json' || isSentencePieceFile(file)) return 'Tokenizer'
   if (lower.endsWith('.json')) return 'JSON'
   if (lower.endsWith('.md')) return 'Markdown'
+  if (lower.endsWith('.pdf')) return 'PDF'
+  if (lower.endsWith('.svg')) return 'SVG'
+  if (isImagePath(file.path)) return 'Image'
   if (isImatrixPath(file.path)) return 'Imatrix'
   return 'Text'
 }

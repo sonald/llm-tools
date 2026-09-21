@@ -184,8 +184,8 @@ private struct DetailHeader: View {
 
             Picker("查看方式", selection: $store.perspective) {
                 ForEach(store.availablePerspectives) { perspective in
-                    Text(perspective == .overview && file.structuredInspectionFormat == .pdf
-                        ? String(localized: "预览")
+                    Text(perspective == .overview && (file.structuredInspectionFormat == .pdf || file.structuredInspectionFormat == .image)
+                        ? (file.name.lowercased().hasSuffix(".svg") ? String(localized: "渲染") : String(localized: "预览"))
                         : perspective == .overview && file.name.lowercased().hasSuffix(".md")
                             ? String(localized: "渲染")
                             : perspective.title)
@@ -337,6 +337,8 @@ private struct InspectionWorkspaceView: View {
                     .id(file.path)
             case let .pdf(data):
                 PDFReaderView(data: data)
+            case let .image(document):
+                ImageReaderView(file: file, document: document, perspective: store.perspective)
             case let .generic(data):
                 if file.isTokenizerPlaygroundEntryPoint, store.perspective == .playground {
                     TokenizerPlaygroundView(store: store, file: file)

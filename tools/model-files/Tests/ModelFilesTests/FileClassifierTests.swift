@@ -108,6 +108,48 @@ final class FileClassifierTests: XCTestCase {
         XCTAssertEqual(FileClassifier.syntaxLanguage(for: templatePython.path), "python")
     }
 
+    func testRoutesImageAndSVGFilesToImageReader() {
+        XCTAssertTrue(FileClassifier.isImageFileName("assets/diagram.svg"))
+        XCTAssertTrue(FileClassifier.isImageFileName("images/logo.png"))
+        XCTAssertTrue(FileClassifier.isImageFileName("images/photo.JPEG"))
+        XCTAssertTrue(FileClassifier.isImageFileName("images/banner.webp"))
+        XCTAssertTrue(FileClassifier.isImageFileName("icon.ico"))
+        XCTAssertFalse(FileClassifier.isImageFileName("config.json"))
+
+        XCTAssertTrue(FileClassifier.isSVGFileName("assets/diagram.svg"))
+        XCTAssertFalse(FileClassifier.isSVGFileName("images/logo.png"))
+
+        let svgFile = RepositoryFile(
+            path: "assets/diagram.svg",
+            size: 1_024,
+            revision: nil,
+            contentHash: nil,
+            category: FileClassifier.category(for: "assets/diagram.svg")
+        )
+        XCTAssertEqual(svgFile.structuredInspectionFormat, .image)
+        XCTAssertTrue(svgFile.isImage)
+        XCTAssertFalse(svgFile.isBlocked)
+
+        let pngFile = RepositoryFile(
+            path: "images/logo.png",
+            size: 2_048,
+            revision: nil,
+            contentHash: nil,
+            category: FileClassifier.category(for: "images/logo.png")
+        )
+        XCTAssertEqual(pngFile.structuredInspectionFormat, .image)
+        XCTAssertTrue(pngFile.isImage)
+        XCTAssertFalse(pngFile.isBlocked)
+
+        let svgDoc = InspectionDocument.image(ImageDocument(data: Data(), isSVG: true, sourceText: "<svg></svg>"))
+        XCTAssertEqual(svgDoc.perspectives, [.overview, .source])
+        XCTAssertEqual(svgDoc.formatTitle, "SVG")
+
+        let pngDoc = InspectionDocument.image(ImageDocument(data: Data(), isSVG: false, sourceText: nil))
+        XCTAssertEqual(pngDoc.perspectives, [.overview])
+        XCTAssertEqual(pngDoc.formatTitle, "Image")
+    }
+
     func testUsesReaderFriendlyOrderingWithinCategories() {
         XCTAssertLessThan(
             FileClassifier.sortPriority(for: "tokenizer_config.json"),

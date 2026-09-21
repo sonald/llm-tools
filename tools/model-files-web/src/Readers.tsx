@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { formatBytes, type RepositorySnapshot } from './core/huggingface.ts'
+import { formatBytes, type RepositoryFile, type RepositorySnapshot } from './core/huggingface.ts'
 import { foldRanges, type FoldRange } from './core/sourceFolding.ts'
 import { formatNumber, translate as t } from './i18n.ts'
 import {
@@ -175,6 +175,128 @@ export function PdfInspection({ data, bytesRead }: { data: ArrayBuffer; bytesRea
       {url !== ''
         ? <a className="pdf-open" href={url} target="_blank" rel="noreferrer">{t('readerOpenPdfNewTab')}</a>
         : null}
+    </div>
+  )
+}
+
+export function ImageInspection({
+  file,
+  data,
+  mimeType,
+  isSvg,
+  textContent,
+  bytesRead,
+}: {
+  file: RepositoryFile
+  data: ArrayBuffer
+  mimeType: string
+  isSvg: boolean
+  textContent?: string
+  bytesRead: number
+}) {
+  const [url, setUrl] = useState('')
+  const [perspective, setPerspective] = useState<'rendered' | 'raw'>('rendered')
+  const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null)
+  const [fit, setFit] = useState(true)
+  const [zoom, setZoom] = useState(1.0)
+  const [hasError, setHasError] = useState(false)
+
+  useEffect(() => {
+    const blob = new Blob([data], { type: mimeType })
+    const nextUrl = URL.createObjectURL(blob)
+    setUrl(nextUrl)
+    setHasError(false)
+    setDimensions(null)
+    setFit(true)
+    setZoom(1.0)
+    return () => URL.revokeObjectURL(nextUrl)
+  }, [data, mimeType])
+
+  const dimText = dimensions
+    ? t('readerImageDimensions', { width: formatNumber(dimensions.width), height: formatNumber(dimensions.height) })
+    : t('readerImageValid')
+
+  return (
+    <div className="reader-canvas image-reader">
+      <ReaderHeader bytesRead={bytesRead} result={dimText} />
+      {isSvg && textContent !== undefined ? (
+        <Perspective<'rendered' | 'raw'>
+          value={perspective}
+          onChange={setPerspective}
+          values={[
+            ['rendered', t('readerRenderedView')],
+            ['raw', t('readerRawSource')],
+          ]}
+        />
+      ) : null}
+
+      {perspective === 'raw' && textContent !== undefined ? (
+        <SourceCode content={textContent} language="markup" bytesRead={bytesRead} />
+      ) : (
+        <div className="image-workspace">
+          <div className="image-toolbar">
+            <div className="image-stats">
+              {dimensions ? <span>{dimensions.width} × {dimensions.height} px</span> : null}
+              <span>{formatBytes(bytesRead)}</span>
+            </div>
+            <div className="image-actions">
+              <button
+                type="button"
+                className={`zoom-btn ${fit ? 'active' : ''}`}
+                onClick={() => { setFit(true); setZoom(1.0); }}
+              >
+                {t('readerImageFit')}
+              </button>
+              <button
+                type="button"
+                className={`zoom-btn ${!fit && zoom === 1.0 ? 'active' : ''}`}
+                onClick={() => { setFit(false); setZoom(1.0); }}
+              >
+                {t('readerImageActual')}
+              </button>
+              <button
+                type="button"
+                className="zoom-btn"
+                title={t('readerZoomOut')}
+                aria-label={t('readerZoomOut')}
+                onClick={() => { setFit(false); setZoom(z => Math.max(0.2, Number((z - 0.2).toFixed(1)))); }}
+              >
+                −
+              </button>
+              <span className="zoom-percentage">{Math.round(zoom * 100)}%</span>
+              <button
+                type="button"
+                className="zoom-btn"
+                title={t('readerZoomIn')}
+                aria-label={t('readerZoomIn')}
+                onClick={() => { setFit(false); setZoom(z => Math.min(5.0, Number((z + 0.2).toFixed(1)))); }}
+              >
+                +
+              </button>
+            </div>
+          </div>
+
+          <div className="image-viewport">
+            <div className="image-checkerboard">
+              {hasError ? (
+                <div className="image-error">{t('readerImageFailed')}</div>
+              ) : url !== '' ? (
+                <img
+                  src={url}
+                  alt={file.path}
+                  className={`inspected-image ${fit ? 'fit' : 'scaled'}`}
+                  style={fit ? undefined : { transform: `scale(${zoom})`, transformOrigin: 'center center' }}
+                  onLoad={(event) => {
+                    const img = event.currentTarget
+                    setDimensions({ width: img.naturalWidth, height: img.naturalHeight })
+                  }}
+                  onError={() => setHasError(true)}
+                />
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -151,6 +151,36 @@ export function isImatrixPath(path: string): boolean {
   return name.includes('imatrix') && (name.endsWith('.dat') || name.includes('.dat.at_'))
 }
 
+const imageExtensions = new Set([
+  'svg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif',
+])
+
+export function isImagePath(path: string): boolean {
+  const basename = path.split('/').at(-1) ?? ''
+  const extensionStart = basename.lastIndexOf('.')
+  if (extensionStart === -1) return false
+  const extension = basename.slice(extensionStart + 1).toLocaleLowerCase()
+  return imageExtensions.has(extension)
+}
+
+export function imageMimeType(path: string): string {
+  const basename = path.split('/').at(-1) ?? ''
+  const extensionStart = basename.lastIndexOf('.')
+  const ext = extensionStart === -1 ? '' : basename.slice(extensionStart + 1).toLocaleLowerCase()
+  switch (ext) {
+    case 'svg': return 'image/svg+xml'
+    case 'png': return 'image/png'
+    case 'jpg':
+    case 'jpeg': return 'image/jpeg'
+    case 'gif': return 'image/gif'
+    case 'webp': return 'image/webp'
+    case 'bmp': return 'image/bmp'
+    case 'ico': return 'image/x-icon'
+    case 'avif': return 'image/avif'
+    default: return 'application/octet-stream'
+  }
+}
+
 export async function loadRepository(input: string, signal?: AbortSignal): Promise<HuggingFaceSnapshot> {
   const modelId = normalizeModelId(input)
   const response = await fetch(`https://huggingface.co/api/models/${encodePath(modelId)}?blobs=true`, requestOptions(signal))

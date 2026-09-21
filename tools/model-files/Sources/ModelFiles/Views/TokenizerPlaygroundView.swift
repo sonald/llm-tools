@@ -370,7 +370,7 @@ struct TokenizerPlaygroundView: View {
                     }
                 }
                 Divider()
-                Button("另一仓库…") {
+                Button("选择另一仓库…") {
                     isShowingComparisonRepositoryPopover = true
                 }
             }

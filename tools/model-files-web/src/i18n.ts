@@ -937,6 +937,34 @@ export const messageCatalog = {
     'zh-Hans': '在新标签页打开 PDF',
     en: 'Open PDF in new tab',
   },
+  readerImageValid: {
+    'zh-Hans': '图片数据已读取',
+    en: 'Image data loaded',
+  },
+  readerImageFit: {
+    'zh-Hans': '适应窗口',
+    en: 'Fit',
+  },
+  readerImageActual: {
+    'zh-Hans': '原始尺寸',
+    en: '100%',
+  },
+  readerZoomIn: {
+    'zh-Hans': '放大',
+    en: 'Zoom in',
+  },
+  readerZoomOut: {
+    'zh-Hans': '缩小',
+    en: 'Zoom out',
+  },
+  readerImageFailed: {
+    'zh-Hans': '无法渲染图片',
+    en: 'Unable to render image',
+  },
+  readerImageDimensions: {
+    'zh-Hans': '{width} × {height} 像素',
+    en: '{width} × {height} px',
+  },
   readerExpandAllFolds: {
     'zh-Hans': '全部展开',
     en: 'Expand all',
