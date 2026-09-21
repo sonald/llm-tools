@@ -98,6 +98,12 @@
 - `generic-threshold-79.json` 显示候选项；选择候选后明确提示 Possible、未达到自动识别阈值，需点击“按会话渲染”才继续。AX 与截图均观察到确认界面，没有自动渲染块。
 - 上一节的根数组会话入口 FAIL 由上述同输入 Native 复测关闭；不据此宣称全部分页、来源/搜索矩阵或 F-00–F-12 完成。
 
+后续同构建补验（可执行文件 SHA-256 `151b4846e5566fa71d3c2c0d465831a8a04630e9245ea8a7c6a9697f4613d209`）：
+
+- 79% Possible 点击确认后显示首批 100 块；连续 Next 分别从第 51、第 94 条消息继续，末页 21 块且 Next 禁用。非匹配的 `speaker-93` / `threshold nonmatching sample 93` 仍有 unknown 源卡；点击后 Raw 定位 Node 282、字节 7412，与输入字符串词法起点一致。
+- 新开普通数组 `generic-non-conversation.json` 后根范围明确提示无会话候选，未继承上一文件的 Possible 确认状态。
+- 在普通数组根范围搜索 `GENERIC_NON_CONVERSATION`，Native 显示 3 个匹配，分别属于 `$.[0]`、`$.[1]`、`$.[2]`。点击第三个结果进入 Raw，起点 341，显示完整原始字符串 `"GENERIC_NON_CONVERSATION_RECORD_SENTINEL"`；直接核对输入词法范围为 `[341,383)`。这证明根搜索覆盖多个 Item，并可跳转最后一个 Item 的源位置。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
