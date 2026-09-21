@@ -139,6 +139,13 @@
 
 上述 F-00 固定样本路由 PASS；只证明这些固定输入，不代替扩展名/大文件抽样边界、无损复制或安全验收。打开有效文件后先前拒绝提示清除。
 
+### 2026-09-21 F-12 Native 首屏与分页窗口
+
+- 现有 `generate-conversation-fixture.mjs` 默认生成 10,000 条消息、2,282,927 B 的 `long-conversation.json`；在 debug Native 构建 `index-CPNlsFas.js` 中通过文件选择器打开。
+- 自动识别 OpenAI、10,000 条消息；首批 100 块，离屏内容显示进入视口后加载。Next 从第 18 条消息继续，Previous 恢复首条 system（Node 9），没有把下一页留在首页。
+- 在实际 WKWebView 的 Web Inspector 执行只读 `document.querySelectorAll("article.conversation-block").length`，返回 24。初次宽泛的 `[data-conversation-block-index]` 查询返回 105，因为内部动作按钮也带此属性，不能当作块数。未安装任何探针。
+- 这是首屏/往返分页和当前 DOM 窗口的 Native 证据，不证明全部 572 页浏览或完整应用内存曲线；Core 全遍历证据仍见 performance-baseline.md，F-12 未由这一快照升级为最终全量 PASS。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
