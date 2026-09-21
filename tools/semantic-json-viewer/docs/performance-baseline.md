@@ -4,6 +4,12 @@
 
 ## 测试边界
 
+### 2026-09-21 Native 采样方法核对（非性能 PASS）
+
+当前 debug 主进程由完整 bundle 可执行路径确认，`footprint -p 74143 --noCategories -f bytes` 返回 `phys_footprint=53,249,344 B`、`peak=78,824,792 B`。此时已操作多份输入且开过 Web Inspector，不是干净 release 基线，也不包含 WebView。
+
+系统同时存在多个 `com.apple.WebKit.WebContent`，父进程均为 launchd；`vmmap` 能读取摘要，但不提供足以确认本应用归属的字段。`launchctl procinfo` 要求 root，未进行 root 提权。因此没有将候选 WebContent 的占用加到应用总数，也不把 RSS、物理 footprint 或 debug 峰值混为 §18 私有内存指标。后续本机补测需使用干净 release 启停对照识别进程；Linux 参考环境的正式测量仍按用户确认延期。
+
 - 日期：2026-09-09。
 - 环境：macOS Darwin，arm64/aarch64，11 logical CPUs，36 GiB 内存。
 - 构建：release，Core-only；未包含 Tauri/WebView，未测 RAM。
