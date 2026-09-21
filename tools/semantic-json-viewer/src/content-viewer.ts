@@ -2277,8 +2277,8 @@ export class ContentViewer {
     const targetNodeId = parsed ? frame.scope.root.id : target.nodeId;
     search.setRawEnabled(!parsed);
     search.setScope({
-      label: parsed ? "Parsed JSON" : "Content Viewer",
-      description: parsed ? "Search parsed JSON keys and values." : preview || !available ? "Rendered search is unavailable; switch to a source tab." : representation === "rawSource" ? "Search the raw lexeme." : "Search the decoded source.",
+      label: parsed ? t("contentViewer.parsedSearchScope") : t("contentViewer.title"),
+      description: parsed ? t("contentViewer.searchParsed") : preview || !available ? t("contentViewer.searchUnavailable") : representation === "rawSource" ? t("contentViewer.searchRaw") : t("contentViewer.searchDecoded"),
       enabled: available && !this.busy && !this.nestedBusy,
       decodedEnabled: true,
       scopeStart,
@@ -2328,9 +2328,9 @@ export class ContentViewer {
       scopeStart: target.spanStart,
       scopeEnd: target.spanEnd
     };
-    if (htmlRendered) rendered.activateDom(renderedTarget, this.htmlSearchRoot!, "Search the visible HTML preview text.");
-    else if (backend) rendered.activate("backend", renderedTarget, null, "Search the visible rendered text.");
-    else rendered.activateDom(renderedTarget, this.elements.content, "Search the visible rendered text.");
+    if (htmlRendered) rendered.activateDom(renderedTarget, this.htmlSearchRoot!, t("contentViewer.searchHtml"));
+    else if (backend) rendered.activate("backend", renderedTarget, null, t("search.renderedDescription"));
+    else rendered.activateDom(renderedTarget, this.elements.content, t("search.renderedDescription"));
   }
 
   private activateContentSearchRepresentation(representation: "decoded" | "rawSource"): void {
