@@ -139,6 +139,11 @@ export class CollectionList {
     this.render();
   }
 
+  clearSelection(): void {
+    this.selectedOrdinal = null;
+    this.render();
+  }
+
   setOpening(opening: boolean): void {
     if (this.opening === opening) return;
     this.opening = opening;

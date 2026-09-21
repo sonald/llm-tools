@@ -515,6 +515,8 @@ export const zhCN: MessageCatalog = {
   "main.currentScopeDocumentBytes": "当前范围：文档字节。解码后搜索不可用；原始文本搜索原始字节。",
   "main.rawOnlySearchUnavailable": "当前范围：仅原始文档。搜索暂时不可用。",
   "main.documentRoot": "文档根节点",
+  "main.collectionRoot": "集合根节点",
+  "main.currentScopeCollectionRoot": "当前范围：集合根节点。",
   "main.currentScopeDocumentRoot": "当前范围：文档根节点。",
   "main.currentScopeDocumentSearchUnavailable": "当前范围：文档根节点。搜索暂时不可用。",
   "main.selectedItemLabel": "选中的项目",

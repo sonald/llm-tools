@@ -107,6 +107,7 @@ const entryNext = required<HTMLButtonElement>("entry-next");
 const entryListStatus = required<HTMLElement>("entry-list-status");
 const entryListRetry = required<HTMLButtonElement>("entry-list-retry");
 const collectionNavigation = required<HTMLElement>("collection-navigation");
+const collectionRootButton = required<HTMLButtonElement>("collection-root");
 const collectionGoInput = required<HTMLInputElement>("collection-go-input");
 const collectionGoButton = required<HTMLButtonElement>("collection-go-button");
 const collectionGoError = required<HTMLElement>("collection-go-error");
@@ -647,6 +648,28 @@ function handleCollectionSelection(node: NodeDto, ordinal: number): void {
   render();
 }
 
+function selectCollectionRoot(): void {
+  const summary = state.summary;
+  if (!summary || summary.mode !== "collection" || !summary.root || summary.documentError
+    || summaryIsInvalidated(summary) || state.opening || state.selectionBusy) return;
+  state.generation += 1;
+  state.selectedItem = null;
+  collectionList.clearSelection();
+  searchView.clear();
+  contentViewer.clear(false);
+  treeView.setSession({
+    mode: "collection",
+    sessionRevision: summary.sessionRevision,
+    scopeId: null,
+    sourceSize: summary.size,
+    ariaLabel: t("main.jsonStructure"),
+    scopeLabel: t("main.collectionRoot")
+  }, summary.root);
+  rawView.setSession(summary.sessionRevision, summary.root, summary.size, "collection");
+  setActiveView("semantic");
+  render();
+}
+
 function summaryIsInvalidated(summary: FileSummary): boolean {
   return state.invalidatedRevision === summary.sessionRevision;
 }
@@ -901,13 +924,13 @@ function setText(node: HTMLElement, value: string): void {
 function currentConversationContext(): ConversationContext | null {
   const summary = state.summary;
   if (!summary || summary.documentError !== null || summaryIsInvalidated(summary)) return null;
-  if (summary.mode === "document") {
+  if (summary.mode === "document" || (summary.mode === "collection" && !state.selectedItem)) {
     return summary.root ? {
       mode: summary.mode,
       sessionRevision: summary.sessionRevision,
       sourceSize: summary.size,
       scopeRoot: summary.root,
-      scopeLabel: t("main.documentRoot")
+      scopeLabel: t(summary.mode === "collection" ? "main.collectionRoot" : "main.documentRoot")
     } : null;
   }
   if (summary.mode === "collection") {
@@ -1195,11 +1218,11 @@ function currentSearchScope(): SearchScope | null {
       targetNodeId: null
     };
   }
-  if (summary.mode === "document") {
+  if (summary.mode === "document" || (summary.mode === "collection" && !state.selectedItem)) {
     return {
-      label: t("main.documentRoot"),
+      label: t(summary.mode === "collection" ? "main.collectionRoot" : "main.documentRoot"),
       description: enabled
-        ? t("main.currentScopeDocumentRoot")
+        ? t(summary.mode === "collection" ? "main.currentScopeCollectionRoot" : "main.currentScopeDocumentRoot")
         : t("main.currentScopeDocumentSearchUnavailable"),
       enabled,
       decodedEnabled: true,
@@ -1306,6 +1329,8 @@ function render(): void {
     && collectionSummary.documentError === null
     && !summaryIsInvalidated(collectionSummary);
   collectionNavigation.hidden = !collectionActive;
+  collectionRootButton.disabled = busy || !collectionActive;
+  collectionRootButton.setAttribute("aria-pressed", String(collectionActive && state.selectedItem === null));
   if (collectionActive) {
     navigationState.hidden = true;
     entryNavigation.hidden = true;
@@ -1414,8 +1439,7 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
       ? { revision: summary.sessionRevision, root: summary.root, sourceSize: summary.size }
       : null);
     if (summary.mode === "collection") {
-      treeView.clear(t("main.selectItem"));
-      rawView.clear(t("main.selectItemRaw"));
+      selectCollectionRoot();
     } else {
       treeView.setSession({
         mode: summary.mode,
@@ -1533,6 +1557,7 @@ function toggleInspector(): void {
 }
 
 openButton.addEventListener("click", () => void chooseFile());
+collectionRootButton.addEventListener("click", selectCollectionRoot);
 readerOpenButton.addEventListener("click", () => void chooseFile());
 previewButton.addEventListener("click", () => {
   const target = selectedStringTarget;

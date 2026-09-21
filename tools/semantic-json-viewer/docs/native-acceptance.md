@@ -90,6 +90,14 @@
 - 这不是 80% 阈值 PASS。§15.1 要求根节点本身为 message-like array 时运行 Adapter；当前 `main.ts` 的 `currentConversationContext()` 在 Collection 未选 Item 时返回 null，`renderSummary()` 因此只显示空阅读器。Core 的根数组识别/投影测试不能覆盖这个真实 UI 入口缺口。
 - 待修复：在保留 Collection Item 导航的同时提供根数组会话入口，并验证从根会话进入 Item 后能回到根；完成后重测 79% Possible / 80% Generic、普通数组及来源/搜索范围。不得通过给输入添加包装对象绕过该缺口。
 
+### 2026-09-21 根数组入口修复与阈值复测
+
+- 修复 Collection 未选择 Item 时的根范围上下文，增加“集合根节点”返回按钮；沿用现有 Collection/Conversation/Tree/Raw/Search，不新增状态类型。Item 选择与根范围切换清除旧搜索结果及查看器内容，列表页缓存和滚动位置保留。
+- TypeScript/生产构建、i18n（154 static / 124 main / 299 view）、Search UI 148 项及中文 8 项通过。新增回归覆盖根候选 IPC、根 Tree/Raw/search 可用、Item→根恢复及搜索不沿用 Item nodeId。
+- 新 Tauri app 构建成功，前端 `index-CPNlsFas.js`；原生退出旧实例后启动新 bundle。`generic-threshold-80.json` 自动显示 Generic、100 条消息、首批 100 块且可继续分页。选 Item 0 后搜索范围切到 Item 0；点“集合根节点”恢复 Generic 根会话，选中 Item 清除、修订版本不变。Raw 显示根 Node 0、`[0,7952)`，没有沿用 Item 的 `[4,75)`。
+- `generic-threshold-79.json` 显示候选项；选择候选后明确提示 Possible、未达到自动识别阈值，需点击“按会话渲染”才继续。AX 与截图均观察到确认界面，没有自动渲染块。
+- 上一节的根数组会话入口 FAIL 由上述同输入 Native 复测关闭；不据此宣称全部分页、来源/搜索矩阵或 F-00–F-12 完成。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |

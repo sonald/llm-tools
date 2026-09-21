@@ -280,7 +280,8 @@ document.getElementById("open-file").click();
 await settle();
 const mainCollectionList=document.getElementById("collection-list");
 check(!document.getElementById("collection-navigation").hidden&&mainCollectionList.querySelectorAll("[role=option]").length===2,"main Collection Item list was not visible after opening");
-check(document.getElementById("tree-tab").disabled&&document.getElementById("raw-tab").disabled&&document.getElementById("scope-search-submit").disabled,"Tree/Raw/search were enabled before selecting an Item");
+check(!document.getElementById("tree-tab").disabled&&!document.getElementById("raw-tab").disabled&&!document.getElementById("scope-search-submit").disabled,"Collection root did not enable Tree/Raw/search");
+check(mainTauriCalls.some(call=>call.command==="get_conversation_candidate"&&call.args.scopeRootId===1&&call.args.candidateNodeId===1&&call.args.sessionRevision===22),"Collection root never reached conversation detection");
 mainCollectionList.querySelector('[data-item-ordinal="0"]').click();
 await settle();
 check(!document.getElementById("tree-tab").disabled&&!document.getElementById("raw-tab").disabled&&!document.getElementById("scope-search-submit").disabled,"selecting an Item did not enable Tree/Raw/search");
@@ -303,6 +304,15 @@ check(document.querySelector("#raw-panel mark")?.textContent?.length===6,"main I
 mainCollectionList.querySelector('[data-item-ordinal="1"]').click();
 await settle();
 check(document.getElementById("scope-search-results").children.length===0&&document.getElementById("scope-search-description").textContent.includes("Item 1"),"switching Items did not clear stale search results and scope");
+document.getElementById("collection-root").click();
+await settle();
+check(document.getElementById("scope-search-description").textContent.includes("Collection root")&&!mainCollectionList.querySelector('[aria-selected="true"]'),"Returning to Collection root retained the Item scope or selection");
+check(document.getElementById("collection-root").getAttribute("aria-pressed")==="true"&&document.getElementById("semantic-tab").getAttribute("aria-selected")==="true","Returning to root did not select the root Semantic view");
+document.getElementById("scope-search-representation-decoded").click();
+mainQuery.value="needle";
+document.getElementById("scope-search").requestSubmit();
+await settle();
+check(mainTauriCalls.filter(call=>call.command==="search_current").at(-1)?.args.nodeId===null,"Root search retained the previous Item node ID");
 if(previousTauri===undefined) delete window.__TAURI_INTERNALS__; else window.__TAURI_INTERNALS__=previousTauri;
 
 const noSelection=makeSearch(async()=>page());

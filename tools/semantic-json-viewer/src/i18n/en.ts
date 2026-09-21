@@ -513,6 +513,8 @@ export const en = {
   "main.currentScopeDocumentBytes": "Current scope: Document bytes. Decoded search is unavailable; Raw Source searches the original bytes.",
   "main.rawOnlySearchUnavailable": "Current scope: Raw-only Document. Search is temporarily unavailable.",
   "main.documentRoot": "Document root",
+  "main.collectionRoot": "Collection root",
+  "main.currentScopeCollectionRoot": "Current scope: Collection root.",
   "main.currentScopeDocumentRoot": "Current scope: Document root.",
   "main.currentScopeDocumentSearchUnavailable": "Current scope: Document root. Search is temporarily unavailable.",
   "main.selectedItemLabel": "Selected Item",
