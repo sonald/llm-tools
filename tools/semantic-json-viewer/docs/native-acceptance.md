@@ -58,6 +58,16 @@
 - 初次辅助功能菜单点击未切换选项；刷新状态后，通过原生菜单 End/Return 确认 Event 才得到上述结果。未将操作尝试当作通过，也未据此修改产品代码。
 - **F-03 局部证据**：`openai-conversation.json`，2,482 B，SHA-256 `c88210a5f839223bc482f09c82abb8a9dd43027356bfa624a413ea2839baaf5e`，自动显示 OpenAI 风格、6 条消息、24 个块；滚动后加载 `lookup_status` 的字符串参数与嵌套 `query=status`，以及 `echo_value` 的对象参数 `value=source-preserving`。`arguments 源`（Node 37）进入 Raw，从文件偏移 1268 显示原始带转义参数及相邻未知字段；切回 Semantic 保留工具卡片阅读位置。未因此把全部 OpenAI/Anthropic/Generic 矩阵标为通过。
 
+### 2026-09-21 OpenAI 结果与 Anthropic blocks 来源复测
+
+沿用 `index-BCTHVp7n.js` / `be24fffe…` 构建，使用 Native 会话列表、键盘滚动及来源按钮。
+
+- OpenAI 固定输入继续加载后，工具结果显示 `status: ready`，`call_lookup` 的 ID 卡显示已确认关联 `block 14`；旧式 `function_call` 显示 `legacy_lookup`、调用 ID 不可用、对象参数 `query=legacy`。另一个 ID 卡显示“结果不可用”，正文在独立结果卡；这里只记录实际呈现，不将这些局部观察等同于完整 F-03 通过。文件 SHA-256 仍为 `c88210a5f839223bc482f09c82abb8a9dd43027356bfa624a413ea2839baaf5e`。
+- 原生文件选择器打开 `anthropic-system-blocks.json`：2,454 B，SHA-256 `02df7dcf8b3763bff0137a9d733e62cb732ca6e4d3d2401a6103a42017b568f9`。自动选择 Anthropic 风格，显示 3 条消息、17 个块，system 数组及文本单独呈现。
+- 滚动后加载 thinking 文本、`opaque-redacted-content`、普通文本、`lookup_status` / `toolu_lookup` 及对象输入 `query=status`。工具结果显示 `is_error=false`、已确认关联 `block 11`、数组结果中的 `status: ready`；未知消息字段仍有独立源卡。
+- 点击结果文本的“原始”按钮，进入 `toolResult 卡片源 · Node 53`，Raw 从字节 1890 开始显示 `"status: ready"` 与相邻未知字段。直接检查输入确认该字符串词法范围为 `[1890,1905)`，与 Native 跳转起点一致。
+- 截图仍看到结果子字段路径 `Result.[0].text`；这是待检查的本地化残留，不将 Native i18n 标为完整通过。Anthropic system-string 变体、完整 unknown/source 矩阵及其他未操作路径仍待验收。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
