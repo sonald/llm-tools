@@ -104,6 +104,14 @@
 - 新开普通数组 `generic-non-conversation.json` 后根范围明确提示无会话候选，未继承上一文件的 Possible 确认状态。
 - 在普通数组根范围搜索 `GENERIC_NON_CONVERSATION`，Native 显示 3 个匹配，分别属于 `$.[0]`、`$.[1]`、`$.[2]`。点击第三个结果进入 Raw，起点 341，显示完整原始字符串 `"GENERIC_NON_CONVERSATION_RECORD_SENTINEL"`；直接核对输入词法范围为 `[341,383)`。这证明根搜索覆盖多个 Item，并可跳转最后一个 Item 的源位置。
 
+### 2026-09-21 无效 UTF-8 Entry 隔离复测
+
+- 使用现有 `generate-raw-document-fixtures.mjs` 在 `/tmp/sjv-native-20260921.NVTxYx/routing` 生成 18 份固定输入，自检通过；生成器拒绝覆盖已有文件。只生成不代表全部路由/编码已通过。
+- 同一 `index-CPNlsFas.js` Native 构建打开 `invalid-utf8-entry.jsonl`（84 B），进入 Entry、10/10 条。第二条标记无效 UTF-8，源文件范围 `[9,10)`；未显示大量无效编码警告（此输入只有 1/10 坏行）。
+- 选择第二条后 Tree 禁用、Raw 可用、Decoded 搜索禁用。Raw 的 Lossy 显示 `�` 和“源字节未修改”说明；切 Hex 显示 `00000000  ff`，条目相对范围 `[0,1)`。AX 与截图核对了实际表示。
+- 随后选择第三条，恢复有效状态和 Tree，Raw 显示 `{"id":3}`、条目相对 `[0,8)`，Inspector 源文件范围 `[11,19)`。无效行没有阻断后续有效记录。
+- 本轮未验证超过 20% 坏行警告、UTF BOM 或完整 F-00/F-07 路由矩阵，保持局部证据。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
