@@ -24,13 +24,14 @@
 | --- | --- | --- |
 | EntryList / Tree | Entry 与 Tree child IPC page 均为 200；Entry 按实测行高挂载视口窗口，Tree 按 35px 行高挂载窗口。主 Tree 与 Nested Tree 的离屏值预览接入共享 LRU，视口/Inspector 使用中的值另计；返回快照不保留值正文，恢复后按 NodeId 重读 | Entry 43；Tree 48 浏览器检查通过，Native 未验。Tree 的 ID、类型、路径标签、跨度、父子/展开状态与行索引按 §8.6 用户确认口径作为导航数据单独估算；`memoryUsage` 分列缓存、活动值和导航，不是实际 heap 测量 |
 | Collection / Conversation / Plain | Collection 窗口、Conversation block 窗口和 Plain text line window 已有实现及局部证据；不据此宣称所有列表或 Code 窗口都已虚拟化 | 部分证据：`src/collection-list.ts`、`src/conversation-view.ts`、`src/text-line-view.ts`、`docs/native-acceptance.md` |
+| Collection page cache | 当前挂载的两页为活动窗口，其他保留页接入 main 共享 ProjectionBudget；仍最多保留三页。先移出新活动窗口的缓存账目，再准入旧页，淘汰不清除选中 ordinal，回访按 cursor 重读 | `test-search-ui.mjs` 英文 144 / 中文 8 项通过（含共享压力、活动页切换与跨文件迟到预取），构建通过；`memoryUsage` 分列缓存页和活动页的估算，非实际 heap |
 | Content text cache | Decoded / Raw / Nested 共用 32 MiB 文本预算，跨缓存 LRU；可见页保留，已淘汰页按偏移重读，Nested CRLF 检查点与正文分离 | `1f96dd0`；独立文本压力 18、真实 CRLF 重读 8 项及构建通过；估算 UTF-16 正文和条目开销，不等于 WebView heap 测量；导航元数据按 §8.6 不计入缓存限额，全应用统计仍未完成 |
 | Code | 支持 Python、JavaScript、TypeScript、Rust、C、C++、Java、Go、Shell、SQL、JSON、YAML；自动猜语言上限 256 KiB，高亮上限为 1 MiB 或 20,000 行，超限退回 Plain Code window | `ace1f24` 已实现超限窗口；独立 wrap 90、Rendered 61 自动化通过，Native 尚未验收：`src/code-renderer.ts`、`src/content-viewer.ts` |
 | Markdown | 自动渲染上限 2 MiB；显式继续渲染上限 32 MiB；链接显示为文本、图片为占位，raw HTML 不执行 | 已实现但安全 Native 五零证据未闭环：`src/content-viewer.ts`、`src/markdown-renderer.ts` |
 | HTML | HTML Preview 输入上限 512 KiB，输出上限 1 MiB；HTML 自动启发式检测上限 64 KiB | Core/浏览器路径已有边界；Native 五项零证据仍未闭环：`src/content-viewer.ts`、`src-tauri/src/html_sanitizer.rs`、`src-tauri/src/semantic_detection.rs` |
 | Nested JSON | 单层 2 MiB、累计 8 MiB；默认深度 5，UI 可选 1–10，变更时从嵌套根重新打开；`4a090e6` 的原 Native tabs FAIL 仍待复测 | `d9b6066`；独立 Content Viewer 144、Parsed Search 32 通过，Native 仍不完整：`docs/native-acceptance.md` |
 | 搜索历史 | Source / Rendered Search 各自最多保留 16 页并有估算字节上限；淘汰正文与游标，Previous 缺页可取消地重扫，不限制可访问的历史深度 | `5609b71`、`ba99a6b`、`47653aa`；Source 英文 133/中文 8、Rendered 113 通过，同目标重入已关闭；`af42714` 将 Viewer 内部 Source/Rendered 接入 main 同一 ProjectionBudget，独立跨组件压力 8 项通过 |
-| Conversation Projection | Conversation 内联/工具投影与主搜索、Viewer 搜索、Tree 离屏值共享 ProjectionBudget；以 ledger/条目估算非 WebView 实际 heap，不宣称 WebView 私有堆 | `e229e0f`、`af42714`；ledger 15、Conversation 10 的独立回归通过；Collection 仍为局部三页保留、尚未接入共享账本，因此不能宣称全前端 32 MiB 已达标 |
+| Conversation Projection | Conversation 内联/工具投影与主搜索、Viewer 搜索、Tree 离屏值、Collection 非活动页共享 ProjectionBudget；以 ledger/条目估算非 WebView 实际 heap，不宣称 WebView 私有堆 | `e229e0f`、`af42714`；ledger 15、Conversation 10 的独立回归通过；上述消费者已共用账本，仍需完整生命周期与全应用内存验收，不据此宣称 §18 已达标 |
 
 Conversation 分页历史现在最多保存 16 个游标检查点；更早的 Previous 从最近可用检查点（或根）重扫，不限制返回深度。重扫失败保留当前页，关闭/切换上下文使迟到结果失效。`test-conversation-projection-budget.mjs` 53 项、现有 Conversation UI 96 项及构建通过；这是浏览器证据，非 Native 全面验收。
 

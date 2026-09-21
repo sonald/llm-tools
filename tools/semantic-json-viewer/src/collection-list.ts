@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { validateNodePage, type NodeDto } from "./tree-view";
 import { locale, t } from "./i18n";
+import { ProjectionBudget } from "./projection-budget";
 
 type Invoke = <T = unknown>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -18,6 +19,7 @@ type CollectionListOptions = CollectionListElements & {
   invoke?: Invoke;
   onSelection: (node: NodeDto, ordinal: number) => void;
   onError: (error: unknown) => void;
+  projectionBudget?: ProjectionBudget;
 };
 
 type CollectionSession = {
@@ -51,6 +53,8 @@ export class CollectionList {
   private readonly invokeRequest: Invoke;
   private readonly onSelection: (node: NodeDto, ordinal: number) => void;
   private readonly onError: (error: unknown) => void;
+  private readonly projectionBudget: ProjectionBudget;
+  private readonly cachedPages = new Set<ItemPage>();
   private session: CollectionSession | null = null;
   private pages = new Map<number, ItemPage>();
   private prefetchRequests = new Map<number, PageRequest>();
@@ -74,6 +78,7 @@ export class CollectionList {
     this.invokeRequest = options.invoke ?? invoke;
     this.onSelection = options.onSelection;
     this.onError = options.onError;
+    this.projectionBudget = options.projectionBudget ?? new ProjectionBudget();
     this.elements.list.addEventListener("scroll", () => this.handleScroll(), { passive: true });
     this.elements.list.addEventListener("click", (event) => this.handleClick(event));
     this.elements.list.addEventListener("keydown", (event) => this.handleKeydown(event));
@@ -97,7 +102,7 @@ export class CollectionList {
   setSession(session: CollectionSession | null): void {
     this.epoch += 1;
     this.session = session;
-    this.pages.clear();
+    this.clearPages();
     this.prefetchRequests.clear();
     this.pageRequest = null;
     this.pendingFocus = null;
@@ -118,7 +123,7 @@ export class CollectionList {
   clear(): void {
     this.epoch += 1;
     this.session = null;
-    this.pages.clear();
+    this.clearPages();
     this.prefetchRequests.clear();
     this.pageRequest = null;
     this.pendingFocus = null;
@@ -284,13 +289,14 @@ export class CollectionList {
       if (page.nodes.length !== expected || page.hasMore !== request.start + expected < session.root.childCount) {
         throw new Error(t("collectionList.pageIncomplete"));
       }
-      this.pages.set(request.start, { start: request.start, ...page });
+      this.storePage({ start: request.start, ...page });
       this.prunePages(request.start);
       this.pageRequest = null;
       this.listError = null;
       const focus = this.pendingFocus;
       this.pendingFocus = null;
       this.render();
+      if (!this.isSessionCurrent(request)) return;
       if (page.hasMore && page.nextCursor !== null) this.prefetchPage(page.nextCursor);
       const wanted = this.wantedStart;
       this.wantedStart = null;
@@ -310,7 +316,7 @@ export class CollectionList {
 
   private prunePages(current: number): void {
     const starts = Array.from(this.pages.keys()).sort((a, b) => Math.abs(a - current) - Math.abs(b - current));
-    for (const start of starts.slice(3)) this.pages.delete(start);
+    for (const start of starts.slice(3)) this.removePage(start);
   }
 
   private prefetchPage(start: number): void {
@@ -329,13 +335,15 @@ export class CollectionList {
       const page = validateNodePage(value, request.start, session.root.childCount, session.sourceSize, []);
       const expected = Math.min(PAGE_SIZE, session.root.childCount - request.start);
       if (!page || page.nodes.length !== expected || page.hasMore !== request.start + expected < session.root.childCount) return;
-      this.pages.set(request.start, { start: request.start, ...page });
+      this.storePage({ start: request.start, ...page });
       this.prunePages(this.windowStart);
+      this.syncPageBudget();
+      if (!this.isSessionCurrent(request)) return;
       if (this.windowStart === request.start - PAGE_SIZE) this.render();
     }).catch((error) => {
       if (this.isSessionCurrent(request) && isGlobalError(error)) this.onError(error);
     }).finally(() => {
-      this.prefetchRequests.delete(start);
+      if (this.prefetchRequests.get(start) === request) this.prefetchRequests.delete(start);
     });
   }
 
@@ -458,6 +466,68 @@ export class CollectionList {
     }
     if (restoreOrdinal !== null) queueMicrotask(() => this.focusOrdinal(restoreOrdinal));
     window.setTimeout(() => { this.rendering = false; }, 0);
+    this.syncPageBudget();
+  }
+
+  get memoryUsage(): { cachedPageBytes: number; activePageBytes: number } {
+    let cachedPageBytes = 0;
+    let activePageBytes = 0;
+    for (const page of this.pages.values()) {
+      if (this.cachedPages.has(page)) cachedPageBytes += this.pageBytes(page);
+      else activePageBytes += this.pageBytes(page);
+    }
+    return { cachedPageBytes, activePageBytes };
+  }
+
+  private pageBytes(page: ItemPage): number {
+    // Conservative UTF-16 and structure estimate, not a WebView heap measurement.
+    return 128 + page.nodes.reduce((bytes, node) => bytes + 192 + node.label.length * 2
+      + (node.valuePreview?.length ?? 0) * 2, 0);
+  }
+
+  private removePage(start: number): void {
+    const page = this.pages.get(start);
+    if (!page) return;
+    this.projectionBudget.release(page);
+    this.cachedPages.delete(page);
+    this.pages.delete(start);
+  }
+
+  private clearPages(): void {
+    for (const start of this.pages.keys()) this.removePage(start);
+  }
+
+  private storePage(page: ItemPage): void {
+    this.removePage(page.start);
+    this.pages.set(page.start, page);
+  }
+
+  private syncPageBudget(): void {
+    const epoch = this.epoch;
+    const windowStart = this.windowStart;
+    // Protect the whole incoming window before admitting any outgoing page.
+    for (const page of this.pages.values()) {
+      if (page.start === windowStart || page.start === windowStart + PAGE_SIZE) {
+        this.projectionBudget.release(page);
+        this.cachedPages.delete(page);
+      }
+    }
+    for (const page of this.pages.values()) {
+      if (page.start === windowStart || page.start === windowStart + PAGE_SIZE) continue;
+      if (!this.cachedPages.has(page)) {
+        const evict = (): void => {
+          this.cachedPages.delete(page);
+          if (this.pages.get(page.start) === page) this.pages.delete(page.start);
+        };
+        const admitted = this.projectionBudget.admit(page, this.pageBytes(page), evict);
+        if (epoch !== this.epoch || windowStart !== this.windowStart || this.pages.get(page.start) !== page) {
+          this.projectionBudget.release(page);
+          return;
+        }
+        if (admitted) this.cachedPages.add(page);
+        else evict();
+      }
+    }
   }
 
   private itemElement(node: NodeDto, ordinal: number, busy: boolean): HTMLButtonElement {

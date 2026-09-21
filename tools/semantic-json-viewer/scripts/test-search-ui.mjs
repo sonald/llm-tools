@@ -111,8 +111,10 @@ collectionHost.innerHTML='<section class="collection-navigation"><label>Go to It
 document.body.append(collectionHost);
 const collectionCalls=[];
 const collectionSelections=[];
+const collectionBudget=new ProjectionBudget(100000);
 const collectionRoot={id:1,kind:"array",spanStart:0,spanEnd:20_000_000,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:1_000_000};
 const collection= new CollectionList({
+  projectionBudget:collectionBudget,
   section:collectionHost.querySelector("section"),
   goInput:collectionHost.querySelector("#item-go"),
   goButton:collectionHost.querySelector("#item-go-button"),
@@ -151,6 +153,10 @@ const endHit=document.elementFromPoint((endRect.left+endRect.right)/2,(endRect.t
 check(endHit===endItem||endItem.contains(endHit),"final Item center was not hit-testable in the viewport");
 endItem.click();
 check(collectionSelections.at(-1)?.ordinal===999999,"Collection Item selection did not expose the zero-based ordinal");
+check(collectionBudget.usedBytes>0&&collectionBudget.usedBytes<=100000,"Collection inactive pages were not charged to the shared budget");
+check(collection.memoryUsage.activePageBytes>0&&collection.memoryUsage.cachedPageBytes===collectionBudget.usedBytes,"Collection active and cached page accounting was not separated");
+const collectionExternal={};check(collectionBudget.admit(collectionExternal,100000,()=>{},()=>false),"External pressure could not evict inactive Collection pages");
+check(collection.pages.size===1&&collection.selectedOrdinal===999999&&collectionList.querySelector('[data-item-ordinal="999999"]')?.getAttribute('aria-selected')==="true","Collection eviction discarded the active page or selected ordinal");
 collectionHost.querySelector('#item-go').value="199";
 collectionHost.querySelector('#item-go-button').click();
 await settle();
@@ -163,6 +169,12 @@ const row200Hit=document.elementFromPoint((row200Rect.left+row200Rect.right)/2,(
 check(row200Hit===row200||row200.contains(row200Hit),"Item 200 was not hit-testable across the viewport boundary");
 row200.click();
 check(collectionSelections.at(-1)?.ordinal===200,"viewport boundary Item selection did not expose its ordinal");
+check(collectionCalls.filter(call=>call.args.cursor===0).length>=2&&collectionBudget.usedBytes===100000,"Collection could not reread an evicted page while another consumer occupied the cache budget");
+collectionBudget.admit(collectionExternal,58000,()=>{},()=>false);collection.requestPage(0,null);collection.prefetchPage(400);await settle();await settle();
+check(collection.pages.has(400)&&collectionBudget.usedBytes>58000,"Active-window transition test did not cache its target page");
+collection.requestPage(400,null);await settle();await settle();
+check(collection.pages.has(400)&&collectionList.querySelector('[data-item-ordinal="400"]')!==null&&collectionBudget.usedBytes<=100000,"Admitting the old window evicted the newly active cached page");
+collection.clear();check(collectionBudget.usedBytes===58000&&collection.memoryUsage.activePageBytes===0,"Collection clear leaked pages or released another consumer's budget");collectionBudget.release(collectionExternal);
 collectionHost.remove();
 
 const deferredHost=document.createElement("div");
@@ -206,6 +218,16 @@ check(pendingPage200!==undefined,"deferred scroll regression did not create the 
 pendingPage200.resolve(deferredPage(200));
 await settle();
 check(deferredList.querySelector('[data-item-ordinal="200"]')!==null&&deferredList.querySelector(".collection-list-window")?.style.top==="4800px","latest scroll intent did not return to the inflight Item 200 page; calls="+JSON.stringify(deferredCalls.map((call)=>call.args.cursor))+" top="+deferredList.querySelector(".collection-list-window")?.style.top+" first="+deferredList.querySelector("[role=option]")?.dataset.itemOrdinal+" wantedScroll="+deferredList.scrollTop);
+const oldPrefetch200=deferredCalls.find(call=>call.args.cursor===200&&call!==pendingPage200);
+check(oldPrefetch200!==undefined,"stale prefetch test did not retain the old request");
+deferredCollection.setSession({revision:9,root:{id:2,kind:"array",spanStart:0,spanEnd:10_000,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:600},sourceSize:10_000});
+deferredCalls.find(call=>call.args.sessionRevision===9&&call.args.cursor===0).resolve(deferredPage(0));await settle();await settle();
+const newPrefetch=deferredCollection.prefetchRequests.get(200);
+oldPrefetch200.resolve(deferredPage(200));await settle();await settle();
+check(newPrefetch!==undefined&&deferredCollection.prefetchRequests.get(200)===newPrefetch&&!deferredCollection.pages.has(200),"Old prefetch response erased the new request or installed stale Collection data");
+deferredCollection.clear();
+deferredCalls.find(call=>call.args.sessionRevision===9&&call.args.cursor===200).resolve(deferredPage(200));await settle();
+check(deferredCollection.pages.size===0&&deferredCollection.memoryUsage.cachedPageBytes===0&&deferredList.textContent==="","Late prefetch repopulated a cleared Collection");
 deferredHost.remove();
 
 const appForm=document.querySelector('form[role="search"]');

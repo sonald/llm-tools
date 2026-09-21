@@ -405,6 +405,7 @@ const entryList = new EntryList({
 });
 
 const collectionList = new CollectionList({
+  projectionBudget,
   section: collectionNavigation,
   goInput: collectionGoInput,
   goButton: collectionGoButton,
