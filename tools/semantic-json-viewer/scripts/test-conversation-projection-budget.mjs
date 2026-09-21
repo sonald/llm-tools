@@ -117,6 +117,38 @@ check(shared.usedBytes<=800,"late response changed shared budget after its view 
 first.view.clear();second.view.clear();check(shared.usedBytes===0,"clearing both Conversation instances did not release the shared budget");
 for(const item of [first,second,late]) item.host.remove();
 const ascii="a".repeat(4096);const conservative=ascii.length*2+256;const probe=new ProjectionBudget(conservative-1);check(!probe.admit({},conservative,()=>{}),"conservative ASCII projection estimate bypassed the budget");check(probe.usedBytes===0,"failed conservative admission changed accounting");
+const history=makeConversation(104,204,"history",false);
+const historyCalls=[];
+let failAt=-1;
+history.view.invokeRequest=async(command,args)=>{
+  if(command!=="get_conversation_blocks")throw new Error("unexpected history command");
+  const index=args.cursor?.messageIndex??0;historyCalls.push(index);
+  if(index===failAt)throw new Error("history replay failed");
+  return {blocks:[],hasMore:index<39,nextCursor:index<39?{kind:"genericConversation",style:"generic",scopeRootId:104,candidateNodeId:104,messageIndex:index+1,phase:"message",fieldIndex:0,elementIndex:0,sessionRevision:104}:null,wrapperRef:{scopeRootId:104,scopeRootSpanStart:0,scopeRootSpanEnd:1000,candidateNodeId:104,candidateSpanStart:0,candidateSpanEnd:1000,ambiguousDuplicateField:false}};
+};
+history.view.context={mode:"document",sessionRevision:104,sourceSize:1000,scopeRoot:history.root,scopeLabel:"history"};
+history.view.selectedCandidate={node:history.root,kind:"generic",messageCount:40,ambiguousDuplicateField:false};
+history.view.candidates=[history.view.selectedCandidate];
+await history.view.loadPage(null,"initial");
+for(let i=0;i<39;i++)await history.view.loadPage(history.view.page.nextCursor,"next");
+check(history.view.previousPages.size<=16,"Conversation retained unbounded pagination cursors");
+history.view.previousPages.clear();failAt=0;
+await history.view.loadPage(null,"previous");
+check(history.view.page.pageStart.messageIndex===39&&!history.view.loading,"Failed replay replaced the current page or left navigation busy");
+failAt=-1;
+for(let i=0;i<39;i++){
+  history.host.querySelector('[data-conversation-action="previous"]').click();await settle();
+  check((history.view.page.pageStart?.messageIndex??0)===38-i,"Previous could not replay an evicted Conversation cursor");
+}
+check(historyCalls.filter(index=>index===0).length>1,"Old Conversation pages were never reread");
+for(let i=0;i<39;i++)await history.view.loadPage(history.view.page.nextCursor,"next");
+history.view.previousPages.clear();
+const normalRead=history.view.invokeRequest;let releaseReplay;
+history.view.invokeRequest=(command,args)=>new Promise(resolve=>{releaseReplay=async()=>resolve(await normalRead(command,args));});
+const pendingReplay=history.view.loadPage(null,"previous");
+history.view.clear();await releaseReplay();await pendingReplay;
+check(history.view.page===null&&history.view.previousPages.size===0&&history.host.textContent==="","Cancelled replay restored a cleared Conversation");
+history.host.remove();
 return {pass:true,assertions};})()`;
 }
 

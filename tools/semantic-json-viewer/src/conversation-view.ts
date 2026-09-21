@@ -217,7 +217,8 @@ export class ConversationView {
   private style: ConversationStyle = "generic";
   private possibleConfirmed = false;
   private page: Page | null = null;
-  private previousPages: Array<Cursor | null> = [];
+  private readonly previousPages = new Map<number, Cursor | null>();
+  private pageIndex = 0;
   private loading = false;
   private statusMessage = "";
   private generation = 0;
@@ -282,7 +283,7 @@ export class ConversationView {
     this.style = "generic";
     this.possibleConfirmed = false;
     this.page = null;
-    this.previousPages = [];
+    this.resetPageHistory();
     this.loading = context !== null;
     this.statusMessage = context ? t("conversation.findingCandidates") : "";
     this.resetProjectionCache();
@@ -301,7 +302,7 @@ export class ConversationView {
     this.candidateScanCursor = null;
     this.selectedCandidate = null;
     this.page = null;
-    this.previousPages = [];
+    this.resetPageHistory();
     this.loading = false;
     this.statusMessage = "";
     this.resetProjectionCache();
@@ -405,7 +406,7 @@ export class ConversationView {
     this.possibleConfirmed = confirmPossible;
     this.style = candidate.kind === "openai" ? "openai" : candidate.kind === "anthropic" ? "anthropic" : "generic";
     this.page = null;
-    this.previousPages = [];
+    this.resetPageHistory();
     this.resetProjectionCache();
     this.pendingAnchor = null;
     this.requestGeneration += 1;
@@ -417,6 +418,17 @@ export class ConversationView {
     if (candidate.kind !== "possible" || confirmPossible) void this.loadPage(null, "initial");
   }
 
+  private resetPageHistory(): void {
+    this.previousPages.clear();
+    this.pageIndex = 0;
+  }
+
+  private rememberPage(index: number, cursor: Cursor | null): void {
+    this.previousPages.delete(index);
+    this.previousPages.set(index, cursor);
+    while (this.previousPages.size > 16) this.previousPages.delete(this.previousPages.keys().next().value!);
+  }
+
   private async loadPage(cursor: Cursor | null, direction: "initial" | "next" | "previous"): Promise<void> {
     const context = this.context;
     const candidate = this.selectedCandidate;
@@ -424,27 +436,49 @@ export class ConversationView {
       || candidate.kind === "possible" && !this.possibleConfirmed || this.loading) return;
     const requestGeneration = ++this.requestGeneration;
     const generation = this.generation;
+    const targetIndex = direction === "previous" ? this.pageIndex - 1 : direction === "next" ? this.pageIndex + 1 : 0;
     this.loading = true;
     this.statusMessage = t("conversation.loadingBlocks");
     this.render();
     try {
-      const value = await this.invokeRequest<unknown>("get_conversation_blocks", {
-        scopeRootId: context.scopeRoot.id,
-        candidateNodeId: candidate.node.id,
-        style: this.style,
-        cursor,
-        limit: PAGE_LIMIT,
-        sessionRevision: context.sessionRevision,
-        scopeId: null
-      });
-      if (!this.isCurrentRequest(context, generation, requestGeneration)) return;
-      const page = validatePage(value, context, candidate, this.style, cursor);
-      if (!page) throw new Error(t("conversation.invalidBlocksResponse"));
-      if (direction === "previous") {
-        this.previousPages = this.previousPages.slice(0, -1);
-      } else if (direction === "next") {
-        this.previousPages.push(this.page?.pageStart ?? null);
+      const readPage = async (start: Cursor | null): Promise<Page | null> => {
+        const value = await this.invokeRequest<unknown>("get_conversation_blocks", {
+          scopeRootId: context.scopeRoot.id,
+          candidateNodeId: candidate.node.id,
+          style: this.style,
+          cursor: start,
+          limit: PAGE_LIMIT,
+          sessionRevision: context.sessionRevision,
+          scopeId: null
+        });
+        if (!this.isCurrentRequest(context, generation, requestGeneration)) return null;
+        const page = validatePage(value, context, candidate, this.style, start);
+        if (!page) throw new Error(t("conversation.invalidBlocksResponse"));
+        return page;
+      };
+      if (direction === "previous" && !this.previousPages.has(targetIndex)) {
+        let index = 0;
+        cursor = null;
+        for (const [knownIndex, knownCursor] of this.previousPages) {
+          if (knownIndex <= targetIndex && knownIndex >= index) {
+            index = knownIndex;
+            cursor = knownCursor;
+          }
+        }
+        // ponytail: evicted cursor replay is linear; retain only 16 checkpoints.
+        while (index < targetIndex) {
+          const replay = await readPage(cursor);
+          if (!replay || !this.isCurrentRequest(context, generation, requestGeneration)) return;
+          if (!replay.nextCursor) throw new Error(t("conversation.invalidBlocksResponse"));
+          cursor = replay.nextCursor;
+          this.rememberPage(++index, cursor);
+        }
       }
+      const page = await readPage(cursor);
+      if (!page || !this.isCurrentRequest(context, generation, requestGeneration)) return;
+      this.rememberPage(this.pageIndex, this.page?.pageStart ?? null);
+      this.rememberPage(targetIndex, cursor);
+      this.pageIndex = targetIndex;
       this.page = { ...page, pageStart: cursor };
       this.resetProjectionCache();
       this.pendingAnchor = null;
@@ -493,7 +527,7 @@ export class ConversationView {
     if (action === "choose-candidate") {
       this.selectedCandidate = null;
       this.page = null;
-      this.previousPages = [];
+      this.resetPageHistory();
       this.resetProjectionCache();
       this.pendingAnchor = null;
       this.possibleConfirmed = false;
@@ -506,8 +540,8 @@ export class ConversationView {
       void this.loadPage(this.page.nextCursor, "next");
       return;
     }
-    if (action === "previous" && this.previousPages.length > 0) {
-      const cursor = this.previousPages[this.previousPages.length - 1] ?? null;
+    if (action === "previous" && this.pageIndex > 0) {
+      const cursor = this.previousPages.get(this.pageIndex - 1) ?? null;
       void this.loadPage(cursor, "previous");
       return;
     }
@@ -556,7 +590,7 @@ export class ConversationView {
     this.requestGeneration += 1;
     this.loading = false;
     this.page = null;
-    this.previousPages = [];
+    this.resetPageHistory();
     this.resetProjectionCache();
     this.pendingAnchor = null;
     this.statusMessage = t("conversation.styleChanged");
@@ -846,7 +880,7 @@ export class ConversationView {
     nav.setAttribute("aria-label", t("conversation.pagesAria"));
     const previous = this.actionButton(t("conversation.previous"), "previous");
     const next = this.actionButton(t("conversation.next"), "next");
-    previous.disabled = this.loading || this.previousPages.length === 0;
+    previous.disabled = this.loading || this.pageIndex === 0;
     next.disabled = this.loading || !this.page?.hasMore;
     const label = element("span", "conversation-page-status", this.page
       ? t("conversation.pageStatus", {

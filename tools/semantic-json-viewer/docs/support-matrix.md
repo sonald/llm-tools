@@ -31,6 +31,8 @@
 | 搜索历史 | Source / Rendered Search 各自最多保留 16 页并有估算字节上限；淘汰正文与游标，Previous 缺页可取消地重扫，不限制可访问的历史深度 | `5609b71`、`ba99a6b`、`47653aa`；Source 英文 133/中文 8、Rendered 113 通过，同目标重入已关闭；Source 已接 main ProjectionBudget，Rendered/Viewer 内部缓存与 Tree 数据尚未共用该账本 |
 | Conversation Projection | Conversation 内联/工具投影接入共享 ProjectionBudget；以 ledger/条目估算非 WebView 实际 heap，不宣称 WebView 私有堆 | `e229e0f`；ledger 15、Conversation 10 的独立回归通过；Viewer 内部 Source/Rendered 与 Tree 数据仍未全部接入同一账本 |
 
+Conversation 分页历史现在最多保存 16 个游标检查点；更早的 Previous 从最近可用检查点（或根）重扫，不限制返回深度。重扫失败保留当前页，关闭/切换上下文使迟到结果失效。`test-conversation-projection-budget.mjs` 53 项、现有 Conversation UI 96 项及构建通过；这是浏览器证据，非 Native 全面验收。
+
 ## Entry hint、国际化与平台
 
 | 范围 | 当前行为 | 状态与证据 |
