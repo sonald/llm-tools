@@ -169,6 +169,13 @@
 
 锁屏后准备：现有 `generate-collection-fixture.mjs` 生成 `million-items.json`，1,000,000 个元素、6,888,891 B，SHA-256 `f60417708b2a0c4b8c7b4c1979b46c2569b3b1ddb9e9d209ab1f8d4b0538286d`。独立检查确认全部元素依次为 0–999999，尚未 Native 打开。根范围修复后的 Main 错误恢复/本地化浏览器回归英文 4、中文 8 项通过；不作为锁屏期间的 Native 证据。
 
+### 解锁后补验：大文档 Raw/Tree 与百万集合
+
+- 用户继续后桌面可操作，沿用 release `index-CPNlsFas.js`。100 MiB `large.json` 根 Raw 首块 `[0,131072)`，Next 为 `[131072,262144)`；Tree 根按需展开为 5 个字段，`items` 显示 419,528 个子节点。
+- 选中尾部 `tail_sentinel`，Tree→Raw 保持 Node 5034345、`[104857513,104857538)`，显示 `"BENCHMARK_TAIL_SENTINEL"`。
+- 打开已校验的 `million-items.json`，进入 Collection、共 1,000,000 项。Go to Item 999999 定位尾项，Enter 选择后显示选中项目 999,999；Raw 为 Node 1000000、`[6888884,6888890)`、原文 `999999`。
+- 上述锁屏前未执行的操作已补验；未以可用性冒烟测试替代正式性能时延或内存指标。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
