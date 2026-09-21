@@ -75,6 +75,15 @@
 - 实际滚动加载 thinking、redactedThinking、普通文本、`lookup_status` / `toolu_lookup`、对象输入 `query=status`；结果显示 `is_error=false`、已确认关联 `block 10`、`status: ready`，未知字段源卡仍在。
 - AX 与截图均显示“结果.[0].text”，先前硬编码 `Result` 的 Native 文案问题关闭。此结论只覆盖已观察标签与上述固定输入，不代表完整 F-04 或全量 i18n 通过。
 
+### 2026-09-21 Generic 会话与普通记录局部验收
+
+沿用 `index-XsCYNr2b.js` / `4804cca3…` 构建，通过 Native 文件选择器打开以下合成输入。
+
+- `generic-role-content.json`（929 B，SHA-256 `de90d2dbce2e11f529fdca9047a6ce13ce8152d6061f6a0529cfa6e954c8f6e1`）：自动 Generic，6 条消息、18 个块。`human` 映射为 user，`gpt/model/bot` 映射为 assistant；滚动加载全部六条正文，unknown 字段保留源卡。
+- `generic-from-value.json`（634 B，SHA-256 `74cf23b0e63ad918b7deeb3014e59414745cc9ed07fd4078a521d37efaa30fe0`）：自动 Generic，4 条消息、12 个块，`value` 内容正常呈现。点击首条 user 的角色源，Raw 显示 `Node 3`、文件起点 42 和原始 `"human"`，后续仍保留 `from=gpt/user/model` 与未知字段；角色归一化未替换原文。
+- `generic-non-conversation.json`（390 B，SHA-256 `11da688afe5df2cc1b1e2e19d98cafd675ec726e94f704311e7925b463634601`）：打开为 Collection、共 3 项；选择项目 0（源字节 `[4,114)`）后提示“当前范围没有受支持的直接会话候选项。树视图仍可用。”，未投影为对话消息。
+- 原生文件选择器的点击曾落到其他行；用键盘选择、核对 selected 文件名后确认打开，且以应用实际文件名为证据。误开的 OpenAI 文件不计入 Generic 验收。79% / 80% 边界输入和完整来源矩阵仍待 Native 验证，F-05 不标全量 PASS。
+
 ### 历史 Native 操作证据（2026-09-14）
 
 | 项目 | 真实输入与操作 | 结果 |
