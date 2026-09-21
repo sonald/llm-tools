@@ -47,7 +47,7 @@ Collection 根数组会话入口已由 `8e341e7` 补齐：未选 Item 时以根�
 | Main IPC 错误 | 稳定 code 的标题/操作说明本地化，原始 diagnostic 保留；`invalid_json` 继续使用共享 parse formatter，未知 code 回退原文 | `87987b1`；Main 英文 4、中文 8 通过；Native 已验证不支持编码/封装格式的中文标题与说明、原始英文 diagnostic 以及拒绝后旧会话保留 |
 | macOS | macOS arm64 新构建已真实启动并复测 Nested 返回、表示切换、复制和 Code 超限；旧重复 tabs 与已发现的英文搜索说明均已复测关闭 | 部分验收，不是 F-00–F-12 全 PASS：`docs/native-acceptance.md` |
 | Linux | Linux 功能、安全及参考环境 cold/warm、fresh 五轮、private-memory 尚未验；等待用户提供远程环境后验证 | 2026-09-21 用户确认延后且不阻塞当前项目；已知依赖风险仍见 `docs/security-report.md`，不标为已支持/已通过 |
-| Windows | `320af83` 已补 FileSource 的平台读取分支；本机回归通过，但未进行 Windows 编译、运行或安全验收，不先列为已支持 | 未验：`src-tauri/src/file_source.rs` |
+| Windows | `320af83` 已补 FileSource 的平台读取分支；未进行 Windows 编译、运行或安全验收，不先列为已支持 | 2026-09-21 用户确认延期，不阻塞首版；待对应环境可用后验证 `src-tauri/src/file_source.rs` 及真实应用流程 |
 
 ## 明确排除（v0.1）
 

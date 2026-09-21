@@ -31,7 +31,7 @@ npm run tauri -- build --bundles app
 
 - 不修改输入文件，不上传数据，不加载远程图片。HTML/Markdown 的脚本、链接和活动内容受到净化及隔离限制。
 - 不支持 JSON 编辑、压缩文件解压、JSON Text Sequence、串接 JSON 或跨 Entry 查询聚合。
-- 已有 macOS arm64 的真实应用验收。Linux 按用户决定等待远程环境，不阻塞当前首版；Windows 尚未完成编译/运行验收，不宣称已支持。
+- 首版按 macOS arm64 验收。Linux 与 Windows 均按用户决定延期，等待对应环境验证，不阻塞首版；未验证的平台不宣称已支持。
 - 真实人工标注统计及严格 Native 零网络/零 IPC 计数证明不作为首版阻塞项；这不代表相关指标已测，也不意味着移除安全防护。
 - 当前仍不是所有平台和全部性能门槛的发布 PASS。具体证据与限制见下列文档。
 
