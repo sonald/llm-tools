@@ -46,12 +46,29 @@ npm audit --json --registry=https://registry.npmjs.org
 
 Vite 官方公告将 6.4.3 列为 Windows 路径绕过问题的修复版本：[GHSA-fx2h-pf6j-xcff](https://github.com/vitejs/vite/security/advisories/GHSA-fx2h-pf6j-xcff)。升级范围选择 6.x，按[官方 v5→v6 迁移说明](https://v6.vite.dev/guide/migration.html)核对，并通过上述构建与浏览器检查，没有自动跳到 audit 推荐的最新大版本。
 
-Rust 依赖审计：**未执行**，当前环境 `cargo audit --version` 返回未安装。Rust 单元测试不能替代 RustSec 漏洞审计。
+### RustSec（2026-09-21）
+
+使用临时安装的 `cargo-audit 0.22.2`，不改全局 PATH，不改 Cargo.lock，不忽略公告，也不按 OS/CPU 过滤：
+
+```bash
+/tmp/sjv-rust-audit.ZjgPxB/bin/cargo-audit audit \
+  --db /tmp/sjv-rust-audit.ZjgPxB/advisory-db --file Cargo.lock --json
+```
+
+被审计 Cargo.lock 的 SHA-256 为 `2ad18dbeba3f65f1fd87f3cfb6d9c06859520c72ddb98e96694fb5017989904c`。数据库提交为 `d5c17953a895cf19e8d3ce66eaa42b6fcfe1fb16`，最后更新时间 `2026-09-19T10:42:27+02:00`，含 1,251 条公告；扫描 484 个锁定依赖。结果为 `vulnerabilities.count=0`，但有 **6 条 unmaintained 和 1 条 unsound 警告**。默认退出码 0 不表示这些风险已解决。
+
+| 类别 | 包与公告 | 当前处理 |
+| --- | --- | --- |
+| 内存安全 | `glib 0.18.5`，[RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html) | `VariantStrIter` 的若干迭代方法存在未定义行为/崩溃风险，上游修复范围为 `>=0.20.0`。Linux GTK/WebKit 依赖链引入 0.18.5，GTK 0.18 系列不能通过一次不兼容版本覆盖安全升级。本项目尚未修复、未证明 Linux 上不可达，不能记为 Linux 安全 PASS |
+| 停止维护 | `proc-macro-error 1.0.4`，[RUSTSEC-2024-0370](https://rustsec.org/advisories/RUSTSEC-2024-0370.html) | Linux 的 `glib-macros` / `gtk3-macros` 引入；无 patched 版本，跟踪上游替换，不用忽略规则隐藏 |
+| 停止维护 | `unic-char-property` / `unic-char-range` / `unic-common` / `unic-ucd-ident` / `unic-ucd-version`，均为 0.9.0；公告依次为 RUSTSEC-2025-0081 / 0075 / 0080 / 0100 / 0098 | 经 `urlpattern → tauri-utils` 引入；属于维护状态警告，无 patched 版本，不等同于已证实可利用漏洞，但保留为依赖风险 |
+
+依赖链由 `cargo tree --locked --target x86_64-unknown-linux-gnu -i glib --depth 4` 核实。`--target aarch64-apple-darwin -i glib` 无结果，只能证明该依赖不在本机目标图中，不能替代 Native 安全验收。临时工具和数据库可重建；发布前应重新审计，不能永久复用本次数据库快照。
 
 ## 尚未闭环
 
 1. 当前构建的 F-11 Native 五零：脚本、网络、IPC、top navigation、宿主 DOM，需真实 Tauri/WebView 证据。
-2. RustSec 依赖审计。
+2. Linux `glib 0.18.5` 的 unsound 警告处理及上游维护依赖跟踪；至少在对应平台发布前复查，不能仅靠本机测试关闭。
 3. Linux 参考环境性能/内存，以及声明支持平台各自的功能和安全验证；本机 arm64 编译不等于跨平台通过。
 4. 完整应用私有内存、峰值、renderer 最坏响应时间；缓存的估算/容量统计不是 heap 证明。
 
