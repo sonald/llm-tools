@@ -36,14 +36,10 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .app-shell {
   display: grid;
   grid-template-rows: 58px auto minmax(0, 1fr) 34px;
-  width: min(100vw - 28px, 1500px);
-  height: min(100vh - 28px, 1000px);
-  margin: 14px auto;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
-  border: 1px solid var(--line-strong);
-  border-radius: 11px;
   background: var(--surface);
-  box-shadow: 0 22px 70px rgb(28 34 45 / 18%), 0 2px 8px rgb(28 34 45 / 9%);
 }
 
 .topbar {
@@ -126,7 +122,7 @@ h3 { font-size: 16px; font-weight: 700; }
 
 #error-details { color: #7d4a46; font-family: "SFMono-Regular", Consolas, monospace; }
 
-.workspace { display: grid; grid-row: 3; min-width: 0; min-height: 0; grid-template-columns: 260px minmax(0, 1fr) 285px; }
+.workspace { position: relative; display: grid; grid-row: 3; min-width: 0; min-height: 0; grid-template-columns: 260px minmax(0, 1fr) 285px; }
 
 .navigation, .reader, .inspector { min-width: 0; min-height: 0; overflow: hidden; }
 
@@ -794,7 +790,7 @@ h3 { font-size: 16px; font-weight: 700; }
 
 @media (min-width: 768px) and (max-width: 1050px) {
   .workspace { grid-template-columns: 220px minmax(0, 1fr); }
-  .inspector { position: fixed; z-index: 20; top: 73px; right: 24px; bottom: 48px; display: none; width: min(380px, calc(100vw - 260px)); border: 1px solid var(--line-strong); box-shadow: -16px 0 42px rgb(12 18 28 / 24%); }
+  .inspector { position: absolute; z-index: 20; top: 0; right: 0; bottom: 0; display: none; width: min(380px, calc(100vw - 260px)); border-left: 1px solid var(--line-strong); box-shadow: -16px 0 42px rgb(12 18 28 / 24%); }
   .app-shell[data-inspector-open="true"] .inspector { display: block; }
   .drawer-toggle { display: inline-flex; align-items: center; }
   #navigation-toggle { display: none; }
@@ -802,7 +798,6 @@ h3 { font-size: 16px; font-weight: 700; }
 }
 
 @media (max-width: 767px) {
-  .app-shell { width: 100vw; height: 100vh; margin: 0; border: 0; border-radius: 0; }
   .topbar { gap: 7px; padding: 0 10px; }
   .brand h1 {
     position: absolute;
@@ -819,8 +814,8 @@ h3 { font-size: 16px; font-weight: 700; }
   .shortcut { display: none; }
   .file-context { display: none; }
   .drawer-toggle { display: inline-flex; min-height: 30px; align-items: center; padding: 0 7px; }
-  .workspace { position: relative; display: block; }
-  .navigation, .inspector { position: fixed; z-index: 30; top: 58px; bottom: 34px; display: none; width: min(280px, calc(100vw - 20px)); border: 1px solid var(--line-strong); box-shadow: 0 16px 46px rgb(12 18 28 / 28%); }
+  .workspace { display: block; }
+  .navigation, .inspector { position: absolute; z-index: 30; top: 0; bottom: 0; display: none; width: min(280px, calc(100vw - 20px)); border: 1px solid var(--line-strong); box-shadow: 0 16px 46px rgb(12 18 28 / 28%); }
   .navigation { left: 0; }
   .inspector { right: 0; }
   .app-shell[data-mobile-drawer="navigation"] .navigation { display: flex; }
