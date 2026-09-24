@@ -10,6 +10,7 @@ import { TreeView, type NodeDto } from "./tree-view";
 import { applyStaticTranslations, locale, t } from "./i18n";
 import { parseErrorMessage } from "./parse-error-message";
 import { ProjectionBudget } from "./projection-budget";
+import { NavigationSearch } from "./navigation-search";
 
 applyStaticTranslations();
 
@@ -41,6 +42,7 @@ type FileSummary = {
   manyInvalidUtf8Warning: boolean;
   documentError: IpcErrorPayload | null;
   sessionRevision: number;
+  fileGeneration: number;
 };
 
 type IpcErrorPayload = {
@@ -106,6 +108,22 @@ const entryPrevious = required<HTMLButtonElement>("entry-prev");
 const entryNext = required<HTMLButtonElement>("entry-next");
 const entryListStatus = required<HTMLElement>("entry-list-status");
 const entryListRetry = required<HTMLButtonElement>("entry-list-retry");
+const navigationSearchPanel = required<HTMLElement>("navigation-search-panel");
+const navigationSearchForm = required<HTMLFormElement>("navigation-search-form");
+const navigationSearchQuery = required<HTMLInputElement>("navigation-search-query");
+const navigationSearchSyntax = required<HTMLSelectElement>("navigation-search-syntax");
+const navigationSearchRepresentation = required<HTMLSelectElement>("navigation-search-representation");
+const navigationSearchClear = required<HTMLButtonElement>("navigation-search-clear");
+const navigationSearchStop = required<HTMLButtonElement>("navigation-search-stop");
+const navigationSearchPrevious = required<HTMLButtonElement>("navigation-search-prev");
+const navigationSearchNext = required<HTMLButtonElement>("navigation-search-next");
+const navigationSearchStatus = required<HTMLElement>("navigation-search-status");
+const navigationSearchDescription = required<HTMLElement>("navigation-search-description");
+const navigationSearchDisplayModes = navigationSearchPanel.querySelectorAll<HTMLInputElement>("input[name=navigation-search-display]");
+const navigationSearchResultsPanel = required<HTMLElement>("navigation-search-results-panel");
+const navigationSearchResults = required<HTMLElement>("navigation-search-results");
+const navigationSearchResultsPrevious = required<HTMLButtonElement>("navigation-search-results-prev");
+const navigationSearchResultsNext = required<HTMLButtonElement>("navigation-search-results-next");
 const collectionNavigation = required<HTMLElement>("collection-navigation");
 const collectionRootButton = required<HTMLButtonElement>("collection-root");
 const collectionGoInput = required<HTMLInputElement>("collection-go-input");
@@ -417,6 +435,32 @@ const collectionList = new CollectionList({
   invoke,
   onSelection: handleCollectionSelection,
   onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
+});
+
+const navigationSearch = new NavigationSearch({
+  panel: navigationSearchPanel,
+  form: navigationSearchForm,
+  query: navigationSearchQuery,
+  syntax: navigationSearchSyntax,
+  representation: navigationSearchRepresentation,
+  clear: navigationSearchClear,
+  stop: navigationSearchStop,
+  previous: navigationSearchPrevious,
+  next: navigationSearchNext,
+  status: navigationSearchStatus,
+  description: navigationSearchDescription,
+  displayModes: navigationSearchDisplayModes,
+  resultsPanel: navigationSearchResultsPanel,
+  results: navigationSearchResults,
+  resultsPrevious: navigationSearchResultsPrevious,
+  resultsNext: navigationSearchResultsNext
+}, (ordinal) => {
+  if (state.summary?.mode === "entry") entryList.navigateToOrdinal(ordinal);
+  else if (state.summary?.mode === "collection") collectionList.navigateToOrdinal(ordinal);
+}, (mode) => {
+  const filtered = mode === "filtered";
+  for (const element of [entryListPanel, entryPrevious, entryNext, entryListStatus, entryListRetry,
+    collectionListPanel, collectionListStatus, collectionListRetry]) element.hidden = filtered;
 });
 
 const conversationView = new ConversationView({
@@ -821,8 +865,9 @@ function fileSummaryValue(value: unknown): FileSummary | undefined {
   const path = typeof value.path === "string" ? value.path : undefined;
   const size = numberValue(value.size);
   const sessionRevision = numberValue(value.sessionRevision);
+  const fileGeneration = numberValue(value.fileGeneration);
   const warning = typeof value.manyInvalidUtf8Warning === "boolean" ? value.manyInvalidUtf8Warning : undefined;
-  if (path === undefined || size === undefined || sessionRevision === undefined || warning === undefined) return undefined;
+  if (path === undefined || size === undefined || sessionRevision === undefined || fileGeneration === undefined || warning === undefined) return undefined;
   const rootValue = value.root;
   const root = rootValue === null ? null : nodeDtoValue(rootValue, size);
   const progressValue = value.progress;
@@ -851,7 +896,8 @@ function fileSummaryValue(value: unknown): FileSummary | undefined {
     progress: progress ?? null,
     manyInvalidUtf8Warning: warning,
     documentError,
-    sessionRevision
+    sessionRevision,
+    fileGeneration
   };
 }
 
@@ -1323,6 +1369,11 @@ function render(): void {
   appShell.dataset.inspectorOpen = tablet ? String(state.tabletInspectorOpen) : "false";
   entryList.setOpening(state.opening);
   collectionList.setOpening(state.opening);
+  const navSummary = state.summary;
+  navigationSearch.setContext(navSummary && !summaryIsInvalidated(navSummary)
+    && (navSummary.mode === "entry" || navSummary.mode === "collection")
+    ? { fileGeneration: navSummary.fileGeneration, mode: navSummary.mode }
+    : null);
   const collectionSummary = state.summary;
   const collectionActive = collectionSummary !== null
     && collectionSummary.mode === "collection"
@@ -1398,6 +1449,7 @@ function failClosedSummary(generation: number): void {
 }
 
 async function openPath(path: string, openAs: "json" | "jsonl" | null, generation: number): Promise<void> {
+  navigationSearch.setContext(null);
   searchView.clear();
   contentViewer.clear(false);
   try {

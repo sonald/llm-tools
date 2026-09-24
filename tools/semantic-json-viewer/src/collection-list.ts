@@ -60,6 +60,7 @@ export class CollectionList {
   private prefetchRequests = new Map<number, PageRequest>();
   private pageRequest: PageRequest | null = null;
   private pendingFocus: number | null = null;
+  private pendingSelection: number | null = null;
   private selectedOrdinal: number | null = null;
   private focusedOrdinal: number | null = null;
   private windowStart = 0;
@@ -106,6 +107,7 @@ export class CollectionList {
     this.prefetchRequests.clear();
     this.pageRequest = null;
     this.pendingFocus = null;
+    this.pendingSelection = null;
     this.selectedOrdinal = null;
     this.focusedOrdinal = null;
     this.windowStart = 0;
@@ -127,6 +129,7 @@ export class CollectionList {
     this.prefetchRequests.clear();
     this.pageRequest = null;
     this.pendingFocus = null;
+    this.pendingSelection = null;
     this.selectedOrdinal = null;
     this.focusedOrdinal = null;
     this.windowStart = 0;
@@ -142,6 +145,20 @@ export class CollectionList {
   clearSelection(): void {
     this.selectedOrdinal = null;
     this.render();
+  }
+
+  navigateToOrdinal(ordinal: number): void {
+    if (!Number.isSafeInteger(ordinal) || !this.session || this.opening || ordinal < 0 || ordinal >= this.session.root.childCount) return;
+    this.pendingSelection = ordinal;
+    const start = Math.floor(ordinal / PAGE_SIZE) * PAGE_SIZE;
+    const page = this.pages.get(start);
+    if (page) {
+      this.windowStart = start;
+      this.render();
+      this.selectOrdinal(ordinal);
+    } else {
+      this.ensureOrdinal(ordinal, true);
+    }
   }
 
   setOpening(opening: boolean): void {
@@ -310,6 +327,11 @@ export class CollectionList {
         return;
       }
       if (focus !== null) queueMicrotask(() => this.focusOrdinal(focus));
+      if (this.pendingSelection !== null && Math.floor(this.pendingSelection / PAGE_SIZE) * PAGE_SIZE === request.start) {
+        const selected = this.pendingSelection;
+        this.pendingSelection = null;
+        this.selectOrdinal(selected);
+      }
     } catch (error) {
       if (!this.isCurrent(request)) return;
       this.pageRequest = null;

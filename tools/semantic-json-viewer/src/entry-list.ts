@@ -380,6 +380,13 @@ export class EntryList {
     this.elements.goInput.select();
   }
 
+  navigateToOrdinal(ordinal: number): void {
+    if (!Number.isSafeInteger(ordinal) || ordinal < 0 || this.opening || !this.session) return;
+    const start = Math.floor(ordinal / PAGE_SIZE) * PAGE_SIZE;
+    const loaded = this.entries.some((entry) => entry.location.entryOrdinal === ordinal);
+    this.requestWindow(start, { ordinal, select: true }, start !== this.windowStart || !loaded);
+  }
+
   private requestWindow(start: number, action: PendingAction | null, force: boolean): void {
     const session = this.session;
     if (!session || this.opening || this.selectionRequest) return;

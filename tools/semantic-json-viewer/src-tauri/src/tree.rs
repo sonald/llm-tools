@@ -10,7 +10,8 @@ use crate::json::{
     ParsedJsonRetainedCapacity, SourceSpan,
 };
 use crate::jsonl_entry::{event_summary_from_parsed, EntryEventSummary};
-use crate::search::{self, SearchError, SearchPage, SearchRequest};
+use crate::navigation_search::Pattern;
+use crate::search::{self, SearchError, SearchMode, SearchPage, SearchRequest};
 use crate::semantic_detection::{detect, Detection, NestedBudget, PlainReason, MAX_INPUT_BYTES};
 
 const MAX_LABEL_OR_VALUE_CHARS: usize = 256;
@@ -75,6 +76,18 @@ impl TreeDocument {
             has_more,
             next_cursor: has_more.then_some(end),
         })
+    }
+
+    pub fn collection_item_id(&self, ordinal: usize) -> Option<usize> {
+        let root = self.parsed.node(self.parsed.root());
+        (root.kind == JsonKind::Array)
+            .then(|| root.children.get(ordinal).map(|child| child.index()))
+            .flatten()
+    }
+
+    pub fn collection_item_count(&self) -> Option<usize> {
+        let root = self.parsed.node(self.parsed.root());
+        (root.kind == JsonKind::Array).then_some(root.children.len())
     }
 
     pub fn read_raw_text(&self, offset: usize, requested_len: usize) -> Option<TextChunk> {
@@ -226,6 +239,15 @@ impl TreeDocument {
 
     pub fn search(&self, request: SearchRequest) -> Result<SearchPage, SearchError> {
         search::search(&self.parsed, request)
+    }
+
+    pub fn navigation_matches(
+        &self,
+        target: usize,
+        pattern: &Pattern,
+        mode: SearchMode,
+    ) -> Result<bool, SearchError> {
+        search::navigation_matches(&self.parsed, target, pattern, mode)
     }
 
     pub fn conversation_candidate(
@@ -793,5 +815,29 @@ mod tests {
         assert!(decoded.text.is_empty());
         assert!(!decoded.has_more);
         assert_eq!(decoded.next_offset, None);
+    }
+
+    #[test]
+    fn navigation_match_searches_decoded_keys_values_and_raw_item_bytes() {
+        let tree = document(r#"[{"\u006eame":"\u4f60\u597d","n":1}]"#);
+        let item = tree.collection_item_id(0).unwrap();
+        let name = Pattern::parse("name", crate::navigation_search::Syntax::Literal).unwrap();
+        let decoded = Pattern::parse("你好", crate::navigation_search::Syntax::Literal).unwrap();
+        let raw =
+            Pattern::parse(r#"\u4f60\u597d"#, crate::navigation_search::Syntax::Literal).unwrap();
+        let cross_field =
+            Pattern::parse("name*你好", crate::navigation_search::Syntax::Glob).unwrap();
+        assert!(tree
+            .navigation_matches(item, &name, SearchMode::Decoded)
+            .unwrap());
+        assert!(tree
+            .navigation_matches(item, &decoded, SearchMode::Decoded)
+            .unwrap());
+        assert!(tree
+            .navigation_matches(item, &raw, SearchMode::Raw)
+            .unwrap());
+        assert!(!tree
+            .navigation_matches(item, &cross_field, SearchMode::Decoded)
+            .unwrap());
     }
 }

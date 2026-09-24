@@ -43,6 +43,49 @@
             <strong data-i18n="shell.noFileOpen">No file is open.</strong>
             <span data-i18n="shell.openLocalFile">Open a local JSON or JSONL file to begin.</span>
           </div>
+          <section class="navigation-search-panel" id="navigation-search-panel" hidden>
+            <form id="navigation-search-form" role="search" aria-describedby="navigation-search-description">
+              <label for="navigation-search-query" data-i18n="navigationSearch.label">Search record contents</label>
+              <div class="navigation-search-input-row">
+                <input id="navigation-search-query" type="search" autocomplete="off" spellcheck="false" placeholder="Search the whole file" data-i18n-placeholder="navigationSearch.queryPlaceholder" />
+                <button class="secondary-button" id="navigation-search-clear" type="button" aria-label="Clear search" data-i18n-aria-label="navigationSearch.clear">×</button>
+              </div>
+              <div class="navigation-search-options">
+                <label><span data-i18n="navigationSearch.syntaxLabel">Syntax</span>
+                  <select id="navigation-search-syntax" aria-label="Search syntax" data-i18n-aria-label="navigationSearch.syntaxLabel">
+                    <option value="literal" data-i18n="navigationSearch.literal">Plain text</option>
+                    <option value="glob" data-i18n="navigationSearch.glob">Wildcard</option>
+                  </select>
+                </label>
+                <label><span data-i18n="navigationSearch.representationLabel">Search in</span>
+                  <select id="navigation-search-representation" aria-label="Search representation" data-i18n-aria-label="navigationSearch.representationLabel">
+                    <option value="decoded" data-i18n="shell.decoded">Decoded</option>
+                    <option value="rawSource" data-i18n="shell.rawSource">Raw Source</option>
+                  </select>
+                </label>
+                <button class="primary-button" type="submit" data-i18n="shell.search">Search</button>
+              </div>
+              <p id="navigation-search-description" data-i18n="navigationSearch.queryPlaceholder">Search the whole file</p>
+            </form>
+            <div class="navigation-search-status" id="navigation-search-status" role="status" aria-live="polite"></div>
+            <fieldset class="navigation-search-display">
+              <legend data-i18n="navigationSearch.displayMode">Display matches</legend>
+              <label><input type="radio" name="navigation-search-display" value="highlight" checked /> <span data-i18n="navigationSearch.highlightAll">Highlight all</span></label>
+              <label><input type="radio" name="navigation-search-display" value="filtered" /> <span data-i18n="navigationSearch.onlyMatches">Only matches</span></label>
+            </fieldset>
+            <div id="navigation-search-results-panel" hidden>
+              <div class="navigation-search-results" id="navigation-search-results" role="list" aria-label="Matching records" data-i18n-aria-label="navigationSearch.results"></div>
+              <div class="navigation-search-actions">
+                <button class="secondary-button" id="navigation-search-results-prev" type="button" data-i18n="shell.previous">Previous</button>
+                <button class="secondary-button" id="navigation-search-results-next" type="button" data-i18n="shell.next">Next</button>
+              </div>
+            </div>
+            <div class="navigation-search-actions">
+              <button class="secondary-button" id="navigation-search-prev" type="button" data-i18n="navigationSearch.previous">Previous match</button>
+              <button class="secondary-button" id="navigation-search-next" type="button" data-i18n="navigationSearch.next">Next match</button>
+              <button class="secondary-button" id="navigation-search-stop" type="button" data-i18n="navigationSearch.stop">Stop</button>
+            </div>
+          </section>
           <section class="entry-navigation" id="entry-navigation" aria-labelledby="entry-navigation-title" hidden>
             <div class="entry-navigation-heading">
               <h3 id="entry-navigation-title" data-i18n="shell.entries">Entries</h3>

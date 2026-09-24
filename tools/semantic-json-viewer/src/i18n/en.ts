@@ -738,7 +738,31 @@ export const en = {
   "raw.rawOnlySubject": "Raw-only Document",
   "raw.entrySubject": "Entry {entry}",
   "raw.repHex": "Hex bytes for {subject}",
-  "raw.repLossy": "Lossy UTF-8 preview for {subject}"
+  "raw.repLossy": "Lossy UTF-8 preview for {subject}",
+  "navigationSearch.label": "Search record contents",
+  "navigationSearch.queryPlaceholder": "Search the whole file",
+  "navigationSearch.collectionDescription": "Search all array items",
+  "navigationSearch.jsonlDescription": "Search the entire JSONL file",
+  "navigationSearch.syntaxLabel": "Syntax",
+  "navigationSearch.literal": "Plain text",
+  "navigationSearch.glob": "Wildcard",
+  "navigationSearch.representationLabel": "Search in",
+  "navigationSearch.clear": "Clear search",
+  "navigationSearch.previous": "Previous match",
+  "navigationSearch.next": "Next match",
+  "navigationSearch.stop": "Stop",
+  "navigationSearch.pressEnter": "Press Enter to search",
+  "navigationSearch.scanning": "Checked {scanned} of {indexed} records · {matches} matches · searching",
+  "navigationSearch.complete": "Found {matches} of {total} records",
+  "navigationSearch.stopped": "Stopped after checking {scanned} records · {matches} matches",
+  "navigationSearch.displayMode": "Display matches",
+  "navigationSearch.highlightAll": "Highlight all",
+  "navigationSearch.onlyMatches": "Only matches",
+  "navigationSearch.results": "Matching records",
+  "navigationSearch.entryResult": "Entry {ordinal}",
+  "navigationSearch.itemResult": "Item {ordinal}",
+  "navigationSearch.noMatches": "No matches found",
+  "navigationSearch.skipped": "Skipped {json} invalid JSON, {utf8} invalid UTF-8, {oversized} oversized"
 } as const;
 
 export type MessageKey = keyof typeof en;

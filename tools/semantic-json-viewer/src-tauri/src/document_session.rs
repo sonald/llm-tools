@@ -7,7 +7,8 @@ use crate::conversation::{
 };
 use crate::file_source::FileSource;
 use crate::json::{ParseError, ParsedJsonRetainedCapacity};
-use crate::search::{SearchError, SearchPage, SearchRequest};
+use crate::navigation_search::Pattern;
+use crate::search::{SearchError, SearchMode, SearchPage, SearchRequest};
 use crate::semantic_detection::{Detection, NestedBudget};
 use crate::tree::{NodePage, NodeProjection, StringMetrics, TextChunk, TreeDocument};
 
@@ -199,6 +200,31 @@ impl DocumentSession {
     pub fn search(&self, request: SearchRequest) -> io::Result<Result<SearchPage, SearchError>> {
         self.ensure_current()?;
         Ok(self.tree.search(request))
+    }
+
+    pub fn collection_item_count(&self) -> io::Result<Option<usize>> {
+        self.ensure_current()?;
+        Ok(self.tree.collection_item_count())
+    }
+
+    pub fn collection_item_matches(
+        &self,
+        ordinal: usize,
+        pattern: &Pattern,
+        mode: SearchMode,
+    ) -> io::Result<Option<(bool, usize)>> {
+        self.ensure_current()?;
+        let Some(node_id) = self.tree.collection_item_id(ordinal) else {
+            return Ok(None);
+        };
+        let Some(node) = self.tree.node(node_id) else {
+            return Ok(None);
+        };
+        let bytes = node.span.end.saturating_sub(node.span.start);
+        self.tree
+            .navigation_matches(node_id, pattern, mode)
+            .map(|matched| Some((matched, bytes)))
+            .map_err(|error| io::Error::new(ErrorKind::InvalidInput, error))
     }
 
     pub fn conversation_candidate(

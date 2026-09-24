@@ -9,6 +9,7 @@ pub mod json;
 pub mod jsonl_entry;
 pub mod jsonl_index;
 pub mod jsonl_session;
+pub mod navigation_search;
 pub mod search;
 pub mod semantic_detection;
 pub mod tree;
@@ -45,6 +46,10 @@ pub fn run() {
             ipc::list_entries,
             ipc::select_entry,
             ipc::get_oversized_preview,
+            ipc::start_navigation_search,
+            ipc::advance_navigation_search,
+            ipc::get_navigation_search_page,
+            ipc::stop_navigation_search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

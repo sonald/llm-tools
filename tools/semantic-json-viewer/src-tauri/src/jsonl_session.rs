@@ -15,7 +15,8 @@ use crate::jsonl_entry::{
 use crate::jsonl_index::{
     Checkpoint, EntryLocation, JsonlIndex, JsonlIndexRetainedCapacity, JsonlIndexer,
 };
-use crate::search::{SearchError, SearchPage, SearchRequest};
+use crate::navigation_search::Pattern;
+use crate::search::{SearchError, SearchMode, SearchPage, SearchRequest};
 use crate::semantic_detection::{Detection, NestedBudget};
 use crate::tree::{NodePage, NodeProjection, StringMetrics, TextChunk, TreeDocument};
 
@@ -74,6 +75,18 @@ pub struct JsonlRetainedCapacity {
 struct LoadedEntry {
     location: EntryLocation,
     bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NavigationEntryMatch {
+    Matched(bool),
+    InvalidJson,
+    InvalidUtf8,
+    Oversized,
+}
+
+fn invalid_pattern(error: impl std::fmt::Display) -> io::Error {
+    io::Error::new(ErrorKind::InvalidInput, error.to_string())
 }
 
 pub struct JsonlSession {
@@ -501,6 +514,50 @@ impl JsonlSession {
     ) -> io::Result<Option<Result<SearchPage, SearchError>>> {
         self.ensure_current()?;
         Ok(self.selected.as_ref().map(|(_, tree)| tree.search(request)))
+    }
+
+    pub fn navigation_entry_matches(
+        &self,
+        ordinal: u64,
+        pattern: &Pattern,
+        mode: SearchMode,
+    ) -> io::Result<Option<(NavigationEntryMatch, u64)>> {
+        self.ensure_current()?;
+        let Some(entry) = self.load_entry_once(ordinal)? else {
+            return Ok(None);
+        };
+        let length = entry
+            .location
+            .byte_end
+            .saturating_sub(entry.location.byte_start);
+        let Some(bytes) = entry.bytes else {
+            if mode == SearchMode::Decoded {
+                return Ok(Some((NavigationEntryMatch::Oversized, length)));
+            }
+            if pattern.is_glob() {
+                return Ok(Some((NavigationEntryMatch::Oversized, length)));
+            }
+            let matched =
+                self.raw_range_matches(entry.location.byte_start, length, pattern.query())?;
+            return Ok(Some((NavigationEntryMatch::Matched(matched), length)));
+        };
+        if mode == SearchMode::Raw {
+            let Some(matched) = pattern.matches_bytes(&bytes) else {
+                return Ok(Some((NavigationEntryMatch::InvalidUtf8, length)));
+            };
+            return Ok(Some((NavigationEntryMatch::Matched(matched), length)));
+        }
+        if from_utf8(&bytes).is_err() {
+            return Ok(Some((NavigationEntryMatch::InvalidUtf8, length)));
+        }
+        let tree = match TreeDocument::from_bytes(bytes) {
+            Ok(tree) => tree,
+            Err(_) => return Ok(Some((NavigationEntryMatch::InvalidJson, length))),
+        };
+        let matched = tree
+            .navigation_matches(tree.root().id, pattern, mode)
+            .map_err(invalid_pattern)?;
+        Ok(Some((NavigationEntryMatch::Matched(matched), length)))
     }
 
     pub fn selected_conversation_candidate(
@@ -1009,6 +1066,33 @@ impl JsonlSession {
         }
         self.ensure_current()?;
         Ok(bytes)
+    }
+
+    fn raw_range_matches(&self, start: u64, length: u64, query: &str) -> io::Result<bool> {
+        let mut offset = start;
+        let end = start.saturating_add(length);
+        let mut overlap = Vec::new();
+        while offset < end {
+            let remaining = usize::try_from(end - offset).unwrap_or(usize::MAX);
+            let chunk = self.source.read_chunk(offset, remaining)?;
+            if chunk.bytes.is_empty() {
+                return Err(ErrorKind::UnexpectedEof.into());
+            }
+            let mut window = overlap;
+            window.extend_from_slice(&chunk.bytes);
+            if window
+                .windows(query.len())
+                .any(|candidate| candidate == query.as_bytes())
+            {
+                self.ensure_current()?;
+                return Ok(true);
+            }
+            let keep = query.len().saturating_sub(1).min(window.len());
+            overlap = window[window.len() - keep..].to_vec();
+            offset = offset.saturating_add(chunk.bytes.len() as u64);
+        }
+        self.ensure_current()?;
+        Ok(false)
     }
 
     fn finish_index(&mut self) {

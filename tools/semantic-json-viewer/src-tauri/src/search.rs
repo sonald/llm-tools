@@ -4,6 +4,7 @@ use std::str;
 use crate::json::{
     ChildLocator, DecodedScalarIter, DecodedString, JsonKind, ParsedJson, SourceSpan,
 };
+use crate::navigation_search::Pattern;
 
 pub const MAX_QUERY_BYTES: usize = 4096;
 pub const MAX_PAGE_SIZE: usize = 50;
@@ -75,6 +76,7 @@ pub enum SearchError {
     CursorMismatch,
     InvalidCursor,
     InvalidTarget,
+    InvalidPattern(crate::navigation_search::PatternError),
 }
 
 impl fmt::Display for SearchError {
@@ -86,6 +88,7 @@ impl fmt::Display for SearchError {
             SearchError::CursorMismatch => "cursor does not match the search request",
             SearchError::InvalidCursor => "cursor is invalid",
             SearchError::InvalidTarget => "search target node is invalid",
+            SearchError::InvalidPattern(error) => return error.fmt(f),
         };
         f.write_str(message)
     }
@@ -126,6 +129,51 @@ pub fn search(parsed: &ParsedJson<'_>, request: SearchRequest) -> Result<SearchP
         SearchMode::Decoded => search_decoded(parsed, &request),
         SearchMode::Raw => search_raw(parsed, &request),
     }
+}
+
+pub fn navigation_matches(
+    parsed: &ParsedJson<'_>,
+    target: usize,
+    pattern: &Pattern,
+    mode: SearchMode,
+) -> Result<bool, SearchError> {
+    let target_node = parsed.node_at(target).ok_or(SearchError::InvalidTarget)?;
+    if mode == SearchMode::Raw {
+        let raw = &parsed.source()[target_node.span.start..target_node.span.end];
+        return Ok(pattern.matches_bytes(raw).unwrap_or(false));
+    }
+
+    let end = subtree_end(parsed, target);
+    for unit in target..end {
+        let node = parsed.node_at(unit).ok_or(SearchError::InvalidTarget)?;
+        if matches!(node.locator, ChildLocator::ObjectKey { .. })
+            && candidate_matches(parsed, unit, SearchPhase::Key, pattern)?
+        {
+            return Ok(true);
+        }
+        if candidate_matches(parsed, unit, SearchPhase::Value, pattern)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn candidate_matches(
+    parsed: &ParsedJson<'_>,
+    unit: usize,
+    phase: SearchPhase,
+    pattern: &Pattern,
+) -> Result<bool, SearchError> {
+    if let Some(candidate) = decoded_candidate(parsed, unit, phase)? {
+        let text = match candidate.text {
+            DecodedCandidateText::Borrowed(text) => std::borrow::Cow::Borrowed(text),
+            DecodedCandidateText::String(text) => text.to_cow(),
+        };
+        if pattern.find(&text).is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn validate_request(request: &SearchRequest) -> Result<(), SearchError> {
