@@ -230,7 +230,7 @@ deferredCalls.find(call=>call.args.sessionRevision===9&&call.args.cursor===200).
 check(deferredCollection.pages.size===0&&deferredCollection.memoryUsage.cachedPageBytes===0&&deferredList.textContent==="","Late prefetch repopulated a cleared Collection");
 deferredHost.remove();
 
-const appForm=document.querySelector('form[role="search"]');
+const appForm=document.querySelector('#scope-search');
 check(appForm instanceof HTMLFormElement,"the app search form is not native");
 check(appForm.querySelector('input[name="query"]') instanceof HTMLInputElement,"native query input is missing");
 check(appForm.querySelectorAll('input[type="radio"]').length===2,"decoded/raw radio controls are missing");
@@ -243,8 +243,8 @@ window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
   mainTauriCalls.push({command,args});
   if(command==="plugin:dialog|open") return "/tmp/search-ui-document.json";
   if(command==="open_file") return mainCollectionMode
-    ? {path:"/tmp/search-ui-collection.json",size:100,mode:"collection",root:{id:1,kind:"array",spanStart:0,spanEnd:100,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:2},progress:null,manyInvalidUtf8Warning:false,documentError:null,sessionRevision:22}
-    : {path:"/tmp/search-ui-document.json",size:262300,mode:"document",root:{id:1,kind:"object",spanStart:200,spanEnd:262200,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:0},progress:null,manyInvalidUtf8Warning:false,documentError:null,sessionRevision:21};
+    ? {path:"/tmp/search-ui-collection.json",size:100,mode:"collection",root:{id:1,kind:"array",spanStart:0,spanEnd:100,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:2},progress:null,manyInvalidUtf8Warning:false,documentError:null,sessionRevision:22,fileGeneration:2}
+    : {path:"/tmp/search-ui-document.json",size:262300,mode:"document",root:{id:1,kind:"object",spanStart:200,spanEnd:262200,label:"$",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:0},progress:null,manyInvalidUtf8Warning:false,documentError:null,sessionRevision:21,fileGeneration:1};
   if(command==="get_children" && mainCollectionMode) return {nodes:[{id:10,kind:"object",spanStart:10,spanEnd:40,label:"[0]",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:0},{id:11,kind:"object",spanStart:50,spanEnd:80,label:"[1]",labelHasMore:false,valuePreview:null,valueHasMore:false,childCount:0}],hasMore:false,nextCursor:null};
   if(command==="read_raw_slice" && mainCollectionMode) return {start:args.sourceStart,text:"A".repeat(args.length),hasMore:false,nextOffset:null};
   if(command==="search_current" && mainCollectionMode) return args.representation==="rawSource"

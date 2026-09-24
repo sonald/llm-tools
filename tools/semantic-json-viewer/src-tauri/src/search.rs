@@ -1,5 +1,6 @@
 use std::fmt;
 use std::str;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::json::{
     ChildLocator, DecodedScalarIter, DecodedString, JsonKind, ParsedJson, SourceSpan,
@@ -48,6 +49,15 @@ pub enum SearchField {
     Key,
     Value,
     RawSource,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NavigationEvidence {
+    pub path: String,
+    pub field: SearchField,
+    pub snippet: String,
+    pub match_start: Option<usize>,
+    pub match_end: Option<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,43 +147,124 @@ pub fn navigation_matches(
     pattern: &Pattern,
     mode: SearchMode,
 ) -> Result<bool, SearchError> {
-    let target_node = parsed.node_at(target).ok_or(SearchError::InvalidTarget)?;
-    if mode == SearchMode::Raw {
-        let raw = &parsed.source()[target_node.span.start..target_node.span.end];
-        return Ok(pattern.matches_bytes(raw).unwrap_or(false));
-    }
-
-    let end = subtree_end(parsed, target);
-    for unit in target..end {
-        let node = parsed.node_at(unit).ok_or(SearchError::InvalidTarget)?;
-        if matches!(node.locator, ChildLocator::ObjectKey { .. })
-            && candidate_matches(parsed, unit, SearchPhase::Key, pattern)?
-        {
-            return Ok(true);
-        }
-        if candidate_matches(parsed, unit, SearchPhase::Value, pattern)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    navigation_matches_cancellable(parsed, target, pattern, mode, &AtomicBool::new(false))
 }
 
-fn candidate_matches(
+pub fn navigation_matches_cancellable(
     parsed: &ParsedJson<'_>,
-    unit: usize,
-    phase: SearchPhase,
+    target: usize,
     pattern: &Pattern,
+    mode: SearchMode,
+    cancelled: &AtomicBool,
 ) -> Result<bool, SearchError> {
-    if let Some(candidate) = decoded_candidate(parsed, unit, phase)? {
-        let text = match candidate.text {
-            DecodedCandidateText::Borrowed(text) => std::borrow::Cow::Borrowed(text),
-            DecodedCandidateText::String(text) => text.to_cow(),
-        };
-        if pattern.find(&text).is_some() {
-            return Ok(true);
+    Ok(navigation_evidence(parsed, target, pattern, mode, cancelled)?.is_some())
+}
+
+pub fn navigation_evidence(
+    parsed: &ParsedJson<'_>,
+    target: usize,
+    pattern: &Pattern,
+    mode: SearchMode,
+    cancelled: &AtomicBool,
+) -> Result<Option<NavigationEvidence>, SearchError> {
+    let target_node = parsed.node_at(target).ok_or(SearchError::InvalidTarget)?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    if mode == SearchMode::Raw {
+        let raw = str::from_utf8(&parsed.source()[target_node.span.start..target_node.span.end])
+            .map_err(|_| SearchError::InvalidTarget)?;
+        return Ok(pattern
+            .find_cancellable(raw, cancelled)
+            .ok()
+            .flatten()
+            .map(|range| {
+                navigation_snippet(
+                    path_for(parsed, target).0.join("."),
+                    SearchField::RawSource,
+                    raw,
+                    range,
+                )
+            }));
+    }
+    let end = subtree_end(parsed, target);
+    for unit in target..end {
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let node = parsed.node_at(unit).ok_or(SearchError::InvalidTarget)?;
+        for phase in [SearchPhase::Key, SearchPhase::Value] {
+            if phase == SearchPhase::Key && !matches!(node.locator, ChildLocator::ObjectKey { .. })
+            {
+                continue;
+            }
+            let Some(candidate) = decoded_candidate(parsed, unit, phase)? else {
+                continue;
+            };
+            let text = match candidate.text {
+                DecodedCandidateText::Borrowed(text) => std::borrow::Cow::Borrowed(text),
+                DecodedCandidateText::String(text) => match text.borrowed() {
+                    Some(text) => std::borrow::Cow::Borrowed(text),
+                    None => {
+                        let mut decoded = String::new();
+                        for (index, scalar) in text.iter().enumerate() {
+                            if index % 1024 == 0 && cancelled.load(Ordering::Relaxed) {
+                                return Ok(None);
+                            }
+                            decoded.push(scalar.value);
+                        }
+                        std::borrow::Cow::Owned(decoded)
+                    }
+                },
+            };
+            if let Some(range) = pattern.find_cancellable(&text, cancelled).ok().flatten() {
+                return Ok(Some(navigation_snippet(
+                    path_for(parsed, unit).0.join("."),
+                    candidate.field,
+                    &text,
+                    range,
+                )));
+            }
         }
     }
-    Ok(false)
+    Ok(None)
+}
+
+pub fn navigation_snippet(
+    path: String,
+    field: SearchField,
+    text: &str,
+    range: (usize, usize),
+) -> NavigationEvidence {
+    let (start, end) = range;
+    let before = text[..start]
+        .char_indices()
+        .rev()
+        .nth(79)
+        .map_or(0, |(i, _)| i);
+    let match_end = text[start..end]
+        .char_indices()
+        .nth(160)
+        .map_or(end, |(i, _)| start + i);
+    let after = if match_end < end {
+        match_end
+    } else {
+        text[end..]
+            .char_indices()
+            .nth(80)
+            .map_or(text.len(), |(i, _)| end + i)
+    };
+    let prefix = if before > 0 { "…" } else { "" };
+    let suffix = if after < text.len() { "…" } else { "" };
+    let match_start = prefix.encode_utf16().count() + text[before..start].encode_utf16().count();
+    let match_end = match_start + text[start..match_end].encode_utf16().count();
+    NavigationEvidence {
+        path,
+        field,
+        snippet: format!("{prefix}{}{suffix}", &text[before..after]),
+        match_start: Some(match_start),
+        match_end: Some(match_end),
+    }
 }
 
 fn validate_request(request: &SearchRequest) -> Result<(), SearchError> {

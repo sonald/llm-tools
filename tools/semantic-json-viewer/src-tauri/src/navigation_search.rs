@@ -1,4 +1,11 @@
-use std::fmt;
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 pub const MAX_PATTERN_BYTES: usize = 4096;
 pub const MAX_PATTERN_TOKENS: usize = 256;
@@ -45,7 +52,7 @@ pub struct Pattern {
     literal: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Task {
     pub id: u64,
     pub file_generation: u64,
@@ -58,6 +65,9 @@ pub struct Task {
     pub matches: Vec<u64>,
     pub done: bool,
     pub stopped: bool,
+    pub cancelled: Arc<AtomicBool>,
+    pub results_cancelled: Arc<AtomicBool>,
+    pub in_flight: bool,
     pub skipped_invalid_json: u64,
     pub skipped_invalid_utf8: u64,
     pub skipped_oversized: u64,
@@ -84,6 +94,9 @@ impl Task {
             matches: Vec::new(),
             done: false,
             stopped: false,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            results_cancelled: Arc::new(AtomicBool::new(false)),
+            in_flight: false,
             skipped_invalid_json: 0,
             skipped_invalid_utf8: 0,
             skipped_oversized: 0,
@@ -132,27 +145,37 @@ impl Pattern {
         })
     }
 
+    pub fn stream(&self) -> StreamMatcher<'_> {
+        StreamMatcher::new(self)
+    }
+
     pub fn find(&self, text: &str) -> Option<(usize, usize)> {
-        match self.syntax {
-            Syntax::Literal => text
-                .match_indices(&self.literal)
-                .next()
-                .map(|(start, value)| (start, start + value.len())),
-            Syntax::Glob => find_glob(&self.tokens, text),
+        self.find_cancellable(text, &AtomicBool::new(false))
+            .unwrap()
+    }
+
+    pub fn find_cancellable(
+        &self,
+        text: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<(usize, usize)>, ()> {
+        let mut stream = self.stream();
+        for chunk in text.as_bytes().chunks(4096) {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err(());
+            }
+            stream.feed(chunk);
+            if stream.range.is_some() {
+                return Ok(stream.range);
+            }
         }
+        Ok(stream.range)
     }
 
     pub fn matches_bytes(&self, bytes: &[u8]) -> Option<bool> {
-        match self.syntax {
-            Syntax::Literal => Some(
-                bytes
-                    .windows(self.query.len())
-                    .any(|window| window == self.query.as_bytes()),
-            ),
-            Syntax::Glob => std::str::from_utf8(bytes)
-                .ok()
-                .map(|text| self.find(text).is_some()),
-        }
+        let mut stream = self.stream();
+        stream.feed(bytes);
+        stream.finish()
     }
 }
 
@@ -195,62 +218,183 @@ fn parse_glob(query: &str) -> Result<Vec<Token>, PatternError> {
     Ok(tokens)
 }
 
-fn find_glob(tokens: &[Token], text: &str) -> Option<(usize, usize)> {
-    let text: Vec<(usize, char)> = text.char_indices().collect();
-    let mut pieces: Vec<Vec<Token>> = Vec::new();
-    let mut piece = Vec::new();
-    for token in tokens {
-        if *token == Token::Star {
-            if !piece.is_empty() {
-                pieces.push(std::mem::take(&mut piece));
-            }
-        } else {
-            piece.push(*token);
-        }
-    }
-    if !piece.is_empty() {
-        pieces.push(piece);
-    }
-
-    let starts_anywhere = tokens.first() == Some(&Token::Star);
-    let mut search_from = 0usize;
-    let mut match_start = 0usize;
-    let mut match_end = 0usize;
-    for (index, piece) in pieces.iter().enumerate() {
-        let Some(start) = find_piece(&text, piece, search_from) else {
-            return None;
-        };
-        if index == 0 && !starts_anywhere {
-            match_start = start;
-        }
-        match_end = start + piece.len();
-        search_from = match_end;
-    }
-    if pieces.is_empty() {
-        return Some((0, 0));
-    }
-    let start = if starts_anywhere { 0 } else { match_start };
-    let end = match_end;
-    let byte_start = text.get(start).map_or(0, |(byte, _)| *byte);
-    let byte_end = text.get(end).map_or_else(
-        || {
-            text.last()
-                .map_or(0, |(byte, character)| byte + character.len_utf8())
-        },
-        |(byte, _)| *byte,
-    );
-    Some((byte_start, byte_end))
+// Each star separates independently searchable fixed-length pieces. Shift-and
+// matches a piece in at most four word operations per character, including '?'.
+struct Piece {
+    literals: HashMap<char, [u64; 4]>,
+    any: [u64; 4],
+    len: usize,
 }
 
-fn find_piece(text: &[(usize, char)], piece: &[Token], from: usize) -> Option<usize> {
-    let last_start = text.len().checked_sub(piece.len())?;
-    (from..=last_start).find(|&start| {
-        piece.iter().enumerate().all(|(offset, token)| match token {
-            Token::Literal(expected) => text[start + offset].1 == *expected,
-            Token::Any => true,
-            Token::Star => false,
-        })
-    })
+pub struct StreamMatcher<'a> {
+    pattern: &'a Pattern,
+    prefix: Vec<usize>,
+    literal_matched: usize,
+    pieces: Vec<Piece>,
+    piece_index: usize,
+    active: [u64; 4],
+    starts: [usize; MAX_PATTERN_TOKENS],
+    character_count: usize,
+    start: usize,
+    offset: usize,
+    pending: Vec<u8>,
+    invalid: bool,
+    range: Option<(usize, usize)>,
+}
+
+impl<'a> StreamMatcher<'a> {
+    fn new(pattern: &'a Pattern) -> Self {
+        let mut prefix = vec![0; pattern.literal.len()];
+        for i in 1..prefix.len() {
+            let mut j = prefix[i - 1];
+            while j > 0 && pattern.literal.as_bytes()[i] != pattern.literal.as_bytes()[j] {
+                j = prefix[j - 1];
+            }
+            if pattern.literal.as_bytes()[i] == pattern.literal.as_bytes()[j] {
+                j += 1;
+            }
+            prefix[i] = j;
+        }
+        let pieces = if pattern.is_glob() {
+            pattern
+                .tokens
+                .split(|token| *token == Token::Star)
+                .filter(|tokens| !tokens.is_empty())
+                .map(|tokens| {
+                    let mut piece = Piece {
+                        literals: HashMap::new(),
+                        any: [0; 4],
+                        len: tokens.len(),
+                    };
+                    for (i, token) in tokens.iter().enumerate() {
+                        let mask = match token {
+                            Token::Literal(c) => piece.literals.entry(*c).or_insert([0; 4]),
+                            Token::Any => &mut piece.any,
+                            Token::Star => unreachable!(),
+                        };
+                        mask[i / 64] |= 1 << (i % 64);
+                    }
+                    piece
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Self {
+            pattern,
+            prefix,
+            literal_matched: 0,
+            pieces,
+            piece_index: 0,
+            active: [0; 4],
+            starts: [0; MAX_PATTERN_TOKENS],
+            character_count: 0,
+            start: 0,
+            offset: 0,
+            pending: Vec::new(),
+            invalid: false,
+            range: None,
+        }
+    }
+
+    pub fn feed(&mut self, bytes: &[u8]) {
+        if self.invalid {
+            return;
+        }
+        if !self.pattern.is_glob() {
+            if self.range.is_some() {
+                return;
+            }
+            let needle = self.pattern.literal.as_bytes();
+            for &byte in bytes {
+                while self.literal_matched > 0 && needle[self.literal_matched] != byte {
+                    self.literal_matched = self.prefix[self.literal_matched - 1];
+                }
+                if needle[self.literal_matched] == byte {
+                    self.literal_matched += 1;
+                }
+                self.offset += 1;
+                if self.literal_matched == needle.len() {
+                    self.range = Some((self.offset - needle.len(), self.offset));
+                    return;
+                }
+            }
+            return;
+        }
+        // At most one split UTF-8 character is carried between chunks.
+        if !self.pending.is_empty() {
+            let needed = match self.pending[0] {
+                0xc2..=0xdf => 2,
+                0xe0..=0xef => 3,
+                _ => 4,
+            } - self.pending.len();
+            let take = needed.min(bytes.len());
+            self.pending.extend_from_slice(&bytes[..take]);
+            if take < needed {
+                return;
+            }
+            let pending = std::mem::take(&mut self.pending);
+            self.feed(&pending);
+            self.feed(&bytes[take..]);
+            return;
+        }
+        let (valid, tail) = match std::str::from_utf8(bytes) {
+            Ok(text) => (text, &[][..]),
+            Err(error) => {
+                if error.error_len().is_some() {
+                    self.invalid = true;
+                    return;
+                }
+                (
+                    std::str::from_utf8(&bytes[..error.valid_up_to()]).unwrap(),
+                    &bytes[error.valid_up_to()..],
+                )
+            }
+        };
+        for character in valid.chars() {
+            if self.range.is_none() {
+                self.feed_character(character);
+            }
+            self.offset += character.len_utf8();
+        }
+        self.pending.extend_from_slice(tail);
+    }
+
+    fn feed_character(&mut self, character: char) {
+        let piece = &self.pieces[self.piece_index];
+        let literals = piece.literals.get(&character).copied().unwrap_or([0; 4]);
+        let mut carry = 1;
+        for (word, literal) in literals.iter().enumerate().take(piece.len.div_ceil(64)) {
+            let next_carry = self.active[word] >> 63;
+            self.active[word] = ((self.active[word] << 1) | carry) & (literal | piece.any[word]);
+            carry = next_carry;
+        }
+        self.starts[self.character_count % MAX_PATTERN_TOKENS] = self.offset;
+        self.character_count += 1;
+        if self.active[(piece.len - 1) / 64] & (1 << ((piece.len - 1) % 64)) == 0 {
+            return;
+        }
+        if self.piece_index == 0 && self.pattern.tokens.first() != Some(&Token::Star) {
+            self.start = self.starts[(self.character_count - piece.len) % MAX_PATTERN_TOKENS];
+        }
+        self.piece_index += 1;
+        self.active = [0; 4];
+        if self.piece_index == self.pieces.len() {
+            self.range = Some((self.start, self.offset + character.len_utf8()));
+        }
+    }
+
+    pub fn range(&self) -> Option<(usize, usize)> {
+        self.range
+    }
+
+    pub fn finish(&self) -> Option<bool> {
+        if self.invalid || !self.pending.is_empty() {
+            None
+        } else {
+            Some(self.range.is_some())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -272,6 +416,67 @@ mod tests {
                 .find("err\nthen timeout"),
             Some((0, 16))
         );
+    }
+
+    #[test]
+    fn streams_globs_and_literals_across_byte_boundaries() {
+        for (query, syntax, text) in [
+            ("err*猫?timeout", Syntax::Glob, "xxerr\n猫!timeout!"),
+            ("猫timeout", Syntax::Literal, "xx猫timeout!"),
+            (
+                &"a".repeat(256),
+                Syntax::Glob,
+                &format!("x{}", "a".repeat(256)),
+            ),
+            ("?*?", Syntax::Glob, "猫狗"),
+        ] {
+            let pattern = Pattern::parse(query, syntax).unwrap();
+            assert!(pattern.find(text).is_some());
+            for size in 1..=8 {
+                let mut stream = pattern.stream();
+                for chunk in text.as_bytes().chunks(size) {
+                    stream.feed(chunk);
+                }
+                assert_eq!(stream.finish(), Some(true), "query={query}, size={size}");
+                assert_eq!(stream.range, pattern.find(text));
+            }
+        }
+    }
+
+    #[test]
+    fn raw_glob_validates_entire_stream_and_literal_accepts_invalid_utf8() {
+        let glob = Pattern::parse("err*timeout", Syntax::Glob).unwrap();
+        let mut stream = glob.stream();
+        stream.feed(b"err timeout");
+        stream.feed(&[0xff]);
+        assert_eq!(stream.finish(), None);
+        let mut stream = glob.stream();
+        stream.feed(b"err timeout");
+        stream.feed(&[0xe7]);
+        assert_eq!(stream.finish(), None);
+        assert_eq!(
+            Pattern::parse("err", Syntax::Literal)
+                .unwrap()
+                .matches_bytes(b"err\xff"),
+            Some(true)
+        );
+        assert!(glob
+            .find_cancellable("err timeout", &AtomicBool::new(true))
+            .is_err());
+    }
+
+    #[test]
+    fn glob_streams_more_than_sixteen_megabytes_without_retaining_text() {
+        let pattern = Pattern::parse("error*timeout", Syntax::Glob).unwrap();
+        let mut stream = pattern.stream();
+        stream.feed(b"error");
+        let chunk = [b'x'; 4096];
+        for _ in 0..4097 {
+            stream.feed(&chunk);
+        }
+        stream.feed(b"timeout");
+        assert_eq!(stream.finish(), Some(true));
+        assert_eq!(stream.range, Some((0, 5 + 4097 * 4096 + 7)));
     }
 
     #[test]

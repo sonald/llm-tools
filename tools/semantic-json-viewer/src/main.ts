@@ -458,10 +458,24 @@ const navigationSearch = new NavigationSearch({
   if (state.summary?.mode === "entry") entryList.navigateToOrdinal(ordinal);
   else if (state.summary?.mode === "collection") collectionList.navigateToOrdinal(ordinal);
 }, (mode) => {
-  const filtered = mode === "filtered";
-  for (const element of [entryListPanel, entryPrevious, entryNext, entryListStatus, entryListRetry,
-    collectionListPanel, collectionListStatus, collectionListRetry]) element.hidden = filtered;
+  entryList.setSearchFiltered(mode === "filtered");
+  collectionList.setSearchFiltered(mode === "filtered");
+}, (progress) => {
+  entryList.setNavigationSearch(state.summary?.mode === "entry" ? progress : null);
+  collectionList.setNavigationSearch(state.summary?.mode === "collection" ? progress : null);
+}, () => {
+  if (state.summary?.mode === "entry") entryList.showSelected();
+  else if (state.summary?.mode === "collection") collectionList.showSelected();
 });
+
+for (const button of [entryGoButton, collectionGoButton]) {
+  button.addEventListener("click", () => navigationSearch.setDisplayMode("highlight"), { capture: true });
+}
+for (const input of [entryGoInput, collectionGoInput]) {
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") navigationSearch.setDisplayMode("highlight");
+  }, { capture: true });
+}
 
 const conversationView = new ConversationView({
   panel: conversationPanel,

@@ -160,8 +160,12 @@ h3 { font-size: 16px; font-weight: 700; }
 .navigation-search-options select { height: 28px; max-width: 125px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--text); background: var(--surface); font-size: 10px; }
 .navigation-search-panel :is(input, select, button):focus-visible { outline: 2px solid #4987ff; outline-offset: 2px; }
 .navigation-search-panel p, .navigation-search-status { margin: 0; color: var(--faint); font-size: 9px; line-height: 1.4; }
-.navigation-search-results { display: grid; max-height: 180px; gap: 3px; overflow: auto; }
-.navigation-search-result { min-height: 28px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: var(--surface); font-size: 10px; text-align: left; }
+.navigation-search-results { display: grid; max-height: clamp(180px, 40vh, 420px); gap: 3px; overflow: auto; }
+.navigation-search-result { display: grid; min-width: 0; gap: 3px; min-height: 28px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: var(--surface); font-size: 10px; text-align: left; }
+.navigation-search-result strong { font-size: 10px; }
+.navigation-search-evidence-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 9px; }
+.navigation-search-evidence { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow-wrap: anywhere; white-space: pre-wrap; font: 10px/1.4 "SFMono-Regular", Consolas, monospace; }
+.navigation-search-evidence mark { color: #493400; background: #ffe59a; }
 .navigation-search-actions .secondary-button { min-height: 26px; padding: 0 7px; font-size: 9px; }
 
 .entry-navigation-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -869,3 +873,7 @@ h3 { font-size: 16px; font-weight: 700; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+
+.entry-option[data-search-match="true"] .entry-option-title,
+.collection-option[data-search-match="true"] .collection-option-title { text-decoration: underline; text-decoration-color: #c78e12; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+:is(.entry-option, .collection-option)[data-search-match="true"] mark { padding: 0 2px; color: #493400; background: #ffe59a; border-radius: 2px; }

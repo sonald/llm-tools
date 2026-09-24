@@ -99,6 +99,7 @@ pub struct JsonlSession {
     selected_location: Option<EntryLocation>,
     many_invalid_utf8_warning: bool,
     event_hint: EventHintSampler,
+    navigation_cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 fn append_entry_byte(bytes: &mut Vec<u8>, byte: u8) -> io::Result<()> {
@@ -116,6 +117,46 @@ fn append_entry_byte(bytes: &mut Vec<u8>, byte: u8) -> io::Result<()> {
 }
 
 impl JsonlSession {
+    pub fn navigation_snapshot(
+        &self,
+        ordinal: u64,
+        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            source: self.source.try_clone()?,
+            indexer: None,
+            index: Some(JsonlIndex {
+                checkpoints: self.nearest_checkpoint(ordinal).into_iter().collect(),
+                oversized_locations: self.oversized_location(ordinal).into_iter().collect(),
+                total_entry_count: self.indexed_entries_unchecked(),
+                total_source_line_count: 0,
+                stride: 1,
+            }),
+            next_offset: self.next_offset,
+            complete: true,
+            selected: None,
+            selected_location: None,
+            many_invalid_utf8_warning: false,
+            event_hint: EventHintSampler::new(),
+            navigation_cancelled: Some(cancelled),
+        })
+    }
+
+    fn check_navigation_cancelled(&self) -> io::Result<()> {
+        if self
+            .navigation_cancelled
+            .as_ref()
+            .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            Err(io::Error::new(
+                ErrorKind::Interrupted,
+                "navigation search cancelled",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn open(path: &Path) -> io::Result<Self> {
         let mut session = Self {
             source: FileSource::open(path)?,
@@ -127,6 +168,7 @@ impl JsonlSession {
             selected_location: None,
             many_invalid_utf8_warning: false,
             event_hint: EventHintSampler::new(),
+            navigation_cancelled: None,
         };
         session.scan_next()?;
         Ok(session)
@@ -534,18 +576,22 @@ impl JsonlSession {
             if mode == SearchMode::Decoded {
                 return Ok(Some((NavigationEntryMatch::Oversized, length)));
             }
-            if pattern.is_glob() {
-                return Ok(Some((NavigationEntryMatch::Oversized, length)));
-            }
-            let matched =
-                self.raw_range_matches(entry.location.byte_start, length, pattern.query())?;
-            return Ok(Some((NavigationEntryMatch::Matched(matched), length)));
+            let matched = self.raw_range_pattern(entry.location.byte_start, length, pattern)?;
+            return Ok(Some((matched, length)));
         };
         if mode == SearchMode::Raw {
-            let Some(matched) = pattern.matches_bytes(&bytes) else {
-                return Ok(Some((NavigationEntryMatch::InvalidUtf8, length)));
-            };
-            return Ok(Some((NavigationEntryMatch::Matched(matched), length)));
+            let mut matcher = pattern.stream();
+            for chunk in bytes.chunks(4096) {
+                self.check_navigation_cancelled()?;
+                matcher.feed(chunk);
+            }
+            return Ok(Some((
+                match matcher.finish() {
+                    Some(matched) => NavigationEntryMatch::Matched(matched),
+                    None => NavigationEntryMatch::InvalidUtf8,
+                },
+                length,
+            )));
         }
         if from_utf8(&bytes).is_err() {
             return Ok(Some((NavigationEntryMatch::InvalidUtf8, length)));
@@ -554,10 +600,90 @@ impl JsonlSession {
             Ok(tree) => tree,
             Err(_) => return Ok(Some((NavigationEntryMatch::InvalidJson, length))),
         };
+        self.check_navigation_cancelled()?;
+        let never_cancelled = std::sync::atomic::AtomicBool::new(false);
+        let cancelled = self
+            .navigation_cancelled
+            .as_deref()
+            .unwrap_or(&never_cancelled);
         let matched = tree
-            .navigation_matches(tree.root().id, pattern, mode)
+            .navigation_matches_cancellable(tree.root().id, pattern, mode, cancelled)
             .map_err(invalid_pattern)?;
         Ok(Some((NavigationEntryMatch::Matched(matched), length)))
+    }
+
+    pub fn navigation_entry_evidence(
+        &self,
+        ordinal: u64,
+        pattern: &Pattern,
+        mode: SearchMode,
+    ) -> io::Result<Option<crate::search::NavigationEvidence>> {
+        let Some(entry) = self.load_entry_once(ordinal)? else {
+            return Ok(None);
+        };
+        let never_cancelled = std::sync::atomic::AtomicBool::new(false);
+        let cancelled = self
+            .navigation_cancelled
+            .as_deref()
+            .unwrap_or(&never_cancelled);
+        if mode == SearchMode::Decoded {
+            let Some(bytes) = entry.bytes else {
+                return Ok(None);
+            };
+            let tree =
+                TreeDocument::from_bytes(bytes).map_err(|error| invalid_pattern(error.message))?;
+            return tree
+                .navigation_evidence(tree.root().id, pattern, mode, cancelled)
+                .map_err(invalid_pattern);
+        }
+        let mut matcher = pattern.stream();
+        let mut offset = entry.location.byte_start;
+        while offset < entry.location.byte_end {
+            self.check_navigation_cancelled()?;
+            let chunk = self.source.read_chunk(
+                offset,
+                (entry.location.byte_end - offset).min(256 * 1024) as usize,
+            )?;
+            if chunk.bytes.is_empty() {
+                return Err(ErrorKind::UnexpectedEof.into());
+            }
+            for bytes in chunk.bytes.chunks(4096) {
+                self.check_navigation_cancelled()?;
+                matcher.feed(bytes);
+            }
+            offset += chunk.bytes.len() as u64;
+        }
+        if matcher.finish() != Some(true) {
+            return Ok(None);
+        }
+        let Some((start, end)) = matcher.range() else {
+            return Ok(None);
+        };
+        // Evidence is a bounded window; raw literal search also accepts malformed UTF-8.
+        let window_start = start.saturating_sub(80) as u64;
+        let window_end = (start.saturating_add(320) as u64)
+            .min(entry.location.byte_end - entry.location.byte_start);
+        let bytes = self.read_range(
+            entry.location.byte_start + window_start,
+            window_end - window_start,
+        )?;
+        let relative_start = start - window_start as usize;
+        let relative_end = end.min(window_end as usize) - window_start as usize;
+        let match_start = String::from_utf8_lossy(&bytes[..relative_start])
+            .encode_utf16()
+            .count();
+        let match_end = match_start
+            + String::from_utf8_lossy(&bytes[relative_start..relative_end])
+                .encode_utf16()
+                .count();
+        let snippet = String::from_utf8_lossy(&bytes).into_owned();
+        Ok(Some(crate::search::NavigationEvidence {
+            path: "$".to_owned(),
+            field: crate::search::SearchField::RawSource,
+            snippet,
+            match_start: Some(match_start),
+            match_end: Some(match_end),
+        }))
     }
 
     pub fn selected_conversation_candidate(
@@ -860,6 +986,7 @@ impl JsonlSession {
         let mut target_bytes = Vec::new();
 
         loop {
+            self.check_navigation_cancelled()?;
             if let Some(location) = self.oversized_location(current_ordinal) {
                 if location.byte_start == line_start && offset <= location.byte_end {
                     if current_ordinal == ordinal {
@@ -1068,31 +1195,34 @@ impl JsonlSession {
         Ok(bytes)
     }
 
-    fn raw_range_matches(&self, start: u64, length: u64, query: &str) -> io::Result<bool> {
+    fn raw_range_pattern(
+        &self,
+        start: u64,
+        length: u64,
+        pattern: &Pattern,
+    ) -> io::Result<NavigationEntryMatch> {
         let mut offset = start;
         let end = start.saturating_add(length);
-        let mut overlap = Vec::new();
+        let mut matcher = pattern.stream();
         while offset < end {
-            let remaining = usize::try_from(end - offset).unwrap_or(usize::MAX);
-            let chunk = self.source.read_chunk(offset, remaining)?;
+            self.check_navigation_cancelled()?;
+            let chunk = self
+                .source
+                .read_chunk(offset, (end - offset).min(256 * 1024) as usize)?;
             if chunk.bytes.is_empty() {
                 return Err(ErrorKind::UnexpectedEof.into());
             }
-            let mut window = overlap;
-            window.extend_from_slice(&chunk.bytes);
-            if window
-                .windows(query.len())
-                .any(|candidate| candidate == query.as_bytes())
-            {
-                self.ensure_current()?;
-                return Ok(true);
+            for bytes in chunk.bytes.chunks(4096) {
+                self.check_navigation_cancelled()?;
+                matcher.feed(bytes);
             }
-            let keep = query.len().saturating_sub(1).min(window.len());
-            overlap = window[window.len() - keep..].to_vec();
-            offset = offset.saturating_add(chunk.bytes.len() as u64);
+            offset += chunk.bytes.len() as u64;
         }
         self.ensure_current()?;
-        Ok(false)
+        Ok(match matcher.finish() {
+            Some(matched) => NavigationEntryMatch::Matched(matched),
+            None => NavigationEntryMatch::InvalidUtf8,
+        })
     }
 
     fn finish_index(&mut self) {
@@ -1465,6 +1595,7 @@ mod tests {
             selected_location: None,
             many_invalid_utf8_warning: false,
             event_hint: EventHintSampler::new(),
+            navigation_cancelled: None,
         };
 
         assert_eq!(

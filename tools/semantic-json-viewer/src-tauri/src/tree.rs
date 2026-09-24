@@ -250,6 +250,26 @@ impl TreeDocument {
         search::navigation_matches(&self.parsed, target, pattern, mode)
     }
 
+    pub fn navigation_matches_cancellable(
+        &self,
+        target: usize,
+        pattern: &Pattern,
+        mode: SearchMode,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<bool, SearchError> {
+        search::navigation_matches_cancellable(&self.parsed, target, pattern, mode, cancelled)
+    }
+
+    pub fn navigation_evidence(
+        &self,
+        target: usize,
+        pattern: &Pattern,
+        mode: SearchMode,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Option<search::NavigationEvidence>, SearchError> {
+        search::navigation_evidence(&self.parsed, target, pattern, mode, cancelled)
+    }
+
     pub fn conversation_candidate(
         &self,
         scope_root_id: usize,
@@ -839,5 +859,49 @@ mod tests {
         assert!(!tree
             .navigation_matches(item, &cross_field, SearchMode::Decoded)
             .unwrap());
+    }
+    #[test]
+    fn navigation_evidence_reports_decoded_field_utf16_and_cancellation() {
+        use crate::navigation_search::Syntax;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let tree = document(r#"[{"name":"😀\u732b"}]"#);
+        let item = tree.collection_item_id(0).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let pattern = Pattern::parse("猫", Syntax::Literal).unwrap();
+        let evidence = tree
+            .navigation_evidence(item, &pattern, SearchMode::Decoded, &cancelled)
+            .unwrap()
+            .unwrap();
+        assert_eq!(evidence.field, search::SearchField::Value);
+        assert_eq!(evidence.path, "$.[0].name");
+        assert_eq!(evidence.snippet, "😀猫");
+        assert_eq!(
+            (evidence.match_start, evidence.match_end),
+            (Some(2), Some(3))
+        );
+        let key = Pattern::parse("name", Syntax::Literal).unwrap();
+        assert_eq!(
+            tree.navigation_evidence(item, &key, SearchMode::Decoded, &cancelled)
+                .unwrap()
+                .unwrap()
+                .field,
+            search::SearchField::Key
+        );
+        cancelled.store(true, Ordering::Relaxed);
+        assert!(!tree
+            .navigation_matches_cancellable(item, &pattern, SearchMode::Decoded, &cancelled)
+            .unwrap());
+        assert!(tree
+            .navigation_evidence(item, &pattern, SearchMode::Raw, &cancelled)
+            .unwrap()
+            .is_none());
+        let text = format!("{}{}tail", "x".repeat(100), "😀".repeat(1000));
+        let evidence =
+            search::navigation_snippet("$".into(), search::SearchField::Value, &text, (100, 4100));
+        assert!(evidence.snippet.chars().count() <= 242);
+        assert_eq!(
+            (evidence.match_start, evidence.match_end),
+            (Some(81), Some(401))
+        );
     }
 }

@@ -54,10 +54,17 @@ impl From<ParseError> for DocumentOpenError {
 
 pub struct DocumentSession {
     source: FileSource,
-    tree: TreeDocument,
+    tree: std::sync::Arc<TreeDocument>,
 }
 
 impl DocumentSession {
+    pub fn navigation_snapshot(&self) -> io::Result<Self> {
+        Ok(Self {
+            source: self.source.try_clone()?,
+            tree: self.tree.clone(),
+        })
+    }
+
     pub fn open(path: &Path) -> Result<Self, DocumentOpenError> {
         let source = FileSource::open(path)?;
         let capacity = usize::try_from(source.identity().size).map_err(|_| {
@@ -86,7 +93,7 @@ impl DocumentSession {
 
         Ok(Self {
             source,
-            tree: TreeDocument::from_bytes(bytes)?,
+            tree: std::sync::Arc::new(TreeDocument::from_bytes(bytes)?),
         })
     }
 
@@ -213,6 +220,21 @@ impl DocumentSession {
         pattern: &Pattern,
         mode: SearchMode,
     ) -> io::Result<Option<(bool, usize)>> {
+        self.collection_item_matches_cancellable(
+            ordinal,
+            pattern,
+            mode,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+    }
+
+    pub fn collection_item_matches_cancellable(
+        &self,
+        ordinal: usize,
+        pattern: &Pattern,
+        mode: SearchMode,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> io::Result<Option<(bool, usize)>> {
         self.ensure_current()?;
         let Some(node_id) = self.tree.collection_item_id(ordinal) else {
             return Ok(None);
@@ -222,8 +244,24 @@ impl DocumentSession {
         };
         let bytes = node.span.end.saturating_sub(node.span.start);
         self.tree
-            .navigation_matches(node_id, pattern, mode)
+            .navigation_matches_cancellable(node_id, pattern, mode, cancelled)
             .map(|matched| Some((matched, bytes)))
+            .map_err(|error| io::Error::new(ErrorKind::InvalidInput, error))
+    }
+
+    pub fn collection_item_evidence(
+        &self,
+        ordinal: usize,
+        pattern: &Pattern,
+        mode: SearchMode,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> io::Result<Option<crate::search::NavigationEvidence>> {
+        self.ensure_current()?;
+        let Some(node_id) = self.tree.collection_item_id(ordinal) else {
+            return Ok(None);
+        };
+        self.tree
+            .navigation_evidence(node_id, pattern, mode, cancelled)
             .map_err(|error| io::Error::new(ErrorKind::InvalidInput, error))
     }
 

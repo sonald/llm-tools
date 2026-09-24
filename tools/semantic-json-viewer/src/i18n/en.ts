@@ -739,6 +739,7 @@ export const en = {
   "raw.entrySubject": "Entry {entry}",
   "raw.repHex": "Hex bytes for {subject}",
   "raw.repLossy": "Lossy UTF-8 preview for {subject}",
+  "navigationSearch.matched": "Matched",
   "navigationSearch.label": "Search record contents",
   "navigationSearch.queryPlaceholder": "Search the whole file",
   "navigationSearch.collectionDescription": "Search all array items",

@@ -1,3 +1,4 @@
+import type { NavigationSearchProgress, NavigationSearchEvidence } from "./navigation-search";
 import { invoke } from "@tauri-apps/api/core";
 import { validateNodePage, type NodeDto } from "./tree-view";
 import { locale, t } from "./i18n";
@@ -72,6 +73,11 @@ export class CollectionList {
   private goError: string | null = null;
   private epoch = 0;
   private opening = false;
+  private navigationSearch: NavigationSearchProgress | null = null;
+  private searchMatches = new Map<number, NavigationSearchEvidence | null>();
+  private searchRequestKey = "";
+  private searchRequestVersion = 0;
+  private searchFiltered = false;
   private rowHeight = ROW_HEIGHT;
 
   constructor(options: CollectionListOptions) {
@@ -103,6 +109,7 @@ export class CollectionList {
   setSession(session: CollectionSession | null): void {
     this.epoch += 1;
     this.session = session;
+    this.resetSearchMatches();
     this.clearPages();
     this.prefetchRequests.clear();
     this.pageRequest = null;
@@ -125,6 +132,7 @@ export class CollectionList {
   clear(): void {
     this.epoch += 1;
     this.session = null;
+    this.resetSearchMatches();
     this.clearPages();
     this.prefetchRequests.clear();
     this.pageRequest = null;
@@ -159,6 +167,73 @@ export class CollectionList {
     } else {
       this.ensureOrdinal(ordinal, true);
     }
+  }
+
+  setNavigationSearch(progress: NavigationSearchProgress | null): void {
+    const previous = this.navigationSearch;
+    if (previous === progress || previous?.searchId === progress?.searchId
+      && previous?.fileGeneration === progress?.fileGeneration
+      && previous?.scannedThrough === progress?.scannedThrough
+      && previous?.matchedCount === progress?.matchedCount
+      && previous?.complete === progress?.complete && previous?.stopped === progress?.stopped) return;
+    if (this.navigationSearch?.searchId !== progress?.searchId
+      || this.navigationSearch?.fileGeneration !== progress?.fileGeneration) {
+      this.searchMatches.clear();
+      this.searchRequestKey = "";
+      this.searchRequestVersion += 1;
+    }
+    this.navigationSearch = progress;
+    this.render();
+  }
+
+  setSearchFiltered(filtered: boolean): void {
+    if (this.searchFiltered === filtered) return;
+    this.searchFiltered = filtered;
+    if (this.session) this.render();
+  }
+
+  showSelected(): void {
+    const ordinal = this.selectedOrdinal;
+    if (ordinal === null) return;
+    this.ensureOrdinal(ordinal, false);
+  }
+
+  private resetSearchMatches(): void {
+    this.navigationSearch = null;
+    this.searchMatches.clear();
+    this.searchRequestKey = "";
+    this.searchRequestVersion += 1;
+    this.searchFiltered = false;
+  }
+
+  private refreshSearchMatches(): void {
+    const progress = this.navigationSearch;
+    if (!progress || !this.session) return;
+    const ordinalStart = this.windowStart;
+    const ordinalEnd = Math.min(this.session.root.childCount, this.windowStart + PAGE_SIZE * 2);
+    if (ordinalEnd <= ordinalStart) return;
+    const key = `${this.epoch}:${progress.fileGeneration}:${progress.searchId}:${Math.min(progress.scannedThrough, ordinalEnd)}:${ordinalStart}:${ordinalEnd}`;
+    if (key === this.searchRequestKey) return;
+    this.searchRequestKey = key;
+    const version = ++this.searchRequestVersion;
+    const ranges = [ordinalStart, ordinalStart + PAGE_SIZE].filter((start) => start < ordinalEnd);
+    void Promise.all(ranges.map((start) => this.invokeRequest<{ ordinals: number[]; evidence: NavigationSearchEvidence[] }>("get_navigation_search_page", {
+      fileGeneration: progress.fileGeneration,
+      searchId: progress.searchId,
+      cursor: 0,
+      limit: PAGE_SIZE,
+      ordinalStart: start,
+      ordinalEnd: Math.min(ordinalEnd, start + PAGE_SIZE)
+    }))).then((pages) => {
+      if (version !== this.searchRequestVersion || key !== this.searchRequestKey) return;
+      const evidence = new Map(pages.flatMap((page) => (page.evidence ?? []).map((match) => [match.ordinal, match] as const)));
+      this.searchMatches = new Map(pages.flatMap((page) => page.ordinals.map((ordinal) => [ordinal, evidence.get(ordinal) ?? null] as const)));
+      this.render();
+    }).catch((error) => {
+      if (version !== this.searchRequestVersion) return;
+      this.searchRequestKey = "";
+      if (isGlobalError(error)) this.onError(error);
+    });
   }
 
   setOpening(opening: boolean): void {
@@ -440,6 +515,7 @@ export class CollectionList {
   }
 
   private render(): void {
+    this.refreshSearchMatches();
     this.rendering = true;
     const active = document.activeElement instanceof HTMLElement ? Number(document.activeElement.dataset.itemOrdinal) : NaN;
     const restoreOrdinal = Number.isSafeInteger(active) ? active : null;
@@ -448,9 +524,11 @@ export class CollectionList {
     const total = session?.root.childCount ?? 0;
     const busy = this.opening || this.pageRequest !== null;
     this.elements.section.hidden = session === null;
+    this.elements.list.hidden = this.searchFiltered;
+    this.elements.status.hidden = this.searchFiltered;
     this.elements.goInput.disabled = busy;
     this.elements.goButton.disabled = busy;
-    this.elements.retry.hidden = this.listError === null;
+    this.elements.retry.hidden = this.searchFiltered || this.listError === null;
     this.elements.retry.disabled = busy;
     this.elements.goError.textContent = this.goError ?? "";
     this.elements.status.textContent = this.listStatus(total);
@@ -584,6 +662,17 @@ export class CollectionList {
       start: node.spanStart,
       end: node.spanEnd
     });
+    if (this.searchMatches.has(ordinal)) {
+      const evidence = this.searchMatches.get(ordinal);
+      const label = t("navigationSearch.matched");
+      const detail = evidence ? `${evidence.path} · ${evidence.snippet}` : label;
+      item.dataset.searchMatch = "true";
+      item.title = `${meta.textContent} · ${detail}`;
+      item.setAttribute("aria-label", `${item.getAttribute("aria-label")} · ${label} · ${detail}`);
+      const mark = document.createElement("mark");
+      mark.textContent = label;
+      meta.replaceChildren(mark, document.createTextNode(` ${detail}`));
+    }
     item.append(title, meta);
     return item;
   }

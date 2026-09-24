@@ -32,6 +32,13 @@ pub struct ReadChunk {
 }
 
 impl FileSource {
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            file: self.file.try_clone()?,
+            identity: self.identity.clone(),
+        })
+    }
+
     pub fn open(path: &Path) -> io::Result<Self> {
         let canonical_path = fs::canonicalize(path)?;
         let file = File::open(&canonical_path)?;

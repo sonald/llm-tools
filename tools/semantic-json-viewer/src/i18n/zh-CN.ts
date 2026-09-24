@@ -741,6 +741,7 @@ export const zhCN: MessageCatalog = {
   "raw.entrySubject": "条目 {entry}",
   "raw.repHex": "{subject}的十六进制字节",
   "raw.repLossy": "{subject}的有损 UTF-8 预览",
+  "navigationSearch.matched": "匹配",
   "navigationSearch.label": "搜索记录内容",
   "navigationSearch.queryPlaceholder": "搜索整个文件",
   "navigationSearch.collectionDescription": "搜索全部数组项",

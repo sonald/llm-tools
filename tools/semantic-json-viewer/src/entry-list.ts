@@ -1,3 +1,4 @@
+import type { NavigationSearchProgress, NavigationSearchEvidence } from "./navigation-search";
 import { invoke } from "@tauri-apps/api/core";
 import { locale, t } from "./i18n";
 import { parseErrorMessage } from "./parse-error-message";
@@ -155,6 +156,11 @@ export class EntryList {
   private goError: string | null = null;
   private epoch = 0;
   private opening = false;
+  private navigationSearch: NavigationSearchProgress | null = null;
+  private searchMatches = new Map<number, NavigationSearchEvidence | null>();
+  private searchRequestKey = "";
+  private searchRequestVersion = 0;
+  private searchFiltered = false;
   private summaryMode: EntrySummaryMode = "auto";
   private readonly rowHeights = new Map<number, number>();
   private rowOffsets: number[] = [0];
@@ -257,6 +263,7 @@ export class EntryList {
     this.summaryMode = "auto";
     this.summaryModeSelect.value = this.summaryMode;
     this.session = session && progress ? { ...session, progress } : null;
+    this.resetSearchMatches();
     this.progress = session && progress ? progress : null;
     this.entries = [];
     this.selectedEntry = null;
@@ -275,6 +282,7 @@ export class EntryList {
     this.resetVirtualization(true);
     this.epoch += 1;
     this.session = null;
+    this.resetSearchMatches();
     this.progress = null;
     this.summaryMode = "auto";
     this.summaryModeSelect.value = this.summaryMode;
@@ -293,6 +301,73 @@ export class EntryList {
     this.elements.navigation.hidden = true;
     this.elements.navigationState.hidden = false;
     this.render();
+  }
+
+  setNavigationSearch(progress: NavigationSearchProgress | null): void {
+    const previous = this.navigationSearch;
+    if (previous === progress || previous?.searchId === progress?.searchId
+      && previous?.fileGeneration === progress?.fileGeneration
+      && previous?.scannedThrough === progress?.scannedThrough
+      && previous?.matchedCount === progress?.matchedCount
+      && previous?.complete === progress?.complete && previous?.stopped === progress?.stopped) return;
+    if (this.navigationSearch?.searchId !== progress?.searchId
+      || this.navigationSearch?.fileGeneration !== progress?.fileGeneration) {
+      this.searchMatches.clear();
+      this.searchRequestKey = "";
+      this.searchRequestVersion += 1;
+    }
+    this.navigationSearch = progress;
+    this.render();
+  }
+
+  setSearchFiltered(filtered: boolean): void {
+    if (this.searchFiltered === filtered) return;
+    this.searchFiltered = filtered;
+    if (this.session) this.render();
+  }
+
+  showSelected(): void {
+    const ordinal = this.selectedEntry?.location.entryOrdinal ?? null;
+    if (ordinal === null) return;
+    const start = Math.floor(ordinal / PAGE_SIZE) * PAGE_SIZE;
+    this.requestWindow(start, { ordinal, select: false }, start !== this.windowStart);
+  }
+
+  private resetSearchMatches(): void {
+    this.navigationSearch = null;
+    this.searchMatches.clear();
+    this.searchRequestKey = "";
+    this.searchRequestVersion += 1;
+    this.searchFiltered = false;
+  }
+
+  private refreshSearchMatches(): void {
+    const progress = this.navigationSearch;
+    if (!progress || !this.session) return;
+    const ordinalStart = this.windowStart;
+    const ordinalEnd = this.windowStart + this.entries.length;
+    if (ordinalEnd <= ordinalStart) return;
+    const key = `${this.epoch}:${progress.fileGeneration}:${progress.searchId}:${Math.min(progress.scannedThrough, ordinalEnd)}:${ordinalStart}:${ordinalEnd}`;
+    if (key === this.searchRequestKey) return;
+    this.searchRequestKey = key;
+    const version = ++this.searchRequestVersion;
+    void invoke<{ ordinals: number[]; evidence: NavigationSearchEvidence[] }>("get_navigation_search_page", {
+      fileGeneration: progress.fileGeneration,
+      searchId: progress.searchId,
+      cursor: 0,
+      limit: ordinalEnd - ordinalStart,
+      ordinalStart,
+      ordinalEnd
+    }).then((page) => {
+      if (version !== this.searchRequestVersion || key !== this.searchRequestKey) return;
+      const evidence = new Map((page.evidence ?? []).map((match) => [match.ordinal, match]));
+      this.searchMatches = new Map(page.ordinals.map((ordinal) => [ordinal, evidence.get(ordinal) ?? null]));
+      this.render();
+    }).catch((error) => {
+      if (version !== this.searchRequestVersion) return;
+      this.searchRequestKey = "";
+      if (isGlobalError(error)) this.onError(error);
+    });
   }
 
   setOpening(opening: boolean): void {
@@ -752,16 +827,21 @@ export class EntryList {
   }
 
   private render(reason: EntryRenderReason = "state"): void {
+    this.refreshSearchMatches();
     const busy = this.opening || this.pageRequest !== null || this.selectionRequest !== null;
     this.elements.navigation.hidden = this.session === null;
     this.elements.navigationState.hidden = this.session !== null;
+    this.elements.list.hidden = this.searchFiltered;
+    this.elements.status.hidden = this.searchFiltered;
+    this.elements.previous.hidden = this.searchFiltered;
+    this.elements.next.hidden = this.searchFiltered;
     this.elements.goInput.disabled = busy;
     this.elements.goButton.disabled = busy;
     this.elements.previous.disabled = busy || this.pageRequest !== null || this.windowStart === 0;
     this.elements.next.disabled = busy || this.pageRequest !== null || !this.hasNext();
     this.elements.list.setAttribute("aria-busy", String(this.pageRequest !== null || busy));
     this.elements.retry.disabled = busy || this.pageRequest !== null;
-    this.elements.retry.hidden = this.listError === null;
+    this.elements.retry.hidden = this.searchFiltered || this.listError === null;
     this.elements.goError.textContent = this.goError ?? "";
     this.elements.status.textContent = this.listStatus();
     this.summaryModeSelect.value = this.summaryMode;
@@ -1078,6 +1158,17 @@ export class EntryList {
       summary.className = "entry-option-meta";
       summary.textContent = eventSummary;
       body.append(summary);
+    }
+    if (this.searchMatches.has(entry.location.entryOrdinal)) {
+      const evidence = this.searchMatches.get(entry.location.entryOrdinal);
+      const label = t("navigationSearch.matched");
+      const detail = evidence ? `${evidence.path} · ${evidence.snippet}` : label;
+      item.dataset.searchMatch = "true";
+      item.title = `${meta.textContent} · ${detail}`;
+      item.setAttribute("aria-label", `${item.getAttribute("aria-label")} · ${label} · ${detail}`);
+      const mark = document.createElement("mark");
+      mark.textContent = label;
+      meta.replaceChildren(mark, document.createTextNode(` ${detail}`));
     }
     item.append(marker, body);
     return item;

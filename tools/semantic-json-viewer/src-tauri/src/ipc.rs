@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::io::{self, ErrorKind};
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -445,8 +446,20 @@ pub struct NavigationSearchProgressDto {
 #[serde(rename_all = "camelCase")]
 pub struct NavigationSearchPageDto {
     pub ordinals: Vec<u64>,
+    pub evidence: Vec<NavigationEvidenceDto>,
     pub has_more: bool,
     pub next_cursor: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NavigationEvidenceDto {
+    pub ordinal: u64,
+    pub path: String,
+    pub field: SearchFieldDto,
+    pub snippet: String,
+    pub match_start: Option<usize>,
+    pub match_end: Option<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -973,7 +986,7 @@ pub fn start_navigation_search(
     start_navigation_search_inner(&state, file_generation, query, syntax, representation)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn advance_navigation_search(
     file_generation: u64,
     search_id: u64,
@@ -982,15 +995,25 @@ pub fn advance_navigation_search(
     advance_navigation_search_inner(&state, file_generation, search_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_navigation_search_page(
     file_generation: u64,
     search_id: u64,
     cursor: usize,
     limit: usize,
+    ordinal_start: Option<u64>,
+    ordinal_end: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<NavigationSearchPageDto, IpcError> {
-    get_navigation_search_page_inner(&state, file_generation, search_id, cursor, limit)
+    get_navigation_search_page_window(
+        &state,
+        file_generation,
+        search_id,
+        cursor,
+        limit,
+        ordinal_start,
+        ordinal_end,
+    )
 }
 
 #[tauri::command]
@@ -1095,6 +1118,10 @@ fn open_file_with_override(
         .ok_or_else(|| internal("file generation overflow"))?;
     let next_navigation_search_id = guard.next_navigation_search_id;
     let summary = file_summary(&session, next_revision, file_generation)?;
+    if let Some(task) = &guard.navigation_search {
+        task.cancelled.store(true, Ordering::Relaxed);
+        task.results_cancelled.store(true, Ordering::Relaxed);
+    }
     *guard = SessionState {
         revision: next_revision,
         file_generation,
@@ -3148,6 +3175,10 @@ fn start_navigation_search_inner(
     guard.next_navigation_search_id = id
         .checked_add(1)
         .ok_or_else(|| internal("navigation search id overflow"))?;
+    if let Some(previous) = &guard.navigation_search {
+        previous.cancelled.store(true, Ordering::Relaxed);
+        previous.results_cancelled.store(true, Ordering::Relaxed);
+    }
     guard.navigation_search = Some(
         NavigationSearchTask::new(id, file_generation, query, syntax, mode)
             .map_err(|error| invalid_request(&error.to_string()))?,
@@ -3160,130 +3191,169 @@ fn advance_navigation_search_inner(
     file_generation: u64,
     search_id: u64,
 ) -> Result<NavigationSearchProgressDto, IpcError> {
-    const MAX_RECORDS_PER_ADVANCE: usize = 200;
-    const MAX_STORED_MATCHES: usize = 2_097_152;
+    let cancelled = {
+        let mut guard = lock_session(state)?;
+        if guard.file_generation != file_generation {
+            return Err(stale_session());
+        }
+        let task = guard
+            .navigation_search
+            .as_mut()
+            .ok_or_else(|| invalid_request("navigation search is not active"))?;
+        if task.id != search_id {
+            return Err(stale_session());
+        }
+        if task.done || task.stopped || task.in_flight {
+            return navigation_search_progress(&guard);
+        }
+        task.in_flight = true;
+        task.cancelled.clone()
+    };
+    let result = (|| {
+        let started = Instant::now();
+        let mut scanned_bytes = 0u64;
+        for _ in 0..200 {
+            if cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+            let (session, ordinal, pattern, mode) = {
+                let mut guard = lock_session(state)?;
+                if guard.file_generation != file_generation {
+                    return Err(stale_session());
+                }
+                let task = guard.navigation_search.as_ref().ok_or_else(stale_session)?;
+                if task.id != search_id {
+                    return Err(stale_session());
+                }
+                if task.stopped || task.done {
+                    break;
+                }
+                let ordinal = task.next_ordinal;
+                let pattern = task.pattern.clone();
+                let mode = task.mode;
+                let at_limit = task.matches.len() >= 2_097_152;
+                let session = guard.session.as_ref().ok_or_else(no_session)?;
+                if !session.is_current() {
+                    return Err(file_changed());
+                }
+                let (indexed, complete) = match session {
+                    OpenSession::Entry(entries) => {
+                        let p = entries.progress().map_err(session_error)?;
+                        (p.indexed_entries, p.complete)
+                    }
+                    OpenSession::Document(document) => (
+                        document
+                            .collection_item_count()
+                            .map_err(session_error)?
+                            .unwrap_or(0) as u64,
+                        true,
+                    ),
+                    _ => return Err(invalid_request("navigation search requires entries")),
+                };
+                if ordinal >= indexed || at_limit {
+                    let task = guard.navigation_search.as_mut().unwrap();
+                    task.done = ordinal >= indexed && complete;
+                    task.stopped |= at_limit;
+                    break;
+                }
+                let snapshot = match session {
+                    OpenSession::Entry(entries) => OpenSession::Entry(
+                        entries
+                            .navigation_snapshot(ordinal, cancelled.clone())
+                            .map_err(session_error)?,
+                    ),
+                    OpenSession::Document(document) => OpenSession::Document(
+                        document.navigation_snapshot().map_err(session_error)?,
+                    ),
+                    _ => unreachable!(),
+                };
+                (snapshot, ordinal, pattern, mode)
+            };
+            // Snapshot owns the file handle/tree; slow reads and matching never hold the UI session lock.
+            let found = match &session {
+                OpenSession::Entry(entries) => {
+                    entries.navigation_entry_matches(ordinal, &pattern, mode)
+                }
+                OpenSession::Document(document) => document
+                    .collection_item_matches_cancellable(
+                        ordinal as usize,
+                        &pattern,
+                        mode,
+                        &cancelled,
+                    )
+                    .map(|value| {
+                        value.map(|(matched, bytes)| {
+                            (NavigationEntryMatch::Matched(matched), bytes as u64)
+                        })
+                    }),
+                _ => unreachable!(),
+            };
+            if cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+            let Some((found, bytes)) = found.map_err(session_error)? else {
+                break;
+            };
+            if !session.is_current() {
+                return Err(file_changed());
+            }
+            let mut guard = lock_session(state)?;
+            if guard.file_generation != file_generation {
+                return Err(stale_session());
+            }
+            let task = guard.navigation_search.as_mut().ok_or_else(stale_session)?;
+            if task.id != search_id {
+                return Err(stale_session());
+            }
+            if task.stopped {
+                break;
+            }
+            let matched = match found {
+                NavigationEntryMatch::Matched(matched) => matched,
+                NavigationEntryMatch::InvalidJson => {
+                    task.skipped_invalid_json += 1;
+                    false
+                }
+                NavigationEntryMatch::InvalidUtf8 => {
+                    task.skipped_invalid_utf8 += 1;
+                    false
+                }
+                NavigationEntryMatch::Oversized => {
+                    task.skipped_oversized += 1;
+                    false
+                }
+            };
+            task.record(ordinal, bytes, matched);
+            scanned_bytes = scanned_bytes.saturating_add(bytes);
+            if scanned_bytes >= crate::search::MAX_SCAN_BYTES as u64
+                || started.elapsed() >= Duration::from_millis(20)
+            {
+                break;
+            }
+        }
+        Ok(())
+    })();
     let mut guard = lock_session(state)?;
     if guard.file_generation != file_generation {
         return Err(stale_session());
     }
-    let mut task = guard
-        .navigation_search
-        .take()
-        .ok_or_else(|| invalid_request("navigation search is not active"))?;
-    if task.id != search_id || task.file_generation != file_generation {
-        guard.navigation_search = Some(task);
+    let task = guard.navigation_search.as_mut().ok_or_else(stale_session)?;
+    if task.id != search_id {
         return Err(stale_session());
     }
-    if task.done || task.stopped {
-        guard.navigation_search = Some(task);
-        return navigation_search_progress(&guard);
+    task.in_flight = false;
+    result?;
+    let progress = navigation_search_progress(&guard)?;
+    if progress
+        .total_count
+        .is_some_and(|total| progress.scanned_count >= total)
+    {
+        guard.navigation_search.as_mut().unwrap().done = true;
     }
-    let session = guard.session.as_ref().ok_or_else(no_session)?;
-    if !session.is_current() {
-        return Err(file_changed());
-    }
-    let started = Instant::now();
-    let first_ordinal = task.next_ordinal;
-    let mut scanned_bytes = 0usize;
-    for _ in 0..MAX_RECORDS_PER_ADVANCE {
-        if task.next_ordinal > first_ordinal
-            && (scanned_bytes >= crate::search::MAX_SCAN_BYTES
-                || started.elapsed() >= Duration::from_millis(20))
-        {
-            break;
-        }
-        if task.matches.len() >= MAX_STORED_MATCHES {
-            task.stopped = true;
-            break;
-        }
-        let ordinal = task.next_ordinal;
-        let (indexed, complete) = match session {
-            OpenSession::Entry(entries) => {
-                let progress = entries.progress().map_err(session_error)?;
-                (progress.indexed_entries, progress.complete)
-            }
-            OpenSession::Document(document) => {
-                let count = document
-                    .collection_item_count()
-                    .map_err(session_error)?
-                    .ok_or_else(|| invalid_request("navigation search requires a root array"))?;
-                (count as u64, true)
-            }
-            OpenSession::RawDocument { .. } => {
-                return Err(invalid_request(
-                    "navigation search is unavailable for a raw-only document",
-                ))
-            }
-        };
-        if ordinal >= indexed {
-            task.done = complete;
-            break;
-        }
-        let (matched, record_bytes) = match session {
-            OpenSession::Entry(entries) => {
-                let result = entries
-                    .navigation_entry_matches(ordinal, &task.pattern, task.mode)
-                    .map_err(session_error)?;
-                let (result, record_bytes) = match result {
-                    Some(result) => result,
-                    None => break,
-                };
-                let matched = match result {
-                    NavigationEntryMatch::Matched(value) => value,
-                    NavigationEntryMatch::InvalidJson => {
-                        task.skipped_invalid_json += 1;
-                        false
-                    }
-                    NavigationEntryMatch::InvalidUtf8 => {
-                        task.skipped_invalid_utf8 += 1;
-                        false
-                    }
-                    NavigationEntryMatch::Oversized => {
-                        task.skipped_oversized += 1;
-                        false
-                    }
-                };
-                (matched, usize::try_from(record_bytes).unwrap_or(usize::MAX))
-            }
-            OpenSession::Document(document) => {
-                match document
-                    .collection_item_matches(ordinal as usize, &task.pattern, task.mode)
-                    .map_err(session_error)?
-                {
-                    Some((matched, bytes)) => (matched, bytes),
-                    None => break,
-                }
-            }
-            OpenSession::RawDocument { .. } => unreachable!(),
-        };
-        task.record(ordinal, record_bytes as u64, matched);
-        scanned_bytes = scanned_bytes.saturating_add(record_bytes);
-    }
-    let (indexed, total, complete) = match session {
-        OpenSession::Entry(entries) => {
-            let progress = entries.progress().map_err(session_error)?;
-            (
-                progress.indexed_entries,
-                progress.total_entries,
-                progress.complete,
-            )
-        }
-        OpenSession::Document(document) => {
-            let count = document
-                .collection_item_count()
-                .map_err(session_error)?
-                .unwrap_or(0) as u64;
-            (count, Some(count), true)
-        }
-        OpenSession::RawDocument { .. } => unreachable!(),
-    };
-    if task.next_ordinal >= indexed && complete {
-        task.done = true;
-    }
-    guard.navigation_search = Some(task);
-    navigation_search_progress_with_counts(&guard, indexed, total)
+    navigation_search_progress(&guard)
 }
 
+#[cfg(test)]
 fn get_navigation_search_page_inner(
     state: &AppState,
     file_generation: u64,
@@ -3291,28 +3361,130 @@ fn get_navigation_search_page_inner(
     cursor: usize,
     limit: usize,
 ) -> Result<NavigationSearchPageDto, IpcError> {
+    get_navigation_search_page_window(state, file_generation, search_id, cursor, limit, None, None)
+}
+
+fn get_navigation_search_page_window(
+    state: &AppState,
+    file_generation: u64,
+    search_id: u64,
+    cursor: usize,
+    limit: usize,
+    ordinal_start: Option<u64>,
+    ordinal_end: Option<u64>,
+) -> Result<NavigationSearchPageDto, IpcError> {
     if limit == 0 || limit > 200 {
         return Err(invalid_request("limit must be between 1 and 200"));
     }
+    if ordinal_start.is_some() != ordinal_end.is_some()
+        || ordinal_start
+            .zip(ordinal_end)
+            .is_some_and(|(start, end)| end < start || end - start > 400)
+    {
+        return Err(invalid_request(
+            "ordinal window must contain at most 400 records",
+        ));
+    }
+    let (ordinals, has_more, next_cursor, pattern, mode, cancelled) = {
+        let guard = lock_session(state)?;
+        if guard.file_generation != file_generation {
+            return Err(stale_session());
+        }
+        let task = guard.navigation_search.as_ref().ok_or_else(stale_session)?;
+        if task.id != search_id {
+            return Err(stale_session());
+        }
+        let (start, end, window) = if let Some((start, end)) = ordinal_start.zip(ordinal_end) {
+            (
+                task.matches.partition_point(|ordinal| *ordinal < start),
+                task.matches.partition_point(|ordinal| *ordinal < end),
+                true,
+            )
+        } else {
+            if cursor > task.matches.len() {
+                return Err(invalid_request("navigation result cursor is out of range"));
+            }
+            (
+                cursor,
+                cursor.saturating_add(limit).min(task.matches.len()),
+                false,
+            )
+        };
+        (
+            task.matches[start..end.min(start.saturating_add(limit))].to_vec(),
+            !window && end < task.matches.len(),
+            (!window && end < task.matches.len()).then_some(end),
+            task.pattern.clone(),
+            task.mode,
+            task.results_cancelled.clone(),
+        )
+    };
+    let mut evidence = Vec::new();
+    for &ordinal in &ordinals {
+        let snapshot = {
+            let guard = lock_session(state)?;
+            if guard.file_generation != file_generation
+                || guard
+                    .navigation_search
+                    .as_ref()
+                    .is_none_or(|task| task.id != search_id)
+            {
+                return Err(stale_session());
+            }
+            match guard.session.as_ref().ok_or_else(no_session)? {
+                OpenSession::Entry(entries) => OpenSession::Entry(
+                    entries
+                        .navigation_snapshot(ordinal, cancelled.clone())
+                        .map_err(session_error)?,
+                ),
+                OpenSession::Document(document) => {
+                    OpenSession::Document(document.navigation_snapshot().map_err(session_error)?)
+                }
+                _ => return Err(stale_session()),
+            }
+        };
+        let item = match &snapshot {
+            OpenSession::Entry(entries) => {
+                entries.navigation_entry_evidence(ordinal, &pattern, mode)
+            }
+            OpenSession::Document(document) => {
+                document.collection_item_evidence(ordinal as usize, &pattern, mode, &cancelled)
+            }
+            _ => unreachable!(),
+        }
+        .map_err(session_error)?;
+        if !snapshot.is_current() {
+            return Err(file_changed());
+        }
+        if let Some(item) = item {
+            evidence.push(NavigationEvidenceDto {
+                ordinal,
+                path: item.path,
+                field: match item.field {
+                    SearchField::Key => SearchFieldDto::Key,
+                    SearchField::Value => SearchFieldDto::Value,
+                    SearchField::RawSource => SearchFieldDto::RawSource,
+                },
+                snippet: item.snippet,
+                match_start: item.match_start,
+                match_end: item.match_end,
+            });
+        }
+    }
     let guard = lock_session(state)?;
-    if guard.file_generation != file_generation {
+    if guard.file_generation != file_generation
+        || guard
+            .navigation_search
+            .as_ref()
+            .is_none_or(|task| task.id != search_id)
+    {
         return Err(stale_session());
     }
-    let task = guard
-        .navigation_search
-        .as_ref()
-        .ok_or_else(|| invalid_request("navigation search is not active"))?;
-    if task.id != search_id || task.file_generation != file_generation {
-        return Err(stale_session());
-    }
-    if cursor > task.matches.len() {
-        return Err(invalid_request("navigation result cursor is out of range"));
-    }
-    let end = cursor.saturating_add(limit).min(task.matches.len());
     Ok(NavigationSearchPageDto {
-        ordinals: task.matches[cursor..end].to_vec(),
-        has_more: end < task.matches.len(),
-        next_cursor: (end < task.matches.len()).then_some(end),
+        ordinals,
+        evidence,
+        has_more,
+        next_cursor,
     })
 }
 
@@ -3334,7 +3506,9 @@ fn stop_navigation_search_inner(
         return Err(stale_session());
     }
     task.stopped = true;
+    task.cancelled.store(true, Ordering::Relaxed);
     if release_results {
+        task.results_cancelled.store(true, Ordering::Relaxed);
         guard.navigation_search = None;
     }
     Ok(())
@@ -11555,6 +11729,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(results.ordinals, [1, 2]);
+        assert_eq!(results.evidence.len(), 2);
+        assert_eq!(results.evidence[0].field, SearchFieldDto::Value);
+        assert_eq!(results.evidence[0].snippet, "needle");
+        assert_eq!(results.evidence[0].match_start, Some(0));
+        assert_eq!(results.evidence[0].match_end, Some(6));
+        let window = get_navigation_search_page_window(
+            &state,
+            collection.file_generation,
+            started.search_id,
+            0,
+            200,
+            Some(2),
+            Some(3),
+        )
+        .unwrap();
+        assert_eq!(window.ordinals, [2]);
+        assert_eq!(window.evidence[0].ordinal, 2);
+        assert!(!window.has_more);
 
         let jsonl_path = temp_jsonl_path("ipc-navigation-jsonl");
         fs::write(
@@ -11606,5 +11798,95 @@ mod tests {
         for path in [collection_path, jsonl_path, replacement_path] {
             fs::remove_file(path).unwrap();
         }
+    }
+    #[test]
+    fn navigation_large_raw_glob_is_streamed_and_stop_does_not_wait_for_worker() {
+        let path = temp_jsonl_path("navigation-cancel-raw");
+        let mut data = b"error".to_vec();
+        data.resize(17 * 1024 * 1024, b'x');
+        data.extend_from_slice(b"timeout\nerror\xfftimeout\n");
+        fs::write(&path, data).unwrap();
+        let state = AppState::default();
+        let opened = open_file_inner(&state, path.to_str().unwrap()).unwrap();
+        {
+            let mut guard = lock_session(&state).unwrap();
+            let OpenSession::Entry(entries) = guard.session.as_mut().unwrap() else {
+                panic!()
+            };
+            while !entries.progress().unwrap().complete {
+                entries.scan_next().unwrap();
+            }
+        }
+        let started = start_navigation_search_inner(
+            &state,
+            opened.file_generation,
+            "error*timeout".into(),
+            NavigationSyntaxDto::Glob,
+            SearchRepresentationDto::RawSource,
+        )
+        .unwrap();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                advance_navigation_search_inner(&state, opened.file_generation, started.search_id)
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                assert!(Instant::now() < deadline, "worker did not enter scan");
+                let guard = lock_session(&state).unwrap();
+                if guard.navigation_search.as_ref().unwrap().in_flight {
+                    break;
+                }
+                drop(guard);
+                std::thread::yield_now();
+            }
+            stop_navigation_search_inner(&state, opened.file_generation, started.search_id, false)
+                .unwrap();
+            let replacement = start_navigation_search_inner(
+                &state,
+                opened.file_generation,
+                "unmatched".into(),
+                NavigationSyntaxDto::Literal,
+                SearchRepresentationDto::RawSource,
+            )
+            .unwrap();
+            if let Ok(progress) = worker.join().unwrap() {
+                assert!(progress.stopped);
+            }
+            let guard = lock_session(&state).unwrap();
+            let task = guard.navigation_search.as_ref().unwrap();
+            assert_eq!(task.id, replacement.search_id);
+            assert_eq!(task.next_ordinal, 0);
+        });
+        let restarted = start_navigation_search_inner(
+            &state,
+            opened.file_generation,
+            "error*timeout".into(),
+            NavigationSyntaxDto::Glob,
+            SearchRepresentationDto::RawSource,
+        )
+        .unwrap();
+        let mut progress = restarted.clone();
+        while !progress.complete {
+            progress = advance_navigation_search_inner(
+                &state,
+                opened.file_generation,
+                restarted.search_id,
+            )
+            .unwrap();
+        }
+        assert_eq!(progress.matched_count, 1);
+        assert_eq!(progress.skipped_invalid_utf8, 1);
+        assert_eq!(progress.skipped_oversized, 0);
+        let page = get_navigation_search_page_inner(
+            &state,
+            opened.file_generation,
+            restarted.search_id,
+            0,
+            20,
+        )
+        .unwrap();
+        assert_eq!(page.ordinals, [0]);
+        assert!(page.evidence[0].snippet.starts_with("error"));
+        fs::remove_file(path).unwrap();
     }
 }
