@@ -194,7 +194,7 @@ mark.find-match.current {
 }
 .fold-marker:hover { background: var(--accent-soft); }
 .fold-marker:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.source-reader {
+.reader-canvas, .source-reader {
   --syntax-comment: #66707d;
   --syntax-string: #08743f;
   --syntax-literal: #7549c1;
@@ -613,7 +613,7 @@ tr:last-child td { border-bottom: 0; }
   mark.find-match { background: rgb(255 214 102 / 28%); }
   mark.find-match.current { background: rgb(255 190 60 / 45%); }
   .source-reader, table, .input-panel, .result-panel { background: #1b1e23; color: #e4e7ec; }
-  .source-reader {
+  .reader-canvas, .source-reader {
     --syntax-comment: #98a2af;
     --syntax-string: #74ca94;
     --syntax-literal: #c3a6ff;

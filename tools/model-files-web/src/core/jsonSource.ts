@@ -51,7 +51,7 @@ export function highlightJsonWindow(source: string, start = 0, end = source.leng
       ? /^\s*:/.test(source.slice(match.index + token.length)) ? 'name' : 'string'
       : /^[-\d]|^(true|false|null)$/.test(token) ? 'literal'
       : /^[{}[\],:]$/.test(token) ? 'operator' : ''
-    segments.push({ text, className: category === '' ? '' : `token source-${category}` })
+    segments.push({ text, className: category === '' ? '' : `token source-syntax-${category}` })
   }
   return segments
 }

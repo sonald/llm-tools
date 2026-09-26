@@ -70,7 +70,7 @@ self.onmessage = (event: MessageEvent<{ content: string; language: string; start
           append(token, inheritedTypes.length === 0 ? '' : [
             'token',
             ...inheritedTypes,
-            `source-${inheritedCategory}`,
+            `source-syntax-${inheritedCategory}`,
           ].join(' '))
           return
         }

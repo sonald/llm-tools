@@ -22,8 +22,8 @@ test('JSON highlighting preserves exact paged source including token boundaries'
     const segments = highlightJsonWindow(source, start, start + 7)
     assert.equal(segments.map(piece => piece.text).join(''), source.slice(start, start + 7))
   }
-  assert.equal(highlightJsonWindow(source, 10, 13)[0].className, 'token source-string')
-  assert.equal(highlightJsonWindow(source)[1].className, 'token source-name')
+  assert.equal(highlightJsonWindow(source, 10, 13)[0].className, 'token source-syntax-string')
+  assert.equal(highlightJsonWindow(source)[1].className, 'token source-syntax-name')
 })
 
 test('raw page boundaries retain Unicode code points and CRLF pairs', () => {
