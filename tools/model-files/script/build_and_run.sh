@@ -98,9 +98,11 @@ case "$MODE" in
   verify)
     build_and_stage
     test -x "$MACOS_DIR/$APP_NAME"
-    test -f "$RESOURCES_DIR/textual_Textual.bundle/prism-bundle.js"
+    test -f "$RESOURCES_DIR/textual_Textual.bundle/prism-bundle.js" || \
+      test -f "$RESOURCES_DIR/textual_Textual.bundle/Contents/Resources/prism-bundle.js"
     test -d "$RESOURCES_DIR/$RESOURCE_BUNDLE"
-    test -f "$RESOURCES_DIR/$RESOURCE_BUNDLE/Localizable.xcstrings"
+    test -f "$RESOURCES_DIR/$RESOURCE_BUNDLE/Localizable.xcstrings" || \
+      test -f "$RESOURCES_DIR/$RESOURCE_BUNDLE/Contents/Resources/zh-Hans.lproj/Localizable.strings"
     test -f "$RESOURCES_DIR/zh-Hans.lproj/Localizable.strings"
     test -f "$RESOURCES_DIR/en.lproj/Localizable.strings"
     /usr/bin/plutil -lint "$CONTENTS_DIR/Info.plist"

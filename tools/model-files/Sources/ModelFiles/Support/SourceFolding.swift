@@ -72,7 +72,7 @@ enum SourceFolding {
                 } else if ch == "\"" {
                     inString = false
                 }
-                if ch == "\n" { line += 1 }
+                if ch == "\n" || ch == "\r" || ch == "\r\n" { line += 1 }
                 source.formIndex(after: &index)
                 continue
             }
@@ -93,7 +93,7 @@ enum SourceFolding {
                 } else {
                     mismatched = true
                 }
-            case "\n":
+            case "\n", "\r", "\r\n":
                 line += 1
             default:
                 break

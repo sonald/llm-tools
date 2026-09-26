@@ -17,6 +17,7 @@ ModelFiles is a native macOS inspector for Hugging Face / ModelScope model artif
 - Compare two tokenizers on the same input: another file in the current snapshot, or a tokenizer bundle from another repository
 - Check repository consistency across `config`, tokenizer, adapter/processor configs, chat templates, and already-opened GGUF metadata
 - Stay read-only: no weights, no tensor payloads, no inference
+- Read JSON fields and source with syntax highlighting, folding, and find, including large `tokenizer.json` files and template JSON output. Formatted fields preserve original numeric precision; malformed JSON remains readable as source.
 
 Tokenizer visualization is inspired by [tiktokenizer](https://tiktokenizer.vercel.app/).
 

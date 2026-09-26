@@ -205,6 +205,7 @@ struct CodeReaderTextView: NSViewRepresentable {
         textStorage.addLayoutManager(layoutManager)
         layoutManager.addTextContainer(textContainer)
         layoutManager.delegate = context.coordinator
+        layoutManager.allowsNonContiguousLayout = true
 
         let textView = InFileFindTextView(frame: .zero, textContainer: textContainer)
         let coordinator = context.coordinator
@@ -233,6 +234,7 @@ struct CodeReaderTextView: NSViewRepresentable {
         textView.setAccessibilityLabel(String(localized: "源码"))
         scrollView.documentView = textView
 
+        context.coordinator.observeScrolling(in: scrollView)
         context.coordinator.textView = textView
         context.coordinator.load(source: source, language: language, into: textView)
         context.coordinator.updateFoldRanges(foldRanges)
@@ -263,10 +265,32 @@ struct CodeReaderTextView: NSViewRepresentable {
         private var loadedLanguage: String?
         private var highlightTask: Task<Void, Never>?
         private var foldButtons: [NSButton] = []
+        private var lineStarts: [Int] = []
+        private var hiddenRanges: [NSRange] = []
+        private var hiddenByParent = Set<FoldRange>()
+        private var positioningButtons = false
+
+        func observeScrolling(in scrollView: NSScrollView) {
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            scrollView.contentView.postsFrameChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(viewportChanged),
+                name: NSView.frameDidChangeNotification, object: scrollView.contentView
+            )
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(viewportChanged),
+                name: NSView.boundsDidChangeNotification, object: scrollView.contentView
+            )
+        }
+
+        @objc private func viewportChanged(_ notification: Notification) {
+            positionVisibleFoldButtons()
+        }
 
 
         deinit {
             highlightTask?.cancel()
+            NotificationCenter.default.removeObserver(self)
         }
 
         func load(source: String, language: String, into textView: NSTextView) {
@@ -275,7 +299,17 @@ struct CodeReaderTextView: NSViewRepresentable {
             let generation = generation
             loadedSource = source
             loadedLanguage = language
+            lineStarts = [0]
+            let ns = source as NSString
+            var offset = 0
+            while offset < ns.length {
+                let newline = utf16NewlineLength(in: ns, at: offset)
+                offset += max(1, newline)
+                if newline > 0 { lineStarts.append(offset) }
+            }
             collapsed.removeAll()
+            hiddenRanges = []
+            hiddenByParent = []
             highlightTask?.cancel()
             apply(Self.plainString(source), to: textView)
             (textView as? InFileFindTextView)?.resetFindState()
@@ -299,7 +333,11 @@ struct CodeReaderTextView: NSViewRepresentable {
             let sourceChanged = foldRanges != ranges
             foldRanges = ranges
             let valid = Set(ranges)
-            collapsed = collapsed.intersection(valid)
+            let retained = collapsed.intersection(valid)
+            if retained != collapsed {
+                collapsed = retained
+                invalidateFoldGlyphs()
+            }
             if sourceChanged {
                 rebuildFoldButtons()
             }
@@ -338,12 +376,10 @@ struct CodeReaderTextView: NSViewRepresentable {
         }
 
         func revealFindRange(_ range: NSRange) {
-            guard let source = loadedSource else { return }
-            let toExpand = expandedFoldRangesForSelection(
-                selection: range,
-                collapsed: collapsed,
-                source: source
-            )
+            let toExpand = collapsed.filter { fold in
+                guard let hidden = hiddenRange(for: fold) else { return false }
+                return NSIntersectionRange(range, hidden).length > 0
+            }
             guard !toExpand.isEmpty else { return }
             collapsed.subtract(toExpand)
             invalidateFoldGlyphs()
@@ -351,6 +387,7 @@ struct CodeReaderTextView: NSViewRepresentable {
         }
 
         func invalidateFoldGlyphs() {
+            hiddenRanges = collapsed.compactMap { hiddenRange(for: $0) }
             guard let layoutManager = textView?.layoutManager,
                   let storage = textView?.textStorage
             else { return }
@@ -367,6 +404,7 @@ struct CodeReaderTextView: NSViewRepresentable {
             font aFont: NSFont,
             forGlyphRange glyphRange: NSRange
         ) -> Int {
+            guard !hiddenRanges.isEmpty else { return 0 }
             let count = glyphRange.length
             var properties = Array(UnsafeBufferPointer(start: props, count: count))
             let hidden = hiddenRanges
@@ -388,9 +426,14 @@ struct CodeReaderTextView: NSViewRepresentable {
             return count
         }
 
-        private var hiddenRanges: [NSRange] {
-            guard let source = loadedSource else { return [] }
-            return collapsed.compactMap { hiddenUTF16Range(for: $0, in: source) }
+        private func hiddenRange(for fold: FoldRange) -> NSRange? {
+            guard fold.startLine >= 1, fold.endLine > fold.startLine,
+                  fold.startLine < lineStarts.count, fold.endLine <= lineStarts.count
+            else { return nil }
+            let start = lineStarts[fold.startLine]
+            let end = fold.endLine < lineStarts.count
+                ? lineStarts[fold.endLine] : (loadedSource as NSString?)?.length ?? start
+            return end > start ? NSRange(location: start, length: end - start) : nil
         }
 
         private func apply(_ attributed: NSAttributedString, to textView: NSTextView) {
@@ -415,27 +458,53 @@ struct CodeReaderTextView: NSViewRepresentable {
         }
 
         private func rebuildFoldButtons() {
-            guard let textView else { return }
+            hiddenByParent = parentHiddenFolds(in: foldRanges, collapsed: collapsed)
+            positionVisibleFoldButtons()
+        }
+
+        private func positionVisibleFoldButtons() {
+            guard !positioningButtons, let textView,
+                  let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer else { return }
+            positioningButtons = true
+            defer {
+                syncFoldAccessibilityActions(on: textView)
+                positioningButtons = false
+            }
             foldButtons.forEach { $0.removeFromSuperview() }
             foldButtons.removeAll()
-            textView.setAccessibilityCustomActions([])
-            guard let source = loadedSource, !foldRanges.isEmpty else {
-                return
-            }
-            guard let layoutManager = textView.layoutManager, let textContainer = textView.textContainer else { return }
+            guard !foldRanges.isEmpty,
+                  let clipView = textView.enclosingScrollView?.contentView,
+                  !clipView.bounds.isEmpty else { return }
 
-            let length = (textView.string as NSString).length
-            if length > 0 {
-                layoutManager.ensureLayout(forCharacterRange: NSRange(location: 0, length: length))
-            }
-
-            let hiddenByParent = parentHiddenFolds(in: foldRanges, collapsed: collapsed)
             let inset = textView.textContainerInset
-            let buttonSize = CodeReaderTextView.foldButtonSize
+            let viewport = clipView.bounds.offsetBy(dx: -inset.width, dy: -inset.height)
+            let glyphs = layoutManager.glyphRange(forBoundingRect: viewport, in: textContainer)
+            let visible = layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+            guard visible.length > 0 else { return }
 
-            for (index, fold) in foldRanges.enumerated() {
-                // ponytail: eager controls are bounded by the 128 KiB rich-reader limit; virtualize visible folds if profiling shows dense files are slow.
-                let button = NSButton(frame: NSRect(origin: .zero, size: buttonSize))
+            // Fold ranges are in source order; skip directly to the first visible header.
+            var low = 0
+            var high = foldRanges.count
+            while low < high {
+                let middle = (low + high) / 2
+                let line = foldRanges[middle].startLine - 1
+                if lineStarts.indices.contains(line), lineStarts[line] < visible.location {
+                    low = middle + 1
+                } else {
+                    high = middle
+                }
+            }
+            for index in low..<foldRanges.count {
+                let fold = foldRanges[index]
+                guard lineStarts.indices.contains(fold.startLine - 1) else { continue }
+                let header = lineStarts[fold.startLine - 1]
+                if header >= NSMaxRange(visible) { break }
+                guard !hiddenByParent.contains(fold) else { continue }
+                let glyph = layoutManager.glyphIndexForCharacter(at: header)
+                let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                guard fragment.maxY >= viewport.minY, fragment.minY <= viewport.maxY else { continue }
+                let button = NSButton(frame: NSRect(origin: .zero, size: CodeReaderTextView.foldButtonSize))
                 button.bezelStyle = .inline
                 button.isBordered = false
                 button.imagePosition = .imageLeading
@@ -451,30 +520,17 @@ struct CodeReaderTextView: NSViewRepresentable {
                 button.setAccessibilityElement(false)
                 button.setAccessibilityHidden(true)
                 positionFoldButton(
-                    button,
-                    fold: fold,
-                    hiddenByParent: hiddenByParent.contains(fold),
-                    source: source,
-                    textView: textView,
-                    layoutManager: layoutManager,
-                    textContainer: textContainer,
-                    inset: inset
+                    button, fold: fold, fragment: fragment, inset: inset
                 )
             }
-            syncFoldAccessibilityActions(on: textView)
         }
 
         private func positionFoldButton(
             _ button: NSButton,
             fold: FoldRange,
-            hiddenByParent: Bool,
-            source: String,
-            textView: NSTextView,
-            layoutManager: NSLayoutManager,
-            textContainer: NSTextContainer,
+            fragment: NSRect,
             inset: NSSize
         ) {
-            button.isHidden = hiddenByParent
             let isCollapsed = collapsed.contains(fold)
             let symbol = NSImage(
                 systemSymbolName: isCollapsed ? "chevron.right" : "chevron.down",
@@ -488,17 +544,6 @@ struct CodeReaderTextView: NSViewRepresentable {
                 : String(localized: "折叠第 \(fold.startLine.formatted()) 行结构")
             button.toolTip = label
 
-            guard !hiddenByParent,
-                  let header = headerUTF16Location(for: fold, in: source),
-                  header < (textView.string as NSString).length
-            else { return }
-
-            let glyphIndex = layoutManager.glyphIndexForCharacter(at: header)
-            let fragment = layoutManager.lineFragmentRect(
-                forGlyphAt: glyphIndex,
-                effectiveRange: nil,
-                withoutAdditionalLayout: false
-            )
             let size = CodeReaderTextView.foldButtonSize
             let y = inset.height + fragment.minY + (fragment.height - size.height) / 2
             button.frame = NSRect(
@@ -512,13 +557,15 @@ struct CodeReaderTextView: NSViewRepresentable {
         private func syncFoldAccessibilityActions(on textView: NSTextView) {
             textView.setAccessibilityCustomActions(
                 makeFoldAccessibilityCustomActions(
-                    ranges: foldRanges,
+                    ranges: foldButtons.map { foldRanges[$0.tag] },
                     collapsed: collapsed,
-                    onToggle: { fold in
+                    onToggle: { [weak self] fold in
+                        guard let self else { return false }
                         self.toggle(fold)
                         return true
                     },
-                    onExpandAll: {
+                    onExpandAll: { [weak self] in
+                        guard let self else { return false }
                         self.collapsed.removeAll()
                         self.invalidateFoldGlyphs()
                         self.rebuildFoldButtons()

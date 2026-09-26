@@ -430,7 +430,9 @@ private struct FileReaderView: View {
     let consistencyReport: RepositoryConsistencyReport?
 
     var body: some View {
-        if let language = codeReaderLanguage {
+        if isJSON && (perspective == .fields || (perspective == .overview && !hasSpecializedSummary)) {
+            JSONReaderView(data: data)
+        } else if let language = codeReaderLanguage {
             CodeReaderView(source: text, language: language)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -499,7 +501,7 @@ private struct FileReaderView: View {
         }
     }
 
-    private var isStructuredOverview: Bool {
+    private var hasSpecializedSummary: Bool {
         let name = file.name.lowercased()
         let structuredNames = [
             "config.json",
@@ -512,13 +514,14 @@ private struct FileReaderView: View {
         return structuredNames.contains(name)
             || file.category == .weightMetadata
             || (file.category == .documentation && name.hasSuffix(".md"))
-            || jsonObject != nil
     }
+
+    private var isStructuredOverview: Bool { hasSpecializedSummary || jsonObject != nil }
 
     private var text: String { String(decoding: data, as: UTF8.self) }
     private var codeReaderLanguage: String? {
-        guard data.count <= 128 * 1_024,
-              let language = FileClassifier.syntaxLanguage(for: file.path)
+        guard let language = FileClassifier.syntaxLanguage(for: file.path),
+              language == "json" || data.count <= 128 * 1_024
         else { return nil }
         if language == "json" {
             return perspective == .raw ? language : nil
@@ -532,8 +535,42 @@ private struct FileReaderView: View {
     }
     private var isJSON: Bool { file.name.lowercased().hasSuffix(".json") }
     private var isTokenizerJSON: Bool { file.name.lowercased() == "tokenizer.json" }
-    private var jsonObject: Any? { try? JSONSerialization.jsonObject(with: data) }
+    private var jsonObject: Any? { try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) }
     private var jsonDictionary: [String: Any] { jsonObject as? [String: Any] ?? [:] }
+}
+
+// Formatting runs off the main actor because tokenizer vocabularies can be large.
+private struct JSONReaderView: View {
+    let data: Data
+    @State private var source: String?
+    @State private var error: String?
+
+    var body: some View {
+        Group {
+            if let source {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let error {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                            .padding(8)
+                    }
+                    CodeReaderView(source: source, language: "json")
+                }
+            } else {
+                ProgressView()
+            }
+        }
+        .task(id: data) {
+            source = nil
+            let formatted = await Task.detached(priority: .userInitiated) {
+                JSONFormatter.formattedSource(data)
+            }.value
+            guard !Task.isCancelled else { return }
+            source = formatted.source
+            error = formatted.error
+        }
+    }
 }
 
 private struct WeightWorkspaceView: View {
@@ -1935,12 +1972,47 @@ private struct KeyValueRow: View {
     }
 }
 
-private enum JSONFormatter {
+enum JSONFormatter {
+    static func formattedSource(_ data: Data) -> (source: String, error: String?) {
+        let source = String(decoding: data, as: UTF8.self)
+        do {
+            _ = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+        } catch {
+            return (source, "JSON: \(error.localizedDescription)")
+        }
+        // Keep number and string lexemes intact; decoding/re-encoding rounds large numbers.
+        var result = ""
+        var depth = 0
+        var inString = false
+        var escaped = false
+        func newline() { result += "\n" + String(repeating: "  ", count: depth) }
+        for character in source {
+            if inString {
+                result.append(character)
+                if escaped { escaped = false }
+                else if character == "\\" { escaped = true }
+                else if character == "\"" { inString = false }
+                continue
+            }
+            switch character {
+            case "\"": inString = true; result.append(character)
+            case "{", "[": result.append(character); depth += 1; newline()
+            case "}", "]": depth = max(0, depth - 1); newline(); result.append(character)
+            case ",": result.append(character); newline()
+            case ":": result += ": "
+            default: if !character.isWhitespace { result.append(character) }
+            }
+        }
+        return (result, nil)
+    }
+
     static func inline(_ value: Any) -> String {
         if value is NSNull { return "null" }
-        if let bool = value as? Bool { return bool ? "true" : "false" }
         if let string = value as? String { return string }
-        if let number = value as? NSNumber { return number.stringValue }
+        if let number = value as? NSNumber {
+            return CFGetTypeID(number) == CFBooleanGetTypeID()
+                ? (number.boolValue ? "true" : "false") : number.stringValue
+        }
         return pretty(value).replacingOccurrences(of: "\n", with: " ")
     }
 

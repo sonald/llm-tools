@@ -261,12 +261,7 @@ struct TemplatePlaygroundView: View {
                     .padding(.horizontal, 10)
                     .frame(height: 28)
                     Divider()
-                    ScrollView([.horizontal, .vertical]) {
-                        Text(json)
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(9)
-                    }
+                    CodeReaderView(source: json, language: "json")
                     .frame(minHeight: 80, idealHeight: 130, maxHeight: 170)
                 }
             }
