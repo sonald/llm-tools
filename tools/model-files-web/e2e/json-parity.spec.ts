@@ -15,6 +15,16 @@ test('tokenizer JSON remains readable without a usable tokenizer runtime', async
   await page.getByRole('button', { name: '原文', exact: true }).click()
   const reader = page.locator('.source-reader')
   await expect(reader).toHaveAttribute('data-highlighted', 'true')
+  for (const colorScheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme })
+    const colors = await reader.evaluate(element => ({
+      plain: getComputedStyle(element).color,
+      tokens: [...element.querySelectorAll('.token')].map(token => getComputedStyle(token).color),
+    }))
+    expect(new Set(colors.tokens).size).toBeGreaterThan(2)
+    expect(colors.tokens.some(color => color !== colors.plain)).toBe(true)
+  }
+  await page.emulateMedia({ colorScheme: 'light' })
   expect(await reader.textContent()).toBe(source)
   await page.getByRole('button', { name: '折叠第 2 行结构' }).click()
   await expect(page.getByRole('button', { name: '展开第 2 行结构' })).toBeVisible()

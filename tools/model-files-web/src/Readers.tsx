@@ -359,11 +359,12 @@ function SourceCode({
   language: string
   bytesRead: number
 }) {
-  const [segments, setSegments] = useState<SourceSegment[] | null>(null)
+  const [highlight, setHighlight] = useState<{ content: string; language: string; segments: SourceSegment[] } | null>(null)
   const rich = language === 'json' || bytesRead <= richLimitBytes
   const [sourcePage, setSourcePage] = useState(0)
   const sourceStart = rich ? sourceBoundary(content, sourcePage * richLimitBytes) : 0
   const displayedContent = rich ? content.slice(sourceStart, sourceBoundary(content, (sourcePage + 1) * richLimitBytes)) : content
+  const segments = highlight?.content === displayedContent && highlight.language === language ? highlight.segments : null
   const firstLine = useMemo(() => textLineAtOffset(content, sourceStart), [content, sourceStart])
   useEffect(() => setSourcePage(0), [content, language])
   const sourceRef = useRef<HTMLPreElement>(null)
@@ -372,7 +373,7 @@ function SourceCode({
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   useEffect(() => {
     if (!rich) return
-    setSegments(null)
+    setHighlight(null)
     let active = true
     let worker: Worker | null = new Worker(new URL('./sourceHighlight.worker.ts', import.meta.url), { type: 'module' })
     const terminate = () => {
@@ -383,12 +384,12 @@ function SourceCode({
       terminate()
       const reply = validateReply(event.data, displayedContent)
       if (!active || reply === null) return
-      setSegments(reply.segments)
+      setHighlight({ content: displayedContent, language, segments: reply.segments })
     }
     worker.onerror = event => {
       event.preventDefault()
       terminate()
-      if (active) setSegments(null)
+      if (active) setHighlight(null)
     }
     worker.postMessage({ content, language, start: sourceStart, end: sourceStart + displayedContent.length })
     return () => {
@@ -843,9 +844,9 @@ function JsonField({ value, preview, source }: { value: unknown; preview: string
   const [open, setOpen] = useState(false)
   if ((value !== null && typeof value === 'object') || (source?.length ?? 0) > 500) {
     return <details onToggle={event => setOpen(event.currentTarget.open)}>
-      <summary><span className="token source-operator">{preview}</span></summary>
+      <summary><span className="token source-syntax-operator">{preview}</span></summary>
       {open ? <SourceCode content={formatJsonSource(source ?? JSON.stringify(value))} language="json" bytesRead={0} /> : null}
     </details>
   }
-  return <span className={`token ${typeof value === 'string' ? 'source-string' : 'source-literal'}`}>{typeof value === 'string' ? preview : source ?? preview}</span>
+  return <span className={`token ${typeof value === 'string' ? 'source-syntax-string' : 'source-syntax-literal'}`}>{typeof value === 'string' ? preview : source ?? preview}</span>
 }
