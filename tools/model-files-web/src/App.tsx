@@ -360,7 +360,7 @@ export default function App() {
       } else if (file.path.split('/').at(-1)?.toLocaleLowerCase() === 'tokenizer_config.json') {
         const data = await readWholeFile(activeSnapshot, file, controller.signal)
         const decoded = decodeStrictText(data)
-        const parsed: unknown = JSON.parse(decoded)
+        const parsed = parseDisplayJSON(decoded)
         const directory = file.path.split('/').slice(0, -1).join('/')
         const templatePath = directory === '' ? 'chat_template.jinja' : `${directory}/chat_template.jinja`
         const independent = activeSnapshot.files.find(candidate => candidate.path === templatePath)
@@ -401,7 +401,7 @@ export default function App() {
             kind: 'text',
             file,
             content: decoded,
-            parsed: json ? JSON.parse(decoded) : null,
+            parsed: json ? parseDisplayJSON(decoded) : null,
             bytesRead: data.byteLength,
             json,
           }
@@ -1221,7 +1221,7 @@ function ImatrixInspection({ inspection }: { inspection: Extract<Inspection, { k
 }
 
 function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot; file: RepositoryFile }) {
-  const [view, setView] = useState<'structure' | 'raw' | 'decode' | 'chat'>('structure')
+  const [view, setView] = useState<'structure' | 'json' | 'raw' | 'decode' | 'chat'>('structure')
   const [rawInput, setRawInput] = useState(() => t('appTokenizerRawSample'))
   const [tokenIdInput, setTokenIdInput] = useState('[1, 3, 2]')
   const [chatMessages, setChatMessages] = useState(JSON.stringify([
@@ -2071,6 +2071,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       </div>
       <div className="tokenizer-tabs" role="tablist" aria-label={t('tokenizerViewsAriaLabel')}>
         <button type="button" role="tab" aria-selected={view === 'structure'} onClick={() => changeView('structure')}>{t('tokenizerStructureTab')}</button>
+        {!isSentencePieceFile(file) ? <button type="button" role="tab" aria-selected={view === 'json'} onClick={() => changeView('json')}>JSON</button> : null}
         <button type="button" role="tab" aria-selected={view === 'raw'} onClick={() => changeView('raw')}>{t('tokenizerRawTab')}</button>
         <button type="button" role="tab" aria-selected={view === 'decode'} onClick={() => changeView('decode')}>{t('tokenizerDecodeTab')}</button>
         <button type="button" role="tab" aria-selected={view === 'chat'} onClick={() => changeView('chat')}>{t('tokenizerChatTab')}</button>
@@ -2086,6 +2087,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
           config={config}
         />
       ) : null}
+      {view === 'json' ? <TokenizerJSONInspection snapshot={snapshot} file={file} /> : null}
       {view === 'decode' ? (
         <div className={`tokenizer-layout ${comparisonOpen ? 'comparison-open' : ''}`}>
           <section className="input-panel">
@@ -2205,6 +2207,32 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       ) : null}
     </div>
   )
+}
+
+// Invalid JSON is still useful source to inspect; runtime/config validation stays strict.
+function parseDisplayJSON(content: string): unknown {
+  try { return JSON.parse(content) } catch { return undefined }
+}
+
+function TokenizerJSONInspection({ snapshot, file }: { snapshot: RepositorySnapshot; file: RepositoryFile }) {
+  const [document, setDocument] = useState<{ content: string; parsed: unknown; bytesRead: number } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    const controller = new AbortController()
+    setDocument(null)
+    setError(null)
+    void readWholeFile(snapshot, file, controller.signal).then(data => {
+      const content = decodeStrictText(data)
+      const parsed = parseDisplayJSON(content)
+      if (!controller.signal.aborted) setDocument({ content, parsed, bytesRead: data.byteLength })
+    }).catch(failure => {
+      if (!controller.signal.aborted) setError(errorMessage(failure))
+    })
+    return () => controller.abort()
+  }, [snapshot, file])
+  if (error !== null) return <InlineError>{error}</InlineError>
+  if (document === null) return <LoadingState file={file} />
+  return <TextInspection snapshot={snapshot} path={file.path} {...document} json />
 }
 
 function TokenizerStructureInspection({

@@ -1,6 +1,7 @@
 export type FoldRange = { startLine: number; endLine: number }
 
 export function foldRanges(source: string, language: string): FoldRange[] {
+  source = source.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
   switch (language.toLowerCase()) {
     case 'python':
     case 'py':

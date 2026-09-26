@@ -184,3 +184,11 @@ test('testPythonFoldScanOn128KiBFixtureStaysUnder50ms', () => {
   const budgetMs = process.env.CI ? 250 : 100
   assert.ok(elapsedMilliseconds < budgetMs, `foldRanges took ${elapsedMilliseconds} ms (budget: ${budgetMs} ms)`)
 })
+
+test('JSON fold line numbers are consistent for LF, CRLF, and CR', () => {
+  const source = '{\n  "nested": [\n    1\n  ]\n}'
+  const expected = [{ startLine: 1, endLine: 5 }, { startLine: 2, endLine: 4 }]
+  for (const newline of ['\n', '\r\n', '\r']) {
+    assert.deepEqual(foldRanges(source.replaceAll('\n', newline), 'json'), expected)
+  }
+})

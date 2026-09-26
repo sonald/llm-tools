@@ -6,18 +6,20 @@ Model Files Web 是纯浏览器、只读的模型文件检查器。它不加载�
 
 | 文件 | 支持等级 | 读取边界 |
 | --- | --- | --- |
-| Config、Generation Config、通用 JSON、分片 index | 语义概览、全部字段、原文 | 单文件最多 32 MiB，严格 UTF-8/JSON，1,000 项渐进显示 |
+| Config、Generation Config、通用 JSON、分片 index | 语义概览、可展开字段、原文高亮/折叠/查找 | 单文件最多 32 MiB，严格 UTF-8，1,000 项渐进显示；无效 JSON 保留原文并提示错误 |
 | Markdown、`vocab.json`、`merges.txt` 与文本 | 渲染/原文、搜索、渐进列表 | 单文件最多 32 MiB；raw HTML 与第三方图片请求禁用 |
 | SafeTensors | Header、metadata、层级 tensor 目录（自然排序、搜索剪枝、后代计数、折叠、breadcrumb、详情） | 只读 8-byte 长度和精确 Header，0 bytes tensor 数据 |
 | GGUF | 基础摘要 | 只读前 24 bytes；版本、字节序、tensor/metadata 数量 |
 | `imatrix*.dat` | legacy imatrix 概览、搜索、Entry 详情 | 受限全文解析；累计条目、名称和 float 数量均失败关闭 |
-| `tokenizer.json` | 结构/词表分析、Raw/Chat、Token IDs/Special/Role/tools/variables/overhead/template catalog/vocabulary | 同目录 bundle 最多 32 MiB；输入最多 64 KiB；搜索结果最多 1,000 条；Worker latest-only |
+| `tokenizer.json` | 结构/词表分析、独立 JSON 阅读、Raw/Chat、Token IDs/Special/Role/tools/variables/overhead/template catalog/vocabulary | 同目录 bundle 最多 32 MiB；JSON 阅读不依赖 tokenizer 运行时；输入最多 64 KiB；搜索结果最多 1,000 条；Worker latest-only |
 | 独立 SentencePiece `.model` | BPE/Unigram 编码、pieces、decode、Raw/Chat 与对照 | 同目录 bundle 最多 32 MiB；输入最多 64 KiB；Worker 内 WASM latest-only |
-| Python、YAML/YML、JSON、PDF 与普通源码 | 语法高亮、折叠、当前文件查找；PDF 内嵌预览 | 可读文件最多 32 MiB；>128 KiB 不折叠但全文可查；未知二进制失败关闭 |
+| Python、YAML/YML、JSON、PDF 与普通源码 | 语法高亮、折叠、当前文件查找；PDF 内嵌预览 | 可读文件最多 32 MiB；大 JSON 分页高亮/折叠并支持全文查找；其他源码 >128 KiB 使用全文可查的文本阅读器；未知二进制失败关闭 |
 | `chat_template.jinja` / `chat_template` | 源码、临时编辑、Template Playground | 最多 64 KiB；Worker 渲染；不支持 include 或代码执行 |
 | 其他权重格式 | 锁定 | 不请求文件内容 |
 
 完整 GGUF metadata/tensor directory 的产品门禁为 NO-GO：格式没有独立目录长度，通用顺序 Range 无法在未知 tensor data offset 前保证停止。证据见 [GGUF 可行性记录](docs/gguf-feasibility.md)。
+
+JSON 原文保留数字和字符串的原始写法；长文件按约 128K 字符分页，查找会跳到命中页。全部字段可展开对象、数组和长字符串，格式化不会把大整数四舍五入。模板生成的 JSON 原始输出也使用同一阅读器。
 
 数据来源支持匿名公开 Hugging Face 仓库、HTTPS 文件/清单和用户主动选择的本地目录。Hugging Face 内容固定到清单返回的 40-hex revision；HTTPS 与本地来源均为 live，会话内不重新发现文件，不能保证远端文件不发生同大小修改。HTTPS 地址和本地文件只保留在当前页面会话，不写入页面 URL 或历史；本地文件不上传。页面只在 `localStorage` 保存最多 10 个 Hugging Face 仓库 ID 并提供清除，不持久化文件内容、目录路径、tokenizer/template 输入或检查结果。
 

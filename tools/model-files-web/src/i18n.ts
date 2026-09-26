@@ -861,6 +861,18 @@ export const messageCatalog = {
     'zh-Hans': 'JSON 有效',
     en: 'Valid JSON',
   },
+  readerJsonInvalid: {
+    'zh-Hans': 'JSON 格式无效 · 显示原文',
+    en: 'Invalid JSON · Showing source',
+  },
+  readerPreviousSourcePage: {
+    'zh-Hans': '上一页',
+    en: 'Previous page',
+  },
+  readerNextSourcePage: {
+    'zh-Hans': '下一页',
+    en: 'Next page',
+  },
   readerUtf8Valid: {
     'zh-Hans': 'UTF-8 有效',
     en: 'Valid UTF-8',
