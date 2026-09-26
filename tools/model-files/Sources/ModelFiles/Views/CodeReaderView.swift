@@ -604,7 +604,7 @@ struct CodeReaderTextView: NSViewRepresentable {
 
         private static func color(for type: String) -> NSColor {
             switch type {
-            case "keyword", "boolean", "literal":
+            case "keyword", "boolean", "literal", "null":
                 .systemPink
             case "string", "char", "regex", "attr-value":
                 .systemRed

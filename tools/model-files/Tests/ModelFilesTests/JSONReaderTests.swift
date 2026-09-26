@@ -48,7 +48,7 @@ final class JSONReaderTests: XCTestCase {
         if let path = ProcessInfo.processInfo.environment["MODELFILES_JSON_FIXTURE"] {
             source = try String(contentsOfFile: path, encoding: .utf8)
         } else {
-            source = "[\n" + Array(repeating: "{\n  \"value\": true\n}", count: 8_000).joined(separator: ",\n") + "\n]"
+            source = "[\n" + Array(repeating: "{\n  \"value\": true,\n  \"empty\": null\n}", count: 8_000).joined(separator: ",\n") + "\n]"
         }
         let folds = SourceFolding.foldRanges(in: source, language: "json")
         let host = NSHostingView(rootView: CodeReaderTextView(
@@ -71,6 +71,9 @@ final class JSONReaderTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertNotEqual(textView.textStorage?.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, NSColor.labelColor)
+        let nullRange = (source as NSString).range(of: "null")
+        XCTAssertNotEqual(nullRange.location, NSNotFound)
+        XCTAssertNotEqual(textView.textStorage?.attribute(.foregroundColor, at: nullRange.location, effectiveRange: nil) as? NSColor, NSColor.labelColor)
         host.layoutSubtreeIfNeeded()
         XCTAssertLessThan(clip.bounds.minY, 30)
         let button = try XCTUnwrap(textView.subviews.compactMap { $0 as? NSButton }.first { $0.tag == 1 })
