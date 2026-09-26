@@ -40,6 +40,9 @@ test('searches stable JSON rows and text lines with explicit limits', () => {
   assert.deepEqual(rows, [['alpha', '1'], ['beta', '2'], ['gamma', '3']])
   assert.deepEqual(visibleRows(rows, 'TA', 1), [['beta', '2']])
   assert.deepEqual(textLines('first\r\n\r\nsecond'), ['first', '', 'second'])
+  assert.deepEqual(jsonRows('model.safetensors.index.json', {
+    metadata: { total_size: 12 }, weight_map: { layer: 'shard.safetensors' },
+  }).map(([key]) => key), ['metadata', 'weight_map'])
 })
 
 test('finds literal text matches without retaining a match array', () => {

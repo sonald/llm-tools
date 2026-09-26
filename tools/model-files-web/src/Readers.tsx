@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { formatBytes, type RepositoryFile, type RepositorySnapshot } from './core/huggingface.ts'
+import { formatJsonSource, jsonFieldSources, sourceBoundary } from './core/jsonSource.ts'
 import { foldRanges, type FoldRange } from './core/sourceFolding.ts'
 import { formatNumber, translate as t } from './i18n.ts'
 import {
@@ -34,23 +35,30 @@ export function TextInspection(props: Props) {
   return <LineInspection {...props} />
 }
 
-function JsonInspection({ path, content, parsed, bytesRead }: Props) {
-  const [perspective, setPerspective] = useState<'overview' | 'fields' | 'raw'>('overview')
+export function JsonInspection({ path, content, parsed, bytesRead }: Props) {
+  const [perspective, setPerspective] = useState<'overview' | 'fields' | 'raw'>(parsed === undefined ? 'raw' : 'overview')
+  const shownPerspective = parsed === undefined ? 'raw' : perspective
   const [query, setQuery] = useState('')
   const [limit, setLimit] = useState(1000)
   const summary = useMemo(() => summarizeJson(path, parsed), [parsed, path])
   const rows = useMemo(() => jsonRows(path, parsed), [parsed, path])
+  const fieldSources = useMemo(() => jsonFieldSources(parsed === undefined ? '' : content), [content, parsed])
   // ponytail: bounded linear scan stays dependency-free; move it to a Worker only if the 100k-row browser gate regresses.
-  const matching = useMemo(() => visibleRows(rows, query, Number.MAX_SAFE_INTEGER), [query, rows])
+  const matching = useMemo(() => {
+    const term = query.trim().toLocaleLowerCase()
+    return term === '' ? rows : rows.filter(([key, preview]) => key.toLocaleLowerCase().includes(term)
+      || preview.toLocaleLowerCase().includes(term)
+      || (fieldSources.get(key) ?? '').toLocaleLowerCase().includes(term))
+  }, [fieldSources, query, rows])
   useEffect(() => setLimit(1000), [query])
 
   return (
     <div className="reader-canvas">
-      <ReaderHeader bytesRead={bytesRead} result={t('readerJsonValid')} />
-      <Perspective<'overview' | 'fields' | 'raw'> value={perspective} onChange={setPerspective} values={[
+      <ReaderHeader bytesRead={bytesRead} result={t(parsed === undefined ? 'readerJsonInvalid' : 'readerJsonValid')} />
+      {parsed !== undefined ? <Perspective<'overview' | 'fields' | 'raw'> value={perspective} onChange={setPerspective} values={[
         ['overview', t('readerOverview')], ['fields', t('readerAllFields')], ['raw', t('readerRawSource')],
-      ]} />
-      {perspective === 'overview' ? (
+      ]} /> : null}
+      {shownPerspective === 'overview' ? (
         <section className="reader-section">
           <h2>{summary.title}</h2>
           <dl className="reader-facts">
@@ -58,10 +66,10 @@ function JsonInspection({ path, content, parsed, bytesRead }: Props) {
           </dl>
         </section>
       ) : null}
-      {perspective === 'fields' ? (
-        <ProgressiveRows rows={matching} query={query} setQuery={setQuery} limit={limit} setLimit={setLimit} />
+      {shownPerspective === 'fields' ? (
+        <ProgressiveRows rows={matching} query={query} setQuery={setQuery} limit={limit} setLimit={setLimit} jsonValue={parsed} path={path} fieldSources={fieldSources} />
       ) : null}
-      {perspective === 'raw' ? <SourceCode content={content} language="json" bytesRead={bytesRead} /> : null}
+      {shownPerspective === 'raw' ? <SourceCode content={content} language="json" bytesRead={bytesRead} /> : null}
     </div>
   )
 }
@@ -352,7 +360,12 @@ function SourceCode({
   bytesRead: number
 }) {
   const [segments, setSegments] = useState<SourceSegment[] | null>(null)
-  const rich = bytesRead <= richLimitBytes
+  const rich = language === 'json' || bytesRead <= richLimitBytes
+  const [sourcePage, setSourcePage] = useState(0)
+  const sourceStart = rich ? sourceBoundary(content, sourcePage * richLimitBytes) : 0
+  const displayedContent = rich ? content.slice(sourceStart, sourceBoundary(content, (sourcePage + 1) * richLimitBytes)) : content
+  const firstLine = useMemo(() => textLineAtOffset(content, sourceStart), [content, sourceStart])
+  useEffect(() => setSourcePage(0), [content, language])
   const sourceRef = useRef<HTMLPreElement>(null)
   const [find, setFind] = useState<SourceFind>(closedFind)
   const ranges = useMemo(() => (rich ? foldRanges(content, language) : []), [content, language, rich])
@@ -368,7 +381,7 @@ function SourceCode({
     }
     worker.onmessage = (event: MessageEvent<unknown>) => {
       terminate()
-      const reply = validateReply(event.data, content)
+      const reply = validateReply(event.data, displayedContent)
       if (!active || reply === null) return
       setSegments(reply.segments)
     }
@@ -377,56 +390,70 @@ function SourceCode({
       terminate()
       if (active) setSegments(null)
     }
-    worker.postMessage({ content, language })
+    worker.postMessage({ content, language, start: sourceStart, end: sourceStart + displayedContent.length })
     return () => {
       active = false
       terminate()
     }
-  }, [content, language, rich])
+  }, [content, displayedContent, language, rich, sourceStart])
   useEffect(() => setCollapsed(new Set()), [content, language])
 
+  const result = useMemo(() => navigateTextMatches(
+    content,
+    rich && find.open ? find.query : '',
+    'next',
+    Math.max(find.current, 1) - 1,
+  ), [content, find.current, find.open, find.query, rich])
   const matches = useMemo(() => {
     if (!rich || !find.open || find.query === '') return []
     const found: SourceMatch[] = []
-    forEachTextMatch(content, find.query, start => found.push({ start, end: start + find.query.length }))
+    forEachTextMatch(content, find.query, start => {
+      const end = start + find.query.length
+      if (end > sourceStart && start < sourceStart + displayedContent.length) found.push({ start, end })
+    })
     return found
-  }, [content, find.open, find.query, rich])
+  }, [content, displayedContent.length, find.open, find.query, rich, sourceStart])
   useEffect(() => setFind(closedFind), [content, language])
 
-  const current = matches.length === 0
-    ? 0
-    : find.current <= 0
-      ? 1
-    : Math.min(find.current, matches.length)
-  const activeMatch = current === 0 ? null : matches[current - 1]
+  const current = result.current
+  const activeMatch = useMemo(() => result.total === 0 ? null : { start: result.start, end: result.end }, [result])
   const activeLine = activeMatch === null ? 0 : textLineAtOffset(content, activeMatch.start)
+  const lastLine = useMemo(() => firstLine + textLineAtOffset(displayedContent, displayedContent.length) - 1,
+    [displayedContent, firstLine])
 
   const hiddenLines = useMemo(() => {
     const hidden = new Set<number>()
     for (const range of ranges) {
       if (!collapsed.has(foldKey(range))) continue
-      for (let line = range.startLine + 1; line <= range.endLine; line += 1) hidden.add(line)
+      for (let line = Math.max(firstLine, range.startLine + 1); line <= Math.min(lastLine, range.endLine); line += 1) hidden.add(line)
     }
     return hidden
-  }, [collapsed, ranges])
+  }, [collapsed, firstLine, lastLine, ranges])
 
   const markersByLine = useMemo(() => {
     const markers = new Map<number, FoldRange[]>()
     for (const range of ranges) {
+      if (range.startLine < firstLine || range.startLine > lastLine) continue
       const current = markers.get(range.startLine)
       markers.set(range.startLine, current === undefined ? [range] : [...current, range])
     }
     return markers
-  }, [ranges])
+  }, [firstLine, lastLine, ranges])
 
   const navigateFind = (navigation: 'next' | 'previous') => setFind(state => ({
     ...state,
     current: navigateTextMatches(content, state.query, navigation, current).current,
   }))
   const lines = useMemo(
-    () => splitSourceLines(content, segments, matches, activeMatch),
-    [activeMatch, content, matches, segments],
+    () => splitSourceLines(displayedContent, segments,
+      matches.map(match => ({ start: match.start - sourceStart, end: match.end - sourceStart })),
+      activeMatch === null ? null : { start: activeMatch.start - sourceStart, end: activeMatch.end - sourceStart }),
+    [activeMatch, displayedContent, matches, segments, sourceStart],
   )
+
+  useEffect(() => {
+    if (activeMatch !== null) setSourcePage(Math.floor(activeMatch.start / richLimitBytes))
+  }, [activeMatch])
 
   useEffect(() => {
     if (activeMatch === null) return
@@ -445,7 +472,7 @@ function SourceCode({
       sourceRef.current?.querySelector('mark.current')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
     })
     return () => cancelAnimationFrame(frame)
-  }, [activeLine, activeMatch, collapsed, content, ranges])
+  }, [activeLine, activeMatch, collapsed, content, ranges, segments, sourceStart])
   const showToolbar = ranges.length > 0
 
   if (!rich) {
@@ -480,9 +507,9 @@ function SourceCode({
             }}
             value={find.query}
           />
-          <span>{formatNumber(current)} / {formatNumber(matches.length)}</span>
-          <button disabled={matches.length === 0} onClick={() => navigateFind('previous')} type="button">{t('readerPreviousMatch')}</button>
-          <button disabled={matches.length === 0} onClick={() => navigateFind('next')} type="button">{t('readerNextMatch')}</button>
+          <span>{formatNumber(current)} / {formatNumber(result.total)}</span>
+          <button disabled={result.total === 0} onClick={() => navigateFind('previous')} type="button">{t('readerPreviousMatch')}</button>
+          <button disabled={result.total === 0} onClick={() => navigateFind('next')} type="button">{t('readerNextMatch')}</button>
         </section>
       ) : null}
       <pre
@@ -499,7 +526,7 @@ function SourceCode({
         data-highlighted={segments !== null}
       >
         {lines.map((line, index) => {
-          const lineNumber = index + 1
+          const lineNumber = index + firstLine
           const markers = markersByLine.get(lineNumber)
           return (
             <span className="source-line" data-line={lineNumber} hidden={hiddenLines.has(lineNumber)} key={lineNumber}>
@@ -545,6 +572,13 @@ function SourceCode({
           )
         })}
       </pre>
+      {rich && content.length > richLimitBytes ? (
+        <div className="fold-toolbar">
+          <button type="button" disabled={sourcePage === 0} onClick={() => setSourcePage(page => page - 1)}>{t('readerPreviousSourcePage')}</button>
+          <span>{formatNumber(sourcePage + 1)} / {formatNumber(Math.ceil(content.length / richLimitBytes))}</span>
+          <button type="button" disabled={sourceStart + displayedContent.length >= content.length} onClick={() => setSourcePage(page => page + 1)}>{t('readerNextSourcePage')}</button>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -586,23 +620,30 @@ function splitSourceLines(
   }
 
   let segmentStart = 0
+  let matchIndex = 0
   for (const segment of pieces) {
     const renderSegment = (text: string, className: string, match = false, current = false) => {
       let start = 0
+      const nextNewline = /\r\n|\r|\n/g
       while (start < text.length) {
-        const newlineIndex = text.indexOf('\n', start)
+        nextNewline.lastIndex = start
+        const newline = nextNewline.exec(text)
+        const newlineIndex = newline?.index ?? -1
         if (newlineIndex === -1) {
           appendPiece(text.slice(start), className, match, current)
           break
         }
-        appendPiece(text.slice(start, newlineIndex + 1), className, match, current)
+        appendPiece(text.slice(start, newlineIndex + newline![0].length), className, match, current)
         lines.push([])
-        start = newlineIndex + 1
+        start = newlineIndex + newline![0].length
       }
     }
 
     let cursor = segmentStart
-    for (const match of matches) {
+    while (matchIndex < matches.length && matches[matchIndex].end <= segmentStart) matchIndex += 1
+    for (let index = matchIndex; index < matches.length; index += 1) {
+      const match = matches[index]
+      if (match.start >= segmentStart + segment.text.length) break
       const start = Math.max(cursor, match.start)
       const end = Math.min(segmentStart + segment.text.length, match.end)
       if (end <= cursor || start >= end) continue
@@ -668,6 +709,9 @@ function ProgressiveRows({
   activeKey = '',
   activeOffset = -1,
   activeRow,
+  jsonValue,
+  path,
+  fieldSources,
 }: {
   rows: Array<[string, string]>
   query: string
@@ -682,8 +726,12 @@ function ProgressiveRows({
   activeKey?: string
   activeOffset?: number
   activeRow?: [string, string]
+  jsonValue?: unknown
+  path?: string
+  fieldSources?: Map<string, string>
 }) {
   const tableRef = useRef<HTMLDivElement>(null)
+  const collection = jsonValue
   let visible = rows.slice(0, limit)
   const canFind = find !== undefined && onNavigate !== undefined && onFindChange !== undefined
   if (canFind && find!.total > 0) {
@@ -753,7 +801,10 @@ function ProgressiveRows({
                     className={`find-match${piece.current ? ' current' : ''}`}
                     key={index}
                   >{piece.text}</mark>
-                ) : <span key={index}>{piece.text}</span>) : value}
+                ) : <span key={index}>{piece.text}</span>) : path !== undefined ? (
+                  <JsonField value={collection !== null && typeof collection === 'object' && !Array.isArray(collection)
+                    ? (collection as Record<string, unknown>)[key] : collection} preview={value} source={fieldSources?.get(key)} />
+                ) : value}
               </td>
             </tr>
           ))}</tbody>
@@ -786,4 +837,15 @@ function splitCellMatches(value: string, query: string, activeOffset: number): A
   })
   if (cursor < value.length) pieces.push({ text: value.slice(cursor), className: '', match: false, current: false })
   return pieces
+}
+
+function JsonField({ value, preview, source }: { value: unknown; preview: string; source?: string }) {
+  const [open, setOpen] = useState(false)
+  if ((value !== null && typeof value === 'object') || (source?.length ?? 0) > 500) {
+    return <details onToggle={event => setOpen(event.currentTarget.open)}>
+      <summary><span className="token source-operator">{preview}</span></summary>
+      {open ? <SourceCode content={formatJsonSource(source ?? JSON.stringify(value))} language="json" bytesRead={0} /> : null}
+    </details>
+  }
+  return <span className={`token ${typeof value === 'string' ? 'source-string' : 'source-literal'}`}>{typeof value === 'string' ? preview : source ?? preview}</span>
 }

@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from '
 import { formatBytes, type RepositorySnapshot } from './core/huggingface.ts'
 import { forEachTextMatch, navigateTextMatches } from './core/readers.ts'
 import { formatNumber, translate as t } from './i18n.ts'
-import { TextInspection } from './Readers.tsx'
+import { SourceInspection, TextInspection } from './Readers.tsx'
 
 type ConfigView = { path: string; content: string; parsed: unknown; bytesRead: number }
 
@@ -30,6 +30,9 @@ export function TemplateWorkbench({
   const [addGenerationPrompt, setAddGenerationPrompt] = useState(true)
   const [phase, setPhase] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [output, setOutput] = useState('')
+  const outputIsJSON = useMemo(() => {
+    try { JSON.parse(output); return true } catch { return false }
+  }, [output])
   const [error, setError] = useState<string | null>(null)
   const [outputView, setOutputView] = useState<'structure' | 'raw'>('structure')
   const [selectedLine, setSelectedLine] = useState(0)
@@ -217,7 +220,9 @@ export function TemplateWorkbench({
             {phase === 'idle' ? <div className="result-empty">{t('templateEditJsonHint')}</div> : null}
             {phase === 'loading' ? <div className="result-empty"><span className="spinner" />{t('templateWorkerRenderingState')}</div> : null}
             {phase === 'error' ? <p className="inline-error" role="alert">{error}</p> : null}
-            {phase === 'ready' && outputView === 'raw' ? <pre className="source-reader standalone">{output}</pre> : null}
+            {phase === 'ready' && outputView === 'raw' ? outputIsJSON
+              ? <SourceInspection content={output} language="json" bytesRead={new TextEncoder().encode(output).byteLength} />
+              : <pre className="source-reader standalone">{output}</pre> : null}
             {phase === 'ready' && outputView === 'structure' ? (
               <div className="template-structure">
                 <div className="table-scroll"><table aria-label={t('templateOutputStructureTableAriaLabel')}><thead><tr><th>#</th><th>{t('readerContentColumn')}</th></tr></thead><tbody>{outputLines.map((line, index) => <tr key={index}><td>{formatNumber(index + 1)}</td><td><button className="table-link" type="button" onClick={() => setSelectedLine(index)}>{line || '∅'}</button></td></tr>)}</tbody></table></div>

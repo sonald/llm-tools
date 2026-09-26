@@ -25,7 +25,7 @@ export function summarizeJson(path: string, value: unknown): JsonSummary {
   const name = path.split('/').at(-1)?.toLocaleLowerCase() ?? ''
   if (!isRecord(value)) return {
     title: 'JSON',
-    facts: [[t('jsonRootType'), Array.isArray(value) ? t('arrayTypeLabel') : typeof value]],
+    facts: [[t('jsonRootType'), Array.isArray(value) ? t('arrayTypeLabel') : value === null ? 'null' : typeof value]],
   }
   if (name === 'config.json' || name === 'configuration.json') {
     return { title: 'Model Config', facts: compactFacts([
@@ -70,13 +70,9 @@ export function summarizeJson(path: string, value: unknown): JsonSummary {
   return { title: 'JSON', facts: [[t('jsonRootFieldCount'), formatNumber(Object.keys(value).length)]] }
 }
 
-export function jsonRows(path: string, value: unknown): Array<[string, string]> {
+export function jsonRows(_path: string, value: unknown): Array<[string, string]> {
   if (!isRecord(value)) return [['$', preview(value)]]
-  const name = path.split('/').at(-1)?.toLocaleLowerCase() ?? ''
-  const collection = name === 'vocab.json'
-    ? value
-    : isWeightIndex(name) && isRecord(value.weight_map) ? value.weight_map : value
-  return Object.entries(collection)
+  return Object.entries(value)
     .map(([key, item]): [string, string] => [key, preview(item)])
     .toSorted(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
 }

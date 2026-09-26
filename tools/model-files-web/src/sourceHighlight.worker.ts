@@ -1,4 +1,5 @@
 import './prismWorkerBootstrap.ts'
+import { highlightJsonWindow } from './core/jsonSource.ts'
 // @ts-expect-error The upstream @types/prismjs package does not declare this component entry.
 import Prism from 'prismjs/components/prism-core'
 import 'prismjs/components/prism-markup'
@@ -36,8 +37,13 @@ type Reply = {
   segments: Array<SourceSegment>
 } | { ok: false }
 
-self.onmessage = (event: MessageEvent<{ content: string; language: string }>) => {
+self.onmessage = (event: MessageEvent<{ content: string; language: string; start?: number; end?: number }>) => {
   try {
+    if (event.data.language === 'json') {
+      const { content, start, end } = event.data
+      self.postMessage({ ok: true, segments: highlightJsonWindow(content, start, end) } satisfies Reply)
+      return
+    }
     const grammar = Prism.languages[event.data.language]
     if (!grammar) {
       self.postMessage({ ok: false } satisfies Reply)
