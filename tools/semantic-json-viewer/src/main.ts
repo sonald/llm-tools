@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ContentViewer, type ContentTarget } from "./content-viewer";
 import { CollectionList } from "./collection-list";
@@ -1435,6 +1436,22 @@ async function chooseFile(): Promise<void> {
       openButton.focus();
     }
   }
+}
+
+if (isTauri()) {
+  void getCurrentWindow().onDragDropEvent((event) => {
+    if (event.payload.type !== "drop" || state.opening || state.selectionBusy || modeDialog.open) return;
+    const path = event.payload.paths[0];
+    if (!path) return;
+    const generation = ++state.generation;
+    state.pendingChoicePreviousError = state.error;
+    state.opening = true;
+    render();
+    void openPath(path, null, generation);
+  }).catch((error) => {
+    state.error = ipcError(error);
+    render();
+  });
 }
 
 function failClosedSummary(generation: number): void {

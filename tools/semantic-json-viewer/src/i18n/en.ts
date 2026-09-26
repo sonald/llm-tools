@@ -319,7 +319,7 @@ export const en = {
   "shell.inspector": "Inspector",
   "shell.openFailed": "Open failed",
   "shell.noFileOpen": "No file is open.",
-  "shell.openLocalFile": "Open a local JSON or JSONL file to begin.",
+  "shell.openLocalFile": "Open a local JSON or JSONL file, or drag it into this window.",
   "shell.entries": "Entries",
   "shell.entriesPerPage": "200 per page",
   "shell.goToEntry": "Go to Entry",

@@ -321,7 +321,7 @@ export const zhCN: MessageCatalog = {
   "shell.inspector": "检查器",
   "shell.openFailed": "打开失败",
   "shell.noFileOpen": "尚未打开文件。",
-  "shell.openLocalFile": "打开本地 JSON 或 JSONL 文件开始。",
+  "shell.openLocalFile": "打开本地 JSON 或 JSONL 文件，或将文件拖入此窗口。",
   "shell.entries": "条目",
   "shell.entriesPerPage": "每页 200 条",
   "shell.goToEntry": "跳转到条目",
