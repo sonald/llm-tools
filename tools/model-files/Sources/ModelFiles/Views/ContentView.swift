@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @StateObject private var store = ModelFilesStore()
 
     var body: some View {
@@ -15,7 +16,11 @@ struct ContentView: View {
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 HStack(spacing: 6) {
-                    Image(systemName: "doc.text.magnifyingglass")
+                    Image(colorScheme == .dark ? "model-files-dark" : "model-files-light", bundle: .module)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 28, height: 28)
+                        .accessibilityHidden(true)
                     Text("Model Files")
                 }
                     .font(.headline)

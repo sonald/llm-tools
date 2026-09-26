@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import logoDark from './assets/model-files-dark.png'
+import logoLight from './assets/model-files-light.png'
 import {
   formatBytes,
   imageMimeType,
@@ -2599,7 +2601,10 @@ function FileIcon({ locked }: { locked: boolean }) {
 }
 
 function AppMark() {
-  return <svg className="app-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h9l5 5v13H5z" /><path d="M14 3v5h5M8 13h8M8 17h6" /></svg>
+  return <picture className="app-mark" aria-hidden="true">
+    <source srcSet={logoDark} media="(prefers-color-scheme: dark)" />
+    <img src={logoLight} alt="" />
+  </picture>
 }
 
 function isBlocked(file: RepositoryFile): boolean {

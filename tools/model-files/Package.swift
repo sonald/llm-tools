@@ -31,7 +31,9 @@ let package = Package(
                 "Resources/AppIcon.png"
             ],
             resources: [
-                .process("Resources/Localizable.xcstrings")
+                .process("Resources/Localizable.xcstrings"),
+                .copy("Resources/model-files-dark.png"),
+                .copy("Resources/model-files-light.png")
             ]
         ),
         .testTarget(
