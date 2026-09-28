@@ -39,7 +39,7 @@ view.setContext({fileGeneration:4,mode:"entry"});check(!section.hidden,"JSONL se
 host.querySelector("#query").value="needle";form.requestSubmit();
 const wait=async()=>{for(let n=0;n<80;n++){await new Promise(resolve=>setTimeout(resolve,10));if(host.querySelector("#status").textContent.includes("Found"))return;}throw new Error("search did not finish");};await wait();
 check(calls.some(call=>call.command==="start_navigation_search"&&call.args.query==="needle"),"Search submit did not start a file-level task");
-host.querySelector('input[value="filtered"]').click();await new Promise(resolve=>setTimeout(resolve,0));check(!host.querySelector("#results-panel").hidden&&host.querySelector("#results button strong")?.textContent==="Entry 2","Filtered mode did not project an original Entry ordinal");
+host.querySelector('input[value="filtered"]').click();await new Promise(resolve=>setTimeout(resolve,0));check(!host.querySelector("#results-panel").hidden&&host.querySelector("#results button strong")?.textContent==="Record 2","Filtered mode did not project an original Entry ordinal");
 host.querySelector("#next").click();await new Promise(resolve=>setTimeout(resolve,0));check(destinations[0]===1,"Next match did not navigate to its original ordinal");
 host.querySelector("#next").click();await new Promise(resolve=>setTimeout(resolve,0));check(destinations[1]===3,"Second result lost its original ordinal");
 check(host.querySelector("#results mark")?.textContent==="needle","Matching content was not highlighted");

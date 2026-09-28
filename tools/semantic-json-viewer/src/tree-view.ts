@@ -87,7 +87,7 @@ type TreeViewOptions = {
     children: HTMLElement;
     value: HTMLElement;
   } | null;
-  onSelection: (node: NodeDto) => void;
+  onSelection: (node: NodeDto, path: string) => void;
   onStringSelection: (target: ContentTarget | null) => void;
   onStringOpen: (target: ContentTarget, opener: HTMLElement) => void;
   onError: (error: unknown) => void;
@@ -132,7 +132,7 @@ export class TreeView {
   private readonly tab: HTMLButtonElement;
   private readonly inspector: HTMLElement | null;
   private readonly fields: TreeViewOptions["fields"];
-  private readonly onSelection: (node: NodeDto) => void;
+  private readonly onSelection: (node: NodeDto, path: string) => void;
   private readonly onStringSelection: (target: ContentTarget | null) => void;
   private readonly onStringOpen: (target: ContentTarget, opener: HTMLElement) => void;
   private readonly onError: (error: unknown) => void;
@@ -529,7 +529,7 @@ export class TreeView {
     if (this.copy) this.copy.status.textContent = "";
     this.selectedId = record.node.id;
     this.focusKey = record.node.id;
-    this.onSelection(record.node);
+    this.onSelection(record.node, this.selectionPath(record));
     this.onStringSelection(record.node.kind === "string" ? this.contentTarget(record) : null);
     this.renderInspector(record.node);
     this.renderTree();
@@ -936,16 +936,20 @@ export class TreeView {
     disclosure.textContent = node.childCount > 0 ? record.expanded ? "▾" : "▸" : "·";
     const label = document.createElement("span");
     label.className = "tree-label";
-    label.textContent = `#${node.id} · ${node.label}`;
+    label.textContent = node.label;
     if (node.labelHasMore) label.textContent += ` · ${t("tree.truncated")}`;
     const kind = document.createElement("span");
     kind.className = "tree-kind";
-    kind.textContent = kindLabel(node.kind);
-    const span = document.createElement("span");
-    span.className = "tree-span";
-    span.textContent = `[${node.spanStart}, ${node.spanEnd})`;
+    kind.textContent = node.childCount > 0
+      ? `${kindLabel(node.kind)} · ${t("tree.childrenCount", { count: node.childCount })}`
+      : kindLabel(node.kind);
+    const technical = document.createElement("span");
+    technical.className = "tree-technical";
+    technical.hidden = true;
+    technical.textContent = `#${node.id} · [${node.spanStart}, ${node.spanEnd})`;
     const children = document.createElement("span");
     children.className = "tree-children";
+    children.hidden = true;
     children.textContent = t("tree.childrenCount", { count: node.childCount });
     const value = document.createElement("span");
     value.className = "tree-value";
@@ -958,7 +962,7 @@ export class TreeView {
         value.title = t("tree.openFullString");
       }
     }
-    item.append(disclosure, label, kind, span, children, value);
+    item.append(disclosure, label, value, kind, technical, children);
     return item;
   }
 
@@ -1101,7 +1105,7 @@ export class TreeView {
     if (!copy) return;
     const enabled = node !== null && this.session !== null && !this.copyBusy;
     copy.raw.hidden = node === null;
-    copy.subtree.hidden = node === null;
+    copy.subtree.hidden = true;
     copy.path.hidden = node === null;
     copy.decoded.hidden = node === null || !isScalarKind(node.kind);
     for (const button of [copy.raw, copy.subtree, copy.decoded, copy.path]) {
@@ -1304,6 +1308,12 @@ export class TreeView {
     };
     if (node.valuePreview !== null) this.pendingValues.add(record);
     return record;
+  }
+
+  private selectionPath(record: NodeRecord): string {
+    const path = this.contentTarget(record).pathSegments.reduce((path, label, index) =>
+      index === 0 ? label : label.startsWith("[") ? `${path}${label}` : `${path}.${label}`, "");
+    return path.startsWith("$") ? path : `$${path.startsWith("[") ? "" : "."}${path}`;
   }
 
   private contentTarget(record: NodeRecord): ContentTarget {

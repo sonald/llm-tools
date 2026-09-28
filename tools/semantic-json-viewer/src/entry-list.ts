@@ -143,6 +143,8 @@ export class EntryList {
   private session: EntryListSession | null = null;
   private entries: EntryDto[] = [];
   private selectedEntry: EntryDto | null = null;
+  private initialRecordArmed = false;
+  private userChoseRecord = false;
   private focusedOrdinal: number | null = null;
   private progress: JsonlProgressDto | null = null;
   private windowStart = 0;
@@ -244,6 +246,11 @@ export class EntryList {
       : null;
     this.rowResizeObserver?.observe(this.elements.list);
     this.clear();
+  }
+
+  armInitialRecord(): void {
+    this.initialRecordArmed = true;
+    this.userChoseRecord = false;
   }
 
   setSession(session: EntryListSession | null): void {
@@ -456,6 +463,8 @@ export class EntryList {
   }
 
   navigateToOrdinal(ordinal: number): void {
+    this.userChoseRecord = true;
+    this.initialRecordArmed = false;
     if (!Number.isSafeInteger(ordinal) || ordinal < 0 || this.opening || !this.session) return;
     const start = Math.floor(ordinal / PAGE_SIZE) * PAGE_SIZE;
     const loaded = this.entries.some((entry) => entry.location.entryOrdinal === ordinal);
@@ -515,6 +524,7 @@ export class EntryList {
       }
       this.render("page");
       if (action) this.applyAction(action);
+      this.maybeSelectInitialRecord();
       this.flushTailRefresh();
     } catch (error) {
       if (!this.isCurrentPageRequest(request)) return;
@@ -538,6 +548,13 @@ export class EntryList {
     } else {
       this.requestWindow(this.windowStart, null, true);
     }
+  }
+
+  private maybeSelectInitialRecord(): void {
+    if (!this.initialRecordArmed || this.userChoseRecord || this.selectedEntry || this.selectionRequest) return;
+    if (!this.entries.some((entry) => entry.location.entryOrdinal === 0)) return;
+    this.initialRecordArmed = false;
+    void this.selectOrdinal(0);
   }
 
   private applyAction(action: PendingAction): void {
@@ -566,6 +583,8 @@ export class EntryList {
     if (!(target instanceof Element)) return;
     const option = target.closest<HTMLElement>("[role=option]");
     if (!option) return;
+    this.userChoseRecord = true;
+    this.initialRecordArmed = false;
     const ordinal = Number(option.dataset.entryOrdinal);
     if (!Number.isSafeInteger(ordinal)) return;
     this.focusedOrdinal = ordinal;

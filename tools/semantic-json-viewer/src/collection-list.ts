@@ -411,8 +411,11 @@ export class CollectionList {
       if (!this.isCurrent(request)) return;
       this.pageRequest = null;
       this.listError = errorMessage(error);
+      if (this.pendingSelection !== null) {
+        this.pendingSelection = null;
+        this.onError(error);
+      } else if (isGlobalError(error)) this.onError(error);
       this.render();
-      if (isGlobalError(error)) this.onError(error);
     }
   }
 
@@ -654,7 +657,10 @@ export class CollectionList {
     }));
     const title = document.createElement("span");
     title.className = "collection-option-title";
-    title.textContent = t("collectionList.itemTitle", { item: ordinal.toLocaleString(locale) });
+    title.textContent = t("collectionList.itemTitle", {
+      record: (ordinal + 1).toLocaleString(locale),
+      index: ordinal.toLocaleString(locale)
+    });
     const meta = document.createElement("span");
     meta.className = "collection-option-meta";
     meta.textContent = t("collectionList.itemMeta", {

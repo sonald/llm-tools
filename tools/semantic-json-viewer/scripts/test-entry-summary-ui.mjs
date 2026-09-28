@@ -89,9 +89,9 @@ window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
     appPhase=true;
     appOpenCount+=1;
     if (appOpenCount > 1) {
-      return {path:"/tmp/main-entry-invalid.jsonl",size:1000,mode:"entry",root:null,progress:{indexedEntries:1,indexedSourceLines:1,complete:true,stride:1,totalEntries:1,eventStreamHint:"yes"},manyInvalidUtf8Warning:false,documentError:null,sessionRevision:50};
+      return {path:"/tmp/main-entry-invalid.jsonl",size:1000,mode:"entry",root:null,progress:{indexedEntries:1,indexedSourceLines:1,complete:true,stride:1,totalEntries:1,eventStreamHint:"yes"},manyInvalidUtf8Warning:false,documentError:null,sessionRevision:50,fileGeneration:7};
     }
-    return {path:"/tmp/main-entry.jsonl",size:1000,mode:"entry",root:null,progress:progress(true,true,1),manyInvalidUtf8Warning:false,documentError:null,sessionRevision:40};
+    return {path:"/tmp/main-entry.jsonl",size:1000,mode:"entry",root:null,progress:progress(true,true,1),manyInvalidUtf8Warning:false,documentError:null,sessionRevision:40,fileGeneration:6};
   }
   if(command==="list_entries") {
     listCalls+=1;
@@ -108,7 +108,7 @@ window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
     return {entries:[invalidUnicodeEntry],hasMore:false,nextCursor:null,progress:progress(true,true,1)};
   }
   if(command==="select_entry") {
-    if(appPhase) return {entry:appEntry,root:appRoot,sessionRevision:41};
+    if(appPhase) return {entry:appEntry,root:appRoot,sessionRevision:args.sessionRevision+1};
     if(selectionMode==="invalid") return {entry:{...positiveEntries[0],eventSummary:{eventType:{value:42,hasMore:false}}},root:null,sessionRevision:11};
     if(selectionMode==="nonobject") return {entry:{...positiveEntries[0],eventSummary:"not-an-object"},root:null,sessionRevision:11};
     return {entry:{...positiveEntries[0],eventSummary:{...positiveEntries[0].eventSummary}},root:null,sessionRevision:11};
@@ -315,7 +315,7 @@ appOption.click();await settle();
 await waitFor(()=>document.querySelector("#entry-list [role=option]")?.getAttribute("aria-selected")==="true","main selection did not settle");
 const appSelected=document.querySelector("#entry-list [role=option]");
 const appSelectCall=tauriCalls.filter((call)=>call.command==="select_entry").at(-1);
-check(appSelectCall?.args.sessionRevision===40&&appSelectCall.args.ordinal===0,"main selection did not send the current revision/ordinal");
+check(appSelectCall?.args.sessionRevision===41&&appSelectCall.args.ordinal===0,"main selection did not send the current revision/ordinal");
 check(appMode.value==="event"&&appSelected?.getAttribute("aria-selected")==="true","main selection did not retain the user summary mode");
 check(appSelected?.textContent.includes("session-17")&&document.getElementById("tree-tab").disabled===false,"main selection dropped eventSummary or left Tree disabled");
 check(document.getElementById("error-region").hidden,"valid main Entry selection raised an error");

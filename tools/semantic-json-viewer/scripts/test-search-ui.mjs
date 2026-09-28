@@ -299,6 +299,11 @@ const itemRawCall=mainTauriCalls.filter((call)=>call.command==="search_current")
 check(itemRawCall?.args.nodeId===10&&itemRawCall.args.representation==="rawSource","main selected Item Raw search did not bind nodeId");
 document.querySelector("#scope-search-results button")?.click();
 await settle();
+// UX redesign contract: a rawSource hit keeps the current representation. The
+// reveal stores the exact byte range and the source view loads it on demand.
+check(document.getElementById("raw-panel").hidden,"rawSource hit switched away from the current view");
+document.getElementById("raw-tab").click();
+await settle();
 check(mainTauriCalls.some((call)=>call.command==="read_raw_slice"&&call.args.sourceStart===20),"main Item Raw result did not reveal the exact match offset");
 check(document.querySelector("#raw-panel mark")?.textContent?.length===6,"main Item Raw result highlighted the whole Item");
 mainCollectionList.querySelector('[data-item-ordinal="1"]').click();
@@ -307,7 +312,9 @@ check(document.getElementById("scope-search-results").children.length===0&&docum
 document.getElementById("collection-root").click();
 await settle();
 check(document.getElementById("scope-search-description").textContent.includes("Collection root")&&!mainCollectionList.querySelector('[aria-selected="true"]'),"Returning to Collection root retained the Item scope or selection");
-check(document.getElementById("collection-root").getAttribute("aria-pressed")==="true"&&document.getElementById("semantic-tab").getAttribute("aria-selected")==="true","Returning to root did not select the root Semantic view");
+// UX redesign contract (UX-17): returning to the parent keeps the current
+// representation instead of forcing the reading view.
+check(document.getElementById("collection-root").getAttribute("aria-pressed")==="true"&&document.getElementById("raw-tab").getAttribute("aria-selected")==="true","Returning to root did not keep the current representation");
 document.getElementById("scope-search-representation-decoded").click();
 mainQuery.value="needle";
 document.getElementById("scope-search").requestSubmit();

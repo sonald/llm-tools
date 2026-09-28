@@ -82,6 +82,7 @@ type RevealRange = {
   start: number;
   end: number;
   label: string;
+  highlight: "bytes" | "field";
 };
 
 type Representation = "lossy" | "hex";
@@ -349,7 +350,21 @@ export class RawView {
     if (this.active) this.requestPage(node.spanStart, 0);
   }
 
-  revealRange(start: number, end: number, label: string): void {
+  revealEnd(label: string): void {
+    const base = this.baseScope;
+    if (!base) return;
+    this.epoch += 1;
+    this.copyEpoch += 1;
+    this.copyBusy = false;
+    this.copyStatus.textContent = "";
+    this.scope = base;
+    this.reveal = null;
+    this.resetPages(label);
+    this.render();
+    if (this.active) this.requestPage(Math.max(scopeStart(base), scopeEnd(base) - PAGE_BYTES), 0);
+  }
+
+  revealRange(start: number, end: number, label: string, highlight: "bytes" | "field" = "bytes"): void {
     const base = this.baseScope;
     if (!base || !safeNonNegativeInteger(start) || !safeNonNegativeInteger(end)
       || start >= end || start < scopeStart(base) || end > scopeEnd(base)) {
@@ -362,7 +377,7 @@ export class RawView {
     this.copyBusy = false;
     this.copyStatus.textContent = "";
     this.scope = base;
-    this.reveal = { start, end, label };
+    this.reveal = { start, end, label, highlight };
     this.resetPages(t("raw.seeking", { label }));
     this.render();
     if (this.active) this.requestPage(start, 0);
@@ -1039,7 +1054,7 @@ function renderRawText(
     lines.forEach((line, index) => {
       const lineStart = pageStart + index * 16;
       const lineEnd = Math.min(pageEnd, lineStart + 16);
-      appendMarkedPart(pre, line, lineStart < end && lineEnd > start, reveal.label);
+      appendMarkedPart(pre, line, lineStart < end && lineEnd > start, reveal.label, reveal.highlight);
       if (index + 1 < lines.length) pre.append(document.createTextNode("\n"));
     });
     return;
@@ -1060,24 +1075,26 @@ function renderRawText(
     codeUnitOffset += character.length;
   }
   if (markerStart === null || markerEnd <= markerStart) {
-    appendMarkedPart(pre, text, true, reveal.label);
+    appendMarkedPart(pre, text, true, reveal.label, reveal.highlight);
     return;
   }
   pre.append(document.createTextNode(text.slice(0, markerStart)));
   const marker = document.createElement("mark");
   marker.title = reveal.label;
+  marker.dataset.sourceHighlight = reveal.highlight;
   marker.textContent = text.slice(markerStart, markerEnd);
   pre.append(marker);
   pre.append(document.createTextNode(text.slice(markerEnd)));
 }
 
-function appendMarkedPart(parent: HTMLElement, text: string, marked: boolean, label: string): void {
+function appendMarkedPart(parent: HTMLElement, text: string, marked: boolean, label: string, highlight: "bytes" | "field"): void {
   if (!marked) {
     parent.append(document.createTextNode(text));
     return;
   }
   const marker = document.createElement("mark");
   marker.title = label;
+  marker.dataset.sourceHighlight = highlight;
   marker.textContent = text;
   parent.append(marker);
 }

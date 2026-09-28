@@ -4644,11 +4644,11 @@ mod tests {
     }
 
     #[test]
-    fn conversation_candidate_ipc_requires_explicit_direct_array() {
+    fn conversation_candidate_ipc_accepts_explicit_nested_and_custom_arrays() {
         let path = temp_path("ipc-conversation-direct-candidate");
         fs::write(
             &path,
-            br#"{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"}],"conversation":[{"role":"user","content":"c"},{"role":"assistant","content":"d"}],"meta":{"messages":[{"role":"user","content":"deep"},{"role":"assistant","content":"deep"}]}}"#,
+            br#"{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"}],"conversation":[{"role":"user","content":"c"},{"role":"assistant","content":"d"}],"meta":{"messages":[{"role":"user","content":"deep"},{"role":"assistant","content":"deep"}],"history":[{"role":"user","content":"custom"},{"role":"assistant","content":"custom"}]}}"#,
         )
         .unwrap();
         let state = AppState::default();
@@ -4711,14 +4711,45 @@ mod tests {
             opened.session_revision,
         );
         let deep_messages = child_id(&state, None, meta, "messages", opened.session_revision);
-        let deep_error = get_conversation_candidate_inner(
+        let nested = get_conversation_candidate_inner(
             &state,
-            meta,
+            opened.root.as_ref().unwrap().id,
             deep_messages,
             None,
             opened.session_revision,
         )
-        .unwrap_err();
+        .unwrap();
+        assert_eq!(nested.kind, "generic");
+        assert_eq!(nested.scope_root_id, opened.root.as_ref().unwrap().id);
+        let history = child_id(&state, None, meta, "history", opened.session_revision);
+        let custom = get_conversation_candidate_inner(
+            &state,
+            opened.root.as_ref().unwrap().id,
+            history,
+            None,
+            opened.session_revision,
+        )
+        .unwrap();
+        assert_eq!(custom.kind, "generic");
+        let page = get_generic_conversation_blocks_inner(
+            &state,
+            opened.root.as_ref().unwrap().id,
+            history,
+            None,
+            100,
+            opened.session_revision,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            page.wrapper_ref.scope_root_id,
+            opened.root.as_ref().unwrap().id
+        );
+        assert_eq!(page.wrapper_ref.candidate_node_id, history);
+        assert!(page.blocks.iter().any(|block| block.role == "user"));
+        let deep_error =
+            get_conversation_candidate_inner(&state, meta, history, None, opened.session_revision)
+                .unwrap_err();
         assert_eq!(deep_error.code, "invalid_request");
 
         fs::remove_file(path).unwrap();

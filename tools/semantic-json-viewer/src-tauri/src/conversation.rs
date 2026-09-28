@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use crate::json::{ChildLocator, JsonKind, JsonNode, ParsedJson, SourceSpan};
 
+#[cfg(test)]
 const CANDIDATE_FIELDS: [&str; 3] = ["messages", "conversation", "conversations"];
 // Conversation discriminators are fixed protocol tokens; content/message
 // bodies are kept out of this helper and use their own bounded consumers.
@@ -212,11 +213,9 @@ pub struct GenericConversationPage {
 
 /// Detect one explicitly selected candidate.
 ///
-/// `scope_root_id` is the document/entry root or a direct item of a root
-/// collection. For an object scope the candidate must be one of its direct
-/// `messages`/`conversation`/`conversations` arrays. For an array scope the
-/// scope itself is the candidate. This keeps duplicate candidate fields
-/// explicit and prevents an unbounded scan of collection items.
+/// Resolve an explicitly selected array within a document/entry root or a
+/// direct item of a root collection. Automatic discovery remains limited to
+/// direct named fields; this function does not scan for candidates.
 pub fn detect_candidate(
     parsed: &ParsedJson<'_>,
     scope_root_id: usize,
@@ -257,23 +256,18 @@ pub fn candidate_array<'a>(
     if scope_root_id != parsed.root().index() && !is_direct_collection_item(parsed, scope_root_id) {
         return None;
     }
-
-    if scope_root_id == candidate_node_id && scope_root.kind == JsonKind::Array {
-        return Some(scope_root);
-    }
-    if scope_root.kind != JsonKind::Object {
+    let candidate = parsed.node_at(candidate_node_id)?;
+    if candidate.kind != JsonKind::Array
+        || candidate.span.start < scope_root.span.start
+        || candidate.span.end > scope_root.span.end
+    {
         return None;
     }
-
-    let candidate = parsed.node_at(candidate_node_id)?;
-    let is_direct_named_array = candidate.parent.map(|parent| parent.index())
-        == Some(scope_root_id)
-        && candidate.kind == JsonKind::Array
-        && match &candidate.locator {
-            ChildLocator::ObjectKey { key, .. } => CANDIDATE_FIELDS.contains(&key.as_str()),
-            ChildLocator::Root | ChildLocator::ArrayIndex(_) => false,
-        };
-    is_direct_named_array.then_some(candidate)
+    let mut current = candidate_node_id;
+    while current != scope_root_id {
+        current = parsed.node_at(current)?.parent?.index();
+    }
+    Some(candidate)
 }
 
 fn is_direct_collection_item(parsed: &ParsedJson<'_>, node_id: usize) -> bool {
@@ -2249,7 +2243,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_candidate_is_not_in_scope_and_duplicate_fields_are_explicit() {
+    fn nested_candidate_requires_explicit_root_scope_and_duplicate_fields_are_explicit() {
         let parsed = parse_json(
             br#"{"meta":{"messages":[{"role":"user","content":"x"},{"role":"assistant","content":"y"}]},"messages":[{"role":"user","content":"x"},{"role":"assistant","content":"y"}],"conversation":[{"role":"user","content":"x"},{"role":"assistant","content":"y"}]}"#,
         )
@@ -2271,7 +2265,8 @@ mod tests {
 
         let meta = parsed.node(parsed.root()).children[0].index();
         let deep_messages = parsed.node_at(meta).unwrap().children[0].index();
-        assert!(detect_candidate(&parsed, root_id, deep_messages).is_none());
+        assert!(detect_candidate(&parsed, root_id, deep_messages).is_some());
+        assert!(detect_candidate(&parsed, meta, deep_messages).is_none());
     }
 
     #[test]
@@ -2461,7 +2456,7 @@ mod tests {
                 .kind,
             ConversationKind::Generic
         );
-        assert!(detect_candidate(&parsed, root_id, messages_id).is_none());
+        assert!(detect_candidate(&parsed, root_id, messages_id).is_some());
         assert!(detect_candidate(&parsed, messages_id, messages_id).is_none());
     }
 

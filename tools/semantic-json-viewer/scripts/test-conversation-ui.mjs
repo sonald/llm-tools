@@ -438,7 +438,7 @@ let openRevision=31;let deferTree=false;let releaseTree;let deferInlineRead=fals
 window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
   mainCalls.push({command,args});
   if(command==="plugin:dialog|open")return "/tmp/conversation-ui.json";
-  if(command==="open_file")return {path:"/tmp/conversation-ui.json",size:1000,mode:"document",root:root,progress:null,manyInvalidUtf8Warning:false,documentError:null,sessionRevision:openRevision};
+  if(command==="open_file")return {path:"/tmp/conversation-ui.json",size:1000,mode:"document",root:root,progress:null,manyInvalidUtf8Warning:false,documentError:null,sessionRevision:openRevision,fileGeneration:1};
   if(command==="get_root_node")return root;
   if(command==="get_children")return {nodes:[messages],hasMore:false,nextCursor:null};
   if(command==="get_conversation_candidate")return {nodeId:10,spanStart:100,spanEnd:900,messageCount:2,kind:"generic",scopeRootId:1,scopeRootSpanStart:0,scopeRootSpanEnd:1000,sessionRevision:openRevision,ambiguousDuplicateField:false};

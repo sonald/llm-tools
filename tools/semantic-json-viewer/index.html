@@ -30,6 +30,12 @@
         <strong id="error-title" data-i18n="shell.openFailed">Open failed</strong>
         <span id="error-message"></span>
         <span id="error-details"></span>
+        <span class="error-actions" id="error-actions">
+          <button class="secondary-button" id="error-reload" type="button" data-i18n="shell.reload">Reload</button>
+          <button class="secondary-button" id="error-retry" type="button" data-i18n="shell.retryRange">Retry current range</button>
+          <button class="secondary-button" id="error-view-source" type="button" data-i18n="shell.viewSource">View source</button>
+          <button class="secondary-button" id="error-locate" type="button" data-i18n="shell.locateError">Locate error</button>
+        </span>
       </div>
 
       <div class="workspace">
@@ -38,6 +44,7 @@
             <h2 id="navigation-title" data-i18n="shell.navigation">Navigation</h2>
             <span class="pane-kicker" id="navigation-mode">—</span>
           </div>
+          <section class="document-outline" id="document-outline" hidden></section>
           <div class="navigation-state" id="navigation-state" role="status" aria-live="polite">
             <span class="state-icon" aria-hidden="true">·</span>
             <strong data-i18n="shell.noFileOpen">No file is open.</strong>
@@ -129,14 +136,28 @@
 
         <main class="reader" id="reader" aria-labelledby="reader-title">
           <div class="reader-toolbar">
-            <h2 id="reader-title" data-i18n="shell.semantic">Semantic</h2>
-            <button class="secondary-button" id="content-viewer-preview" type="button" aria-label="Preview selected string in Content Viewer" data-i18n-aria-label="shell.previewSelectedString" disabled data-i18n="shell.preview">Preview</button>
+            <h2 id="reader-title" data-i18n="shell.semantic">Reading</h2>
+            <nav class="reader-crumb" id="reader-breadcrumb" aria-label="Reading range"></nav>
+            <button class="secondary-button" id="reader-back" type="button" data-i18n="shell.back" disabled>Back</button>
+            <button class="secondary-button" id="reader-forward" type="button" data-i18n="shell.forward" disabled>Forward</button>
+            <button class="secondary-button" id="content-viewer-preview" type="button" aria-label="Expand reading for the selected string" data-i18n-aria-label="shell.previewSelectedString" disabled data-i18n="shell.preview">Expand reading</button>
+            <button class="secondary-button" id="conversation-offer" type="button" hidden data-i18n="reader.conversationOffer">A message array is available. You can switch to reading.</button>
+            <label class="text-size-control">
+              <span data-i18n="shell.textSize">Text size</span>
+              <select id="text-size" aria-label="Text size" data-i18n-aria-label="shell.textSize">
+                <option value="sm" data-i18n="shell.textSmall">Small</option>
+                <option value="md" selected data-i18n="shell.textMedium">Medium</option>
+                <option value="lg" data-i18n="shell.textLarge">Large</option>
+              </select>
+            </label>
             <div class="view-tabs" role="tablist" aria-label="Reader views" data-i18n-aria-label="shell.readerViews">
-              <button class="view-tab is-active" id="semantic-tab" type="button" role="tab" aria-selected="true" aria-controls="semantic-panel" data-i18n="shell.semantic">Semantic</button>
-              <button class="view-tab" id="tree-tab" type="button" role="tab" aria-selected="false" aria-controls="tree-panel" disabled aria-disabled="true" data-i18n="shell.tree">Tree</button>
-              <button class="view-tab" id="raw-tab" type="button" role="tab" aria-selected="false" aria-controls="raw-panel" disabled aria-disabled="true" data-i18n="shell.raw">Raw</button>
+              <button class="view-tab is-active" id="semantic-tab" type="button" role="tab" aria-selected="true" aria-controls="semantic-panel" data-i18n="shell.semantic">Reading</button>
+              <button class="view-tab" id="tree-tab" type="button" role="tab" aria-selected="false" aria-controls="tree-panel" disabled aria-disabled="true" data-i18n="shell.tree">Structure</button>
+              <button class="view-tab" id="raw-tab" type="button" role="tab" aria-selected="false" aria-controls="raw-panel" disabled aria-disabled="true" data-i18n="shell.raw">Source text</button>
             </div>
           </div>
+          <p class="find-scope-label" id="find-scope-label"></p>
+          <p class="locate-note" id="locate-note" role="status"></p>
           <section class="scope-search-panel" id="scope-search-panel" aria-label="Search current scope" data-i18n-aria-label="shell.searchCurrentScope" hidden>
             <form class="scope-search-form" id="scope-search" role="search" aria-describedby="scope-search-description">
               <div class="scope-search-controls">
@@ -149,6 +170,13 @@
                   <label><input id="scope-search-representation-decoded" type="radio" name="representation" value="decoded" checked /> <span data-i18n="shell.decoded">Decoded</span></label>
                   <label><input id="scope-search-representation-raw" type="radio" name="representation" value="rawSource" /> <span data-i18n="shell.rawSource">Raw Source</span></label>
                 </fieldset>
+                <label class="find-scope-control"><span data-i18n="shell.findScope">Find scope</span>
+                  <select id="find-scope" aria-label="Find scope" data-i18n-aria-label="shell.findScope">
+                    <option value="record" selected data-i18n="shell.findScopeRecord">Current record</option>
+                    <option value="file" data-i18n="shell.findScopeFile">This file</option>
+                    <option value="field" data-i18n="shell.findScopeField">Current field</option>
+                  </select>
+                </label>
                 <button class="primary-button scope-search-submit" id="scope-search-submit" type="submit" data-i18n="shell.search">Search</button>
               </div>
               <p class="scope-search-description" id="scope-search-description" data-i18n="shell.openFileToSearch">Open a file to search its current scope.</p>
@@ -169,6 +197,7 @@
               <p data-i18n="shell.semanticAfterOpen">Semantic view will appear here after a file is opened.</p>
               <button class="secondary-button" id="reader-open" type="button" data-i18n="shell.openAFile">Open a file</button>
             </div>
+            <div id="generic-reader" hidden></div>
             <div id="conversation-view" hidden></div>
           </section>
           <section class="reader-panel" id="tree-panel" role="tabpanel" aria-labelledby="tree-tab" hidden></section>
@@ -202,6 +231,21 @@
               <div><dt data-i18n="shell.column">Column</dt><dd class="mono" id="entry-inspector-parse-column">—</dd></div>
             </dl>
           </section>
+          <section class="field-detail" id="field-detail" aria-labelledby="field-detail-title" hidden>
+            <h3 id="field-detail-title" data-i18n="shell.fieldDetail">Field detail</h3>
+            <p id="field-detail-note"></p>
+            <pre id="field-detail-raw"></pre>
+            <div class="copy-actions">
+              <button class="secondary-button" id="field-copy-text" type="button" data-i18n="reader.copyTextAction">Copy text</button>
+              <button class="secondary-button" id="field-copy-raw" type="button" data-i18n="reader.copyRawAction">Copy raw JSON</button>
+              <button class="secondary-button" id="field-read-alone" type="button" data-i18n="reader.readFieldAlone">Read this field alone</button>
+              <span class="copy-status" id="field-copy-status" role="status" aria-live="polite"></span>
+            </div>
+            <details id="field-technical">
+              <summary data-i18n="reader.technicalDetails">Technical details</summary>
+              <p id="field-technical-body"></p>
+            </details>
+          </section>
           <section class="node-inspector" id="node-inspector" aria-labelledby="node-inspector-title" hidden>
             <h3 id="node-inspector-title" data-i18n="shell.nodeInspector">Node Inspector</h3>
             <dl class="node-inspector-list">
@@ -214,7 +258,7 @@
             </dl>
             <div class="copy-actions" aria-label="Copy selected node" data-i18n-aria-label="shell.copySelectedNode">
               <button class="secondary-button" id="node-copy-raw" type="button" data-i18n="shell.copyRaw">Copy Raw</button>
-              <button class="secondary-button" id="node-copy-subtree" type="button" data-i18n="shell.copyJsonSubtree">Copy JSON Subtree</button>
+              <button class="secondary-button" id="node-copy-subtree" type="button" hidden data-i18n="shell.copyJsonSubtree">Copy JSON Subtree</button>
               <button class="secondary-button" id="node-copy-decoded" type="button" data-i18n="shell.copyDecodedValue">Copy Decoded Value</button>
               <button class="secondary-button" id="node-copy-path" type="button" data-i18n="shell.copyPath">Copy Path</button>
               <span class="copy-status" id="node-copy-status" role="status" aria-live="polite"></span>

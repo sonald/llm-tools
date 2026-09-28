@@ -14,6 +14,7 @@ export type SearchScope = {
   sessionRevision: number;
   scopeId: number | null;
   targetNodeId: number | null;
+  fileSearch?: boolean;
 };
 
 export type SearchMatch = {
@@ -68,6 +69,7 @@ type SearchViewOptions = SearchViewElements & {
   projectionBudget?: ProjectionBudget;
   onIntentChange?: () => void;
   onRepresentationChange?: (representation: SearchRepresentation) => void;
+  onFileSearch?: (query: string, representation: SearchRepresentation) => void;
 };
 
 type SearchHistoryPage = {
@@ -99,6 +101,7 @@ export class SearchView {
   private readonly projectionBudget: ProjectionBudget;
   private readonly onIntentChange: () => void;
   private readonly onRepresentationChange: ((representation: SearchRepresentation) => void) | undefined;
+  private readonly onFileSearch: ((query: string, representation: SearchRepresentation) => void) | undefined;
   private rawEnabled = true;
   private scope: SearchScope | null = null;
   private history = new Map<number, SearchHistoryPage>();
@@ -118,6 +121,7 @@ export class SearchView {
     this.projectionBudget = options.projectionBudget ?? new ProjectionBudget();
     this.onIntentChange = options.onIntentChange ?? (() => undefined);
     this.onRepresentationChange = options.onRepresentationChange;
+    this.onFileSearch = options.onFileSearch;
     this.elements.form.addEventListener("submit", (event) => {
       event.preventDefault();
       if (this.isOwner()) void this.submit();
@@ -253,6 +257,11 @@ export class SearchView {
       return;
     }
     const representation = this.selectedRepresentation(scope);
+    if (scope.fileSearch) {
+      this.resetResults(false, true);
+      this.onFileSearch?.(query, representation);
+      return;
+    }
     const requestCursor = null;
     this.clearHistory();
     const token = this.beginRequest(query, representation, scope, t("search.searching"));
@@ -798,7 +807,7 @@ function isSearchField(value: unknown): value is SearchField {
 
 function scopeKey(scope: SearchScope | null): string {
   if (!scope) return "none";
-  return [scope.label, scope.decodedEnabled, scope.scopeStart, scope.scopeEnd, scope.sessionRevision, scope.scopeId, scope.targetNodeId].join("\u0000");
+  return [scope.label, scope.decodedEnabled, scope.scopeStart, scope.scopeEnd, scope.sessionRevision, scope.scopeId, scope.targetNodeId, scope.fileSearch].join("\u0000");
 }
 
 function resultLabel(match: SearchMatch): string {
@@ -812,6 +821,7 @@ function resultLabel(match: SearchMatch): string {
 function pageStatus(page: SearchPage, representation: SearchRepresentation): string {
   const mode = representation === "decoded" ? t("search.representationDecoded") : t("search.representationRawSource");
   const suffix = page.hasMore ? t("search.moreResults") : "";
+  if (page.matches.length === 0 && page.hasMore) return t("search.partialIncomplete", { representation: mode, suffix });
   if (page.matches.length === 0) return t("search.noMatches", { representation: mode, suffix });
   if (page.matches.length === 1) return t("search.oneMatch", { representation: mode, suffix });
   return t("search.manyMatches", { representation: mode, count: page.matches.length, suffix });

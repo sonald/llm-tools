@@ -3,7 +3,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ContentViewer, type ContentTarget } from "./content-viewer";
 import { CollectionList } from "./collection-list";
-import { ConversationView, type ConversationContext } from "./conversation-view";
+import { ConversationView, type ConversationContext, type ConversationPresentation } from "./conversation-view";
+import { DocumentOutline } from "./document-outline";
+import { GenericReader } from "./generic-reader";
 import { EntryList, type EntrySelectionDto } from "./entry-list";
 import { MAX_ENTRY_BYTES, RawView } from "./raw-view";
 import { SearchView, type SearchMatch, type SearchScope } from "./search-view";
@@ -52,6 +54,18 @@ type IpcErrorPayload = {
   parseError?: ParseErrorDto;
 };
 
+type ReadingSnapshot = {
+  view: "semantic" | "tree" | "raw";
+  recordOrdinal: number | null;
+  subtree: NodeDto | null;
+  subtreePath: string;
+  focusNode: NodeDto | null;
+  focusPath: string;
+  expanded: number[];
+  anchor: string | null;
+  scrollTop: number;
+};
+
 type AppState = {
   summary: FileSummary | null;
   selectedEntry: EntrySelectionDto["entry"] | null;
@@ -64,7 +78,21 @@ type AppState = {
   pendingChoicePath: string | null;
   pendingChoicePreviousError: IpcErrorPayload | null;
   mobileDrawer: "navigation" | "inspector" | null;
-  tabletInspectorOpen: boolean;
+  navigationOpen: boolean;
+  detailOpen: boolean;
+  findScope: "file" | "record" | "field";
+  textSize: "sm" | "md" | "lg";
+  focusNode: NodeDto | null;
+  focusPath: string;
+  subtree: NodeDto | null;
+  subtreePath: string;
+  backStack: ReadingSnapshot[];
+  forwardStack: ReadingSnapshot[];
+  pendingHistory: { snapshot: ReadingSnapshot; generation: number; ordinal: number; direction: "back" | "forward" } | null;
+  readingScrollTop: number;
+  locateNote: string;
+  userLockedView: boolean;
+  conversationMode: ConversationPresentation;
   scanInFlight: { generation: number; sessionRevision: number } | null;
   scanQueued: { generation: number; sessionRevision: number } | null;
   scanStoppedRevision: number | null;
@@ -83,7 +111,21 @@ const state: AppState = {
   pendingChoicePath: null,
   pendingChoicePreviousError: null,
   mobileDrawer: null,
-  tabletInspectorOpen: false,
+  navigationOpen: true,
+  detailOpen: false,
+  findScope: "record",
+  textSize: "md",
+  focusNode: null,
+  focusPath: "",
+  subtree: null,
+  subtreePath: "",
+  backStack: [],
+  forwardStack: [],
+  pendingHistory: null,
+  readingScrollTop: 0,
+  locateNote: "",
+  userLockedView: false,
+  conversationMode: "hidden",
   scanInFlight: null,
   scanQueued: null,
   scanStoppedRevision: null,
@@ -185,6 +227,29 @@ const nodeCopySubtree = required<HTMLButtonElement>("node-copy-subtree");
 const nodeCopyDecoded = required<HTMLButtonElement>("node-copy-decoded");
 const nodeCopyPath = required<HTMLButtonElement>("node-copy-path");
 const nodeCopyStatus = required<HTMLElement>("node-copy-status");
+const readerBack = required<HTMLButtonElement>("reader-back");
+const readerForward = required<HTMLButtonElement>("reader-forward");
+const readerBreadcrumb = required<HTMLElement>("reader-breadcrumb");
+const findScopeLabel = required<HTMLElement>("find-scope-label");
+const findScopeSelect = required<HTMLSelectElement>("find-scope");
+const locateNoteElement = required<HTMLElement>("locate-note");
+const textSizeSelect = required<HTMLSelectElement>("text-size");
+const genericReaderHost = required<HTMLElement>("generic-reader");
+const outlineHost = required<HTMLElement>("document-outline");
+const fieldDetail = required<HTMLElement>("field-detail");
+const fieldDetailTitle = required<HTMLElement>("field-detail-title");
+const fieldDetailNote = required<HTMLElement>("field-detail-note");
+const fieldDetailRaw = required<HTMLElement>("field-detail-raw");
+const fieldCopyText = required<HTMLButtonElement>("field-copy-text");
+const fieldCopyRaw = required<HTMLButtonElement>("field-copy-raw");
+const fieldReadAlone = required<HTMLButtonElement>("field-read-alone");
+const fieldCopyStatus = required<HTMLElement>("field-copy-status");
+const fieldTechnicalBody = required<HTMLElement>("field-technical-body");
+const errorReload = required<HTMLButtonElement>("error-reload");
+const errorRetry = required<HTMLButtonElement>("error-retry");
+const errorViewSource = required<HTMLButtonElement>("error-view-source");
+const errorLocate = required<HTMLButtonElement>("error-locate");
+const conversationOffer = required<HTMLButtonElement>("conversation-offer");
 const entryInspector = required<HTMLElement>("entry-inspector");
 const entryInspectorOrdinal = required<HTMLElement>("entry-inspector-ordinal");
 const entryInspectorStatus = required<HTMLElement>("entry-inspector-status");
@@ -394,6 +459,16 @@ const searchView = new SearchView({
   invoke,
   projectionBudget,
   onReveal: handleSearchReveal,
+  onFileSearch: (query, representation) => {
+    navigationSearchQuery.value = query;
+    navigationSearchQuery.dispatchEvent(new Event("input", { bubbles: true }));
+    navigationSearchSyntax.value = "literal";
+    navigationSearchRepresentation.value = representation;
+    navigationSearchForm.requestSubmit();
+    navigationSearchDisplayModes.forEach((radio) => {
+      if (radio.value === "filtered") radio.click();
+    });
+  },
   onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
 });
 
@@ -435,7 +510,10 @@ const collectionList = new CollectionList({
   retry: collectionListRetry,
   invoke,
   onSelection: handleCollectionSelection,
-  onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
+  onError: (error) => {
+    if (state.pendingHistory && !["file_changed", "stale_session"].includes(ipcError(error).code)) cancelPendingHistory();
+    handleCurrentSessionAsyncError(ipcError(error));
+  }
 });
 
 const navigationSearch = new NavigationSearch({
@@ -456,8 +534,13 @@ const navigationSearch = new NavigationSearch({
   resultsPrevious: navigationSearchResultsPrevious,
   resultsNext: navigationSearchResultsNext
 }, (ordinal) => {
+  const current = state.summary?.mode === "entry"
+    ? state.selectedEntry?.location.entryOrdinal
+    : state.selectedItem?.ordinal;
+  if (current !== ordinal) state.locateNote = t("reader.enteredRecord", { ordinal: ordinal + 1 });
   if (state.summary?.mode === "entry") entryList.navigateToOrdinal(ordinal);
   else if (state.summary?.mode === "collection") collectionList.navigateToOrdinal(ordinal);
+  render();
 }, (mode) => {
   entryList.setSearchFiltered(mode === "filtered");
   collectionList.setSearchFiltered(mode === "filtered");
@@ -485,8 +568,28 @@ const conversationView = new ConversationView({
   onError: (error) => handleCurrentSessionAsyncError(ipcError(error)),
   onRaw: handleConversationRaw,
   onTree: handleConversationTree,
-  onContent: handleConversationContent
+  onContent: handleConversationContent,
+  onPresentation: (mode) => handleConversationPresentation(mode)
 });
+
+const genericReader = new GenericReader({
+  host: genericReaderHost,
+  invoke,
+  onFocus: (node, path) => rememberFocus(node, path),
+  onReadAlone: (node, path) => readFieldAlone(node, path),
+  onViewRaw: (node, path) => void viewFieldRaw(node, path),
+  onExpand: (node, path, opener) => expandReading(node, path, opener),
+  onCopy: (node, path, format) => copyField(node, path, format),
+  onReadMessages: (node) => void conversationView.useMessageArray(node),
+  onError: (error) => handleCurrentSessionAsyncError(ipcError(error))
+});
+
+const documentOutline = new DocumentOutline(
+  outlineHost,
+  invoke,
+  (node, path) => rememberFocus(node, path),
+  (error) => handleCurrentSessionAsyncError(ipcError(error))
+);
 
 function required<T extends Element>(id: string): T {
   const node = document.getElementById(id);
@@ -613,9 +716,389 @@ function handleEntrySelectionBusy(busy: boolean): void {
   render();
 }
 
-function handleTreeSelection(node: NodeDto): void {
-  // Raw navigation needs the identity/span, not a retained Tree value body.
-  rawView.setScope({ ...node, valuePreview: null });
+function canUseSource(): boolean {
+  return state.summary !== null && !summaryIsInvalidated(state.summary);
+}
+
+function rangeRoot(): NodeDto | null {
+  const summary = state.summary;
+  if (!summary || summary.documentError) return null;
+  if (summary.mode === "entry") return state.selectedEntry?.status === "valid" ? state.selectedEntryRoot : null;
+  if (summary.mode === "collection") return state.selectedItem?.node ?? summary.root;
+  return summary.root;
+}
+
+function currentScopeRoot(): NodeDto | null {
+  return state.subtree ?? rangeRoot();
+}
+
+function sourceKind(): "document" | "collection" | "entry" {
+  if (state.summary?.mode === "entry") return "entry";
+  if (state.summary?.mode === "collection") return "collection";
+  return "document";
+}
+
+function sourceSizeForRange(): number {
+  const summary = state.summary;
+  if (!summary) return 0;
+  if (summary.mode === "entry" && state.selectedEntry) return entrySourceSize(state.selectedEntry);
+  return summary.size;
+}
+
+function readerSession(): { revision: number; sourceSize: number; scopeId: null } | null {
+  const summary = state.summary;
+  const root = currentScopeRoot();
+  if (!summary || !root || summaryIsInvalidated(summary)) return null;
+  return { revision: summary.sessionRevision, sourceSize: sourceSizeForRange(), scopeId: null };
+}
+
+function captureSnapshot(): ReadingSnapshot {
+  return {
+    view: activeView,
+    recordOrdinal: state.summary?.mode === "entry" ? state.selectedEntry?.location.entryOrdinal ?? null
+      : state.summary?.mode === "collection" ? state.selectedItem?.ordinal ?? null : null,
+    subtree: state.subtree,
+    subtreePath: state.subtreePath,
+    focusNode: state.focusNode,
+    focusPath: state.focusPath,
+    expanded: genericReader.expandedIds(),
+    anchor: genericReader.scrollAnchor(),
+    scrollTop: activeView === "semantic" ? semanticPanel.scrollTop : state.readingScrollTop
+  };
+}
+
+function rememberFocus(node: NodeDto, path: string): void {
+  state.focusNode = node;
+  state.focusPath = path;
+  documentOutline.focus(node.id);
+  genericReader.focus(node.id);
+  if (!canUseSource()) {
+    state.locateNote = t("reader.locateBlocked");
+    render();
+    return;
+  }
+  rawView.revealRange(node.spanStart, node.spanEnd, path, "bytes");
+  if (state.detailOpen) void viewFieldRaw(node, path);
+  else render();
+}
+
+function handleTreeSelection(node: NodeDto, path: string): void {
+  rememberFocus(node, path);
+}
+
+async function copyField(node: NodeDto, path: string, format: "raw" | "decoded"): Promise<void> {
+  if (!canUseSource() || !state.summary) {
+    state.locateNote = t("reader.locateBlocked");
+    fieldCopyStatus.textContent = t("reader.locateBlocked");
+    render();
+    return;
+  }
+  const revision = state.summary.sessionRevision;
+  const requestGeneration = state.generation;
+  const requestPath = state.summary.path;
+  try {
+    await invoke("copy_node", {
+      nodeId: node.id,
+      scopeId: null,
+      sessionRevision: revision,
+      format
+    });
+    if (requestGeneration !== state.generation || state.summary?.sessionRevision !== revision || state.summary.path !== requestPath || !canUseSource()) return;
+    const message = t(
+      format === "decoded"
+        ? node.valueHasMore ? "reader.copyTextFull" : "reader.copyTextDone"
+        : node.valueHasMore ? "reader.copyRawFull" : "reader.copyRawDone",
+      { path }
+    );
+    fieldCopyStatus.textContent = message;
+    genericReader.setStatus(message);
+  } catch (error) {
+    if (requestGeneration !== state.generation || state.summary?.sessionRevision !== revision || state.summary.path !== requestPath) return;
+    const parsed = ipcError(error);
+    if (parsed.code === "file_changed" || parsed.code === "stale_session") {
+      handleCurrentSessionAsyncError(parsed);
+      return;
+    }
+    const message = t("reader.copyFailed", { path, message: parsed.message });
+    fieldCopyStatus.textContent = message;
+    genericReader.setStatus(message);
+  }
+}
+
+function expandReading(node: NodeDto, path: string, opener: HTMLElement): void {
+  const summary = state.summary;
+  if (!summary || !canUseSource()) return;
+  const target: ContentTarget = {
+    revision: summary.sessionRevision,
+    nodeId: node.id,
+    spanStart: node.spanStart,
+    spanEnd: node.spanEnd,
+    scopeId: null,
+    scopeLabel: path,
+    pathSegments: path.split(/\.|(?=\[)/).filter((segment) => segment.length > 0 && segment !== "$"),
+    pathTruncated: node.labelHasMore
+  };
+  void contentViewer.open(target, opener);
+}
+
+async function viewFieldRaw(node: NodeDto, path: string): Promise<void> {
+  state.focusNode = node;
+  state.focusPath = path;
+  state.detailOpen = true;
+  fieldDetail.hidden = false;
+  fieldDetailTitle.textContent = t("reader.fieldDetailTitle", { path });
+  fieldDetailNote.textContent = t("reader.localRaw", { path });
+  fieldTechnicalBody.textContent = t("reader.technicalBody", {
+    id: node.id,
+    start: node.spanStart,
+    end: node.spanEnd,
+    coordinate: t("reader.fileCoordinates")
+  });
+  if (!canUseSource() || !state.summary) {
+    state.locateNote = t("reader.locateBlocked");
+    fieldDetailRaw.textContent = "";
+    render();
+    return;
+  }
+  fieldDetailRaw.textContent = t("reader.loadingFields");
+  render();
+  const revision = state.summary.sessionRevision;
+  const requestGeneration = state.generation;
+  try {
+    const chunk = await invoke<{ text?: string; hasMore?: boolean }>("read_raw_slice", {
+      sourceStart: node.spanStart,
+      length: Math.min(128 * 1024, Math.max(1, node.spanEnd - node.spanStart)),
+      sessionRevision: revision
+    });
+    if (requestGeneration !== state.generation || state.summary?.sessionRevision !== revision || state.focusNode?.id !== node.id || !canUseSource()) return;
+    fieldDetailRaw.textContent = typeof chunk?.text === "string" ? chunk.text : "";
+    if (chunk?.hasMore) fieldDetailRaw.append(document.createTextNode(`\n${t("reader.previewTruncated")}`));
+  } catch (error) {
+    if (requestGeneration !== state.generation || state.summary?.sessionRevision !== revision) return;
+    const parsed = ipcError(error);
+    if (parsed.code === "file_changed" || parsed.code === "stale_session") handleCurrentSessionAsyncError(parsed);
+    else fieldDetailRaw.textContent = parsed.message;
+  }
+}
+
+function readFieldAlone(node: NodeDto, path: string): void {
+  const summary = state.summary;
+  if (!summary || !canUseSource()) {
+    state.locateNote = t("reader.locateBlocked");
+    render();
+    return;
+  }
+  state.pendingHistory = null;
+  state.backStack.push(captureSnapshot());
+  state.forwardStack = [];
+  state.subtree = node;
+  state.subtreePath = path;
+  state.focusNode = node;
+  state.focusPath = path;
+  state.locateNote = t("reader.rangeNow", { path });
+  rawView.setItemSession(summary.sessionRevision, node, sourceSizeForRange(), sourceKind());
+  render();
+}
+
+function recordOrdinal(): number | null {
+  return state.summary?.mode === "entry" ? state.selectedEntry?.location.entryOrdinal ?? null
+    : state.summary?.mode === "collection" ? state.selectedItem?.ordinal ?? null : null;
+}
+
+function recordLocationChanged(nextOrdinal: number | null): void {
+  if (recordOrdinal() === nextOrdinal) return;
+  if (state.pendingHistory) {
+    if (state.pendingHistory.ordinal === (nextOrdinal ?? -1) && state.pendingHistory.generation + 1 === state.generation) return;
+    state.pendingHistory = null;
+  }
+  if (state.summary && rangeRoot()) state.backStack.push(captureSnapshot());
+  state.forwardStack = [];
+}
+
+function restoreRange(snapshot: ReadingSnapshot, direction: "back" | "forward"): void {
+  const summary = state.summary;
+  if (!summary || !canUseSource()) return;
+  if (snapshot.recordOrdinal !== recordOrdinal()) {
+    state.pendingHistory = { snapshot, generation: state.generation, ordinal: snapshot.recordOrdinal ?? -1, direction };
+    if (summary.mode === "entry" && snapshot.recordOrdinal !== null) entryList.navigateToOrdinal(snapshot.recordOrdinal);
+    else if (summary.mode === "collection") {
+      if (snapshot.recordOrdinal === null) selectCollectionRoot();
+      else collectionList.navigateToOrdinal(snapshot.recordOrdinal);
+    }
+    render();
+    return;
+  }
+  state.readingScrollTop = snapshot.scrollTop;
+  state.subtree = snapshot.subtree;
+  state.subtreePath = snapshot.subtreePath;
+  state.focusNode = snapshot.focusNode;
+  state.focusPath = snapshot.focusPath;
+  const root = snapshot.subtree ?? rangeRoot();
+  if (snapshot.subtree) rawView.setItemSession(summary.sessionRevision, snapshot.subtree, sourceSizeForRange(), sourceKind());
+  else if (root) rawView.setSession(summary.sessionRevision, root, sourceSizeForRange(), sourceKind());
+  const session = readerSession();
+  if (session && root) {
+    const generation = state.generation;
+    void genericReader.restore(session, root, snapshot.subtree ? snapshot.subtreePath : "$", snapshot.expanded, snapshot.anchor)
+      .then(() => { if (generation === state.generation && state.subtree === snapshot.subtree && state.summary?.sessionRevision === session.revision) semanticPanel.scrollTop = snapshot.scrollTop; });
+  }
+  if (snapshot.focusNode) {
+    documentOutline.focus(snapshot.focusNode.id);
+    rawView.revealRange(snapshot.focusNode.spanStart, snapshot.focusNode.spanEnd, snapshot.focusPath, "bytes");
+  }
+  if (!state.userLockedView) state.userLockedView = true;
+  setActiveView(snapshot.view);
+}
+
+function cancelPendingHistory(): void {
+  const pending = state.pendingHistory;
+  if (!pending) return;
+  state.pendingHistory = null;
+  if (pending.direction === "back") {
+    const current = state.forwardStack.pop();
+    if (current) state.backStack.push(pending.snapshot);
+  } else {
+    const current = state.backStack.pop();
+    if (current) state.forwardStack.push(pending.snapshot);
+  }
+  render();
+}
+
+function goBack(): void {
+  if (state.pendingHistory) return;
+  if (!canUseSource()) {
+    state.locateNote = t("reader.locateBlocked");
+    render();
+    return;
+  }
+  const snapshot = state.backStack.pop();
+  if (!snapshot) return;
+  state.forwardStack.push(captureSnapshot());
+  restoreRange(snapshot, "back");
+  render();
+}
+
+function goForward(): void {
+  if (state.pendingHistory) return;
+  if (!canUseSource()) {
+    state.locateNote = t("reader.locateBlocked");
+    render();
+    return;
+  }
+  const snapshot = state.forwardStack.pop();
+  if (!snapshot) return;
+  state.backStack.push(captureSnapshot());
+  restoreRange(snapshot, "forward");
+  render();
+}
+
+function handleConversationPresentation(mode: ConversationPresentation): void {
+  if (state.conversationMode === mode) return;
+  state.conversationMode = mode;
+  if (mode === "reading" && state.userLockedView && activeView !== "semantic") {
+    state.locateNote = t("reader.conversationOffer");
+  }
+  render();
+}
+
+async function reloadCurrentFile(): Promise<void> {
+  const path = state.summary?.path;
+  if (!path || state.opening) return;
+  const generation = ++state.generation;
+  state.opening = true;
+  state.invalidatedRevision = null;
+  state.locateNote = "";
+  render();
+  await openPath(path, null, generation);
+}
+
+function retryCurrentRange(): void {
+  const summary = state.summary;
+  if (!summary || state.opening) return;
+  if (summary.documentError) {
+    rawView.setRawDocument(summary.sessionRevision, summary.size, summary.documentError);
+    setActiveView("raw");
+    render();
+    return;
+  }
+  const root = state.subtree ?? rangeRoot();
+  if (!root) return;
+  if (state.subtree) rawView.setItemSession(summary.sessionRevision, state.subtree, sourceSizeForRange(), sourceKind());
+  else rawView.setSession(summary.sessionRevision, root, sourceSizeForRange(), sourceKind());
+  const session = readerSession();
+  if (session) genericReader.setRoot(null, null, "");
+  if (session) genericReader.setRoot(session, root, state.subtree ? state.subtreePath : "$");
+  render();
+}
+
+function locateCurrentError(): void {
+  if (!canUseSource()) {
+    state.locateNote = t("reader.locateBlocked");
+    render();
+    return;
+  }
+  const parse = state.error?.parseError ?? state.summary?.documentError?.parseError ?? state.selectedEntry?.parseError ?? null;
+  state.userLockedView = true;
+  setActiveView("raw");
+  if (!parse) return;
+  const size = state.summary?.mode === "entry" && state.selectedEntry
+    ? entrySourceSize(state.selectedEntry)
+    : state.summary?.size ?? 0;
+  if (parse.byteOffset === size) {
+    rawView.revealEnd(t("shell.errorAtEnd"));
+    state.locateNote = t("shell.errorAtEnd");
+    render();
+    return;
+  }
+  const start = Math.max(0, Math.min(parse.byteOffset, Math.max(0, size - 1)));
+  const end = Math.min(size, start + 1);
+  if (end > start) rawView.revealRange(start, end, t("shell.locateError"), "bytes");
+}
+
+function findScopeText(): string {
+  const name = state.findScope === "file"
+    ? t("shell.findScopeFile")
+    : state.findScope === "field"
+      ? t("shell.findScopeField")
+      : t("shell.findScopeRecord");
+  const base = t("shell.findScopeActive", { scope: name });
+  const widened = state.findScope === "file" && state.summary !== null && state.summary.mode !== "document" && (state.selectedEntry !== null || state.selectedItem !== null);
+  return widened ? `${base} ${t("shell.searchWidened")}` : base;
+}
+
+function renderBreadcrumb(): void {
+  const parts: string[] = [];
+  if (state.summary) parts.push(fileLabel(state.summary.path));
+  if (state.summary?.mode === "entry" && state.selectedEntry) {
+    parts.push(t("navigationSearch.entryResult", { ordinal: state.selectedEntry.location.entryOrdinal + 1 }));
+  }
+  if (state.subtree) parts.push(state.subtreePath);
+  readerBreadcrumb.replaceChildren(...parts.map((part) => {
+    const span = document.createElement("span");
+    span.textContent = part;
+    return span;
+  }));
+}
+
+function syncReadingSurface(): void {
+  const root = currentScopeRoot();
+  const session = readerSession();
+  genericReader.setRoot(session, root, state.subtree ? state.subtreePath : "$");
+  documentOutline.setRoot(session, root);
+  genericReaderHost.hidden = root === null || state.conversationMode === "reading";
+  outlineHost.hidden = root === null;
+  renderBreadcrumb();
+  if (findScopeSelect.value !== state.findScope) findScopeSelect.value = state.findScope;
+  findScopeLabel.textContent = state.summary ? findScopeText() : "";
+  locateNoteElement.textContent = state.locateNote;
+  readerBack.disabled = state.pendingHistory !== null || state.backStack.length === 0;
+  readerForward.disabled = state.pendingHistory !== null || state.forwardStack.length === 0;
+  conversationOffer.hidden = !(state.userLockedView && activeView !== "semantic" && state.conversationMode === "reading");
+  document.documentElement.dataset.textSize = state.textSize;
+  fieldDetail.hidden = !state.detailOpen || state.focusNode === null;
+  if (state.focusNode && state.detailOpen) {
+    fieldDetailTitle.textContent = t("reader.fieldDetailTitle", { path: state.focusPath || state.focusNode.label });
+  }
 }
 
 function handleConversationRaw(target: { ref: { nodeId: number; spanStart: number; spanEnd: number }; label: string }): void {
@@ -665,18 +1148,35 @@ function handleConversationContent(target: ContentTarget, opener: HTMLElement): 
 }
 
 function handleSearchReveal(match: SearchMatch): void {
-  if (rawTab.disabled) return;
-  const revealStart = match.field === "rawSource" ? match.matchStart : match.sourceSpanStart;
-  const revealEnd = match.field === "rawSource" ? match.matchEnd : match.sourceSpanEnd;
-  rawView.revealRange(
-    revealStart,
-    revealEnd,
-    t(match.field === "rawSource" ? "main.rawSourceSearchMatch" : match.field === "key" ? "main.keySearchMatch" : "main.valueSearchMatch")
-  );
-  setActiveView("raw");
+  if (rawTab.disabled || !canUseSource()) {
+    state.locateNote = t("reader.locateBlocked");
+    render();
+    return;
+  }
+  if (match.field === "rawSource") {
+    rawView.revealRange(match.matchStart, match.matchEnd, t("main.rawSourceSearchMatch"), "bytes");
+    if (activeView !== "raw" && match.nodeId !== null) {
+      genericReader.focus(match.nodeId);
+      documentOutline.focus(match.nodeId);
+    }
+    render();
+    return;
+  }
+  state.locateNote = t("reader.decodedWholeField");
+  rawView.revealRange(match.sourceSpanStart, match.sourceSpanEnd, t("reader.decodedWholeField"), "field");
+  if (match.nodeId !== null) {
+    genericReader.focus(match.nodeId);
+    documentOutline.focus(match.nodeId);
+  }
+  if (activeView === "semantic" && (genericReaderHost.hidden
+    || !genericReaderHost.querySelector(`[data-field-id="${match.nodeId}"]`))) {
+    setActiveView("raw");
+  }
+  render();
 }
 
 function handleEntryError(error: unknown): void {
+  cancelPendingHistory();
   handleCurrentSessionAsyncError(ipcError(error));
 }
 
@@ -685,7 +1185,11 @@ function handleCollectionSelection(node: NodeDto, ordinal: number): void {
   if (!summary || summary.mode !== "collection" || summary.documentError !== null) return;
   const previousView = activeView;
   state.generation += 1;
+  recordLocationChanged(ordinal);
+  state.readingScrollTop = 0;
   state.selectedItem = { node, ordinal };
+  state.subtree = null;
+  state.subtreePath = "";
   state.selectedEntry = null;
   state.selectedEntryRoot = null;
   state.error = null;
@@ -705,6 +1209,15 @@ function handleCollectionSelection(node: NodeDto, ordinal: number): void {
   else if (previousView === "raw") setActiveView("raw");
   else setActiveView("semantic");
   render();
+  const pending = state.pendingHistory;
+  if (pending && pending.ordinal === ordinal && pending.generation + 1 === state.generation && summary === state.summary && canUseSource()) {
+    state.pendingHistory = null;
+    restoreRange(pending.snapshot, pending.direction);
+    render();
+  } else if (pending) {
+    state.pendingHistory = null;
+    render();
+  }
 }
 
 function selectCollectionRoot(): void {
@@ -712,6 +1225,8 @@ function selectCollectionRoot(): void {
   if (!summary || summary.mode !== "collection" || !summary.root || summary.documentError
     || summaryIsInvalidated(summary) || state.opening || state.selectionBusy) return;
   state.generation += 1;
+  recordLocationChanged(null);
+  state.readingScrollTop = 0;
   state.selectedItem = null;
   collectionList.clearSelection();
   searchView.clear();
@@ -725,8 +1240,18 @@ function selectCollectionRoot(): void {
     scopeLabel: t("main.collectionRoot")
   }, summary.root);
   rawView.setSession(summary.sessionRevision, summary.root, summary.size, "collection");
-  setActiveView("semantic");
+  state.subtree = null;
+  state.subtreePath = "";
   render();
+  const pending = state.pendingHistory;
+  if (pending && pending.ordinal === -1 && pending.generation + 1 === state.generation && summary === state.summary && canUseSource()) {
+    state.pendingHistory = null;
+    restoreRange(pending.snapshot, pending.direction);
+    render();
+  } else if (pending) {
+    state.pendingHistory = null;
+    render();
+  }
 }
 
 function summaryIsInvalidated(summary: FileSummary): boolean {
@@ -740,25 +1265,20 @@ function handleCurrentSessionAsyncError(parsed: IpcErrorPayload, stopEntryIndex 
     state.scanStoppedRevision = summary.sessionRevision;
   }
   if (parsed.code === "file_changed" || parsed.code === "stale_session") {
+    state.pendingHistory = null;
+    state.backStack = [];
+    state.forwardStack = [];
     if (summary) state.invalidatedRevision = summary.sessionRevision;
     contentViewer.clearOverridesForRevision(summary?.sessionRevision);
     if (contentViewer.isOpen) contentViewer.clear(false);
     searchView.invalidate();
     rawView.clear();
     treeView.clear();
-    if (summary?.mode === "entry") {
-      state.scanStoppedRevision = summary.sessionRevision;
-      state.selectedEntry = null;
-      state.selectedEntryRoot = null;
-      entryList.clear();
-      setActiveView("semantic");
-    } else if (summary?.mode === "collection") {
-      state.selectedItem = null;
-      collectionList.clear();
-      setActiveView("semantic");
-    } else {
-      setActiveView("semantic");
-    }
+    state.locateNote = t("reader.locateBlocked");
+    state.subtree = null;
+    state.subtreePath = "";
+    state.focusNode = null;
+    if (summary?.mode === "entry") state.scanStoppedRevision = summary.sessionRevision;
   }
   render();
 }
@@ -777,9 +1297,13 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
 
   const previousView = activeView;
   state.generation += 1;
+  recordLocationChanged(selection.entry.location.entryOrdinal);
+  state.readingScrollTop = 0;
   state.summary = { ...summary, sessionRevision: selection.sessionRevision };
   state.selectedEntry = selection.entry;
   state.selectedEntryRoot = selection.root;
+  state.subtree = null;
+  state.subtreePath = "";
   state.selectedItem = null;
   state.error = null;
   state.invalidatedRevision = null;
@@ -828,15 +1352,31 @@ function handleEntrySelection(selection: EntrySelectionDto): void {
     if ((invalidJson || invalidUtf8 || oversized) && !rawAvailable) {
       state.error = { code: "internal", message: t("main.invalidEntryRawUnavailable") };
       setActiveView("semantic");
-    } else if ((valid || invalidJson || invalidUtf8 || oversized) && previousView === "raw") {
+    } else if (invalidJson || invalidUtf8 || oversized) {
+      const parseError = selection.entry.parseError ?? undefined;
+      state.error = invalidJson && parseError
+        ? { code: "invalid_json", message: parseError.message, parseError }
+        : { code: invalidUtf8 ? "unsupported_encoding" : "invalid_json", message: t("reader.fallbackSource") };
+      state.locateNote = t("reader.fallbackSource");
       setActiveView("raw");
-    } else if (valid && previousView === "tree") {
+    } else if (previousView === "raw" && state.userLockedView) {
+      setActiveView("raw");
+    } else if (previousView === "tree" && state.userLockedView) {
       setActiveView("tree");
     } else {
-      setActiveView("semantic");
+      setActiveView(previousView);
     }
   }
   render();
+  const pending = state.pendingHistory;
+  if (pending && pending.ordinal === selection.entry.location.entryOrdinal && pending.generation + 1 === state.generation && canUseSource()) {
+    state.pendingHistory = null;
+    restoreRange(pending.snapshot, pending.direction);
+    render();
+  } else if (pending) {
+    state.pendingHistory = null;
+    render();
+  }
   if (state.summary.progress && !state.summary.progress.complete) {
     resumeExistingScan();
   }
@@ -850,6 +1390,10 @@ function handleEntryRevisionUnknown(value: unknown): void {
     return;
   }
   const generation = ++state.generation;
+  state.backStack = [];
+  state.forwardStack = [];
+  state.pendingHistory = null;
+  state.readingScrollTop = 0;
   searchView.clear();
   contentViewer.clearOverridesForRevision(next.sessionRevision);
   contentViewer.clear(false);
@@ -1140,7 +1684,10 @@ function renderSummary(): void {
   setText(statusReady, invalidated ? t("main.unavailable") : state.opening ? t("main.opening") : stopped ? t("main.indexingStopped") : summary.progress && !summary.progress.complete ? t("main.indexing") : t("shell.ready"));
   const conversationContext = currentConversationContext();
   conversationView.setContext(conversationContext);
-  readerState.hidden = conversationContext !== null;
+  readerState.hidden = currentScopeRoot() !== null
+    || state.conversationMode === "reading"
+    || state.conversationMode === "chooser"
+    || state.conversationMode === "scanning";
 }
 
 function navigationCopy(summary: FileSummary): string {
@@ -1152,9 +1699,9 @@ function navigationCopy(summary: FileSummary): string {
     }
     return summary.progress.complete
       ? t("main.indexedEntriesReady")
-      : t("main.indexedEntriesSoFar", { entries: summary.progress.indexedEntries.toLocaleString(locale) });
+      : t("reader.indexedUnknownTotal", { entries: summary.progress.indexedEntries.toLocaleString(locale) });
   }
-  return summary.mode === "collection" ? t("main.itemsOnDemand") : t("main.outlineOnDemand");
+  return summary.mode === "collection" ? t("main.itemsOnDemand") : t("reader.outlineTitle");
 }
 
 function readerTitle(summary: FileSummary): string {
@@ -1213,7 +1760,7 @@ function statusProgressLabel(summary: FileSummary): string {
     ? t("main.indexingStoppedIndexed", { entries: summary.progress.indexedEntries.toLocaleString(locale) })
     : summary.progress.complete && summary.progress.totalEntries !== null
       ? t("main.entriesCount", { entries: summary.progress.totalEntries.toLocaleString(locale) })
-      : t("main.indexingIndexed", { entries: summary.progress.indexedEntries.toLocaleString(locale) });
+      : t("reader.indexedUnknownTotal", { entries: summary.progress.indexedEntries.toLocaleString(locale) });
   if (summary.mode !== "entry") return progress;
   const selected = state.selectedEntry;
   if (!selected) return t("main.indexedThroughLine", {
@@ -1240,6 +1787,7 @@ function entryStatusLabel(status: string): string {
 function setActiveView(view: "semantic" | "tree" | "raw"): void {
   if (view === "tree" && treeTab.disabled) return;
   if (view === "raw" && rawTab.disabled) return;
+  if (activeView === "semantic" && view !== "semantic") state.readingScrollTop = semanticPanel.scrollTop;
   activeView = view;
   const tabs: Array<[HTMLButtonElement, HTMLElement]> = [
     [semanticTab, semanticPanel],
@@ -1258,9 +1806,42 @@ function setActiveView(view: "semantic" | "tree" | "raw"): void {
   if (view === "raw") rawView.activate();
   else rawView.deactivate();
   if (view === "semantic" && state.summary && !summaryIsInvalidated(state.summary)) conversationView.onSemanticVisible();
+  if (view === "semantic") semanticPanel.scrollTop = state.readingScrollTop;
 }
 
 function currentSearchScope(): SearchScope | null {
+  const scope = baseSearchScope();
+  if (!scope || !state.summary) return scope;
+  const scopeName = state.findScope === "file"
+    ? t("shell.findScopeFile")
+    : state.findScope === "field"
+      ? t("shell.findScopeField")
+      : t("shell.findScopeRecord");
+  if (state.findScope !== "record") {
+    scope.label = scopeName;
+    scope.description = findScopeText();
+  }
+  if (state.findScope === "file") {
+    if (state.summary.mode === "entry") {
+      scope.fileSearch = true;
+      scope.enabled = !state.opening && !state.selectionBusy;
+      scope.decodedEnabled = true;
+    }
+    scope.scopeStart = 0;
+    scope.scopeEnd = state.summary.size;
+    scope.targetNodeId = null;
+  } else if (state.findScope === "field") {
+    if (!state.focusNode) scope.enabled = false;
+    else {
+      scope.scopeStart = state.focusNode.spanStart;
+      scope.scopeEnd = state.focusNode.spanEnd;
+      scope.targetNodeId = state.focusNode.id;
+    }
+  }
+  return scope;
+}
+
+function baseSearchScope(): SearchScope | null {
   const summary = state.summary;
   if (!summary || summaryIsInvalidated(summary)) return null;
   const enabled = !state.opening && !state.selectionBusy;
@@ -1373,15 +1954,15 @@ function focusViewTab(tab: HTMLButtonElement | undefined): void {
 function render(): void {
   const width = window.innerWidth;
   const mobile = width <= 767;
-  const tablet = width >= 768 && width <= 1050;
   const busy = state.opening || state.selectionBusy;
   appShell.setAttribute("aria-busy", String(busy));
   openButton.disabled = busy;
   readerOpenButton.disabled = busy;
-  navigationToggle.setAttribute("aria-expanded", String(mobile ? state.mobileDrawer === "navigation" : true));
-  inspectorToggle.setAttribute("aria-expanded", String(mobile ? state.mobileDrawer === "inspector" : tablet ? state.tabletInspectorOpen : true));
+  navigationToggle.setAttribute("aria-expanded", String(mobile ? state.mobileDrawer === "navigation" : state.navigationOpen));
+  inspectorToggle.setAttribute("aria-expanded", String(mobile ? state.mobileDrawer === "inspector" : state.detailOpen));
   appShell.dataset.mobileDrawer = state.mobileDrawer ?? "";
-  appShell.dataset.inspectorOpen = tablet ? String(state.tabletInspectorOpen) : "false";
+  appShell.dataset.navigationOpen = String(!mobile && state.navigationOpen);
+  appShell.dataset.inspectorOpen = String(!mobile && state.detailOpen);
   entryList.setOpening(state.opening);
   collectionList.setOpening(state.opening);
   const navSummary = state.summary;
@@ -1408,6 +1989,7 @@ function render(): void {
   renderPreviewButton();
   renderSummary();
   renderError();
+  syncReadingSurface();
 }
 
 async function chooseFile(): Promise<void> {
@@ -1459,6 +2041,9 @@ function failClosedSummary(generation: number): void {
   contentViewer.clear(false);
   state.generation += 1;
   state.summary = null;
+  state.backStack = [];
+  state.forwardStack = [];
+  state.pendingHistory = null;
   state.selectedEntry = null;
   state.selectedEntryRoot = null;
   state.selectedItem = null;
@@ -1492,6 +2077,20 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
       return;
     }
     state.summary = summary;
+    searchView.setRepresentation(summary.documentError ? "rawSource" : "decoded");
+    state.subtree = null;
+    state.subtreePath = "";
+    state.focusNode = null;
+    state.focusPath = "";
+    state.backStack = [];
+    state.forwardStack = [];
+    state.pendingHistory = null;
+    state.readingScrollTop = 0;
+    state.userLockedView = false;
+    state.findScope = "record";
+    state.locateNote = "";
+    state.conversationMode = "hidden";
+    state.detailOpen = false;
     state.error = summary.documentError;
     state.invalidatedRevision = null;
     state.pendingChoicePath = null;
@@ -1513,7 +2112,7 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
         failClosedSummary(generation);
         return;
       }
-      setActiveView("semantic");
+      setActiveView("raw");
       render();
       return;
     }
@@ -1539,6 +2138,7 @@ async function openPath(path: string, openAs: "json" | "jsonl" | null, generatio
       revision: summary.sessionRevision,
       progress: summary.progress
     } : null);
+    if (summary.mode === "entry") entryList.armInitialRecord();
     setActiveView("semantic");
     render();
     if (summary.mode === "entry" && summary.progress && !summary.progress.complete) {
@@ -1626,6 +2226,8 @@ function showModeChoice(): void {
 function toggleNavigation(): void {
   if (window.innerWidth <= 767) {
     state.mobileDrawer = state.mobileDrawer === "navigation" ? null : "navigation";
+  } else {
+    state.navigationOpen = !state.navigationOpen;
   }
   render();
 }
@@ -1633,8 +2235,8 @@ function toggleNavigation(): void {
 function toggleInspector(): void {
   if (window.innerWidth <= 767) {
     state.mobileDrawer = state.mobileDrawer === "inspector" ? null : "inspector";
-  } else if (window.innerWidth <= 1050) {
-    state.tabletInspectorOpen = !state.tabletInspectorOpen;
+  } else {
+    state.detailOpen = !state.detailOpen;
   }
   render();
 }
@@ -1648,9 +2250,31 @@ previewButton.addEventListener("click", () => {
 });
 navigationToggle.addEventListener("click", toggleNavigation);
 inspectorToggle.addEventListener("click", toggleInspector);
-semanticTab.addEventListener("click", () => setActiveView("semantic"));
-treeTab.addEventListener("click", () => setActiveView("tree"));
-rawTab.addEventListener("click", () => setActiveView("raw"));
+semanticTab.addEventListener("click", () => { state.userLockedView = true; setActiveView("semantic"); });
+treeTab.addEventListener("click", () => { state.userLockedView = true; setActiveView("tree"); });
+rawTab.addEventListener("click", () => { state.userLockedView = true; setActiveView("raw"); });
+readerBack.addEventListener("click", () => goBack());
+readerForward.addEventListener("click", () => goForward());
+errorReload.addEventListener("click", () => void reloadCurrentFile());
+errorRetry.addEventListener("click", () => retryCurrentRange());
+errorViewSource.addEventListener("click", () => { state.userLockedView = true; setActiveView("raw"); });
+errorLocate.addEventListener("click", () => locateCurrentError());
+conversationOffer.addEventListener("click", () => { state.userLockedView = true; setActiveView("semantic"); });
+fieldCopyText.addEventListener("click", () => { if (state.focusNode) void copyField(state.focusNode, state.focusPath || state.focusNode.label, "decoded"); });
+fieldCopyRaw.addEventListener("click", () => { if (state.focusNode) void copyField(state.focusNode, state.focusPath || state.focusNode.label, "raw"); });
+fieldReadAlone.addEventListener("click", () => { if (state.focusNode) readFieldAlone(state.focusNode, state.focusPath || state.focusNode.label); });
+findScopeSelect.addEventListener("change", () => {
+  const value = findScopeSelect.value;
+  if (value !== "file" && value !== "record" && value !== "field") return;
+  state.findScope = value;
+  if (value === "file") state.locateNote = t("shell.searchWidened");
+  render();
+});
+textSizeSelect.addEventListener("change", () => {
+  const value = textSizeSelect.value;
+  if (value === "sm" || value === "md" || value === "lg") state.textSize = value;
+  render();
+});
 document.querySelector<HTMLElement>(".view-tabs")?.addEventListener("keydown", (event) => {
   if (!(event instanceof KeyboardEvent)) return;
   if (event.key === "ArrowRight") {
@@ -1724,11 +2348,21 @@ document.addEventListener("keydown", (event) => {
     }
     return;
   }
+  if (event.altKey && event.key === "ArrowLeft") {
+    event.preventDefault();
+    goBack();
+    return;
+  }
+  if (event.altKey && event.key === "ArrowRight") {
+    event.preventDefault();
+    goForward();
+    return;
+  }
   if (event.key === "Escape" && !modeDialog.open) {
     if (searchView.handleEscape(event)) return;
-    if (state.mobileDrawer !== null || state.tabletInspectorOpen) {
+    if (state.mobileDrawer !== null || state.detailOpen) {
       state.mobileDrawer = null;
-      state.tabletInspectorOpen = false;
+      state.detailOpen = false;
       render();
       openButton.focus();
     }
@@ -1736,15 +2370,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 window.addEventListener("resize", () => {
-  if (window.innerWidth <= 767) {
-    state.tabletInspectorOpen = false;
-  }
-  if (window.innerWidth > 767) {
-    state.mobileDrawer = null;
-  }
-  if (window.innerWidth > 1050) {
-    state.tabletInspectorOpen = false;
-  }
+  if (window.innerWidth > 767) state.mobileDrawer = null;
   render();
 });
 

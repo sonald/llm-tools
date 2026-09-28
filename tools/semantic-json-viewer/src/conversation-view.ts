@@ -102,6 +102,8 @@ type ConversationSourceTarget = {
   label: string;
 };
 
+export type ConversationPresentation = "hidden" | "scanning" | "chooser" | "reading";
+
 type ConversationViewOptions = {
   panel: HTMLElement;
   invoke?: typeof invoke;
@@ -110,6 +112,7 @@ type ConversationViewOptions = {
   onRaw: (target: ConversationSourceTarget, opener: HTMLElement) => void;
   onTree: (target: ConversationSourceTarget, opener: HTMLElement) => void;
   onContent: (target: ContentTarget, opener: HTMLElement) => void;
+  onPresentation?: (mode: ConversationPresentation) => void;
 };
 
 type FocusIntent = {
@@ -245,6 +248,10 @@ export class ConversationView {
   private layoutVersion = 0;
   private renderedLayoutVersion = -1;
   private pendingAnchor: InlineAnchor | null = null;
+  private readonly onPresentation: ((mode: ConversationPresentation) => void) | undefined;
+  private styleChoice: "auto" | ConversationStyle = "auto";
+  private styleAnchorMessageId: number | null = null;
+  private suppressed = false;
   private readonly budgetRejected = new Map<string, number>();
 
   constructor(options: ConversationViewOptions) {
@@ -254,6 +261,7 @@ export class ConversationView {
     this.onRaw = options.onRaw;
     this.onTree = options.onTree;
     this.onContent = options.onContent;
+    this.onPresentation = options.onPresentation;
     this.projectionBudget = options.projectionBudget ?? new ProjectionBudget();
     this.rowResizeObserver = typeof ResizeObserver === "function"
       ? new ResizeObserver((entries) => this.handleRowResize(entries))
@@ -281,6 +289,8 @@ export class ConversationView {
     this.candidateScanCursor = context?.scopeRoot.kind === "object" ? 0 : null;
     this.selectedCandidate = null;
     this.style = "generic";
+    this.styleChoice = "auto";
+    this.suppressed = false;
     this.possibleConfirmed = false;
     this.page = null;
     this.resetPageHistory();
@@ -291,6 +301,32 @@ export class ConversationView {
     this.resetWindowElements();
     this.render();
     if (context) void this.discoverCandidates(context, this.generation);
+  }
+
+  dismiss(): void {
+    this.suppressed = true;
+    this.panel.hidden = true;
+    this.onPresentation?.("hidden");
+  }
+
+  async useMessageArray(node: NodeDto): Promise<boolean> {
+    const context = this.context;
+    if (!context) return false;
+    this.generation += 1;
+    const generation = this.generation;
+    this.loading = false;
+    this.suppressed = false;
+    const candidate = await this.readCandidate(context, node, generation);
+    if (!this.isCurrent(context, generation)) return false;
+    if (!candidate || candidate.kind === "none" && !candidate.ambiguousDuplicateField) {
+      this.statusMessage = t("conversation.notMessageArray");
+      this.render();
+      return false;
+    }
+    this.candidates = [...this.candidates.filter((item) => item.node.id !== candidate.node.id), candidate];
+    this.candidateScanCursor = null;
+    this.selectCandidate(candidate, candidate.kind === "possible");
+    return true;
   }
 
   clear(): void {
@@ -404,6 +440,7 @@ export class ConversationView {
   private selectCandidate(candidate: Candidate, confirmPossible: boolean): void {
     this.selectedCandidate = candidate;
     this.possibleConfirmed = confirmPossible;
+    this.styleChoice = "auto";
     this.style = candidate.kind === "openai" ? "openai" : candidate.kind === "anthropic" ? "anthropic" : "generic";
     this.page = null;
     this.resetPageHistory();
@@ -483,11 +520,19 @@ export class ConversationView {
       this.resetProjectionCache();
       this.pendingAnchor = null;
       this.loading = false;
-      this.statusMessage = page.blocks.length === 0 && page.hasMore
-        ? t("conversation.emptyPageContinue")
-        : page.blocks.length === 0
-          ? t("conversation.noBlocks")
-          : "";
+      const anchorId = this.styleAnchorMessageId;
+      this.styleAnchorMessageId = null;
+      const keptIndex = anchorId === null ? -1 : page.blocks.findIndex((block) => block.message?.nodeId === anchorId);
+      if (keptIndex >= 0) this.pendingAnchor = { index: keptIndex, offset: 0 };
+      this.statusMessage = keptIndex >= 0
+        ? t("conversation.formatKeptMessage")
+        : anchorId !== null
+          ? t("conversation.formatLostMessage")
+          : page.blocks.length === 0 && page.hasMore
+            ? t("conversation.emptyPageContinue")
+            : page.blocks.length === 0
+              ? t("conversation.noBlocks")
+              : "";
       this.render();
     } catch (error) {
       if (!this.isCurrentRequest(context, generation, requestGeneration)) return;
@@ -516,6 +561,10 @@ export class ConversationView {
     const actionElement = target.closest<HTMLElement>("[data-conversation-action]");
     if (!actionElement) return;
     const action = actionElement.dataset.conversationAction;
+    if (action === "ordinary") {
+      this.dismiss();
+      return;
+    }
     if (action === "confirm") {
       if (this.selectedCandidate?.kind === "possible") this.selectCandidate(this.selectedCandidate, true);
       return;
@@ -583,9 +632,23 @@ export class ConversationView {
   private handleChange(event: Event): void {
     const target = event.target;
     if (!(target instanceof HTMLSelectElement) || target.dataset.conversationStyle === undefined) return;
-    const style = target.value;
+    const requested = target.value;
+    const style = requested === "auto"
+      ? this.selectedCandidate?.kind === "openai"
+        ? "openai"
+        : this.selectedCandidate?.kind === "anthropic"
+          ? "anthropic"
+          : "generic"
+      : requested;
     if (style !== "generic" && style !== "openai" && style !== "anthropic") return;
+    this.styleChoice = requested === "auto" ? "auto" : style;
+    if (requested === "auto" && style === this.style) {
+      this.statusMessage = t("conversation.formatRestored");
+      this.render();
+      return;
+    }
     if (style === this.style) return;
+    this.styleAnchorMessageId = this.page?.blocks.find((block) => block.message)?.message?.nodeId ?? null;
     this.style = style;
     this.requestGeneration += 1;
     this.loading = false;
@@ -671,6 +734,17 @@ export class ConversationView {
     }
   }
 
+  private messageArrayLabel(candidate: Candidate): string {
+    const first = this.page?.blocks.find((block) => block.kind === "message" && block.message?.nodeId === candidate.node.id)
+      ?? this.page?.blocks.find((block) => block.kind === "message");
+    const summary = first?.role || candidate.node.valuePreview || t("conversation.summaryPending");
+    return t("conversation.messageArray", {
+      path: candidate.node.label,
+      count: candidate.messageCount.toLocaleString(),
+      summary
+    });
+  }
+
   private sourceLabel(block: ConversationBlock, action: string): string {
     if (action === "role") return t("conversation.roleSourceLabel", { role: block.role || t("conversation.unknown") });
     if (action === "content") return t("conversation.contentLabel", { category: block.category });
@@ -680,11 +754,13 @@ export class ConversationView {
   private render(): void {
     const context = this.context;
     const focusIntent = this.captureFocusIntent();
-    this.panel.hidden = context === null;
-    if (!context) {
-      this.panel.replaceChildren();
+    if (this.suppressed || context === null) {
+      this.panel.hidden = true;
+      if (!context) this.panel.replaceChildren();
+      this.onPresentation?.("hidden");
       return;
     }
+    this.panel.hidden = false;
     const shell = element("section", "conversation-shell");
     shell.setAttribute("aria-label", t("conversation.scopeAria", { scopeLabel: context.scopeLabel }));
     const header = element("header", "conversation-header");
@@ -695,7 +771,11 @@ export class ConversationView {
     header.append(heading);
     if (this.selectedCandidate && this.page) {
       const wrapperActions = element("div", "conversation-wrapper-actions");
-      wrapperActions.append(this.actionButton(t("conversation.wrapperRaw"), "wrapper-raw"), this.actionButton(t("conversation.wrapperTree"), "wrapper-tree"));
+      wrapperActions.append(
+        this.actionButton(t("reader.ordinaryJson"), "ordinary"),
+        this.actionButton(t("conversation.wrapperRaw"), "wrapper-raw"),
+        this.actionButton(t("conversation.wrapperTree"), "wrapper-tree")
+      );
       header.append(wrapperActions);
     }
     shell.append(header);
@@ -706,18 +786,21 @@ export class ConversationView {
     shell.append(status);
 
     if (this.loading && this.candidates.length === 0) {
-      shell.append(element("div", "conversation-empty", t("conversation.loadingMessages")));
+      shell.append(element("p", "conversation-status", t("conversation.loadingMessages")));
       this.installPanel(shell, focusIntent);
+      this.onPresentation?.("scanning");
       return;
     }
     if (this.candidates.length === 0 && this.candidateScanCursor === null) {
-      shell.append(element("div", "conversation-empty", this.statusMessage || t("conversation.noSupportedCandidate")));
-      this.installPanel(shell, focusIntent);
+      this.panel.hidden = true;
+      this.panel.replaceChildren();
+      this.onPresentation?.("hidden");
       return;
     }
     if (!this.selectedCandidate) {
       shell.append(this.renderCandidateChooser());
       this.installPanel(shell, focusIntent);
+      this.onPresentation?.("chooser");
       return;
     }
     shell.append(this.renderProjectionControls());
@@ -728,6 +811,7 @@ export class ConversationView {
       possible.append(this.actionButton(t("conversation.renderAsConversation"), "confirm", "primary-button"));
       shell.append(possible);
       this.installPanel(shell, focusIntent);
+      this.onPresentation?.("chooser");
       return;
     }
     if (this.selectedCandidate.kind === "mixed" && this.style === "generic") {
@@ -746,6 +830,7 @@ export class ConversationView {
     shell.append(this.renderBlockViewport());
     shell.append(this.renderPageControls(true));
     this.installPanel(shell, focusIntent);
+    this.onPresentation?.("reading");
   }
 
   private captureFocusIntent(): FocusIntent | null {
@@ -815,13 +900,7 @@ export class ConversationView {
       button.dataset.conversationCandidate = String(candidate.node.id);
       button.setAttribute("aria-label", t("conversation.renderCandidate", { label: candidate.node.label }));
       const label = element("strong", "conversation-candidate-label", candidate.node.label);
-      const kind = candidate.kind === "none" && candidate.ambiguousDuplicateField ? "generic" : candidate.kind;
-      const ambiguity = candidate.ambiguousDuplicateField ? ` · ${t("conversation.ambiguousDuplicateField")}` : "";
-      const meta = element("span", "conversation-candidate-meta", t("conversation.candidateMeta", {
-        kind: `${kind}${ambiguity}`,
-        messageCount: candidate.messageCount.toLocaleString(),
-        nodeId: candidate.node.id
-      }));
+      const meta = element("span", "conversation-candidate-meta", this.messageArrayLabel(candidate));
       button.append(label, meta);
       list.append(button);
     }
@@ -838,12 +917,7 @@ export class ConversationView {
     if (candidate) {
       const selected = element("div", "conversation-selected-candidate");
       selected.append(element("strong", "", candidate.node.label));
-      const selectedKind = candidate.kind === "none" && candidate.ambiguousDuplicateField ? "generic" : candidate.kind;
-      selected.append(element("span", "", t("conversation.candidateMeta", {
-        kind: selectedKind,
-        messageCount: candidate.messageCount.toLocaleString(),
-        nodeId: candidate.node.id
-      })));
+      selected.append(element("span", "", this.messageArrayLabel(candidate)));
       if (candidate.ambiguousDuplicateField) {
         const warning = element("span", "conversation-ambiguity", t("conversation.ambiguousDuplicateField"));
         warning.title = t("conversation.ambiguousDuplicateFieldSource");
@@ -863,11 +937,11 @@ export class ConversationView {
     const select = document.createElement("select");
     select.dataset.conversationStyle = "true";
     select.setAttribute("aria-label", t("conversation.renderAria"));
-    for (const option of [["generic", t("conversation.styleGeneric")], ["openai", t("conversation.styleOpenAI")], ["anthropic", t("conversation.styleAnthropic")]] as const) {
+    for (const option of [["auto", t("conversation.styleAuto")], ["generic", t("conversation.styleGeneric")], ["openai", t("conversation.styleOpenAI")], ["anthropic", t("conversation.styleAnthropic")]] as const) {
       const item = document.createElement("option");
       item.value = option[0];
       item.textContent = option[1];
-      item.selected = option[0] === this.style;
+      item.selected = option[0] === this.styleChoice;
       select.append(item);
     }
     label.append(select);

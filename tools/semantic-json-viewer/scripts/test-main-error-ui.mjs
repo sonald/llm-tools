@@ -69,7 +69,7 @@ const check=(condition,message)=>{assertions+=1;if(!condition)throw new Error(me
 const settle=async()=>{await Promise.resolve();await Promise.resolve();await new Promise((resolve)=>setTimeout(resolve,0));};
 const waitFor=async(predicate,message)=>{for(let attempt=0;attempt<80;attempt+=1){await settle();if(predicate())return;await new Promise((resolve)=>setTimeout(resolve,25));}throw new Error(message);};
 await waitFor(()=>document.documentElement.dataset.testAppReady==="true"&&document.documentElement.lang===expectedLanguage,"main fixture did not reach the expected ready locale");
-const rawSummary={path:"/tmp/main-error.json",size:20,mode:"document",root:null,progress:null,manyInvalidUtf8Warning:false,documentError:{code:"invalid_json",message:"invalid JSON",parseError:{code:"expected_object_key",message:"raw parser detail",byteOffset:4,line:1,column:5}},sessionRevision:1};
+const rawSummary={path:"/tmp/main-error.json",size:20,mode:"document",root:null,progress:null,manyInvalidUtf8Warning:false,documentError:{code:"invalid_json",message:"invalid JSON",parseError:{code:"expected_object_key",message:"raw parser detail",byteOffset:4,line:1,column:5}},sessionRevision:1,fileGeneration:1};
 window.__TAURI_INTERNALS__={invoke:async(command)=>{
   if(command==="plugin:dialog|open")return "/tmp/main-error.json";
   if(command!=="open_file")throw new Error("unexpected IPC command "+command);

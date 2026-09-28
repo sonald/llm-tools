@@ -97,8 +97,8 @@ const invoke=async(command,args)=>{
 };
 const host=document.createElement("div");document.body.append(host);const view=new ConversationView({panel:host,invoke,onError:(error)=>{throw error;},onRaw:(target)=>raw.push(target),onTree:(target)=>tree.push(target),onContent:(target)=>content.push(target)});
 view.setContext({mode:"document",sessionRevision:7,sourceSize:1000,scopeRoot:root,scopeLabel:"文档根"});await settle();await settle();await settle();await settle();
-check(host.textContent.includes("会话")&&host.textContent.includes("语义投影"),"Chinese Conversation heading/status was not localized");
-check(host.querySelector("select[data-conversation-style]")?.selectedOptions[0]?.textContent==="通用","Chinese style label was not localized");
+check(host.textContent.includes("会话")&&host.textContent.includes("阅读"),"Chinese Conversation heading/status was not localized");
+check(host.querySelector("select[data-conversation-style]")?.selectedOptions[0]?.textContent==="自动","Chinese style label was not localized");
 check(host.querySelector('[data-conversation-action="raw"]')?.textContent==="原始"&&host.querySelector('[data-conversation-action="tree"]')?.textContent==="树","Chinese Raw/Tree actions were not localized");
 check(host.querySelector('[data-conversation-action="next"]')?.textContent==="下一页"&&host.textContent.includes("3 个块"),"Chinese paging labels/status were not localized");
 host.querySelector('[data-conversation-action="raw"][data-conversation-block-index="0"]')?.click();host.querySelector('[data-conversation-action="role"][data-conversation-block-index="0"]')?.click();
