@@ -57,6 +57,11 @@ final class ModelFilesStore: ObservableObject {
         return snapshot?.files.first { $0.path == selectedPath }
     }
 
+    var canCopySelectedFullPath: Bool {
+        guard let snapshot, let file = selectedFile else { return false }
+        return service.fullSourcePath(for: file, in: snapshot) != nil
+    }
+
     var selectedInspection: InspectionDocument? {
         guard let selectedPath else { return nil }
         return contents[selectedPath]
@@ -1061,6 +1066,52 @@ final class ModelFilesStore: ObservableObject {
         guard let selectedPath else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(selectedPath, forType: .string)
+    }
+
+    func copySelectedFullPath() {
+        guard let snapshot, let file = selectedFile,
+              let fullPath = service.fullSourcePath(for: file, in: snapshot) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(fullPath, forType: .string)
+    }
+
+    func copyFullPath(of file: RepositoryFile) {
+        guard let snapshot,
+              let fullPath = service.fullSourcePath(for: file, in: snapshot) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(fullPath, forType: .string)
+    }
+
+    func copyRelativePath(of file: RepositoryFile) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(file.path, forType: .string)
+    }
+
+    func canOpenOriginalFile(_ file: RepositoryFile) -> Bool {
+        guard let snapshot else { return false }
+        switch snapshot.location {
+        case .local:
+            return true
+        case .ssh:
+            return false
+        case .modelScope, .huggingFace:
+            return service.contentURL(for: file, in: snapshot) != nil
+        }
+    }
+
+    func openOriginalFile(_ file: RepositoryFile) {
+        guard let snapshot else { return }
+        switch snapshot.location {
+        case let .local(root):
+            NSWorkspace.shared.open(root.appending(path: file.path))
+        case .ssh:
+            return
+        case .modelScope, .huggingFace:
+            if let url = service.contentURL(for: file, in: snapshot)
+                ?? service.browserURL(for: file, in: snapshot) {
+                NSWorkspace.shared.open(url)
+            }
+        }
     }
 
     func openSelectedExternally() {

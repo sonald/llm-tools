@@ -317,6 +317,24 @@ struct RepositoryService: Sendable {
         return access.browserURL(for: file)
     }
 
+    func contentURL(for file: RepositoryFile, in snapshot: RepositorySnapshot) -> URL? {
+        guard let access = try? hubAccess(for: snapshot.location) else { return nil }
+        return try? access.contentURL(for: file)
+    }
+
+    func fullSourcePath(for file: RepositoryFile, in snapshot: RepositorySnapshot) -> String? {
+        switch snapshot.location {
+        case let .local(root):
+            return root.appending(path: file.path).path
+        case let .ssh(location):
+            var base = location.canonicalInput
+            while base.count > 1, base.hasSuffix("/") { base.removeLast() }
+            return "\(base)/\(file.path)"
+        case .modelScope, .huggingFace:
+            return contentURL(for: file, in: snapshot)?.absoluteString
+        }
+    }
+
     func markdownBaseURL(for file: RepositoryFile, in snapshot: RepositorySnapshot) -> URL? {
         guard let access = try? hubAccess(for: snapshot.location),
               let url = try? access.contentURL(for: file) else { return nil }

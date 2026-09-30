@@ -46,6 +46,7 @@ struct SidebarView: View {
                                 ForEach(files) { file in
                                     SidebarFileRow(file: file)
                                         .tag(file.path)
+                                        .contextMenu { rowContextMenu(for: file) }
                                 }
                             }
                         }
@@ -60,9 +61,11 @@ struct SidebarView: View {
                                     if !file.isBlocked {
                                         SidebarFileRow(file: file)
                                             .tag(file.path)
+                                            .contextMenu { rowContextMenu(for: file) }
                                     } else {
                                         SidebarFileRow(file: file)
                                             .opacity(0.62)
+                                            .contextMenu { rowContextMenu(for: file) }
                                     }
                                 }
                             } label: {
@@ -82,6 +85,28 @@ struct SidebarView: View {
             }
         }
         .searchable(text: $store.filter, placement: .sidebar, prompt: "筛选文件")
+    }
+
+    @ViewBuilder
+    private func rowContextMenu(for file: RepositoryFile) -> some View {
+        if store.canOpenOriginalFile(file) {
+            Button {
+                store.openOriginalFile(file)
+            } label: {
+                Label("打开原始文件", systemImage: "arrow.up.right.square")
+            }
+            Divider()
+        }
+        Button {
+            store.copyFullPath(of: file)
+        } label: {
+            Label("复制全路径", systemImage: "link")
+        }
+        Button {
+            store.copyRelativePath(of: file)
+        } label: {
+            Label("复制相对路径", systemImage: "doc.on.doc")
+        }
     }
 }
 

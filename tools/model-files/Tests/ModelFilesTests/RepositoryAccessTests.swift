@@ -98,6 +98,62 @@ final class RepositoryAccessTests: XCTestCase {
         }
     }
 
+    func testFullSourcePathCoversLocalSSHAndHubLocations() throws {
+        let service = RepositoryService()
+        let file = RepositoryFile(
+            path: "nested/config.json",
+            size: 10,
+            revision: nil,
+            contentHash: nil,
+            category: .configuration
+        )
+
+        let root = URL(fileURLWithPath: "/tmp/models/Qwen", isDirectory: true)
+        let localSnapshot = RepositorySnapshot(location: .local(root: root), version: .live, files: [file])
+        XCTAssertEqual(
+            service.fullSourcePath(for: file, in: localSnapshot),
+            root.appending(path: "nested/config.json").path
+        )
+
+        let sshLocation = try RepositoryService.normalizedSSHLocation(
+            from: "ssh://alice@gpu.example.com:2222/srv/models/My%20Model"
+        )
+        let sshSnapshot = RepositorySnapshot(location: .ssh(sshLocation), version: .live, files: [file])
+        XCTAssertEqual(
+            service.fullSourcePath(for: file, in: sshSnapshot),
+            "ssh://alice@gpu.example.com:2222/srv/models/My%20Model/nested/config.json"
+        )
+
+        let hubFile = RepositoryFile(
+            path: "nested/config.json",
+            size: 10,
+            revision: "abc123",
+            contentHash: nil,
+            category: .configuration
+        )
+        let modelScopeSnapshot = RepositorySnapshot(
+            location: .modelScope(modelID: "Qwen/Qwen3-4B"),
+            version: .immutable(label: "abc123"),
+            files: [hubFile]
+        )
+        XCTAssertEqual(
+            service.fullSourcePath(for: hubFile, in: modelScopeSnapshot),
+            "https://modelscope.cn/models/Qwen/Qwen3-4B/resolve/abc123/nested/config.json"
+        )
+
+        let huggingFaceSnapshot = RepositorySnapshot(
+            location: .huggingFace(modelID: "Qwen/Qwen3-4B"),
+            version: .immutable(label: "abc123"),
+            files: [hubFile]
+        )
+        XCTAssertEqual(
+            service.fullSourcePath(for: hubFile, in: huggingFaceSnapshot),
+            "https://huggingface.co/Qwen/Qwen3-4B/resolve/abc123/nested/config.json"
+        )
+
+        XCTAssertNil(service.fullSourcePath(for: file, in: modelScopeSnapshot))
+    }
+
     func testInfersRepositorySourceFromInput() async throws {
         let service = RepositoryService(makeAccess: { EchoRepositoryAccess(location: $0) })
 

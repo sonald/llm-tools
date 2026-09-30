@@ -205,6 +205,15 @@ private struct DetailHeader: View {
             }
             .help("复制文件路径")
 
+            Button {
+                store.copySelectedFullPath()
+            } label: {
+                Label("复制全路径", systemImage: "link")
+                    .labelStyle(.iconOnly)
+            }
+            .help("复制文件完整路径或 URL")
+            .disabled(!store.canCopySelectedFullPath)
+
             if let snapshot = store.snapshot,
                case .ssh = snapshot.location {
                 EmptyView()
