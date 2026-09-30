@@ -1987,6 +1987,7 @@ test('external tokenizer cancellation still publishes partial consistency', asyn
 test('restores, refreshes, and navigates shareable repository URLs', async ({ page }) => {
   const errors = collectErrors(page)
   await page.addInitScript("Object.defineProperty(navigator, 'clipboard', { value: { writeText: value => { window.__copiedPath = value; return Promise.resolve() } } })")
+  await page.addInitScript("window.open = (url) => { window.__openedUrl = String(url); return null }")
   await installFixtureRoutes(page)
   await page.goto(`/?repo=${encodeURIComponent(fixtureModelId)}&file=model.gguf`)
   await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible()
@@ -1999,12 +2000,32 @@ test('restores, refreshes, and navigates shareable repository URLs', async ({ pa
   await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible()
   await page.goForward()
   await expect(page.getByText('参数总数').locator('..').getByText('2')).toBeVisible()
-  await page.getByRole('button', { name: '复制路径' }).click()
+  await page.getByRole('button', { name: '复制相对路径' }).click()
   expect(await page.evaluate('window.__copiedPath')).toBe('model.safetensors')
   await expect(page.getByRole('button', { name: '已复制' })).toBeVisible()
+  await page.getByRole('button', { name: '复制全路径' }).click()
+  expect(await page.evaluate('window.__copiedPath')).toBe(
+    `https://huggingface.co/${fixtureModelId}/resolve/${fixtureRevision}/model.safetensors`,
+  )
   await expect(page.getByRole('link', { name: '源站' })).toHaveAttribute(
     'href',
     `https://huggingface.co/${fixtureModelId}/blob/${fixtureRevision}/model.safetensors`,
+  )
+
+  await page.getByRole('button', { name: /^config\.json\s/ }).click({ button: 'right' })
+  const fileMenu = page.getByRole('menu', { name: '文件操作' })
+  await expect(fileMenu).toBeVisible()
+  await fileMenu.getByRole('menuitem', { name: '复制全路径' }).click()
+  expect(await page.evaluate('window.__copiedPath')).toBe(
+    `https://huggingface.co/${fixtureModelId}/resolve/${fixtureRevision}/config.json`,
+  )
+  await page.getByRole('button', { name: /^config\.json\s/ }).click({ button: 'right' })
+  await page.getByRole('menu', { name: '文件操作' }).getByRole('menuitem', { name: '复制相对路径' }).click()
+  expect(await page.evaluate('window.__copiedPath')).toBe('config.json')
+  await page.getByRole('button', { name: /^config\.json\s/ }).click({ button: 'right' })
+  await page.getByRole('menu', { name: '文件操作' }).getByRole('menuitem', { name: '打开原始文件' }).click()
+  expect(await page.evaluate('window.__openedUrl')).toBe(
+    `https://huggingface.co/${fixtureModelId}/resolve/${fixtureRevision}/config.json`,
   )
   expect(errors).toEqual([])
 })

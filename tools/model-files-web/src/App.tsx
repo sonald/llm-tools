@@ -3,6 +3,7 @@ import logoDark from './assets/model-files-dark.png'
 import logoLight from './assets/model-files-light.png'
 import {
   formatBytes,
+  fullSourcePath,
   imageMimeType,
   isImagePath,
   isImatrixPath,
@@ -136,6 +137,27 @@ export default function App() {
   const [consistencyReport, setConsistencyReport] = useState<RepositoryConsistencyReport | null>(null)
   const [consistencyConfigPath, setConsistencyConfigPath] = useState<string | null>(null)
   const [consistencyOpen, setConsistencyOpen] = useState(false)
+  const [fileMenu, setFileMenu] = useState<{ x: number; y: number; file: RepositoryFile } | null>(null)
+
+  useEffect(() => {
+    if (fileMenu === null) return
+    const close = () => setFileMenu(null)
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setFileMenu(null)
+    }
+    document.addEventListener('click', close)
+    document.addEventListener('contextmenu', close)
+    document.addEventListener('scroll', close, true)
+    document.addEventListener('resize', close)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('click', close)
+      document.removeEventListener('contextmenu', close)
+      document.removeEventListener('scroll', close, true)
+      document.removeEventListener('resize', close)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [fileMenu])
 
   useEffect(() => () => {
     repositoryAbort.current?.abort()
@@ -658,6 +680,12 @@ export default function App() {
                       aria-current={selectedPath === file.path}
                       key={file.path}
                       onClick={() => selectFile(file)}
+                      onContextMenu={event => {
+                        if (snapshot === null) return
+                        event.preventDefault()
+                        event.stopPropagation()
+                        setFileMenu({ x: event.clientX, y: event.clientY, file })
+                      }}
                       title={file.path}
                     >
                       <FileIcon locked={isBlocked(file)} />
@@ -681,6 +709,37 @@ export default function App() {
           if (snapshot !== null && inspection.kind !== 'empty') void inspectFile(snapshot, inspection.file)
         }} />
       </div>
+      {fileMenu !== null && snapshot !== null ? (() => {
+        const url = fullSourcePath(snapshot, fileMenu.file)
+        return (
+          <div
+            className="file-context-menu"
+            role="menu"
+            aria-label={t('appFileActionsMenuAriaLabel')}
+            style={{
+              left: Math.max(8, Math.min(fileMenu.x, window.innerWidth - 216)),
+              top: Math.max(8, Math.min(fileMenu.y, window.innerHeight - 148)),
+            }}
+          >
+            {url !== null ? (
+              <button type="button" role="menuitem" onClick={() => {
+                window.open(url, '_blank', 'noopener,noreferrer')
+                setFileMenu(null)
+              }}>{t('appOpenOriginalFileAction')}</button>
+            ) : null}
+            {url !== null ? (
+              <button type="button" role="menuitem" onClick={() => {
+                void navigator.clipboard.writeText(url).catch(() => {})
+                setFileMenu(null)
+              }}>{t('appCopyFullPathAction')}</button>
+            ) : null}
+            <button type="button" role="menuitem" onClick={() => {
+              void navigator.clipboard.writeText(fileMenu.file.path).catch(() => {})
+              setFileMenu(null)
+            }}>{t('appCopyRelativePathAction')}</button>
+          </div>
+        )
+      })() : null}
     </main>
   )
 }
@@ -712,9 +771,12 @@ function Detail({
   onToggleConsistency(): void
 }) {
   const [copyLabel, setCopyLabel] = useState(() => t('appCopyPathAction'))
+  const [fullCopyLabel, setFullCopyLabel] = useState(() => t('appCopyFullPathAction'))
   const badgeRef = useRef<HTMLButtonElement>(null)
   const activePath = inspection.kind === 'empty' ? null : inspection.file.path
   useEffect(() => setCopyLabel(t('appCopyPathAction')), [activePath])
+  useEffect(() => setFullCopyLabel(t('appCopyFullPathAction')), [activePath])
+  const fullUrl = inspection.kind === 'empty' || snapshot === null ? null : fullSourcePath(snapshot, inspection.file)
 
   function closeReport() {
     onToggleConsistency()
@@ -756,6 +818,15 @@ function Detail({
             setCopyLabel(t('templateCopyFailedState'))
           }
         }}>{copyLabel}</button>
+        <button className="path-copy" type="button" hidden={fullUrl === null} onClick={async () => {
+          if (fullUrl === null) return
+          try {
+            await navigator.clipboard.writeText(fullUrl)
+            setFullCopyLabel(t('templateCopiedState'))
+          } catch {
+            setFullCopyLabel(t('templateCopyFailedState'))
+          }
+        }}>{fullCopyLabel}</button>
         <a
           className="source-link"
           href={snapshot?.source === 'huggingface' ? `https://huggingface.co/${snapshot.modelId}/blob/${snapshot.revision}/${file.path}` : snapshot?.source === 'https' ? contentUrl(snapshot, file) : undefined}

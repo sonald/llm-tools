@@ -401,6 +401,18 @@ export function contentUrl(snapshot: HuggingFaceSnapshot | HttpsSnapshot, file: 
   return `https://huggingface.co/${encodePath(modelId)}/resolve/${snapshot.revision}/${encodePath(safeRepositoryPath(file.path))}`
 }
 
+// The complete path users paste to reopen the original file: the resolve URL for
+// hub repositories, the source URL for HTTPS sources. Local directories have no
+// browser-accessible absolute path, so they return null.
+export function fullSourcePath(snapshot: RepositorySnapshot, file: RepositoryFile): string | null {
+  if (snapshot.source === 'local') return null
+  try {
+    return contentUrl(snapshot, file)
+  } catch {
+    return null
+  }
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${formatNumber(bytes)} bytes`
   const units = bytes < 1024 ** 2 ? ['KiB', 1024] : bytes < 1024 ** 3 ? ['MiB', 1024 ** 2] : ['GiB', 1024 ** 3]

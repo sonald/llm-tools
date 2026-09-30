@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   classifyFile,
+  fullSourcePath,
   loadLocalDirectory,
   loadHttpsSource,
   loadRepository,
@@ -51,6 +52,23 @@ const file: RepositoryFile = {
   hash: null,
   category: 'weights',
 }
+
+test('derives full source paths for hub and HTTPS sources, never local files', () => {
+  const hubFile: RepositoryFile = { path: 'nested/config.json', size: 2, hash: null, category: 'configuration' }
+  assert.equal(
+    fullSourcePath(snapshot, hubFile),
+    `https://huggingface.co/owner/model/resolve/${snapshot.revision}/nested/config.json`,
+  )
+
+  const httpsSnapshot: RepositorySnapshot = {
+    source: 'https', name: 'files.example', revision: 'live', selectionId: 'selection',
+    files: [hubFile], urls: new Map([['nested/config.json', 'https://files.example/nested/config.json?sig=1']]),
+  }
+  assert.equal(fullSourcePath(httpsSnapshot, hubFile), 'https://files.example/nested/config.json?sig=1')
+
+  const localResult = loadLocalDirectory([localFile('Fixture/config.json', '{}')])
+  assert.equal(fullSourcePath(localResult, localResult.files[0]), null)
+})
 
 test('normalizes only owner/model identifiers and Hugging Face model URLs', () => {
   assert.equal(normalizeModelId(' owner/model '), 'owner/model')

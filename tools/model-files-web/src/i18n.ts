@@ -1306,8 +1306,24 @@ export const messageCatalog = {
     en: 'Repository files',
   },
   appCopyPathAction: {
-    'zh-Hans': '复制路径',
-    en: 'Copy path',
+    'zh-Hans': '复制相对路径',
+    en: 'Copy relative path',
+  },
+  appCopyRelativePathAction: {
+    'zh-Hans': '复制相对路径',
+    en: 'Copy relative path',
+  },
+  appCopyFullPathAction: {
+    'zh-Hans': '复制全路径',
+    en: 'Copy full path',
+  },
+  appOpenOriginalFileAction: {
+    'zh-Hans': '打开原始文件',
+    en: 'Open original file',
+  },
+  appFileActionsMenuAriaLabel: {
+    'zh-Hans': '文件操作',
+    en: 'File actions',
   },
   appOpenModelRepositoryTitle: {
     'zh-Hans': '打开模型仓库',
