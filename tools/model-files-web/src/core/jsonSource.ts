@@ -40,6 +40,32 @@ export function jsonFieldSources(source: string): Map<string, string> {
   return fields
 }
 
+// Top-level object keys → source range of the key token. Later duplicates win, as in JSON.parse.
+export function jsonTopLevelKeyRanges(source: string): Map<string, { start: number; end: number }> {
+  const ranges = new Map<string, { start: number; end: number }>()
+  let depth = 0
+  let expectKey = false
+  for (const match of source.matchAll(tokens)) {
+    const token = match[0]
+    if (token === '{' || token === '[') {
+      depth += 1
+      expectKey = depth === 1 && token === '{'
+    } else if (token === '}' || token === ']') {
+      depth -= 1
+    } else if (depth === 1 && token === ',') {
+      expectKey = true
+    } else if (depth === 1 && expectKey && token.startsWith('"')) {
+      expectKey = false
+      try {
+        ranges.set(JSON.parse(token) as string, { start: match.index, end: match.index + token.length })
+      } catch {
+        // Malformed key spelling: leave it unanchored.
+      }
+    }
+  }
+  return ranges
+}
+
 export function highlightJsonWindow(source: string, start = 0, end = source.length) {
   const segments: Array<{ text: string; className: string }> = []
   for (const match of source.matchAll(tokens)) {

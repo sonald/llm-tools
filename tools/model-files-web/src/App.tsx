@@ -46,6 +46,7 @@ import {
   chatTemplateMaterial,
   consistencyBadgeState,
   selectConsistencyFiles,
+  type ConsistencyAnchor,
   type ConsistencyMaterial,
   type RepositoryConsistencyMaterials,
   type RepositoryConsistencyReport,
@@ -72,7 +73,7 @@ import {
   type TokenizerVocabularyEntry,
   type VocabularyDiffScope,
 } from './core/tokenizer.ts'
-import { ImageInspection, PdfInspection, SourceInspection, TextInspection } from './Readers.tsx'
+import { ImageInspection, PdfInspection, SourceInspection, TextInspection, type FileDiagnostic } from './Readers.tsx'
 import { TemplateWorkbench } from './TemplateWorkbench.tsx'
 import { formatNumber, translate as t, type MessageKey } from './i18n.ts'
 
@@ -136,7 +137,8 @@ export default function App() {
   const baseMaterials = useRef<RepositoryConsistencyMaterials | null>(null)
   const consistencyInspectStarted = useRef(false)
   const [consistencyReport, setConsistencyReport] = useState<RepositoryConsistencyReport | null>(null)
-  const [consistencyConfigPath, setConsistencyConfigPath] = useState<string | null>(null)
+  const [consistencyPaths, setConsistencyPaths] = useState<ConsistencyPaths>({})
+  const fileDiagnostics = useMemo(() => diagnosticsByPath(consistencyReport, consistencyPaths), [consistencyReport, consistencyPaths])
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelTab, setPanelTab] = useState<PanelTabId>('problems')
   const badgeRef = useRef<HTMLButtonElement>(null)
@@ -486,7 +488,7 @@ export default function App() {
     consistencySnapshotIdentity.current = null
     baseMaterials.current = null
     setConsistencyReport(null)
-    setConsistencyConfigPath(null)
+    setConsistencyPaths({})
     setPanelOpen(false)
     if (consistencyInspectStarted.current) cancelTokenizerRequests()
     consistencyInspectStarted.current = false
@@ -499,7 +501,9 @@ export default function App() {
   ) {
     try {
       const selected = selectConsistencyFiles(activeSnapshot.files)
-      setConsistencyConfigPath(selected.config?.path ?? null)
+      // Only files that open in the JSON reader can show their problem list; tokenizer_config.json opens in the
+      // template workbench, so its findings stay in the Problems tab rather than leaving a count that leads nowhere.
+      setConsistencyPaths({ config: selected.config?.path, generationConfig: selected.generationConfig?.path })
       const json = async (file?: RepositoryFile) => {
         if (file === undefined) return { state: 'missing' } as ConsistencyMaterial<unknown>
         try {
@@ -718,6 +722,7 @@ export default function App() {
                     >
                       <FileGlyph category={file.category} locked={isBlocked(file)} />
                       <span>{file.path}</span>
+                      <FileProblemCount diagnostics={fileDiagnostics.get(file.path)} />
                       {file.size !== null ? <small>{formatBytes(file.size)}</small> : null}
                     </button>
                   ))}
@@ -740,7 +745,7 @@ export default function App() {
             setPanelTab(current => current === 'problems' ? 'tokens' : current)
           }}
           onClosePanel={closePanel}
-          configPath={consistencyConfigPath}
+          diagnostics={(selectedPath === null ? undefined : fileDiagnostics.get(selectedPath)) ?? noDiagnostics}
           inspectorOpen={inspectorShown}
           selectedFindingId={selectedFindingId}
           onSelectFinding={id => {
@@ -912,7 +917,7 @@ function Detail({
   onSelectPanelTab,
   onOpenToolPanel,
   onClosePanel,
-  configPath,
+  diagnostics,
   inspectorOpen,
   selectedFindingId,
   onSelectFinding,
@@ -926,7 +931,7 @@ function Detail({
   onSelectPanelTab(id: PanelTabId): void
   onOpenToolPanel(): void
   onClosePanel(): void
-  configPath: string | null
+  diagnostics: FileDiagnostic[]
   inspectorOpen: boolean
   selectedFindingId: string | null
   onSelectFinding(id: string): void
@@ -959,7 +964,8 @@ function Detail({
     <WorkspaceSlotsContext.Provider value={slots}>
       <section className="detail">
         <div className="detail-main">
-          <DetailBody inspection={inspection} snapshot={snapshot} report={report} configPath={configPath} onRetry={onRetry} />
+          <DetailBody inspection={inspection} snapshot={snapshot} diagnostics={diagnostics}
+            selectedFindingId={selectedFindingId} onSelectFinding={onSelectFinding} onRetry={onRetry} />
           {panelOpen ? (
             <BottomPanel
               tabs={toolTabs}
@@ -1005,11 +1011,12 @@ function useMediaQuery(query: string): boolean {
   return matches
 }
 
-function DetailBody({ inspection, snapshot, report, configPath, onRetry }: {
+function DetailBody({ inspection, snapshot, diagnostics, selectedFindingId, onSelectFinding, onRetry }: {
   inspection: Inspection
   snapshot: RepositorySnapshot | null
-  report: RepositoryConsistencyReport | null
-  configPath: string | null
+  diagnostics: FileDiagnostic[]
+  selectedFindingId: string | null
+  onSelectFinding(id: string): void
   onRetry(): void
 }) {
   if (inspection.kind === 'empty') {
@@ -1025,33 +1032,13 @@ function DetailBody({ inspection, snapshot, report, configPath, onRetry }: {
   return (
       <div className="detail-body" aria-live="polite" aria-busy={inspection.kind === 'loading'}>
         {inspection.kind === 'loading' ? <LoadingState file={file} /> : null}
-        {/* One tree whether or not the report has arrived, so the reader keeps its chosen view. */}
-        {inspection.kind === 'text' && snapshot !== null && configPath !== null && file.path === configPath ? (
-            <div className="detail-reader-stack">
-              {report !== null ? (
-                <section className="inspection-section consistency-embedded" aria-label={t('appConfigConsistencyReportTitle')}>
-                  <h2>{t('appConfigConsistencyReportTitle')}</h2>
-                  <ConsistencyReportBody report={report} />
-                </section>
-              ) : null}
-              <TextInspection
-                key={`${snapshotIdentity(snapshot)}/${file.path}`}
-                snapshot={snapshot}
-                path={file.path}
-                content={inspection.content}
-                parsed={inspection.parsed}
-                json={inspection.json}
-                bytesRead={inspection.bytesRead}
-              />
-            </div>
-          ) : null}
         {inspection.kind === 'error' ? (
           <EmptyState title={t('appUnableToReadFileTitle')} message={inspection.message} action={t('appRetryAction')} onAction={onRetry} tone="error" />
         ) : null}
         {inspection.kind === 'locked' ? (
           <EmptyState title={t('appLockedWeightsTitle')} message={t('appLockedWeightsMessage')} />
         ) : null}
-        {inspection.kind === 'text' && snapshot !== null && !(configPath !== null && file.path === configPath) ? (
+        {inspection.kind === 'text' && snapshot !== null ? (
           <TextInspection
             key={`${snapshotIdentity(snapshot)}/${file.path}`}
             snapshot={snapshot}
@@ -1060,6 +1047,9 @@ function DetailBody({ inspection, snapshot, report, configPath, onRetry }: {
             parsed={inspection.parsed}
             json={inspection.json}
             bytesRead={inspection.bytesRead}
+            diagnostics={diagnostics}
+            selectedDiagnosticId={selectedFindingId}
+            onSelectDiagnostic={onSelectFinding}
           />
         ) : null}
         {inspection.kind === 'safetensors' && snapshot !== null
@@ -1419,6 +1409,36 @@ function FindingComparison({ finding }: { finding: RepositoryConsistencyReport['
   )
 }
 
+type ConsistencyPaths = Partial<Record<ConsistencyAnchor['material'], string>>
+const noDiagnostics: FileDiagnostic[] = []
+
+// Findings grouped by the file their anchor names; the note shows the other side of the comparison.
+function diagnosticsByPath(report: RepositoryConsistencyReport | null, paths: ConsistencyPaths) {
+  const byPath = new Map<string, FileDiagnostic[]>()
+  for (const finding of report?.findings ?? []) {
+    for (const anchor of finding.anchors) {
+      const path = paths[anchor.material]
+      if (path === undefined) continue
+      const other = anchor.side === 'left' ? finding.right : finding.left
+      byPath.set(path, [...(byPath.get(path) ?? []), {
+        id: finding.id, severity: finding.severity, title: finding.title, key: anchor.key, note: `≠ ${other.key} ${other.value}`,
+      }])
+    }
+  }
+  return byPath
+}
+
+function FileProblemCount({ diagnostics }: { diagnostics: FileDiagnostic[] | undefined }) {
+  if (diagnostics === undefined) return null
+  const count = formatNumber(diagnostics.length)
+  return (
+    <span className="file-problems" data-severity={diagnostics.some(item => item.severity === 'warning') ? 'warning' : 'info'}>
+      <span aria-hidden="true">{count}</span>
+      <span className="sr-only">{t('appFileProblemCount', { count })}</span>
+    </span>
+  )
+}
+
 function SeverityMark({ severity }: { severity: 'warning' | 'info' }) {
   return (
     <span className="severity-mark" data-severity={severity}>
@@ -1428,15 +1448,15 @@ function SeverityMark({ severity }: { severity: 'warning' | 'info' }) {
   )
 }
 
-function ConsistencyReportBody({ report, selectedId = null, onSelect }: {
+function ConsistencyReportBody({ report, selectedId, onSelect }: {
   report: RepositoryConsistencyReport | null
-  selectedId?: string | null
-  onSelect?(id: string): void
+  selectedId: string | null
+  onSelect(id: string): void
 }) {
   if (report === null) return <p>{t('appCheckingRepositoryMaterials')}</p>
   return (
     <>
-      {onSelect !== undefined ? report.findings.map(finding => (
+      {report.findings.map(finding => (
         <button
           className="finding-row"
           type="button"
@@ -1454,7 +1474,7 @@ function ConsistencyReportBody({ report, selectedId = null, onSelect }: {
           <span className="finding-title">{finding.title}</span>
           <span className="finding-compare">{`${finding.left.key} = ${finding.left.value} · ${finding.right.key} = ${finding.right.value}`}</span>
         </button>
-      )) : null}
+      ))}
       <dl aria-label={t('appRepositoryIdentityAriaLabel')} className="consistency-identity">
         {report.identityFields.map(item => (
           <div key={item.key} data-identity-key={item.key}>
@@ -1463,13 +1483,6 @@ function ConsistencyReportBody({ report, selectedId = null, onSelect }: {
           </div>
         ))}
       </dl>
-      {onSelect === undefined ? report.findings.map(finding => (
-        <article key={finding.id} data-finding-id={finding.id}>
-          <h3>{finding.title}</h3>
-          <p>{finding.detail}</p>
-          <FindingComparison finding={finding} />
-        </article>
-      )) : null}
       <div className="table-scroll">
         <table aria-label={t('appConsistencyCoverageAriaLabel')}>
           <thead><tr><th>{t('appMaterialColumn')}</th><th>{t('appStatusColumn')}</th></tr></thead>

@@ -1610,31 +1610,40 @@ test('Jinja source find preserves query while editing and resets on file switch'
   expect(errors).toEqual([])
 })
 
-test('config report and complete source share one reachable scroll area', async ({ page }) => {
+test('config diagnostics point at their line and the full source stays reachable', async ({ page }) => {
   const errors = collectErrors(page)
   await installFixtureRoutes(page)
-  const content = ('{'+ '\n'.repeat(100) + '"last_field":"END_OF_CONFIG"}').padEnd(144)
+  // vocab_size sits on line 61, END_OF_CONFIG on line 92; the body keeps the manifest's 144 bytes.
+  const content = ('{' + '\n'.repeat(60) + '"vocab_size":1005,' + '\n'.repeat(31) + '"last_field":"END_OF_CONFIG"}').padEnd(144)
   await page.route('**/resolve/**/config.json', route => route.fulfill({
     contentType: 'application/json', body: content,
   }))
   await openFixture(page)
-  const stack = page.locator('.detail-reader-stack')
-  await expect(stack).toBeVisible()
+  const problems = page.getByRole('region', { name: '此文件的问题' })
+  await expect(problems.getByRole('button')).toHaveCount(1)
+  await expect(problems).toContainText('词表大小不一致')
+  await expect(problems).toContainText('第 61 行')
+  await expect(page.getByRole('button', { name: /^config\.json/ }).locator('.file-problems')).toContainText('1 个问题')
+  await expect(page.getByRole('button', { name: /^generation_config\.json/ }).locator('.file-problems')).toContainText('1 个问题')
+  // tokenizer_config.json opens in the template workbench, which has no problem list to lead to.
+  await expect(page.getByRole('button', { name: /^tokenizer_config\.json/ }).locator('.file-problems')).toHaveCount(0)
+
+  await problems.getByRole('button').click()
+  await expect(page.getByRole('button', { name: '原文', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  const line = page.locator('.source-line[data-line="61"]')
+  await expect(line).toHaveAttribute('data-severity', 'warning')
+  await expect(line.locator('.line-diagnostic')).toContainText('≠ tokenizer.vocab_count 6')
+  await expect(line).toBeInViewport()
+  await expect(page.getByRole('complementary', { name: '检查器' })).toContainText('词表大小不一致')
+
   for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport)
-    await page.getByRole('button', { name: '原文', exact: true }).click()
     const source = page.locator('.source-reader')
-    await expect(source).toContainText('END_OF_CONFIG')
-    await stack.hover()
-    await page.mouse.wheel(0, 10000)
+    await source.hover()
     await expect(async () => {
       await page.mouse.wheel(0, 10000)
-      expect(await stack.evaluate(el => el.scrollTop + el.clientHeight >= el.scrollHeight - 2)).toBe(true)
+      await expect(page.locator('.source-line[data-line="92"]')).toBeInViewport({ timeout: 200 })
     }).toPass()
-    const bounds = await source.boundingBox()
-    const container = await stack.boundingBox()
-    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(container!.y + container!.height)
-    expect(await page.locator('.consistency-embedded').evaluate(el => el.scrollHeight <= el.clientHeight)).toBe(true)
   }
   expect(errors).toEqual([])
 })
@@ -1784,10 +1793,9 @@ test('consistency background acquires materials once and reports repository warn
   await expect(report).toContainText('词表大小不一致')
   await expect(report).toContainText('EOS Token 不一致')
   await expect(report).toContainText('上下文长度声明不同')
-  const embedded = page.getByRole('region', { name: 'Config 一致性报告' })
-  await expect(embedded).toBeVisible()
-  await expect(embedded.locator('[data-material]')).toHaveCount(8)
-  const readerPerspective = page.locator('.detail-reader-stack').getByRole('group', { name: '阅读视图' })
+  await expect(report.locator('[data-material]')).toHaveCount(8)
+  await expect(page.getByRole('region', { name: '此文件的问题' })).toContainText('上下文长度声明不同')
+  const readerPerspective = page.locator('.reader-canvas').getByRole('group', { name: '阅读视图' })
   await expect(readerPerspective).toBeVisible()
   for (const button of ['概览', '全部字段', '原文']) {
     await expect(readerPerspective.getByRole('button', { name: button, exact: true })).toBeVisible()

@@ -98,13 +98,35 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .file-group { margin-top: 15px; }
 .file-group h2 { margin: 0; padding: 0 8px 5px; color: var(--muted); font-size: 9.5px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
 .file-row {
-  width: 100%; height: 30px; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 0 9px;
+  width: 100%; height: 30px; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 0 9px;
   border: 0; border-radius: 6px; background: transparent; color: #373a40; text-align: left; cursor: pointer;
 }
 .file-row:hover { background: rgb(0 0 0 / 5%); }
 .file-row.selected { color: inherit; background: var(--accent-soft); font-weight: 600; }
 .file-row span { overflow: hidden; font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
 .file-row small { font-size: 9px; opacity: .64; }
+.file-problems { min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font: 650 9.5px/16px var(--mono); text-align: center; }
+.file-problems[data-severity="warning"] { background: #fef3c7; color: #8a5a00; }
+
+/* Diagnostics anchored in a JSON file: a list above the reader, tinted lines with a note in the source. */
+.reader-diagnostics { display: grid; gap: 2px; margin: 0 20px 10px; padding: 6px; border: 1px solid #f1d9a6; border-radius: 8px; background: #fffaf0; }
+.reader-diagnostic {
+  display: grid; grid-template-columns: 14px auto minmax(0, 1fr) auto; align-items: baseline; gap: 8px; padding: 5px 8px;
+  border: 0; border-radius: 6px; background: transparent; color: inherit; font-size: 11.5px; text-align: left; cursor: pointer;
+}
+.reader-diagnostic:hover, .reader-diagnostic[aria-pressed="true"] { background: rgb(0 0 0 / 5%); }
+.reader-diagnostic > span:first-child { color: var(--accent); font-size: 10px; }
+.reader-diagnostic[data-severity="warning"] > span:first-child { color: #c27c0e; }
+.reader-diagnostic-title { font-weight: 600; }
+.reader-diagnostic code { overflow: hidden; color: var(--muted); font: 10.5px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.reader-diagnostic-line { color: var(--muted); font-size: 10.5px; }
+.source-line[data-severity] { background: rgb(47 111 236 / 7%); }
+.source-line[data-severity="warning"] { background: rgb(234 168 50 / 14%); }
+.line-diagnostic {
+  float: right; max-width: 45%; margin-left: 16px; color: #8a5a00; font: italic 10.5px/1.9 var(--sans, inherit);
+  white-space: normal; overflow-wrap: anywhere; user-select: none;
+}
+.source-line[data-severity="info"] .line-diagnostic { color: var(--accent); }
 .file-glyph {
   width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; border-radius: 5px;
   color: var(--glyph); background: color-mix(in srgb, var(--glyph) 14%, transparent); font: 600 9px/1 var(--mono);
@@ -188,20 +210,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .finding-comparison dd, .inspector-facts dd { margin: 0; overflow-wrap: anywhere; font: 11.5px var(--mono); }
 .inspector-section .finding-comparison { padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 .inspector-empty { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
-:is(.panel-body, .consistency-embedded) p, :is(.panel-body, .consistency-embedded) article { margin: 12px 14px; }
-:is(.panel-body, .consistency-embedded) article { padding-bottom: 10px; border-bottom: 1px solid var(--line); }
-:is(.panel-body, .consistency-embedded) h3 { margin: 0 0 4px; font-size: 12px; }
-:is(.panel-body, .consistency-embedded) article p { margin: 0 0 8px; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
-.consistency-identity, :is(.panel-body, .consistency-embedded) article dl { display: grid; gap: 4px; margin: 0 14px; }
-:is(.panel-body, .consistency-embedded) article dl { margin: 0; }
-.consistency-identity div, :is(.panel-body, .consistency-embedded) article dl div { display: flex; gap: 7px; min-width: 0; }
-.consistency-identity dt, :is(.panel-body, .consistency-embedded) article dt { flex: none; max-width: 55%; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.consistency-identity dd, :is(.panel-body, .consistency-embedded) article dd { margin: 0; overflow-wrap: anywhere; font: 10.5px var(--mono); }
-:is(.panel-body, .consistency-embedded) .table-scroll { max-width: 100%; margin: 12px 14px 0; border: 1px solid var(--line); }
-/* Keep the report and config in one bounded scroll area. */
-.consistency-embedded { margin: 0; padding-bottom: 18px; }
-.detail-reader-stack { height: 100%; min-height: 0; overflow: auto; }
-.detail-reader-stack > .reader-canvas { height: auto; overflow: visible; }
+.panel-body p { margin: 12px 14px; }
+.consistency-identity { display: grid; gap: 4px; margin: 0 14px; }
+.consistency-identity div { display: flex; gap: 7px; min-width: 0; }
+.consistency-identity dt { flex: none; max-width: 55%; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.consistency-identity dd { margin: 0; overflow-wrap: anywhere; font: 10.5px var(--mono); }
+.panel-body .table-scroll { max-width: 100%; margin: 12px 14px 0; border: 1px solid var(--line); }
 .detail-body { min-height: 0; overflow: hidden; }
 
 .empty-state, .loading-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; }
@@ -673,6 +687,8 @@ tr:last-child td { border-bottom: 0; }
   .pdf-open { padding: 0 12px; text-align: center; }
   .tokenizer-layout { padding: 10px; }
   .selected-token { flex-wrap: wrap; gap: 8px 14px; }
+  /* ponytail: no width for a floated note beside source; the file's problem list above says the same. */
+  .line-diagnostic { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -701,6 +717,11 @@ tr:last-child td { border-bottom: 0; }
   .statusbar { color: #c9d2e6; }
   .icon-button:hover, :is(.inspector-toggle, .panel-toggle)[aria-pressed="true"] { background: rgb(255 255 255 / 8%); }
   .severity-mark[data-severity="warning"] { color: #e5b454; }
+  .file-problems[data-severity="warning"] { background: rgb(229 180 84 / 18%); color: #e5b454; }
+  .reader-diagnostics { border-color: rgb(229 180 84 / 30%); background: rgb(229 180 84 / 7%); }
+  .reader-diagnostic:hover, .reader-diagnostic[aria-pressed="true"] { background: rgb(255 255 255 / 7%); }
+  .reader-diagnostic[data-severity="warning"] > span:first-child, .line-diagnostic { color: #e5b454; }
+  .source-line[data-severity="warning"] { background: rgb(229 180 84 / 12%); }
   .file-glyph[data-category] { --glyph: #aab1bd; }
   .file-glyph[data-category="configuration"] { --glyph: #8fb4ff; }
   .file-glyph[data-category="tokenizer"] { --glyph: #b79cff; }

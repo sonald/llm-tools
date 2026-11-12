@@ -993,6 +993,18 @@ export const messageCatalog = {
     'zh-Hans': '下一个命中',
     en: 'Next match',
   },
+  readerFileProblems: {
+    'zh-Hans': '此文件的问题',
+    en: 'Problems in this file',
+  },
+  readerDiagnosticLine: {
+    'zh-Hans': '第 {line} 行',
+    en: 'Line {line}',
+  },
+  appFileProblemCount: {
+    'zh-Hans': '{count} 个问题',
+    en: 'Problems: {count}',
+  },
   readerFoldStructureLine: {
     'zh-Hans': '{action}第 {line} 行结构',
     en: '{action} structure on line {line}',
@@ -1348,10 +1360,6 @@ export const messageCatalog = {
   appSourceLinkAction: {
     'zh-Hans': '源站',
     en: 'Source',
-  },
-  appConfigConsistencyReportTitle: {
-    'zh-Hans': 'Config 一致性报告',
-    en: 'Config consistency report',
   },
   appUnableToReadFileTitle: {
     'zh-Hans': '无法读取文件',

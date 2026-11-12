@@ -27,6 +27,14 @@ export type ConsistencyField = {
   origin: 'embedded' | 'derived' | 'repository'
 }
 
+// Where a finding lives in the repository: a top-level key of one JSON material, and which side of
+// the comparison that key supplies. An absent key (e.g. missing tokenizer_class) still names its file.
+export type ConsistencyAnchor = {
+  material: 'config' | 'generationConfig' | 'tokenizerConfig'
+  key: string
+  side: 'left' | 'right'
+}
+
 export type ConsistencyFinding = {
   id:
     | 'vocab-mismatch'
@@ -40,6 +48,7 @@ export type ConsistencyFinding = {
   left: ConsistencyField
   right: ConsistencyField
   detail: string
+  anchors: ConsistencyAnchor[]
 }
 
 export type ConsistencyCoverage = {
@@ -188,6 +197,7 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
       left: field('config.vocab_size', 'count', String(configVocab), 'embedded'),
       right: field('tokenizer.vocab_count', 'count', String(tokenizerVocab), 'derived'),
       detail: t('vocabularyMismatchDetail'),
+      anchors: [{ material: 'config', key: 'vocab_size', side: 'left' }],
     })
   }
 
@@ -199,6 +209,7 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
       left: field('tokenizer_config.json', 'file', t('statusRead'), 'repository'),
       right: field('tokenizer_class', 'string', t('statusMissing'), 'embedded'),
       detail: t('missingTokenizerClassDetail'),
+      anchors: [{ material: 'tokenizerConfig', key: 'tokenizer_class', side: 'right' }],
     })
   }
 
@@ -210,6 +221,7 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
       left: field('chat_template.jinja', 'template', t('statusNotFound'), 'repository'),
       right: field('tokenizer_config.chat_template', 'template', t('statusUnavailable'), 'derived'),
       detail: t('missingChatTemplateDetail'),
+      anchors: tokenizerConfig.checked ? [{ material: 'tokenizerConfig', key: 'chat_template', side: 'right' }] : [],
     })
   }
 
@@ -223,10 +235,17 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
       left: field('generation_config.eos_token_id', 'token IDs', tokenIDDisplay(generationEos), 'embedded'),
       right: tokenizerEos.field,
       detail: t('eosMismatchDetail'),
+      anchors: [
+        { material: 'generationConfig', key: 'eos_token_id', side: 'left' },
+        ...(tokenizerEos.field.key === 'tokenizer_config.eos_token_id'
+          ? [{ material: 'tokenizerConfig', key: 'eos_token_id', side: 'right' } as const]
+          : []),
+      ],
     })
   }
 
   const configContext = contextValue(config.object)
+  const configContextKey = contextKey(config.object)
   const tokenizerContext = unsigned(tokenizerConfig.object.model_max_length)
   if (configContext !== null && tokenizerContext !== null && configContext !== tokenizerContext) {
     findings.push({
@@ -236,6 +255,10 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
       left: field('config.context', 'count', String(configContext), 'embedded'),
       right: field('tokenizer_config.model_max_length', 'count', String(tokenizerContext), 'embedded'),
       detail: t('contextLengthMismatchDetail'),
+      anchors: [
+        { material: 'config', key: configContextKey!, side: 'left' },
+        { material: 'tokenizerConfig', key: 'model_max_length', side: 'right' },
+      ],
     })
   }
 
@@ -247,6 +270,7 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
       left: field('repository', 'source', t('currentRepository'), 'repository'),
       right: field('config.json', 'file', t('statusMissing'), 'repository'),
       detail: t('missingConfigDetail'),
+      anchors: [],
     })
   }
 
@@ -342,12 +366,15 @@ function displayValue(value: unknown): string | null {
   return width === null || height === null ? null : `${width}×${height}`
 }
 
+const contextAliases = ['max_position_embeddings', 'max_sequence_length', 'n_positions']
+
+function contextKey(object: Record<string, unknown>): string | null {
+  return contextAliases.find(alias => unsigned(object[alias]) !== null) ?? null
+}
+
 function contextValue(object: Record<string, unknown>): number | null {
-  for (const alias of ['max_position_embeddings', 'max_sequence_length', 'n_positions']) {
-    const value = unsigned(object[alias])
-    if (value !== null) return value
-  }
-  return null
+  const key = contextKey(object)
+  return key === null ? null : unsigned(object[key])
 }
 
 function parsedTokenIds(value: unknown): number[] | null {

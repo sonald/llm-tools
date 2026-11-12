@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { formatBytes, type RepositoryFile, type RepositorySnapshot } from './core/huggingface.ts'
-import { formatJsonSource, jsonFieldSources, sourceBoundary } from './core/jsonSource.ts'
+import { formatJsonSource, jsonFieldSources, jsonTopLevelKeyRanges, sourceBoundary } from './core/jsonSource.ts'
 import { foldRanges, type FoldRange } from './core/sourceFolding.ts'
 import { formatNumber, translate as t } from './i18n.ts'
 import {
@@ -17,6 +17,15 @@ import {
   type TextFindNavigation,
 } from './core/readers.ts'
 
+// A repository consistency finding anchored at a top-level key of this file.
+export type FileDiagnostic = {
+  id: string
+  severity: 'warning' | 'info'
+  title: string
+  key: string
+  note: string
+}
+
 type Props = {
   snapshot: RepositorySnapshot
   path: string
@@ -24,7 +33,13 @@ type Props = {
   parsed: unknown
   json: boolean
   bytesRead: number
+  diagnostics?: FileDiagnostic[]
+  selectedDiagnosticId?: string | null
+  onSelectDiagnostic?(id: string): void
 }
+
+type SourceMark = { line: number; severity: FileDiagnostic['severity']; key: string; note: string }
+type SourceJump = { offset: number; nonce: number }
 
 type LineFind = { open: boolean; query: string; current: number }
 
@@ -35,7 +50,7 @@ export function TextInspection(props: Props) {
   return <LineInspection {...props} />
 }
 
-export function JsonInspection({ path, content, parsed, bytesRead }: Props) {
+export function JsonInspection({ path, content, parsed, bytesRead, diagnostics = [], selectedDiagnosticId = null, onSelectDiagnostic }: Props) {
   const [perspective, setPerspective] = useState<'overview' | 'fields' | 'raw'>(parsed === undefined ? 'raw' : 'overview')
   const shownPerspective = parsed === undefined ? 'raw' : perspective
   const [query, setQuery] = useState('')
@@ -51,10 +66,47 @@ export function JsonInspection({ path, content, parsed, bytesRead }: Props) {
       || (fieldSources.get(key) ?? '').toLocaleLowerCase().includes(term))
   }, [fieldSources, query, rows])
   useEffect(() => setLimit(1000), [query])
+  // Scan only when there is something to anchor: this reader also opens multi-megabyte tokenizer and vocab JSON.
+  const keyRanges = useMemo(() => diagnostics.length === 0 ? null : jsonTopLevelKeyRanges(content), [content, diagnostics.length])
+  const located = useMemo(() => diagnostics.map(diagnostic => {
+    const offset = keyRanges?.get(diagnostic.key)?.start ?? null
+    return { ...diagnostic, offset, line: offset === null ? null : textLineAtOffset(content, offset) }
+  }), [content, diagnostics, keyRanges])
+  const marks = useMemo(() => located.flatMap(item => item.line === null ? [] : [{
+    line: item.line, severity: item.severity, key: item.key, note: item.note,
+  }]), [located])
+  const [jump, setJump] = useState<SourceJump | null>(null)
 
   return (
     <div className="reader-canvas">
       <ReaderHeader bytesRead={bytesRead} result={t(parsed === undefined ? 'readerJsonInvalid' : 'readerJsonValid')} />
+      {located.length > 0 ? (
+        <section className="reader-diagnostics" aria-label={t('readerFileProblems')}>
+          {located.map(item => (
+            <button
+              className="reader-diagnostic"
+              data-severity={item.severity}
+              aria-pressed={selectedDiagnosticId === item.id}
+              key={`${item.id}/${item.key}`}
+              type="button"
+              onClick={() => {
+                onSelectDiagnostic?.(item.id)
+                if (item.offset === null) return
+                setPerspective('raw')
+                setJump(current => ({ offset: item.offset!, nonce: (current?.nonce ?? 0) + 1 }))
+              }}
+            >
+              <span aria-hidden="true">{item.severity === 'warning' ? '▲' : '●'}</span>
+              <span className="sr-only">{t(item.severity === 'warning' ? 'appSeverityWarning' : 'appSeverityInfo')}</span>
+              <span className="reader-diagnostic-title">{item.title}</span>
+              <code>{item.key}</code>
+              <span className="reader-diagnostic-line">
+                {item.line === null ? null : t('readerDiagnosticLine', { line: formatNumber(item.line) })}
+              </span>
+            </button>
+          ))}
+        </section>
+      ) : null}
       {parsed !== undefined ? <Perspective<'overview' | 'fields' | 'raw'> value={perspective} onChange={setPerspective} values={[
         ['overview', t('readerOverview')], ['fields', t('readerAllFields')], ['raw', t('readerRawSource')],
       ]} /> : null}
@@ -69,7 +121,7 @@ export function JsonInspection({ path, content, parsed, bytesRead }: Props) {
       {shownPerspective === 'fields' ? (
         <ProgressiveRows rows={matching} query={query} setQuery={setQuery} limit={limit} setLimit={setLimit} jsonValue={parsed} path={path} fieldSources={fieldSources} />
       ) : null}
-      {shownPerspective === 'raw' ? <SourceCode content={content} language="json" bytesRead={bytesRead} /> : null}
+      {shownPerspective === 'raw' ? <SourceCode content={content} language="json" bytesRead={bytesRead} marks={marks} jump={jump} /> : null}
     </div>
   )
 }
@@ -354,10 +406,14 @@ function SourceCode({
   content,
   language,
   bytesRead,
+  marks = [],
+  jump = null,
 }: {
   content: string
   language: string
   bytesRead: number
+  marks?: SourceMark[]
+  jump?: SourceJump | null
 }) {
   const [highlight, setHighlight] = useState<{ content: string; language: string; segments: SourceSegment[] } | null>(null)
   const rich = language === 'json' || bytesRead <= richLimitBytes
@@ -474,6 +530,34 @@ function SourceCode({
     })
     return () => cancelAnimationFrame(frame)
   }, [activeLine, activeMatch, collapsed, content, ranges, segments, sourceStart])
+  const marksByLine = useMemo(() => {
+    const byLine = new Map<number, SourceMark[]>()
+    for (const mark of marks) byLine.set(mark.line, [...(byLine.get(mark.line) ?? []), mark])
+    return byLine
+  }, [marks])
+
+  // Jump to a diagnostic: show its page, unfold what hides its line, then scroll it into view.
+  useEffect(() => {
+    if (jump === null) return
+    const line = textLineAtOffset(content, jump.offset)
+    setSourcePage(Math.floor(jump.offset / richLimitBytes))
+    setCollapsed(current => {
+      const next = new Set([...current].filter(key => !ranges.some(range => (
+        foldKey(range) === key && range.startLine <= line && line <= range.endLine
+      ))))
+      return next.size === current.size ? current : next
+    })
+    let inner = 0
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        sourceRef.current?.querySelector(`[data-line="${line}"]`)?.scrollIntoView({ block: 'center' })
+      })
+    })
+    return () => {
+      cancelAnimationFrame(outer)
+      cancelAnimationFrame(inner)
+    }
+  }, [jump]) // only a new click re-runs it; content/ranges changes must not re-scroll
   const showToolbar = ranges.length > 0
 
   if (!rich) {
@@ -529,8 +613,22 @@ function SourceCode({
         {lines.map((line, index) => {
           const lineNumber = index + firstLine
           const markers = markersByLine.get(lineNumber)
+          const lineMarks = marksByLine.get(lineNumber)
           return (
-            <span className="source-line" data-line={lineNumber} hidden={hiddenLines.has(lineNumber)} key={lineNumber}>
+            <span
+              className="source-line"
+              data-line={lineNumber}
+              data-severity={lineMarks === undefined ? undefined : lineMarks.some(mark => mark.severity === 'warning') ? 'warning' : 'info'}
+              hidden={hiddenLines.has(lineNumber)}
+              key={lineNumber}
+            >
+              {/* Floats right on the line it annotates; aria-hidden because the file's problem list carries the text. */}
+              {lineMarks !== undefined ? (
+                <span className="line-diagnostic" aria-hidden="true">
+                  {/* The key is visible on its own line; name it only when one (minified) line carries several. */}
+                  {lineMarks.map(mark => `${mark.severity === 'warning' ? '▲' : '●'} ${lineMarks.length > 1 ? `${mark.key} ` : ''}${mark.note}`).join('   ')}
+                </span>
+              ) : null}
               {markers !== undefined ? (
                 <span className="fold-markers">
                   {markers.map(range => {

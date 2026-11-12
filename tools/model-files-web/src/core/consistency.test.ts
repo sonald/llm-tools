@@ -247,6 +247,7 @@ test('reports vocabulary mismatch only for valid counts and derives fallback cou
   const finding = mismatch.findings.find(item => item.id === 'vocab-mismatch')
 
   assert.equal(finding?.severity, 'warning')
+  assert.deepEqual(finding?.anchors, [{ material: 'config', key: 'vocab_size', side: 'left' }])
   assert.deepEqual(finding?.left, {
     key: 'config.vocab_size',
     type: 'count',
@@ -354,6 +355,10 @@ test('compares EOS IDs safely and uses only one reliable added-token fallback', 
   assert.equal(finding?.left.value, '3')
   assert.equal(finding?.right.value, '2')
   assert.equal(finding?.right.origin, 'embedded')
+  assert.deepEqual(finding?.anchors, [
+    { material: 'generationConfig', key: 'eos_token_id', side: 'left' },
+    { material: 'tokenizerConfig', key: 'eos_token_id', side: 'right' },
+  ])
 
   const sameArrays = analyzeRepositoryConsistency(materials({
     generationConfig: available({ eos_token_id: [3, 2, 2] }),
@@ -370,6 +375,8 @@ test('compares EOS IDs safely and uses only one reliable added-token fallback', 
   assert.equal(fallbackFinding?.right.key, 'tokenizer.added_tokens.eos_token_id')
   assert.equal(fallbackFinding?.right.value, '2')
   assert.equal(fallbackFinding?.right.origin, 'derived')
+  // The derived side lives in tokenizer.json added tokens, not a tokenizer_config key.
+  assert.deepEqual(fallbackFinding?.anchors, [{ material: 'generationConfig', key: 'eos_token_id', side: 'left' }])
 
   const noFindings = [
     materials({
@@ -412,6 +419,15 @@ test('uses context alias priority and reports semantic length differences as inf
   const finding = mismatch.findings.find(item => item.id === 'context-info')
   assert.equal(finding?.severity, 'info')
   assert.equal(finding?.left.value, '4096')
+  assert.deepEqual(finding?.anchors, [
+    { material: 'config', key: 'max_position_embeddings', side: 'left' },
+    { material: 'tokenizerConfig', key: 'model_max_length', side: 'right' },
+  ])
+  const aliased = analyzeRepositoryConsistency(materials({
+    config: available({ n_positions: 2048 }),
+    tokenizerConfig: available({ model_max_length: 8192 }),
+  }))
+  assert.equal(aliased.findings.find(item => item.id === 'context-info')?.anchors[0].key, 'n_positions')
 
   const matching = analyzeRepositoryConsistency(materials({
     config: available({ n_positions: 4096 }),

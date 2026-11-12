@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { formatJsonSource, highlightJsonWindow, jsonFieldSources, sourceBoundary } from './jsonSource.ts'
+import { formatJsonSource, highlightJsonWindow, jsonFieldSources, jsonTopLevelKeyRanges, sourceBoundary } from './jsonSource.ts'
 
 test('JSON fields and formatting preserve numeric spelling, strings and root fragments', () => {
   const source = '{"big":900719925474099312345,"nested":{"decimal":1.2300e+45,"s":"[, \\\"x\\\"]"},"empty":[]}'
@@ -30,4 +30,20 @@ test('raw page boundaries retain Unicode code points and CRLF pairs', () => {
   assert.equal(sourceBoundary('a😀b', 2), 3)
   assert.equal(sourceBoundary('a\r\nb', 2), 3)
   assert.equal(sourceBoundary('abc', 2), 2)
+})
+
+test('top-level key ranges ignore nested keys and key-like string values', () => {
+  const minified = '{"a":{"vocab_size":1},"note":"\\"vocab_size\\":2","vocab_size":3}'
+  const ranges = jsonTopLevelKeyRanges(minified)
+  const vocab = ranges.get('vocab_size')!
+  assert.equal(minified.slice(vocab.start, vocab.end), '"vocab_size"')
+  assert.equal(vocab.start, minified.lastIndexOf('"vocab_size"'))
+  assert.deepEqual([...ranges.keys()], ['a', 'note', 'vocab_size'])
+  assert.equal(ranges.get('missing'), undefined)
+
+  const pretty = '{\r\n  "model_type": "x",\r\n  "eos_token_id": [1, 2]\r\n}'
+  const eos = jsonTopLevelKeyRanges(pretty).get('eos_token_id')!
+  assert.equal(pretty.slice(eos.start, eos.end), '"eos_token_id"')
+  assert.deepEqual([...jsonTopLevelKeyRanges('[{"a":1}]').keys()], [])
+  assert.equal(jsonTopLevelKeyRanges('{"a":1,"a":2}').get('a')!.start, 7)
 })
