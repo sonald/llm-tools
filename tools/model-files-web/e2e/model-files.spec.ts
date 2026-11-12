@@ -2138,6 +2138,8 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
   await page.goto(`/?repo=${encodeURIComponent(fixtureModelId)}&file=model.gguf`)
   expect(await contrastRatio(page, 'body')).toBeGreaterThanOrEqual(4.5)
   expect(await contrastRatio(page, '.scope-note')).toBeGreaterThanOrEqual(4.5)
+  expect(await contrastRatio(page, '.primary-button')).toBeGreaterThanOrEqual(4.5)
+  expect(await contrastRatio(page, '.consistency-badge')).toBeGreaterThanOrEqual(4.5)
   if (capturesScreenshots) {
     const darkScreenshot = testInfo.outputPath('dark-mode.png')
     await page.screenshot({ path: darkScreenshot })
