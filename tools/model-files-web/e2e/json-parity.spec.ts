@@ -112,3 +112,22 @@ test('nested JSON fields preserve full values and searchable numeric spelling', 
   await row.getByRole('button', { name: '折叠第 1 行结构' }).click()
   await expect(row.getByRole('button', { name: '展开第 1 行结构' })).toBeVisible()
 })
+
+test('YAML null literals share the literal syntax color', async ({ page }, testInfo) => {
+  const directory = testInfo.outputPath('yaml-null')
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, 'reader.yaml'), 'count: 2\nempty: null\n')
+  await page.goto('/')
+  await page.getByLabel('选择本地目录').setInputFiles(directory)
+  await page.getByRole('button', { name: /^reader\.yaml/ }).click()
+  const reader = page.locator('.source-reader')
+  await expect(reader).toHaveAttribute('data-highlighted', 'true')
+  const colors = await reader.evaluate(element => {
+    const color = (text: string) => [...element.querySelectorAll('.token')]
+      .filter(token => token.textContent === text).map(token => getComputedStyle(token).color)
+    return { plain: getComputedStyle(element).color, literal: color('2'), null: color('null') }
+  })
+  expect(colors.literal).toHaveLength(1)
+  expect(colors.null).toEqual(colors.literal)
+  expect(colors.null[0]).not.toBe(colors.plain)
+})

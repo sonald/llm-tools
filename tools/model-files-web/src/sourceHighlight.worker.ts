@@ -94,7 +94,7 @@ self.onmessage = (event: MessageEvent<{ content: string; language: string; start
 function tokenClassName(type: string): string {
   if (type.startsWith('comment')) return 'comment'
   if (['string', 'char', 'attr-value', 'template-variable', 'regex'].includes(type)) return 'string'
-  if (['number', 'boolean', 'constant', 'builtin', 'symbol'].includes(type)) return 'literal'
+  if (['number', 'boolean', 'null', 'constant', 'builtin', 'symbol'].includes(type)) return 'literal'
   if (type === 'keyword') return 'keyword'
   if (['atrule', 'tag', 'important', 'selector'].includes(type)) return 'structure'
   if (['function', 'class-name', 'maybe-class-name', 'property', 'attr-name'].includes(type)) return 'name'
