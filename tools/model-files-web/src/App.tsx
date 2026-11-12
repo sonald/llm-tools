@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal, flushSync } from 'react-dom'
 import logoDark from './assets/model-files-dark.png'
 import logoLight from './assets/model-files-light.png'
 import {
@@ -136,7 +137,33 @@ export default function App() {
   const consistencyInspectStarted = useRef(false)
   const [consistencyReport, setConsistencyReport] = useState<RepositoryConsistencyReport | null>(null)
   const [consistencyConfigPath, setConsistencyConfigPath] = useState<string | null>(null)
-  const [consistencyOpen, setConsistencyOpen] = useState(false)
+  const [panelOpen, setPanelOpen] = useState(false)
+  const [panelTab, setPanelTab] = useState<PanelTabId>('problems')
+  const badgeRef = useRef<HTMLButtonElement>(null)
+  const [inspectorOpen, setInspectorOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 1200)
+  // A JS fact, not CSS: when the inspector is hidden its slot is null and details render inline instead.
+  const isPhone = useMediaQuery('(max-width: 640px)')
+  const inspectorShown = inspectorOpen && !isPhone
+  const problemsOpen = panelOpen && panelTab === 'problems'
+
+  function toggleProblems() {
+    if (problemsOpen) {
+      setPanelOpen(false)
+      return
+    }
+    flushSync(() => {
+      setPanelOpen(true)
+      setPanelTab('problems')
+    })
+    document.getElementById('panel-tab-problems')?.focus()
+  }
+
+  function closePanel() {
+    const wasProblems = panelTab === 'problems'
+    setPanelOpen(false)
+    if (wasProblems) badgeRef.current?.focus()
+  }
+  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null)
   const [fileMenu, setFileMenu] = useState<{ x: number; y: number; file: RepositoryFile } | null>(null)
 
   useEffect(() => {
@@ -164,7 +191,7 @@ export default function App() {
     inspectionAbort.current?.abort()
     resetConsistency()
   }, [])
-  useEffect(() => setConsistencyOpen(false), [selectedPath, snapshot])
+  useEffect(() => setSelectedFindingId(null), [snapshot])
 
   useEffect(() => {
     let active = true
@@ -460,7 +487,7 @@ export default function App() {
     baseMaterials.current = null
     setConsistencyReport(null)
     setConsistencyConfigPath(null)
-    setConsistencyOpen(false)
+    setPanelOpen(false)
     if (consistencyInspectStarted.current) cancelTokenizerRequests()
     consistencyInspectStarted.current = false
   }
@@ -628,18 +655,19 @@ export default function App() {
             }}>{t('appClearHistoryAction')}</button>
           ) : null}
         </form>
-        <div className="repository-status" aria-live="polite">
-          {snapshot !== null ? (
-            snapshot.source === 'huggingface'
-              ? <><i />{t('appPublicRepositoryStatus', {
-                revision: snapshot.revision.slice(0, 7),
-                count: formatNumber(snapshot.files.length),
-              })}</>
-              : snapshot.source === 'https'
-                ? <><i />{t('appHttpsStatus', { count: formatNumber(snapshot.files.length) })}</>
-              : <><i />{t('appLocalDirectoryStatus', { count: formatNumber(snapshot.files.length) })}</>
-          ) : isLoadingRepository ? t('appLoadingManifestStatus') : t('appBrowserReadonlyStatus')}
-        </div>
+        <FileHeader
+          inspection={inspection}
+          snapshot={snapshot}
+          report={consistencyReport}
+          reportOpen={problemsOpen}
+          badgeRef={badgeRef}
+          inspectorOpen={inspectorShown}
+          inspectorAvailable={!isPhone}
+          panelOpen={panelOpen}
+          onTogglePanel={() => setPanelOpen(open => !open)}
+          onToggleInspector={() => setInspectorOpen(open => !open)}
+          onToggleConsistency={toggleProblems}
+        />
       </header>
 
       <div className="workspace">
@@ -688,7 +716,7 @@ export default function App() {
                       }}
                       title={file.path}
                     >
-                      <FileIcon locked={isBlocked(file)} />
+                      <FileGlyph category={file.category} locked={isBlocked(file)} />
                       <span>{file.path}</span>
                       {file.size !== null ? <small>{formatBytes(file.size)}</small> : null}
                     </button>
@@ -702,13 +730,46 @@ export default function App() {
           inspection={inspection}
           snapshot={snapshot}
           report={consistencyReport}
-          reportOpen={consistencyOpen}
+          panelOpen={panelOpen}
+          panelTab={panelTab}
+          onSelectPanelTab={setPanelTab}
+          onOpenToolPanel={() => {
+            // Never pull an open panel away from the tab the user is reading; phones lack the height to auto-open.
+            if (panelOpen || isPhone) return
+            setPanelOpen(true)
+            setPanelTab(current => current === 'problems' ? 'tokens' : current)
+          }}
+          onClosePanel={closePanel}
           configPath={consistencyConfigPath}
-          onToggleConsistency={() => setConsistencyOpen(open => !open)}
+          inspectorOpen={inspectorShown}
+          selectedFindingId={selectedFindingId}
+          onSelectFinding={id => {
+            setSelectedFindingId(id)
+            setInspectorOpen(true)
+          }}
           onRetry={() => {
           if (snapshot !== null && inspection.kind !== 'empty') void inspectFile(snapshot, inspection.file)
         }} />
       </div>
+      <footer className="statusbar">
+        <div className="repository-status" aria-live="polite">
+          {snapshot !== null ? (
+            snapshot.source === 'huggingface'
+              ? <><i />{t('appPublicRepositoryStatus', {
+                revision: snapshot.revision.slice(0, 7),
+                count: formatNumber(snapshot.files.length),
+              })}</>
+              : snapshot.source === 'https'
+                ? <><i />{t('appHttpsStatus', { count: formatNumber(snapshot.files.length) })}</>
+              : <><i />{t('appLocalDirectoryStatus', { count: formatNumber(snapshot.files.length) })}</>
+          ) : isLoadingRepository ? t('appLoadingManifestStatus') : t('appBrowserReadonlyStatus')}
+        </div>
+        {inspection.kind !== 'empty' ? (
+          <span className="status-file" title={inspection.file.path}>
+            {inspection.file.path} · {formatName(inspection.file)} · {inspection.file.size === null ? t('appUnknownSize') : formatBytes(inspection.file.size)}
+          </span>
+        ) : null}
+      </footer>
       {fileMenu !== null && snapshot !== null ? (() => {
         const url = fullSourcePath(snapshot, fileMenu.file)
         return (
@@ -744,6 +805,95 @@ export default function App() {
   )
 }
 
+// The file half of the unified toolbar: breadcrumb, path actions and the consistency badge.
+function FileHeader({
+  inspection,
+  snapshot,
+  report,
+  reportOpen,
+  badgeRef,
+  inspectorOpen,
+  inspectorAvailable,
+  panelOpen,
+  onTogglePanel,
+  onToggleInspector,
+  onToggleConsistency,
+}: {
+  inspection: Inspection
+  snapshot: RepositorySnapshot | null
+  report: RepositoryConsistencyReport | null
+  reportOpen: boolean
+  badgeRef: React.RefObject<HTMLButtonElement | null>
+  inspectorOpen: boolean
+  inspectorAvailable: boolean
+  panelOpen: boolean
+  onTogglePanel(): void
+  onToggleInspector(): void
+  onToggleConsistency(): void
+}) {
+  const [copyLabel, setCopyLabel] = useState(() => t('appCopyPathAction'))
+  const [fullCopyLabel, setFullCopyLabel] = useState(() => t('appCopyFullPathAction'))
+  const file = inspection.kind === 'empty' ? null : inspection.file
+  useEffect(() => setCopyLabel(t('appCopyPathAction')), [file?.path])
+  useEffect(() => setFullCopyLabel(t('appCopyFullPathAction')), [file?.path])
+  const fullUrl = file === null || snapshot === null ? null : fullSourcePath(snapshot, file)
+  const sourceHref = file === null || snapshot === null ? undefined
+    : snapshot.source === 'huggingface' ? `https://huggingface.co/${snapshot.modelId}/blob/${snapshot.revision}/${file.path}`
+      : snapshot.source === 'https' ? contentUrl(snapshot, file) : undefined
+
+  async function copy(text: string, setLabel: (label: string) => void) {
+    try {
+      await navigator.clipboard.writeText(text)
+      setLabel(t('templateCopiedState'))
+    } catch {
+      setLabel(t('templateCopyFailedState'))
+    }
+  }
+
+  return (
+    <div className="detail-header">
+      {file !== null ? (
+        <>
+          <span className="breadcrumb-separator" aria-hidden="true">›</span>
+          <div className="file-title">
+            <h1 title={file.path}>{file.path.split('/').at(-1)}</h1>
+            <p>{formatName(file)} · {file.size === null ? t('appUnknownSize') : formatBytes(file.size)}</p>
+          </div>
+          <div className="header-actions">
+            <button className="icon-button path-copy" type="button" aria-label={copyLabel} title={copyLabel}
+              onClick={() => void copy(file.path, setCopyLabel)}>
+              {copyLabel === t('templateCopiedState') ? <CheckIcon /> : <CopyIcon />}
+            </button>
+            <button className="icon-button path-copy" type="button" aria-label={fullCopyLabel} title={fullCopyLabel}
+              hidden={fullUrl === null} onClick={() => { if (fullUrl !== null) void copy(fullUrl, setFullCopyLabel) }}>
+              {fullCopyLabel === t('templateCopiedState') ? <CheckIcon /> : <LinkIcon />}
+            </button>
+            <a className="icon-button source-link" href={sourceHref} target="_blank" rel="noreferrer"
+              aria-label={t('appSourceLinkAction')} title={t('appSourceLinkAction')} hidden={sourceHref === undefined}>
+              <ExternalIcon />
+            </a>
+          </div>
+        </>
+      ) : null}
+      {snapshot !== null ? (
+        <ConsistencyBadge ref={badgeRef} report={report} open={reportOpen} onToggle={onToggleConsistency} />
+      ) : null}
+      {snapshot !== null ? (
+        <button className="icon-button panel-toggle" type="button" aria-label={t('appTogglePanelAction')}
+          title={t('appTogglePanelAction')} aria-pressed={panelOpen} onClick={onTogglePanel}>
+          <PanelIcon />
+        </button>
+      ) : null}
+      {inspectorAvailable ? (
+        <button className="icon-button inspector-toggle" type="button" aria-label={t('appToggleInspectorAction')}
+          title={t('appToggleInspectorAction')} aria-pressed={inspectorOpen} onClick={onToggleInspector}>
+          <InspectorIcon />
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 function SourceSelect({ value, onChange }: { value: SourceMode; onChange(value: SourceMode): void }) {
   return <select className="source-select" aria-label={t('appSourceLabel')} value={value}
     onChange={event => onChange(event.target.value as SourceMode)}>
@@ -757,95 +907,133 @@ function Detail({
   inspection,
   snapshot,
   report,
-  reportOpen,
+  panelOpen,
+  panelTab,
+  onSelectPanelTab,
+  onOpenToolPanel,
+  onClosePanel,
   configPath,
+  inspectorOpen,
+  selectedFindingId,
+  onSelectFinding,
   onRetry,
-  onToggleConsistency,
 }: {
   inspection: Inspection
   snapshot: RepositorySnapshot | null
   report: RepositoryConsistencyReport | null
-  reportOpen: boolean
+  panelOpen: boolean
+  panelTab: PanelTabId
+  onSelectPanelTab(id: PanelTabId): void
+  onOpenToolPanel(): void
+  onClosePanel(): void
+  configPath: string | null
+  inspectorOpen: boolean
+  selectedFindingId: string | null
+  onSelectFinding(id: string): void
+  onRetry(): void
+}) {
+  const [toolTabs, setToolTabs] = useState<ToolTab[]>([])
+  const [panelBody, setPanelBody] = useState<HTMLElement | null>(null)
+  const [inspectorSlot, setInspectorSlot] = useState<HTMLElement | null>(null)
+  const activeTab: PanelTabId = toolTabs.some(tab => tab.id === panelTab) ? panelTab : 'problems'
+  // When the docked result goes away (comparison opened, file left), its open tab closes with it
+  // instead of falling back to Problems the user never asked for.
+  const hadToolTabs = useRef(false)
+  useEffect(() => {
+    if (hadToolTabs.current && toolTabs.length === 0 && panelTab !== 'problems') {
+      if (panelOpen) onClosePanel()
+      onSelectPanelTab('problems')
+    }
+    hadToolTabs.current = toolTabs.length > 0
+  }, [toolTabs.length, panelOpen, panelTab, onClosePanel, onSelectPanelTab])
+  const slots = useMemo<WorkspaceSlots>(() => ({
+    panelBody: panelOpen && activeTab !== 'problems' ? panelBody : null,
+    activeTab,
+    inspector: inspectorOpen ? inspectorSlot : null,
+    registerTabs: setToolTabs,
+    openToolPanel: onOpenToolPanel,
+  }), [panelOpen, activeTab, panelBody, inspectorOpen, inspectorSlot, onOpenToolPanel])
+
+  // Shared frame: content on top, the bottom panel below it, the inspector on the right.
+  return (
+    <WorkspaceSlotsContext.Provider value={slots}>
+      <section className="detail">
+        <div className="detail-main">
+          <DetailBody inspection={inspection} snapshot={snapshot} report={report} configPath={configPath} onRetry={onRetry} />
+          {panelOpen ? (
+            <BottomPanel
+              tabs={toolTabs}
+              activeTab={activeTab}
+              onSelectTab={onSelectPanelTab}
+              report={report}
+              selectedFindingId={selectedFindingId}
+              onSelectFinding={onSelectFinding}
+              onClose={onClosePanel}
+              bodyRef={setPanelBody}
+            />
+          ) : null}
+        </div>
+        {inspectorOpen ? (
+          <Inspector inspection={inspection} report={report} selectedFindingId={selectedFindingId} slotRef={setInspectorSlot} />
+        ) : null}
+      </section>
+    </WorkspaceSlotsContext.Provider>
+  )
+}
+
+type PanelTabId = 'problems' | 'tokens' | 'ids'
+type ToolTab = { id: Exclude<PanelTabId, 'problems'>; label: string }
+type WorkspaceSlots = {
+  panelBody: HTMLElement | null
+  activeTab: PanelTabId
+  inspector: HTMLElement | null
+  registerTabs(tabs: ToolTab[]): void
+  openToolPanel(): void
+}
+// Views portal their panel tabs and inspector details into these slots; null means "render inline".
+const WorkspaceSlotsContext = createContext<WorkspaceSlots | null>(null)
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => typeof window !== 'undefined' && window.matchMedia(query).matches)
+  useEffect(() => {
+    const media = window.matchMedia(query)
+    const update = () => setMatches(media.matches)
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [query])
+  return matches
+}
+
+function DetailBody({ inspection, snapshot, report, configPath, onRetry }: {
+  inspection: Inspection
+  snapshot: RepositorySnapshot | null
+  report: RepositoryConsistencyReport | null
   configPath: string | null
   onRetry(): void
-  onToggleConsistency(): void
 }) {
-  const [copyLabel, setCopyLabel] = useState(() => t('appCopyPathAction'))
-  const [fullCopyLabel, setFullCopyLabel] = useState(() => t('appCopyFullPathAction'))
-  const badgeRef = useRef<HTMLButtonElement>(null)
-  const activePath = inspection.kind === 'empty' ? null : inspection.file.path
-  useEffect(() => setCopyLabel(t('appCopyPathAction')), [activePath])
-  useEffect(() => setFullCopyLabel(t('appCopyFullPathAction')), [activePath])
-  const fullUrl = inspection.kind === 'empty' || snapshot === null ? null : fullSourcePath(snapshot, inspection.file)
-
-  function closeReport() {
-    onToggleConsistency()
-    badgeRef.current?.focus()
-  }
-
   if (inspection.kind === 'empty') {
     return (
-      <section className="detail">
-        <header className="detail-header">
-          <div><h1>{snapshot === null ? t('appOpenModelRepositoryTitle') : t('appSelectFileTitle')}</h1></div>
-          {snapshot !== null ? (
-            <ConsistencyBadge ref={badgeRef} report={report} open={reportOpen} onToggle={onToggleConsistency} />
-          ) : null}
-        </header>
-        {reportOpen ? <ConsistencyDialog report={report} onClose={closeReport} /> : null}
-        <div className="detail-body">
-          {snapshot === null
-            ? <EmptyState title={t('appOpenModelRepositoryTitle')} message={t('appOpenModelRepositoryMessage')} />
-            : <EmptyState title={t('appSelectFileTitle')} message={t('appSelectFileMessage')} />}
-        </div>
-      </section>
+      <div className="detail-body">
+        {snapshot === null
+          ? <EmptyState title={t('appOpenModelRepositoryTitle')} message={t('appOpenModelRepositoryMessage')} />
+          : <EmptyState title={t('appSelectFileTitle')} message={t('appSelectFileMessage')} />}
+      </div>
     )
   }
   const file = inspection.file
   return (
-    <section className="detail">
-      <header className="detail-header">
-        <div>
-          <h1>{file.path.split('/').at(-1)}</h1>
-          <p>{t(categoryLabels[file.category])} · {file.size === null ? t('appUnknownSize') : formatBytes(file.size)}</p>
-        </div>
-        <span className="format-chip">{formatName(file)}</span>
-        <button className="path-copy" type="button" onClick={async () => {
-          try {
-            await navigator.clipboard.writeText(file.path)
-            setCopyLabel(t('templateCopiedState'))
-          } catch {
-            setCopyLabel(t('templateCopyFailedState'))
-          }
-        }}>{copyLabel}</button>
-        <button className="path-copy" type="button" hidden={fullUrl === null} onClick={async () => {
-          if (fullUrl === null) return
-          try {
-            await navigator.clipboard.writeText(fullUrl)
-            setFullCopyLabel(t('templateCopiedState'))
-          } catch {
-            setFullCopyLabel(t('templateCopyFailedState'))
-          }
-        }}>{fullCopyLabel}</button>
-        <a
-          className="source-link"
-          href={snapshot?.source === 'huggingface' ? `https://huggingface.co/${snapshot.modelId}/blob/${snapshot.revision}/${file.path}` : snapshot?.source === 'https' ? contentUrl(snapshot, file) : undefined}
-          target="_blank"
-          rel="noreferrer"
-          hidden={snapshot === null || snapshot.source === 'local'}
-        >{t('appSourceLinkAction')}</a>
-        <ConsistencyBadge ref={badgeRef} report={report} open={reportOpen} onToggle={onToggleConsistency} />
-      </header>
-      {reportOpen ? <ConsistencyDialog report={report} onClose={closeReport} /> : null}
       <div className="detail-body" aria-live="polite" aria-busy={inspection.kind === 'loading'}>
         {inspection.kind === 'loading' ? <LoadingState file={file} /> : null}
-        {inspection.kind === 'text' && snapshot !== null && report !== null
-          && configPath !== null && file.path === configPath ? (
+        {/* One tree whether or not the report has arrived, so the reader keeps its chosen view. */}
+        {inspection.kind === 'text' && snapshot !== null && configPath !== null && file.path === configPath ? (
             <div className="detail-reader-stack">
-              <section className="inspection-section consistency-embedded" aria-label={t('appConfigConsistencyReportTitle')}>
-                <h2>{t('appConfigConsistencyReportTitle')}</h2>
-                <ConsistencyReportBody report={report} />
-              </section>
+              {report !== null ? (
+                <section className="inspection-section consistency-embedded" aria-label={t('appConfigConsistencyReportTitle')}>
+                  <h2>{t('appConfigConsistencyReportTitle')}</h2>
+                  <ConsistencyReportBody report={report} />
+                </section>
+              ) : null}
               <TextInspection
                 key={`${snapshotIdentity(snapshot)}/${file.path}`}
                 snapshot={snapshot}
@@ -863,9 +1051,7 @@ function Detail({
         {inspection.kind === 'locked' ? (
           <EmptyState title={t('appLockedWeightsTitle')} message={t('appLockedWeightsMessage')} />
         ) : null}
-        {inspection.kind === 'text' && snapshot !== null && !(
-          report !== null && configPath !== null && file.path === configPath
-        ) ? (
+        {inspection.kind === 'text' && snapshot !== null && !(configPath !== null && file.path === configPath) ? (
           <TextInspection
             key={`${snapshotIdentity(snapshot)}/${file.path}`}
             snapshot={snapshot}
@@ -920,7 +1106,6 @@ function Detail({
           />
         ) : null}
       </div>
-    </section>
   )
 }
 
@@ -1143,36 +1328,133 @@ function ConsistencyBadge({
   )
 }
 
-function ConsistencyDialog({ report, onClose }: {
+function BottomPanel({ tabs, activeTab, onSelectTab, report, selectedFindingId, onSelectFinding, onClose, bodyRef }: {
+  tabs: ToolTab[]
+  activeTab: PanelTabId
+  onSelectTab(id: PanelTabId): void
   report: RepositoryConsistencyReport | null
+  selectedFindingId: string | null
+  onSelectFinding(id: string): void
   onClose(): void
+  bodyRef(element: HTMLElement | null): void
 }) {
-  const closeButtonRef = useRef<HTMLButtonElement>(null)
-
-  useEffect(() => closeButtonRef.current?.focus(), [])
-
+  const allTabs: Array<{ id: PanelTabId; label: React.ReactNode }> = [
+    ...tabs,
+    { id: 'problems', label: <>{t('appProblemsTab')} <span className="panel-tab-count">{report?.findings.length ?? 0}</span></> },
+  ]
   return (
-    <div className="consistency-dialog" role="dialog" aria-label={t('appRepositoryConsistencyReportAriaLabel')}
+    <section className="bottom-panel" aria-label={t('appBottomPanelAriaLabel')}
       onKeyDown={event => {
-        if (event.key === 'Escape') {
+        // Escape returns to the badge only from Problems, which the badge opened.
+        if (event.key === 'Escape' && activeTab === 'problems') {
           event.preventDefault()
           onClose()
         }
       }}
     >
-      <header>
-        <h2>{t('appRepositoryConsistencyReportAriaLabel')}</h2>
-        <button ref={closeButtonRef} type="button" onClick={onClose}>{t('appCloseAction')}</button>
-      </header>
-      <ConsistencyReportBody report={report} />
-    </div>
+      <div className="panel-tabs">
+        <div role="tablist" aria-label={t('appBottomPanelAriaLabel')}>
+          {allTabs.map(tab => (
+            <button key={tab.id} className="panel-tab" type="button" role="tab" id={`panel-tab-${tab.id}`}
+              aria-selected={activeTab === tab.id} aria-controls={`panel-${tab.id}`} onClick={() => onSelectTab(tab.id)}>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <button className="icon-button" type="button" aria-label={t('appCloseAction')} title={t('appCloseAction')} onClick={onClose}>
+          <CloseIcon />
+        </button>
+      </div>
+      {activeTab === 'problems' ? (
+        <div className="panel-body" role="tabpanel" id="panel-problems" aria-label={t('appRepositoryConsistencyReportAriaLabel')}>
+          <ConsistencyReportBody report={report} selectedId={selectedFindingId} onSelect={onSelectFinding} />
+        </div>
+      ) : (
+        <div className="panel-body" role="tabpanel" id={`panel-${activeTab}`} aria-labelledby={`panel-tab-${activeTab}`} ref={bodyRef} />
+      )}
+    </section>
   )
 }
 
-function ConsistencyReportBody({ report }: { report: RepositoryConsistencyReport | null }) {
+function Inspector({ inspection, report, selectedFindingId, slotRef }: {
+  inspection: Inspection
+  report: RepositoryConsistencyReport | null
+  selectedFindingId: string | null
+  slotRef(element: HTMLElement | null): void
+}) {
+  const finding = report?.findings.find(item => item.id === selectedFindingId) ?? null
+  const file = inspection.kind === 'empty' ? null : inspection.file
+  // ponytail: path and size only; format and bytes read already sit in the content's own strip and the status bar.
+  return (
+    <aside className="inspector" aria-label={t('appInspectorAriaLabel')}>
+      <div className="inspector-slot" ref={slotRef} />
+      {finding !== null ? (
+        <section className="inspector-section" data-severity={finding.severity}>
+          <h2>{t('appInspectorSelectedProblem')}</h2>
+          <h3><SeverityMark severity={finding.severity} />{finding.title}</h3>
+          <FindingComparison finding={finding} />
+          <p>{finding.detail}</p>
+        </section>
+      ) : null}
+      {file !== null ? (
+        <section className="inspector-section">
+          <h2>{t('appInspectorFileSection')}</h2>
+          <dl className="inspector-facts">
+            <div><dt>{t('appInspectorPathLabel')}</dt><dd>{file.path}</dd></div>
+            <div><dt>{t('appInspectorSizeLabel')}</dt><dd>{file.size === null ? t('appUnknownSize') : formatBytes(file.size)}</dd></div>
+          </dl>
+        </section>
+      ) : null}
+      {finding === null && file === null ? <p className="inspector-empty">{t('appInspectorEmpty')}</p> : null}
+    </aside>
+  )
+}
+
+function FindingComparison({ finding }: { finding: RepositoryConsistencyReport['findings'][number] }) {
+  return (
+    <dl className="finding-comparison">
+      <div><dt>{finding.left.key}</dt><dd>{finding.left.value}</dd></div>
+      <div><dt>{finding.right.key}</dt><dd>{finding.right.value}</dd></div>
+    </dl>
+  )
+}
+
+function SeverityMark({ severity }: { severity: 'warning' | 'info' }) {
+  return (
+    <span className="severity-mark" data-severity={severity}>
+      <span aria-hidden="true">{severity === 'warning' ? '▲' : '●'}</span>
+      <span className="sr-only">{t(severity === 'warning' ? 'appSeverityWarning' : 'appSeverityInfo')}</span>
+    </span>
+  )
+}
+
+function ConsistencyReportBody({ report, selectedId = null, onSelect }: {
+  report: RepositoryConsistencyReport | null
+  selectedId?: string | null
+  onSelect?(id: string): void
+}) {
   if (report === null) return <p>{t('appCheckingRepositoryMaterials')}</p>
   return (
     <>
+      {onSelect !== undefined ? report.findings.map(finding => (
+        <button
+          className="finding-row"
+          type="button"
+          key={finding.id}
+          data-finding-id={finding.id}
+          data-severity={finding.severity}
+          aria-pressed={selectedId === finding.id}
+          onClick={event => {
+            // Safari does not focus buttons on click; keep focus in the panel so Escape still closes it.
+            event.currentTarget.focus()
+            onSelect(finding.id)
+          }}
+        >
+          <SeverityMark severity={finding.severity} />
+          <span className="finding-title">{finding.title}</span>
+          <span className="finding-compare">{`${finding.left.key} = ${finding.left.value} · ${finding.right.key} = ${finding.right.value}`}</span>
+        </button>
+      )) : null}
       <dl aria-label={t('appRepositoryIdentityAriaLabel')} className="consistency-identity">
         {report.identityFields.map(item => (
           <div key={item.key} data-identity-key={item.key}>
@@ -1181,16 +1463,13 @@ function ConsistencyReportBody({ report }: { report: RepositoryConsistencyReport
           </div>
         ))}
       </dl>
-      {report.findings.map(finding => (
+      {onSelect === undefined ? report.findings.map(finding => (
         <article key={finding.id} data-finding-id={finding.id}>
           <h3>{finding.title}</h3>
           <p>{finding.detail}</p>
-          <dl>
-            <div><dt>{finding.left.key}</dt><dd>{finding.left.value}</dd></div>
-            <div><dt>{finding.right.key}</dt><dd>{finding.right.value}</dd></div>
-          </dl>
+          <FindingComparison finding={finding} />
         </article>
-      ))}
+      )) : null}
       <div className="table-scroll">
         <table aria-label={t('appConsistencyCoverageAriaLabel')}>
           <thead><tr><th>{t('appMaterialColumn')}</th><th>{t('appStatusColumn')}</th></tr></thead>
@@ -2083,6 +2362,14 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
 
   return (
     <div className={`tokenizer-workspace ${comparisonOpen ? 'comparison-open' : ''}`}>
+      <div className="tokenizer-header">
+      <div className="tokenizer-tabs" role="tablist" aria-label={t('tokenizerViewsAriaLabel')}>
+        <button type="button" role="tab" aria-selected={view === 'structure'} onClick={() => changeView('structure')}>{t('tokenizerStructureTab')}</button>
+        {!isSentencePieceFile(file) ? <button type="button" role="tab" aria-selected={view === 'json'} onClick={() => changeView('json')}>JSON</button> : null}
+        <button type="button" role="tab" aria-selected={view === 'raw'} onClick={() => changeView('raw')}>{t('tokenizerRawTab')}</button>
+        <button type="button" role="tab" aria-selected={view === 'decode'} onClick={() => changeView('decode')}>{t('tokenizerDecodeTab')}</button>
+        <button type="button" role="tab" aria-selected={view === 'chat'} onClick={() => changeView('chat')}>{t('tokenizerChatTab')}</button>
+      </div>
       <div className="comparison-toolbar">
         {comparisonOpen ? null : (
           <button className="primary-button" type="button" onClick={openComparison} disabled={comparisonTargets.length === 0}>
@@ -2107,6 +2394,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
         ) : null}
         <details className="comparison-repository">
           <summary>{t('comparisonOtherPublicRepositoryAction')}</summary>
+          <div className="comparison-repository-popover">
           <form onSubmit={loadComparisonRepository}>
             <SourceSelect value={comparisonSourceMode} onChange={mode => {
               closeExternalSource()
@@ -2136,18 +2424,13 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
             <span>{t('comparisonSecondLocalDirectoryLabel')}</span>
             <input type="file" multiple onChange={loadComparisonLocalDirectory} {...{ webkitdirectory: '' }} />
           </label>
+          </div>
         </details>
         {comparisonOpen ? (
           <button type="button" aria-label={t('comparisonCloseAriaLabel')} onClick={closeComparison}>{t('comparisonCloseAction')}</button>
         ) : null}
         {comparisonTargets.length === 0 ? <span>{t('comparisonNoTargetsStatus')}</span> : null}
       </div>
-      <div className="tokenizer-tabs" role="tablist" aria-label={t('tokenizerViewsAriaLabel')}>
-        <button type="button" role="tab" aria-selected={view === 'structure'} onClick={() => changeView('structure')}>{t('tokenizerStructureTab')}</button>
-        {!isSentencePieceFile(file) ? <button type="button" role="tab" aria-selected={view === 'json'} onClick={() => changeView('json')}>JSON</button> : null}
-        <button type="button" role="tab" aria-selected={view === 'raw'} onClick={() => changeView('raw')}>{t('tokenizerRawTab')}</button>
-        <button type="button" role="tab" aria-selected={view === 'decode'} onClick={() => changeView('decode')}>{t('tokenizerDecodeTab')}</button>
-        <button type="button" role="tab" aria-selected={view === 'chat'} onClick={() => changeView('chat')}>{t('tokenizerChatTab')}</button>
       </div>
       {view === 'structure' ? (
         <TokenizerStructureInspection
@@ -2185,6 +2468,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
             showWhitespace={showWhitespace}
             setShowWhitespace={setShowWhitespace}
             tableLabel={comparisonOpen ? t('mainTokenizerTokensTableLabel') : undefined}
+            docked={!comparisonOpen}
           />
           {comparisonPanel}
         </div>
@@ -2210,6 +2494,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
             showWhitespace={showWhitespace}
             setShowWhitespace={setShowWhitespace}
             tableLabel={comparisonOpen ? t('mainTokenizerTokensTableLabel') : undefined}
+            docked={!comparisonOpen}
           />
           {comparisonPanel}
         </div>
@@ -2274,6 +2559,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
             showWhitespace={showWhitespace}
             setShowWhitespace={setShowWhitespace}
             tableLabel={comparisonOpen ? t('mainTokenizerTokensTableLabel') : undefined}
+            docked={!comparisonOpen}
           />
           {comparisonPanel}
         </div>
@@ -2480,6 +2766,7 @@ function TokenizerResultView({
   setShowWhitespace,
   heading,
   tableLabel,
+  docked = false,
 }: {
   phase: 'idle' | 'loading' | 'ready' | 'error'
   error: string | null
@@ -2489,7 +2776,34 @@ function TokenizerResultView({
   setShowWhitespace(value: boolean): void
   heading?: string
   tableLabel?: string
+  docked?: boolean
 }) {
+  // Docked: the table, IDs and text go to the bottom panel and the selection to the inspector.
+  // Comparison views pass docked=false, since one panel cannot hold two results.
+  const slots = useContext(WorkspaceSlotsContext)
+  const dock = docked ? slots : null
+  const registerTabs = dock?.registerTabs
+  useEffect(() => {
+    if (registerTabs === undefined) return
+    registerTabs([
+      { id: 'tokens', label: t('appPanelTokensTab') },
+      { id: 'ids', label: t('appPanelTokenIdsTab') },
+    ])
+    return () => registerTabs([])
+  }, [registerTabs])
+  const openToolPanel = useRef(dock?.openToolPanel)
+  openToolPanel.current = dock?.openToolPanel
+  // Open the panel for the first docked result only: Raw re-tokenizes on every keystroke,
+  // and a panel the user closed must stay closed while they type.
+  const docking = dock !== null
+  const autoOpened = useRef(false)
+  useEffect(() => {
+    if (!docking) { autoOpened.current = false; return }
+    if (result !== null && !autoOpened.current) {
+      autoOpened.current = true
+      openToolPanel.current?.()
+    }
+  }, [result, docking])
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [limit, setLimit] = useState(1000)
   const [copyLabel, setCopyLabel] = useState(() => t('tokenizerResultCopyIdAction'))
@@ -2508,9 +2822,81 @@ function TokenizerResultView({
     }
     return values
   }, [result])
+  // Lines end after a segment whose text ends in a newline; merged (>100 ID) segments never split a line.
+  const lines = useMemo(() => {
+    const out: Array<{ items: Array<{ segment: Tokenization['segments'][number]; index: number }>; count: number }> = []
+    let current: (typeof out)[number] = { items: [], count: 0 }
+    for (const [index, segment] of (result?.segments ?? []).entries()) {
+      current.items.push({ segment, index })
+      current.count += segment.end - segment.start
+      if (segment.ids.length <= 100 && segment.text.endsWith('\n')) {
+        out.push(current)
+        current = { items: [], count: 0 }
+      }
+    }
+    if (current.items.length > 0) out.push(current)
+    return out
+  }, [result])
   const selectedId = selectedIndex === null ? undefined : result?.ids[selectedIndex]
   const selectedRole = selectedIndex !== null ? result?.roles?.[selectedIndex] ?? null : null
   const inputBytes = new TextEncoder().encode(authoritativeInput).byteLength
+  const selectedDetail = result === null ? null : selectedId !== undefined && selectedIndex !== null ? (
+            <dl className="selected-token">
+              <div><dt>{t('tokenizerResultSelectedTokenLabel')}</dt><dd>#{selectedIndex + 1}</dd></div>
+              <div><dt>{t('tokenizerStructureIdColumn')}</dt><dd>{selectedId}</dd></div>
+              <div><dt>{t('tokenizerResultSelectedRoleLabel')}</dt><dd>{chatRoleLabel(selectedRole)}</dd></div>
+              <div><dt>{t('tokenizerResultSelectedPieceLabel')}</dt><dd>{visiblePiece(result.pieces[selectedIndex] ?? '', showWhitespace)}</dd></div>
+              <button type="button" onClick={async () => {
+                try { await navigator.clipboard.writeText(String(selectedId)); setCopyLabel(t('templateCopiedState')) } catch { setCopyLabel(t('templateCopyFailedState')) }
+              }}>{copyLabel}</button>
+            </dl>
+          ) : null
+  const idsBlock = result === null ? null : (
+    <>
+          <div className="token-id-chips" aria-label={t('tokenizerResultTokenIdChipsAria')}>
+            {result.ids.slice(0, limit).map((id, index) => (
+              <button
+                type="button"
+                key={`${index}-${id}`}
+                aria-label={t('tokenizerResultTokenIdChipAria', { id, index })}
+                aria-pressed={selectedIndex === index}
+                onClick={() => setSelectedIndex(current => current === index ? null : index)}
+              >{id}</button>
+            ))}
+          </div>
+    </>
+  )
+  const tableBlock = result === null ? null : (
+    <>
+          <div className="table-scroll">
+            <table aria-label={tableLabel ?? t('tokenizerResultTokensTableLabel')}>
+              <thead><tr><th>{t('tokenizerResultPositionColumn')}</th><th>{t('tokenizerStructureIdColumn')}</th><th>{t('tokenizerResultSpecialColumn')}</th><th>{t('tokenizerResultSelectedRoleLabel')}</th><th>{t('comparisonTokenPieceColumn')}</th><th>{t('tokenizerResultDecodedColumn')}</th><th>{t('tokenizerResultMappingColumn')}</th></tr></thead>
+              <tbody>{result.ids.slice(0, limit).map((id, index) => (
+                <tr className={selectedIndex === index ? 'selected-token-row' : ''} key={`${index}-${id}`}>
+                  <td><button className="table-link" type="button" aria-pressed={selectedIndex === index} onClick={() => setSelectedIndex(current => current === index ? null : index)}>{index + 1}</button></td>
+                  <td><button className="table-link" type="button" aria-pressed={selectedIndex === index} onClick={() => setSelectedIndex(current => current === index ? null : index)}>{id}</button></td>
+                  <td>{result.flags[index]?.specialName ?? t('comparisonEmDashValue')}</td>
+                  <td>{chatRoleLabel(result.roles?.[index] ?? null)}</td>
+                  <td>{visiblePiece(result.pieces[index] ?? '', showWhitespace)}</td>
+                  <td>{visiblePiece(decoded.get(index) ?? '', showWhitespace)}</td><td>{result.mapping}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+          {limit < result.ids.length ? <button className="load-more" type="button" onClick={() => setLimit(Math.min(limit + 1000, result.ids.length))}>{t('tokenizerResultLoadMoreAction', { count: formatNumber(1000) })}</button> : null}
+    </>
+  )
+  const textBlock = result === null ? null : (
+    <>
+          <p className="decoded-text">{result.direction === 'decode' ? t('tokenizerResultTokenIdsPrefix') + result.input : t('tokenizerResultAuthoritativeInputPrefix') + authoritativeInput}</p>
+          <p className="decoded-text">{result.direction === 'decode' ? t('tokenizerResultDecodedTextPrefix') : t('tokenizerResultDecodedPrefix')}{result.decoded}</p>
+    </>
+  )
+  const panelContent = dock?.panelBody == null ? null : createPortal(
+    result === null ? <div className="result-empty">{t('tokenizerResultIdleStatus')}</div>
+      : dock.activeTab === 'ids' ? idsBlock : tableBlock,
+    dock.panelBody,
+  )
   return (
     <section className="result-panel" aria-live="polite">
       <header><h2>{heading ?? (result?.direction === 'decode' ? t('tokenizerResultDecodeHeading') : t('tokenizerResultHeading'))}</h2><label><input type="checkbox" checked={showWhitespace} onChange={event => setShowWhitespace(event.target.checked)} />{t('tokenizerResultShowWhitespaceAction')}</label></header>
@@ -2519,28 +2905,37 @@ function TokenizerResultView({
       {phase === 'error' ? <InlineError>{error}</InlineError> : null}
       {result !== null ? (
         <>
-          <ValidationStrip items={[
-            [t('tokenizerStructureRunLocationLabel'), t('tokenizerStructureWebWorkerValue')],
-            [t('tokenizerResultDirectionLabel'), result.direction === 'decode' ? 'decode' : 'encode'],
-            [t('tokenizerStructureTokenCountColumn'), formatNumber(result.ids.length)],
-            ...(result.overhead === null ? [] : [
-              [t('tokenizerResultContentTokenLabel'), formatNumber(result.overhead.contentCount)],
-              [t('tokenizerResultApproximateTemplateOverheadLabel'), result.overhead.templateCount < 0
-                ? t('tokenizerResultUnableToSplitValue')
-                : formatNumber(result.overhead.templateCount)],
-            ] as Array<[string, string]>),
-            [t('tokenizerResultBytesPerTokenLabel'), formatNumber(result.ids.length === 0 ? 0 : inputBytes / result.ids.length, { maximumFractionDigits: 2 })],
-            [t('tokenizerResultMappingLabel'), result.mapping],
-          ]} />
+          <dl className="token-metrics">
+            <div className="token-metric-primary"><dt>{t('tokenizerStructureTokenCountColumn')}</dt><dd>{formatNumber(result.ids.length)}</dd></div>
+            {result.overhead !== null ? (
+              <>
+                <div data-metric="content"><dt>{t('tokenizerResultContentTokenLabel')}</dt><dd>{formatNumber(result.overhead.contentCount)}</dd></div>
+                <div data-metric="template"><dt>{t('tokenizerResultApproximateTemplateOverheadLabel')}</dt><dd>{formatTemplateOverhead(result.overhead.templateCount)}</dd></div>
+              </>
+            ) : null}
+            <div><dt>{t('tokenizerResultBytesPerTokenLabel')}</dt><dd>{formatNumber(result.ids.length === 0 ? 0 : inputBytes / result.ids.length, { maximumFractionDigits: 2 })}</dd></div>
+            <div><dt>{t('tokenizerResultMappingLabel')}</dt><dd className="mapping-badge" data-mapping={result.mapping}>{result.mapping}</dd></div>
+          </dl>
+          {result.overhead !== null && result.overhead.templateCount >= 0 && result.ids.length > 0 ? (
+            <div className="token-ratio" aria-hidden="true">
+              <span data-metric="content" style={{ flexGrow: result.overhead.contentCount }} />
+              <span data-metric="template" style={{ flexGrow: result.overhead.templateCount }} />
+            </div>
+          ) : null}
           {result.overhead !== null && result.mapping === 'Decoded only' ? (
             <p className="decoded-text">{t('tokenizerResultDecodedOnlyWarning', { mapping: result.mapping })}</p>
           ) : null}
           <h3 className="result-label">{t('tokenizerResultGraphemeHeading')}</h3>
           <div className="token-pieces">
-            {result.segments.map((segment, index) => {
+            {lines.map((line, lineIndex) => (
+              <div className="token-line" key={line.items[0]?.segment.start ?? lineIndex}>
+                <span className="token-line-number" aria-hidden="true">{lineIndex + 1}</span>
+                <div className="token-line-pieces">
+            {line.items.map(({ segment, index }) => {
               const role = segmentRole(result, segment)
               return (
               <button
+                data-tone={index % 5}
                 type="button"
                 className={selectedIndex !== null && selectedIndex >= segment.start && selectedIndex < segment.end ? 'selected' : ''}
                 aria-pressed={selectedIndex !== null && selectedIndex >= segment.start && selectedIndex < segment.end}
@@ -2565,49 +2960,22 @@ function TokenizerResultView({
                 ? t('tokenizerResultMergedSegmentChip', { count: formatNumber(segment.ids.length) })
                 : visiblePiece(segment.text, showWhitespace)}</button>
             )})}
-          </div>
-          {selectedId !== undefined && selectedIndex !== null ? (
-            <dl className="selected-token">
-              <div><dt>{t('tokenizerResultSelectedTokenLabel')}</dt><dd>#{selectedIndex + 1}</dd></div>
-              <div><dt>{t('tokenizerStructureIdColumn')}</dt><dd>{selectedId}</dd></div>
-              <div><dt>{t('tokenizerResultSelectedRoleLabel')}</dt><dd>{chatRoleLabel(selectedRole)}</dd></div>
-              <div><dt>{t('tokenizerResultSelectedPieceLabel')}</dt><dd>{visiblePiece(result.pieces[selectedIndex] ?? '', showWhitespace)}</dd></div>
-              <button type="button" onClick={async () => {
-                try { await navigator.clipboard.writeText(String(selectedId)); setCopyLabel(t('templateCopiedState')) } catch { setCopyLabel(t('templateCopyFailedState')) }
-              }}>{copyLabel}</button>
-            </dl>
-          ) : null}
-          <div className="token-id-chips" aria-label={t('tokenizerResultTokenIdChipsAria')}>
-            {result.ids.slice(0, limit).map((id, index) => (
-              <button
-                type="button"
-                key={`${index}-${id}`}
-                aria-label={t('tokenizerResultTokenIdChipAria', { id, index })}
-                aria-pressed={selectedIndex === index}
-                onClick={() => setSelectedIndex(current => current === index ? null : index)}
-              >{id}</button>
+                </div>
+                <span className="token-line-count" aria-hidden="true">{formatNumber(line.count)}</span>
+              </div>
             ))}
           </div>
-          <div className="table-scroll">
-            <table aria-label={tableLabel ?? t('tokenizerResultTokensTableLabel')}>
-              <thead><tr><th>{t('tokenizerResultPositionColumn')}</th><th>{t('tokenizerStructureIdColumn')}</th><th>{t('tokenizerResultSpecialColumn')}</th><th>{t('tokenizerResultSelectedRoleLabel')}</th><th>{t('comparisonTokenPieceColumn')}</th><th>{t('tokenizerResultDecodedColumn')}</th><th>{t('tokenizerResultMappingColumn')}</th></tr></thead>
-              <tbody>{result.ids.slice(0, limit).map((id, index) => (
-                <tr className={selectedIndex === index ? 'selected-token-row' : ''} key={`${index}-${id}`}>
-                  <td><button className="table-link" type="button" aria-pressed={selectedIndex === index} onClick={() => setSelectedIndex(current => current === index ? null : index)}>{index + 1}</button></td>
-                  <td><button className="table-link" type="button" aria-pressed={selectedIndex === index} onClick={() => setSelectedIndex(current => current === index ? null : index)}>{id}</button></td>
-                  <td>{result.flags[index]?.specialName ?? t('comparisonEmDashValue')}</td>
-                  <td>{chatRoleLabel(result.roles?.[index] ?? null)}</td>
-                  <td>{visiblePiece(result.pieces[index] ?? '', showWhitespace)}</td>
-                  <td>{visiblePiece(decoded.get(index) ?? '', showWhitespace)}</td><td>{result.mapping}</td>
-                </tr>
-              ))}</tbody>
-            </table>
-          </div>
-          {limit < result.ids.length ? <button className="load-more" type="button" onClick={() => setLimit(Math.min(limit + 1000, result.ids.length))}>{t('tokenizerResultLoadMoreAction', { count: formatNumber(1000) })}</button> : null}
-          <p className="decoded-text">{result.direction === 'decode' ? t('tokenizerResultTokenIdsPrefix') + result.input : t('tokenizerResultAuthoritativeInputPrefix') + authoritativeInput}</p>
-          <p className="decoded-text">{result.direction === 'decode' ? t('tokenizerResultDecodedTextPrefix') : t('tokenizerResultDecodedPrefix')}{result.decoded}</p>
+          {textBlock}
+          {dock === null ? <>{selectedDetail}{idsBlock}{tableBlock}</> : null}
+          {dock !== null ? (dock.inspector !== null && selectedDetail !== null
+            ? createPortal(
+              <section className="inspector-section"><h2>{t('appInspectorSelectedToken')}</h2>{selectedDetail}</section>,
+              dock.inspector,
+            )
+            : selectedDetail) : null}
         </>
       ) : null}
+      {panelContent}
     </section>
   )
 }
@@ -2693,10 +3061,52 @@ function SearchIcon() {
   return <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
 }
 
-function FileIcon({ locked }: { locked: boolean }) {
-  return locked
-    ? <svg className="file-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="2" /><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" /></svg>
-    : <svg className="file-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 1.5h6l4 4v9H3z" /><path d="M9 1.5v4h4" /></svg>
+const categoryGlyphs: Record<FileCategory, string> = {
+  configuration: '{ }',
+  tokenizer: 'Aa',
+  templates: '{%',
+  weightMetadata: '≡',
+  documentation: '¶',
+  other: '·',
+  weights: '≡',
+}
+
+function FileGlyph({ category, locked }: { category: FileCategory; locked: boolean }) {
+  return (
+    <span className="file-glyph" data-category={category} aria-hidden="true">
+      {locked
+        ? <svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5" /><path d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7" /></svg>
+        : categoryGlyphs[category]}
+    </span>
+  )
+}
+
+function CopyIcon() {
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" /><path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" /></svg>
+}
+
+function LinkIcon() {
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 9.5 9.5 6.5" /><path d="M7 4.5 8.3 3.2a2.6 2.6 0 0 1 3.7 3.7L10.7 8.2" /><path d="M9 11.5 7.7 12.8A2.6 2.6 0 0 1 4 9.1l1.3-1.3" /></svg>
+}
+
+function ExternalIcon() {
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2.5h4.5V7" /><path d="M13.5 2.5 7.5 8.5" /><path d="M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3" /></svg>
+}
+
+function CloseIcon() {
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg>
+}
+
+function PanelIcon() {
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M2 9.5h12" /></svg>
+}
+
+function InspectorIcon() {
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M10 3v10" /></svg>
+}
+
+function CheckIcon() {
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" /></svg>
 }
 
 function AppMark() {

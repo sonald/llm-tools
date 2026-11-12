@@ -1501,6 +1501,66 @@ export const messageCatalog = {
     'zh-Hans': '仓库一致性报告',
     en: 'Repository consistency report',
   },
+  appBottomPanelAriaLabel: {
+    'zh-Hans': '底部面板',
+    en: 'Bottom panel',
+  },
+  appProblemsTab: {
+    'zh-Hans': '问题',
+    en: 'Problems',
+  },
+  appSeverityWarning: {
+    'zh-Hans': '警告',
+    en: 'Warning',
+  },
+  appSeverityInfo: {
+    'zh-Hans': '提示',
+    en: 'Info',
+  },
+  appInspectorAriaLabel: {
+    'zh-Hans': '检查器',
+    en: 'Inspector',
+  },
+  appToggleInspectorAction: {
+    'zh-Hans': '显示或隐藏检查器',
+    en: 'Show or hide inspector',
+  },
+  appInspectorSelectedProblem: {
+    'zh-Hans': '选中问题',
+    en: 'Selected problem',
+  },
+  appInspectorFileSection: {
+    'zh-Hans': '文件',
+    en: 'File',
+  },
+  appInspectorPathLabel: {
+    'zh-Hans': '路径',
+    en: 'Path',
+  },
+  appInspectorSizeLabel: {
+    'zh-Hans': '大小',
+    en: 'Size',
+  },
+  appInspectorEmpty: {
+    'zh-Hans': '打开文件或在问题面板中选择一项，这里会显示详情。',
+    en: 'Open a file or pick a problem to see its details here.',
+  },
+  appTogglePanelAction: {
+    'zh-Hans': '显示或隐藏底部面板',
+    en: 'Show or hide bottom panel',
+  },
+  appPanelTokensTab: {
+    'zh-Hans': 'Token 表',
+    en: 'Token table',
+  },
+  appPanelTokenIdsTab: {
+    'zh-Hans': 'Token IDs',
+    en: 'Token IDs',
+  },
+  appInspectorSelectedToken: {
+    'zh-Hans': '选中 Token',
+    en: 'Selected token',
+  },
   appCloseAction: {
     'zh-Hans': '关闭',
     en: 'Close',
