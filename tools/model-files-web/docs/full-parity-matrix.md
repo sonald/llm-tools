@@ -122,7 +122,7 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | H-4 | 格式标签只用于结构化格式（SafeTensors / GGUF v3 / Imatrix DAT / Jinja / PDF / SVG / Image） | DV:198-205，`InspectionDocument.swift:136-146` | App:865,3138-3150（并进副标题） | PASS | 2026-11-13：独立格式胶囊，规则同原生：载入后用文档的格式名（GGUF v{n}、SVG、Imatrix DAT），载入前用文件结构格式；JSON、文本、Markdown、tokenizer 不显示 |
 | H-5 | 图标按钮：复制文件路径 / 复制完整路径或 URL / 在浏览器中打开当前版本（本地：在 Finder 中显示）；不可用时禁用 | DV:222-257 | App:867-880 | PASS | 2026-11-13：三个图标按钮，aria-label 用原生标签（复制路径 / 复制全路径 / 在源站打开），title 用原生 help。不可用时禁用（本地文件按 P-4）。保留 Web 独有的「已复制」反馈 |
 | H-6 | config 概览内嵌一致性报告 | — | — | 已关闭 | 两端都改为文件内诊断 + 问题面板（§3.4） |
-| H-7 | 底部只读安全提示条（锁图标） | DV:393-413 | `Readers.tsx:769-777`（顶部三栏 validation strip） | 不同 | |
+| H-7 | 底部只读安全提示条（锁图标） | DV:393-413 | `App.tsx` SafetyNotice + `safetyNotice()` | PASS | 2026-11-13：SafeTensors/GGUF/imatrix/PDF/图片/权重索引用原生文案；PDF 按 P-6 改为「浏览器内置查看器」。Jinja 概览和 tokenizer.json 结构页仍有各自的信息条，归 J-/T- 行。GGUF 提示暂时只保留前半句，「最后一个 Range…」要等 D-1 改成 1 MiB 分块读取后才成立 |
 | H-8 | 状态页：未选文件、加载中（按格式区分文案 +「大小 · 来源 · 可切换到其他文件取消」）、锁定、「没有内容」、「无法读取文件」 | DV:80-139，`Support/EmptyStateView.swift` | App:1022-1040,3042-3067 | 部分 | 2026-11-13：未选文件、加载中（按格式文案 +「大小 · 来源 · 可切换到其他文件取消」）、锁定、无法读取、无法打开位置都按原生文案和图标。「没有内容」在 Web 不可达（每种文件都有对应 inspection），没有实现 |
 
 ### 3.4 工作台：底部面板、问题与检查器
@@ -142,42 +142,42 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | Q-4 | Coverage：带状态图标的列表，材料名本地化 | DV:1811-1827,1889-1926 | App:1486-1498 | 不同 | Web 是英文表头「Material / Status」，显示原始键名 |
 | Q-5 | 检查器「选中问题」区（含来源） | IV:18-47,121-134 | App:1381-1388,1403-1410 | 不同 | Web 不显示 origin |
 | Q-6 | 选中问题时不强制打开检查器 | IV:18 | App:751-754 | Web 独有 | Web 会强制打开检查器 |
-| Q-7 | 文件内问题列表：贴满宽度的 bar 行，选中底色为 accent 16%，每行有 note tooltip | DV:477-540 | `Readers.tsx:70-109`，CSS:111-122,721-724 | 不同 | Web 是缩进的琥珀色卡片，放在 validation strip 和视角按钮之间，没有 tooltip |
-| Q-8 | 哪些文件显示诊断和侧栏计数：config、generation_config、**tokenizer_config** | ST:930-945 | App:504-506 | 缺失 | Web 的 tokenizer_config 没有问题列表、行标记和计数 |
+| Q-7 | 文件内问题列表：贴满宽度的 bar 行，选中底色为 accent 16%，每行有 note tooltip | DV:477-540 | `Readers.tsx` JsonInspection，CSS `.reader-diagnostics` | PASS | 2026-11-13 |
+| Q-8 | 哪些文件显示诊断和侧栏计数：config、generation_config、**tokenizer_config** | ST:930-945 | App:504-506 | PASS | 2026-11-13：tokenizer_config 有问题列表、行标记和侧栏计数（E2E 覆盖） |
 | Q-9 | GGUF 上下文和词表不一致锚定到 config.json | `Support/ConsistencyAnalyzer.swift:287-297` | 缺 | 缺失 | 依赖 D-1 |
-| Q-10 | 原文行标记：只给文字范围着色（warning 20%、info 14%，亮暗自适应） | `CodeReaderView.swift:400-413` | `Readers.tsx:616-631`，CSS:121-129,725 | 不同 | Web 给整行上色，还在行右侧浮动显示「▲ ≠ key 值」；暗色下 info 没有适配 |
-| Q-11 | 点击问题跳行：放在视口上方 1/3，放置光标并闪烁查找指示 | DV:509-513，`CodeReaderView.swift:415-436` | `Readers.tsx:92-97,539-560` | 不同 | Web 居中滚动，没有光标和闪烁 |
+| Q-10 | 原文行标记：只给文字范围着色（warning 20%、info 14%，亮暗自适应） | `CodeReaderView.swift:400-413` | `CodeReader.tsx` `.line-text[data-severity]` | PASS | 2026-11-13：浮动注释已删，注释只在问题列表 tooltip 和检查器里 |
+| Q-11 | 点击问题跳行：放在视口上方 1/3，放置光标并闪烁查找指示 | DV:509-513，`CodeReaderView.swift:415-436` | `CodeReader.tsx` jump effect | PASS | 2026-11-13：行放在上方 1/3，光标落在行首，闪烁动画；最后几行到不了 1/3 时停在底部 |
 
 ### 3.5 JSON 与摘要阅读器
 
 | ID | 元素 | 原生 | Web | 状态 | 差异 |
 | --- | --- | --- | --- | --- | --- |
-| R-1 | **JSON「全部字段」是整份格式化的代码阅读器（高亮、折叠、查找）** | DV:544-545,654-685 | `Readers.tsx:121-123,797-917,941-950`（根键表格 + details） | 不同 | |
-| R-2 | 没有专门摘要的 JSON，概览也是格式化代码 | DV:544,615-626 | `core/readers.ts:70`，`Readers.tsx:113-120`（一张「根字段 N」卡片） | 不同 | |
-| R-3 | 无效 JSON：代码上方显示红色错误详情，视角保留 | DV:660-666 | `Readers.tsx:54-55,82,110` | 不同 | Web 强制切到原文、隐藏视角，不显示错误详情 |
-| R-4 | 摘要布局：标题 + 副标题 + 分组属性行 | DV:2134-2187 | `Readers.tsx:113-120`，CSS:388-393（卡片网格） | 不同 | |
-| R-5 | 取值格式：null、数组、对象内联显示，大整数完整显示 | DV:2222-2230 | `core/readers.ts:172-187` | 不同 | Web 丢掉非标量的行，大数显示成 `1e+30` |
-| R-6 | config.json：标题为 architectures[0]，没有就用 model_type，再没有就用「模型配置」；副标题 `model_type · torch_dtype · N layers`；分组「模型规模 / Attention / 上下文」，含 intermediate_size、num_attention_heads、num_key_value_heads、head_dim、max_position_embeddings、rope_theta | DV:1929-1973 | `core/readers.ts:30-38` | 不同 | 缺 6 个字段和 3 个分组 |
-| R-7 | generation_config：「采样」「终止与长度」两组；有 Top K、PAD、重复惩罚，没有 BOS；数组 EOS 照常显示；最大新 token 只读 max_new_tokens | DV:1975-2000 | `core/readers.ts:40-48` | 不同 | 数组 EOS（例如 Qwen）在 Web 上整行消失 |
-| R-8 | **tokenizer_config：标题为 tokenizer_class；「核心设置」含最大长度 / Padding side / BOS / EOS / UNK；内嵌可折叠的 Chat Template 试验台（只用配置里的 chat_template，变量由配置预填）；有文件内诊断** | DV:2002-2038 | `core/readers.ts:50-57`，App:413-435（有模板时改走 TW 四标签工作台） | 不同 | 缺 Padding side 和 UNK；诊断见 Q-8。2026-11-13：已改为通用 JSON 阅读器，概览底部内嵌折叠的「Chat Template 试验台」，只用配置里的 chat_template，不再读同目录的 `chat_template.jinja`；标题、核心设置和变量预填还没做 |
-| R-9 | 权重 index：标题「权重分片索引」，总大小格式化，「前 80 条映射」列表 | DV:2040-2065 | `core/readers.ts:59-68` | 不同 | Web 显示原始字节数，没有映射列表 |
-| R-10 | vocab.json 专用视图：「共 N 个 token」、按 token/ID 搜索、按 ID 排序、显示前 1,000 条 | DV:2067-2107 | 缺 | 缺失 | |
+| R-1 | **JSON「全部字段」是整份格式化的代码阅读器（高亮、折叠、查找）** | DV:544-545,654-685 | `Readers.tsx` FormattedJson + `core/jsonSource.ts` formatJsonSource | PASS | 2026-11-13：移植原生 formattedSource（按字符，保留数字和字符串原样） |
+| R-2 | 没有专门摘要的 JSON，概览也是格式化代码 | DV:544,615-626 | `Readers.tsx` JsonInspection | PASS | 2026-11-13 |
+| R-3 | 无效 JSON：代码上方显示红色错误详情，视角保留 | DV:660-666 | `Readers.tsx` FormattedJson | PASS | 2026-11-13：错误文字是浏览器 JSON.parse 的消息，前缀同为「JSON: 」 |
+| R-4 | 摘要布局：标题 + 副标题 + 分组属性行 | DV:2134-2187 | `Readers.tsx` SummaryView，CSS `.reader-title/.property-group/.key-value-row` | PASS | 2026-11-13 |
+| R-5 | 取值格式：null、数组、对象内联显示，大整数完整显示 | DV:2222-2230 | `core/jsonValue.ts` nativeInline/nativeNumberString | PASS | 2026-11-13：单元测试固定了 Swift 输出 |
+| R-6 | config.json：标题为 architectures[0]，没有就用 model_type，再没有就用「模型配置」；副标题 `model_type · torch_dtype · N layers`；分组「模型规模 / Attention / 上下文」，含 intermediate_size、num_attention_heads、num_key_value_heads、head_dim、max_position_embeddings、rope_theta | DV:1929-1973 | `core/readers.ts` jsonSummary(config) | PASS | 2026-11-13 |
+| R-7 | generation_config：「采样」「终止与长度」两组；有 Top K、PAD、重复惩罚，没有 BOS；数组 EOS 照常显示；最大新 token 只读 max_new_tokens | DV:1975-2000 | `core/readers.ts` jsonSummary(generation) | PASS | 2026-11-13 |
+| R-8 | **tokenizer_config：标题为 tokenizer_class；「核心设置」含最大长度 / Padding side / BOS / EOS / UNK；内嵌可折叠的 Chat Template 试验台（只用配置里的 chat_template，变量由配置预填）；有文件内诊断** | DV:2002-2038 | `core/readers.ts:50-57`，App:413-435（有模板时改走 TW 四标签工作台） | 部分 | 2026-11-13：标题、核心设置（含 Padding side、UNK）、诊断已对齐；试验台变量预填留到批次 3 |
+| R-9 | 权重 index：标题「权重分片索引」，总大小格式化，「前 80 条映射」列表 | DV:2040-2065 | `core/readers.ts` jsonSummary(weightIndex) | PASS | 2026-11-13 |
+| R-10 | vocab.json 专用视图：「共 N 个 token」、按 token/ID 搜索、按 ID 排序、显示前 1,000 条 | DV:2067-2107 | `Readers.tsx` VocabSummary + `core/readers.ts` vocabEntries | PASS | 2026-11-13 |
 
 ### 3.6 源码、文本与 Markdown
 
 | ID | 元素 | 原生 | Web | 状态 | 差异 |
 | --- | --- | --- | --- | --- | --- |
-| C-1 | 代码文件也有三个视角 | DV:543-560,601-650 | `Readers.tsx:388-403`，App:440-446 | 不同 | Web 没有视角 |
-| C-2 | >128 KB 代码、`.txt`、merges.txt：完整换行文本 + 系统查找 | `Support/InFileFindTextView.swift:97-157`，DV:601-613 | `Readers.tsx:129-179,797-917`（行号表 + 过滤 + 1,000 行分页） | 不同 | |
-| C-3 | 代码不换行，横向滚动；字号 12.5pt | `CodeReaderView.swift:207-249` | CSS:250（pre-wrap，11.5px） | 不同 | |
+| C-1 | 代码文件也有三个视角 | DV:543-560,601-650 | `Readers.tsx` SourceInspection | PASS | 2026-11-13：概览高亮，全部字段/原文是纯文本 |
+| C-2 | >128 KB 代码、`.txt`、merges.txt：完整换行文本 + 系统查找 | `Support/InFileFindTextView.swift:97-157`，DV:601-613 | `CodeReader.tsx`（language=null） | PASS | 2026-11-13：整篇文本懒渲染，按字符换行；查找用 Web 自己的查找条（Cmd/Ctrl+F），32 MiB 尾部查找 <1 s |
+| C-3 | 代码不换行，横向滚动；字号 12.5pt | `CodeReaderView.swift:207-249` | `CodeReader.tsx`，CSS `.code-reader` | PASS | 2026-11-13。平台调整：超过 4K 字符的单行（压缩 JSON）切成 4K 字符一行显示，滚动到时保持纯文本，查找、跳转、标记命中的那段才高亮；原生是一整行全高亮。WebKit 对超长无换行行的排版太慢（64K 字符一行时查找要 8 s） |
 | C-4 | 语法高亮 | `Palette.swift:24-48`，`CodeReaderView.swift:668-684` | `sourceHighlight.worker.ts:94-103`，`core/jsonSource.ts:69-83`，CSS:278-294,746-754 | 不同 | 7 组色值两端已一致。剩下三处：原生会映射 literal、directive、function-name、attribute、variable、inserted、deleted 等类型，Web 归为 other；原生给 keyword、boolean、literal 加粗，Web 只加粗 keyword；Web 的注释是斜体 |
 | C-5 | 查找：增量查找，包含 / 前缀 / 整词选项，⌘G，不需要焦点 | `InFileFindTextView.swift:4-95` | `Readers.tsx:578-606`（需要焦点，没有选项） | 不同 | |
 | C-6 | Markdown 去掉 YAML front matter | `MarkdownReaderView.swift:127-136` | 缺 | 缺失 | 每个 HF README 都受影响 |
 | C-7 | Markdown 内联 HTML：`<img>`、`<a>`、`<br>` 转成 Markdown，其他标签剥离，保留图片宽度 | `MarkdownReaderView.swift:147-207` | `Readers.tsx:206`（skipHtml） | 不同 | 徽章、logo、链接全部丢失；另见 D-7 |
-| C-8 | Markdown 主题用分段控件；三个视角，全部字段和原文是纯文本 | `MarkdownReaderView.swift:13-25`，DV:601-613 | `Readers.tsx:181-201` | 不同 | |
+| C-8 | Markdown 主题用分段控件；三个视角，全部字段和原文是纯文本 | `MarkdownReaderView.swift:13-25`，DV:601-613 | `Readers.tsx:181-201` | 部分 | 2026-11-13：全部字段/原文改为纯文本；只有 documentation 分类的 .md 渲染；主题仍是下拉框 |
 | C-9 | 图片工具栏「W × H px · 扩展名 · 大小」、1:1、步长 0.25、按尺寸缩放并可滚动 | `ImageReaderView.swift:45-135` | `Readers.tsx:242-362`（CSS transform） | 不同 | |
 | C-10 | Jinja 概览（大小、行数、来源、状态 +「查看源码」「打开试验台」）；就地编辑高亮（6 类 token，系统色）；「源码详情」侧栏 | DV:1009-1103，`Support/JinjaSyntaxHighlighter.swift:128-156` | TW:136-198,254-256，CSS:551-552,759-760 | 不同 | Web 是 textarea + 下方只读预览，只有 3 类 token，表达式和语句的颜色与原生正好相反 |
-| C-11 | 「全部展开」：左对齐，小号无边框 | `CodeReaderView.swift:31-42` | `Readers.tsx:573-577`，CSS:231 | 不同 | Web 右对齐，带边框 |
+| C-11 | 「全部展开」：左对齐，小号无边框 | `CodeReaderView.swift:31-42` | CSS `.fold-toolbar` | PASS | 2026-11-13 |
 
 ### 3.7 SafeTensors / GGUF / imatrix
 

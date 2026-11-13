@@ -10,14 +10,14 @@ test('Chat: Qwen config, README, SafeTensors, Tokenizer Raw, Chat and cross-repo
   const manifest = page.waitForResponse(response => response.url().includes('/api/models/Qwen/Qwen3-0.6B'))
   await page.goto('/?repo=Qwen%2FQwen3-0.6B&file=config.json')
   const identity = await (await manifest).json() as { sha: string }
-  await expect(page.getByRole('heading', { name: 'Model Config' })).toBeVisible({ timeout: 30_000 })
-  await expect(page.getByText('模型类型').locator('..')).toContainText('qwen3')
+  await expect(page.getByRole('heading', { name: 'Qwen3ForCausalLM' })).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText('qwen3 · bfloat16 · 28 layers')).toBeVisible()
 
   await page.getByRole('button', { name: /^README\.md/ }).click()
   await expect(page.locator('.markdown-body')).toContainText('Qwen3', { timeout: 30_000 })
   await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
-  await expect(page.getByText('Tensor 数据').locator('..').getByText('0 bytes', { exact: true })).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText(/^只读取了 .+ JSON Header；没有请求 tensor 数据。$/)).toBeVisible({ timeout: 30_000 })
   const tensorHierarchyStartedAt = Date.now()
   await page.getByRole('button', { name: 'Tensors', exact: true }).click()
   const tensorTable = page.getByRole('table', { name: 'SafeTensors Tensors' })
@@ -170,8 +170,7 @@ test('GGUF public path reads only the 24-byte basic prefix', async ({ page }, te
   const manifest = page.waitForResponse(response => response.url().includes('/api/models/bartowski/Qwen_Qwen3-0.6B-GGUF'))
   await page.goto('/?repo=bartowski%2FQwen_Qwen3-0.6B-GGUF&file=Qwen_Qwen3-0.6B-IQ2_M.gguf')
   const identity = await (await manifest).json() as { sha: string }
-  await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible({ timeout: 30_000 })
-  await expect(page.getByText('模型数据').locator('..').getByText('0 bytes', { exact: true })).toBeVisible()
+  await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible({ timeout: 30_000 })
   const ggufRequests = requests.filter(request => request.modelId === ggufModelId)
   expect(ggufRequests.length).toBeGreaterThan(0)
   for (const request of ggufRequests) {
@@ -195,8 +194,8 @@ test('HTTPS direct file reads a public config without the Hub manifest API', asy
     'https://huggingface.co/Qwen/Qwen3-0.6B/resolve/main/config.json',
   )
   await page.getByRole('button', { name: '打开', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Model Config' })).toBeVisible({ timeout: 30_000 })
-  await expect(page.getByText('模型类型').locator('..')).toContainText('qwen3')
+  await expect(page.getByRole('heading', { name: 'Qwen3ForCausalLM' })).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText('qwen3 · bfloat16 · 28 layers')).toBeVisible()
   expect(requests.some(url => url.includes('/api/models/'))).toBe(false)
   expect(new URL(page.url()).search).toBe('')
   expect(errors).toEqual([])

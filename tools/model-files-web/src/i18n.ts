@@ -1,6 +1,130 @@
 export type Locale = 'zh-Hans' | 'en'
 
 export const messageCatalog = {
+  summaryModelConfigTitle: {
+    'zh-Hans': '模型配置',
+    en: 'Model configuration',
+  },
+  summaryModelScale: {
+    'zh-Hans': '模型规模',
+    en: 'Model scale',
+  },
+  summaryHiddenSize: {
+    'zh-Hans': '隐藏层维度（hidden_size）',
+    en: 'Hidden size (hidden_size)',
+  },
+  summaryIntermediateSize: {
+    'zh-Hans': '中间层维度（intermediate_size）',
+    en: 'Intermediate size (intermediate_size)',
+  },
+  summaryVocabSize: {
+    'zh-Hans': '词表大小（vocab_size）',
+    en: 'Vocabulary size (vocab_size)',
+  },
+  summaryAttentionHeads: {
+    'zh-Hans': '注意力头数（num_attention_heads）',
+    en: 'Attention heads (num_attention_heads)',
+  },
+  summaryKeyValueHeads: {
+    'zh-Hans': 'KV 头数（num_key_value_heads）',
+    en: 'KV heads (num_key_value_heads)',
+  },
+  summaryHeadDim: {
+    'zh-Hans': '头维度（head_dim）',
+    en: 'Head dimension (head_dim)',
+  },
+  summaryContext: {
+    'zh-Hans': '上下文',
+    en: 'Context',
+  },
+  summaryMaxPositions: {
+    'zh-Hans': '最大上下文长度（max_position_embeddings）',
+    en: 'Maximum context length (max_position_embeddings)',
+  },
+  summaryRopeTheta: {
+    'zh-Hans': 'RoPE θ（rope_theta）',
+    en: 'RoPE θ (rope_theta)',
+  },
+  summaryGenerationTitle: {
+    'zh-Hans': '生成默认值',
+    en: 'Generation defaults',
+  },
+  summaryGenerationSubtitle: {
+    'zh-Hans': '推理框架在调用 generate 时使用的模型目录默认参数。',
+    en: 'Defaults from the model folder that inference frameworks use when calling generate.',
+  },
+  summarySampling: {
+    'zh-Hans': '采样',
+    en: 'Sampling',
+  },
+  summaryStopAndLength: {
+    'zh-Hans': '终止与长度',
+    en: 'Stopping and length',
+  },
+  summaryMaxNewTokens: {
+    'zh-Hans': '最大新 token',
+    en: 'Max new tokens',
+  },
+  summaryRepetitionPenalty: {
+    'zh-Hans': '重复惩罚',
+    en: 'Repetition penalty',
+  },
+  summaryTokenizerConfigTitle: {
+    'zh-Hans': 'Tokenizer 配置',
+    en: 'Tokenizer configuration',
+  },
+  summaryTokenizerConfigSubtitle: {
+    'zh-Hans': '特殊 token、最大长度，以及随模型发布的对话格式。',
+    en: 'Special tokens, maximum length, and the chat format shipped with the model.',
+  },
+  summaryCoreSettings: {
+    'zh-Hans': '核心设置',
+    en: 'Core settings',
+  },
+  summaryMaxLength: {
+    'zh-Hans': '最大长度',
+    en: 'Maximum length',
+  },
+  summaryWeightIndexTitle: {
+    'zh-Hans': '权重分片索引',
+    en: 'Weight shard index',
+  },
+  summaryWeightIndexSubtitle: {
+    'zh-Hans': '只读取映射关系，不读取任何权重分片。',
+    en: 'Reads only the mapping, never any weight shard.',
+  },
+  summaryOverview: {
+    'zh-Hans': '概览',
+    en: 'Overview',
+  },
+  summaryParameterTensors: {
+    'zh-Hans': '参数张量',
+    en: 'Parameter tensors',
+  },
+  summaryShardCount: {
+    'zh-Hans': '分片数量',
+    en: 'Shard count',
+  },
+  summaryTotalWeightSize: {
+    'zh-Hans': '权重总大小',
+    en: 'Total weight size',
+  },
+  summaryFirstMappings: {
+    'zh-Hans': '前 80 条映射',
+    en: 'First 80 mappings',
+  },
+  summaryVocabTitle: {
+    'zh-Hans': '词表',
+    en: 'Vocabulary',
+  },
+  summaryVocabSubtitle: {
+    'zh-Hans': '共 {count} 个 token；列表最多展示当前筛选结果的前 1,000 项。',
+    en: '{count} tokens in total; the list shows at most the first 1,000 matches.',
+  },
+  summaryVocabSearch: {
+    'zh-Hans': '搜索 token 或 ID',
+    en: 'Search tokens or IDs',
+  },
   appWeightsPreviewable: {
     'zh-Hans': '{count}/{total} 可预览',
     en: '{count}/{total} previewable',
@@ -237,57 +361,9 @@ export const messageCatalog = {
     'zh-Hans': '不是有效的 PDF 文件签名。',
     en: 'Not a valid PDF file signature.',
   },
-  jsonRootType: {
-    'zh-Hans': '根类型',
-    en: 'Root type',
-  },
-  arrayTypeLabel: {
-    'zh-Hans': '数组',
-    en: 'array',
-  },
   jsonRootFieldCount: {
     'zh-Hans': '根字段',
     en: 'Root fields',
-  },
-  modelTypeLabel: {
-    'zh-Hans': '模型类型',
-    en: 'Model type',
-  },
-  architectureLabel: {
-    'zh-Hans': '架构',
-    en: 'Architecture',
-  },
-  layerCountLabel: {
-    'zh-Hans': '层数',
-    en: 'Layers',
-  },
-  vocabularySizeLabel: {
-    'zh-Hans': '词表大小',
-    en: 'Vocabulary size',
-  },
-  dataTypeLabel: {
-    'zh-Hans': '数据类型',
-    en: 'Data type',
-  },
-  maxLengthLabel: {
-    'zh-Hans': '最大长度',
-    en: 'Maximum length',
-  },
-  samplingLabel: {
-    'zh-Hans': '采样',
-    en: 'Sampling',
-  },
-  tensorEntryCountLabel: {
-    'zh-Hans': 'Tensor 条目',
-    en: 'Tensor entries',
-  },
-  shardCountLabel: {
-    'zh-Hans': '分片数量',
-    en: 'Shards',
-  },
-  declaredTotalSizeLabel: {
-    'zh-Hans': '声明总大小',
-    en: 'Declared total size',
   },
   metadataFieldCountLabel: {
     'zh-Hans': 'Metadata 字段',
@@ -566,8 +642,8 @@ export const messageCatalog = {
     en: 'The GGUF metadata type {typeCode} is invalid.',
   },
   imatrixFileTooLarge: {
-    'zh-Hans': 'Imatrix 文件超过 32 MiB 上限。',
-    en: 'The Imatrix file exceeds the 32 MiB limit.',
+    'zh-Hans': 'Imatrix 文件超过 {limit} 上限。',
+    en: 'The Imatrix file exceeds the {limit} limit.',
   },
   imatrixEntryCountInvalid: {
     'zh-Hans': 'Imatrix 条目数量无效或超过安全上限。',
@@ -710,8 +786,8 @@ export const messageCatalog = {
     en: 'The repository does not provide complete tokenizer resource sizes; loading was rejected.',
   },
   tokenizerBundleTooLarge: {
-    'zh-Hans': 'Tokenizer 资源超过 32 MiB 上限。',
-    en: 'Tokenizer resources exceed the 32 MiB limit.',
+    'zh-Hans': 'Tokenizer 资源超过 {limit} 上限。',
+    en: 'Tokenizer resources exceed the {limit} limit.',
   },
   tokenizerRootNotObject: {
     'zh-Hans': 'tokenizer.json 根节点不是对象。',
@@ -830,8 +906,8 @@ export const messageCatalog = {
     en: '{label} exceeds the 64 KiB limit.',
   },
   tokenizerDataTooLarge: {
-    'zh-Hans': 'Tokenizer 数据超过 32 MiB 上限。',
-    en: 'The Tokenizer data exceeds the 32 MiB limit.',
+    'zh-Hans': 'Tokenizer 数据超过 {limit} 上限。',
+    en: 'The Tokenizer data exceeds the {limit} limit.',
   },
   tokenizerRequestCancelled: {
     'zh-Hans': 'Tokenizer 请求已取消。',
@@ -981,42 +1057,6 @@ export const messageCatalog = {
     'zh-Hans': 'Tokenizer Worker 返回的 Chat 结果缺少 overhead。',
     en: 'The Chat result returned by the Tokenizer Worker is missing overhead.',
   },
-  readerReadMethod: {
-    'zh-Hans': '读取方式',
-    en: 'Read method',
-  },
-  readerLimitedFullText: {
-    'zh-Hans': '受限全文',
-    en: 'Limited full text',
-  },
-  readerActualRead: {
-    'zh-Hans': '实际读取',
-    en: 'Bytes read',
-  },
-  readerParseResult: {
-    'zh-Hans': '解析结果',
-    en: 'Parse result',
-  },
-  readerJsonValid: {
-    'zh-Hans': 'JSON 有效',
-    en: 'Valid JSON',
-  },
-  readerJsonInvalid: {
-    'zh-Hans': 'JSON 格式无效 · 显示原文',
-    en: 'Invalid JSON · Showing source',
-  },
-  readerPreviousSourcePage: {
-    'zh-Hans': '上一页',
-    en: 'Previous page',
-  },
-  readerNextSourcePage: {
-    'zh-Hans': '下一页',
-    en: 'Next page',
-  },
-  readerUtf8Valid: {
-    'zh-Hans': 'UTF-8 有效',
-    en: 'Valid UTF-8',
-  },
   readerOverview: {
     'zh-Hans': '概览',
     en: 'Overview',
@@ -1041,10 +1081,6 @@ export const messageCatalog = {
     'zh-Hans': '预览',
     en: 'Preview',
   },
-  readerLineColumn: {
-    'zh-Hans': '行',
-    en: 'Line',
-  },
   readerContentColumn: {
     'zh-Hans': '内容',
     en: 'Content',
@@ -1052,14 +1088,6 @@ export const messageCatalog = {
   readerFieldColumn: {
     'zh-Hans': '字段',
     en: 'Field',
-  },
-  readerValueColumn: {
-    'zh-Hans': '值',
-    en: 'Value',
-  },
-  readerMarkdownHtmlDisabled: {
-    'zh-Hans': 'Markdown · raw HTML 已禁用',
-    en: 'Markdown · raw HTML is disabled',
   },
   readerRenderedView: {
     'zh-Hans': '渲染',
@@ -1089,10 +1117,6 @@ export const messageCatalog = {
     'zh-Hans': '打开链接',
     en: 'Open link',
   },
-  readerPdfValid: {
-    'zh-Hans': 'PDF 签名有效',
-    en: 'PDF signature valid',
-  },
   readerPdfDocumentTitle: {
     'zh-Hans': 'PDF 文档',
     en: 'PDF document',
@@ -1100,10 +1124,6 @@ export const messageCatalog = {
   readerOpenPdfNewTab: {
     'zh-Hans': '在新标签页打开 PDF',
     en: 'Open PDF in new tab',
-  },
-  readerImageValid: {
-    'zh-Hans': '图片数据已读取',
-    en: 'Image data loaded',
   },
   readerImageFit: {
     'zh-Hans': '适应窗口',
@@ -1125,10 +1145,6 @@ export const messageCatalog = {
     'zh-Hans': '无法渲染图片',
     en: 'Unable to render image',
   },
-  readerImageDimensions: {
-    'zh-Hans': '{width} × {height} 像素',
-    en: '{width} × {height} px',
-  },
   readerExpandAllFolds: {
     'zh-Hans': '全部展开',
     en: 'Expand all',
@@ -1145,9 +1161,35 @@ export const messageCatalog = {
     'zh-Hans': '下一个命中',
     en: 'Next match',
   },
+  noticeSafeTensors: {
+    'zh-Hans': '只读取了 {size} JSON Header；没有请求 tensor 数据。',
+    en: 'Read only the {size} JSON header; no tensor data was requested.',
+  },
+  // ponytail: native adds 「；最后一个 Range 可能包含少量首个 tensor 数据。」, true only once D-1 reads 1 MiB chunks.
+  noticeGguf: {
+    'zh-Hans': '只读取了 {size} GGUF 文件前缀。',
+    en: 'Read only a {size} GGUF prefix.',
+  },
+  noticeImatrix: {
+    'zh-Hans': '读取了完整的 {size} legacy imatrix 文件；只解析，不执行。',
+    en: 'Read the whole {size} legacy imatrix file; parsed only, never executed.',
+  },
+  // Platform adaptation (matrix P-6): the browser's built-in viewer replaces PDFKit.
+  noticePdf: {
+    'zh-Hans': '读取了完整的 {size} PDF，使用浏览器内置查看器本地预览。',
+    en: 'Read the whole {size} PDF; previewed locally in the browser’s built-in viewer.',
+  },
+  noticeImage: {
+    'zh-Hans': '读取了完整的 {size} 图片数据，在本地直接渲染。',
+    en: 'Read the whole {size} of image data; rendered locally.',
+  },
+  noticeWeightIndex: {
+    'zh-Hans': '只读取权重分片索引；不会请求任何权重文件。',
+    en: 'Reads only the weight shard index; no weight file is requested.',
+  },
   readerFileProblems: {
-    'zh-Hans': '此文件的问题',
-    en: 'Problems in this file',
+    'zh-Hans': '文件问题',
+    en: 'File problems',
   },
   readerDiagnosticLine: {
     'zh-Hans': '第 {line} 行',
@@ -1177,21 +1219,9 @@ export const messageCatalog = {
     'zh-Hans': '搜索',
     en: 'Search',
   },
-  readerFieldOrContentContainsPlaceholder: {
-    'zh-Hans': '字段或内容包含…',
-    en: 'Field or content contains…',
-  },
   readerShowingCount: {
     'zh-Hans': '显示 {visible} / {total}',
     en: 'Showing {visible} / {total}',
-  },
-  readerListAriaLabel: {
-    'zh-Hans': '{column}列表',
-    en: '{column} list',
-  },
-  readerShowMoreItems: {
-    'zh-Hans': '再显示 {count} 项',
-    en: 'Show {count} more items',
   },
   templateSourceTab: {
     'zh-Hans': '源码',
@@ -1489,22 +1519,6 @@ export const messageCatalog = {
     'zh-Hans': '为避免意外下载大文件，应用只展示文件名、大小和哈希。',
     en: 'To avoid downloading large files by accident, the app shows only the file name, size and hash.',
   },
-  appReadMethodTwoLocalSlices: {
-    'zh-Hans': '2 次 File.slice()',
-    en: '2 File.slice() calls',
-  },
-  appReadMethodTwoHttpRanges: {
-    'zh-Hans': '2 次 HTTP 206 Range',
-    en: '2 HTTP 206 Range requests',
-  },
-  appTensorDataLabel: {
-    'zh-Hans': 'Tensor 数据',
-    en: 'Tensor data',
-  },
-  appZeroBytesValue: {
-    'zh-Hans': '0 bytes',
-    en: '0 bytes',
-  },
   appParameterTotalLabel: {
     'zh-Hans': '参数总数',
     en: 'Parameter total',
@@ -1514,8 +1528,8 @@ export const messageCatalog = {
     en: 'Data region size',
   },
   appSafeTensorsScopeNote: {
-    'zh-Hans': '名称、dtype、shape、offset 与 Metadata 来自 Header；参数量和字节数为浏览器推导。Tensor 数据保持 0 bytes。',
-    en: 'Names, dtype, shape, offsets, and metadata come from the header; parameter and byte totals are derived in the browser. Tensor data remains 0 bytes.',
+    'zh-Hans': '名称、dtype、shape、offset 与 Metadata 来自 Header；参数量和字节数为浏览器推导。',
+    en: 'Names, dtype, shape, offsets, and metadata come from the header; parameter and byte totals are derived in the browser.',
   },
   appFilterMetadataLabel: {
     'zh-Hans': '筛选 Metadata',
@@ -1733,14 +1747,6 @@ export const messageCatalog = {
     'zh-Hans': 'v0.1 仅提供 GGUF 基础摘要。完整 metadata/tensor directory 因无法保证 0 bytes tensor 数据而未启用。',
     en: 'v0.1 provides only a basic GGUF summary. Full metadata/tensor directories are disabled because 0-byte tensor data cannot be guaranteed.',
   },
-  appReadMethodOneLocalSlice: {
-    'zh-Hans': '1 次 File.slice()',
-    en: '1 File.slice() call',
-  },
-  appReadMethodOneHttpRange: {
-    'zh-Hans': '1 次 HTTP 206 Range',
-    en: '1 HTTP 206 Range request',
-  },
   appMetadataTab: {
     'zh-Hans': 'Metadata',
     en: 'Metadata',
@@ -1756,18 +1762,6 @@ export const messageCatalog = {
   appLoadingSwitchHint: {
     'zh-Hans': '可切换到其他文件取消',
     en: 'switch to another file to cancel',
-  },
-  appModelDataLabel: {
-    'zh-Hans': '模型数据',
-    en: 'Model data',
-  },
-  appFormatLabel: {
-    'zh-Hans': '格式',
-    en: 'Format',
-  },
-  appLlamaCppLegacyImatrixValue: {
-    'zh-Hans': 'llama.cpp legacy imatrix',
-    en: 'llama.cpp legacy imatrix',
   },
   appEntryCountLabel: {
     'zh-Hans': 'Entry 数量',

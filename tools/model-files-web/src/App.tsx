@@ -1085,10 +1085,10 @@ function DetailBody({
             key={`${snapshotIdentity(snapshot)}/${file.path}`}
             snapshot={snapshot}
             path={file.path}
+            category={file.category}
             content={inspection.content}
             parsed={inspection.parsed}
             json={inspection.json}
-            bytesRead={inspection.bytesRead}
             diagnostics={diagnostics}
             selectedDiagnosticId={selectedFindingId}
             onSelectDiagnostic={onSelectFinding}
@@ -1102,7 +1102,7 @@ function DetailBody({
           : null}
         {inspection.kind === 'gguf' && snapshot !== null ? <GGUFInspection inspection={inspection} snapshot={snapshot} /> : null}
         {inspection.kind === 'imatrix' ? <ImatrixInspection inspection={inspection} perspective={perspective} /> : null}
-        {inspection.kind === 'pdf' ? <PdfInspection data={inspection.data} bytesRead={inspection.bytesRead} /> : null}
+        {inspection.kind === 'pdf' ? <PdfInspection data={inspection.data} /> : null}
         {inspection.kind === 'image' ? (
           <ImageInspection
             key={file.path}
@@ -1120,7 +1120,8 @@ function DetailBody({
             key={`${snapshotIdentity(snapshot)}/${file.path}`}
             content={inspection.content}
             language={inspection.language}
-            bytesRead={inspection.bytesRead}
+            label={file.path}
+            perspective={perspective}
           />
         ) : null}
         {inspection.kind === 'template' && snapshot !== null ? (
@@ -1140,6 +1141,7 @@ function DetailBody({
             perspective={perspective}
           />
         ) : null}
+        <SafetyNotice inspection={inspection} />
       </div>
   )
 }
@@ -1236,11 +1238,6 @@ function SafeTensorsInspection({
 
   return (
     <div className="inspection-canvas">
-      <ValidationStrip items={[
-        [t('readerReadMethod'), snapshot.source === 'local' ? t('appReadMethodTwoLocalSlices') : t('appReadMethodTwoHttpRanges')],
-        [t('readerActualRead'), formatBytes(inspection.bytesRead)],
-        [t('appTensorDataLabel'), t('appZeroBytesValue')],
-      ]} />
       {perspective === 'overview' ? (
         <>
           <MetricGrid items={[
@@ -1620,11 +1617,6 @@ function GGUFInspection({
   const { summary } = inspection
   return (
     <div className="inspection-canvas">
-      <ValidationStrip items={[
-        [t('readerReadMethod'), snapshot.source === 'local' ? t('appReadMethodOneLocalSlice') : t('appReadMethodOneHttpRange')],
-        [t('readerActualRead'), t('appActualReadBytesValue', { count: formatNumber(inspection.bytesRead) })],
-        [t('appModelDataLabel'), t('appZeroBytesValue')],
-      ]} />
       <MetricGrid items={[
         [t('appGgufVersionLabel'), `v${summary.version}`],
         [t('appTensorCountLabel'), formatNumber(summary.tensorCount)],
@@ -1647,11 +1639,6 @@ function ImatrixInspection({ inspection, perspective }: {
   const selected = inspection.summary.entries.find(entry => entry.name === selectedName) ?? null
   return (
     <div className="inspection-canvas">
-      <ValidationStrip items={[
-        [t('readerReadMethod'), t('readerLimitedFullText')],
-        [t('readerActualRead'), formatBytes(inspection.bytesRead)],
-        [t('appFormatLabel'), t('appLlamaCppLegacyImatrixValue')],
-      ]} />
       {perspective === 'overview' ? <MetricGrid items={[
         [t('appEntryCountLabel'), formatNumber(inspection.summary.entries.length)],
         [t('appChunkCountLabel'), inspection.summary.chunkCount === null ? t('appNoneValue') : formatNumber(inspection.summary.chunkCount)],
@@ -2736,7 +2723,8 @@ function TokenizerJSONInspection({ snapshot, file, perspective }: {
   }, [snapshot, file])
   if (error !== null) return <InlineError>{error}</InlineError>
   if (document === null) return <LoadingState file={file} snapshot={snapshot} />
-  return <TextInspection snapshot={snapshot} path={file.path} {...document} json perspective={perspective} />
+  return <TextInspection snapshot={snapshot} path={file.path} category={file.category} content={document.content}
+    parsed={document.parsed} json perspective={perspective} />
 }
 
 function TokenizerStructureInspection({
@@ -3144,6 +3132,26 @@ function chatRoleClass(role: ChatTokenRole | null): string {
   if (role === null) return ''
   if (role.kind === 'template') return 'role-template'
   return ['system', 'user', 'assistant', 'tool'].includes(role.role) ? `role-${role.role}` : 'role-custom'
+}
+
+// Native DetailView bottom inset: what was read, and what was deliberately not requested.
+function SafetyNotice({ inspection }: { inspection: Inspection }) {
+  const notice = safetyNotice(inspection)
+  if (notice === null) return null
+  return <div className="safety-notice"><LockIcon /><span>{notice}</span></div>
+}
+
+function safetyNotice(inspection: Inspection): string | null {
+  switch (inspection.kind) {
+    case 'safetensors': return t('noticeSafeTensors', { size: formatBytes(inspection.bytesRead) })
+    case 'gguf': return t('noticeGguf', { size: formatBytes(inspection.bytesRead) })
+    case 'imatrix': return t('noticeImatrix', { size: formatBytes(inspection.bytesRead) })
+    case 'pdf': return t('noticePdf', { size: formatBytes(inspection.bytesRead) })
+    case 'image': return t('noticeImage', { size: formatBytes(inspection.bytesRead) })
+    // Native shows the fallback only for a loaded document, not while loading, failed or locked.
+    case 'text': return inspection.file.category === 'weightMetadata' ? t('noticeWeightIndex') : null
+    default: return null
+  }
 }
 
 function ValidationStrip({ items }: { items: Array<[string, string]> }) {

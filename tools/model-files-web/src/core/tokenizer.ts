@@ -1,4 +1,4 @@
-import type { RepositoryFile, RepositorySnapshot } from './huggingface.ts'
+import { formatBytes, type RepositoryFile, type RepositorySnapshot } from './huggingface.ts'
 import type { ChatTokenOverhead, ChatTokenRole } from './tokenAttribution.ts'
 import type { ChatTemplateCatalog } from './chatTemplates.ts'
 import { formatNumber, translate as t } from '../i18n.ts'
@@ -180,9 +180,9 @@ export function tokenizerBundleBytes(
     throw new Error(t('tokenizerBundleSizeMissing'))
   }
   const sizes = [tokenizerSize, configSize ?? 0, templateSize ?? 0]
-  if (sizes.some(size => size > 32 * 1024 * 1024)) throw new Error(t('tokenizerBundleTooLarge'))
+  if (sizes.some(size => size > 32 * 1024 * 1024)) throw new Error(t('tokenizerBundleTooLarge', { limit: formatBytes(32 * 1024 * 1024) }))
   const total = sizes.reduce((sum, size) => sum + size, 0)
-  if (total > 32 * 1024 * 1024) throw new Error(t('tokenizerBundleTooLarge'))
+  if (total > 32 * 1024 * 1024) throw new Error(t('tokenizerBundleTooLarge', { limit: formatBytes(32 * 1024 * 1024) }))
   return total
 }
 

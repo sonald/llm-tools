@@ -127,25 +127,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .file-problems { min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font: 650 9.5px/16px var(--mono); text-align: center; }
 .file-problems[data-severity="warning"] { background: #fef3c7; color: #8a5a00; }
 
-/* Diagnostics anchored in a JSON file: a list above the reader, tinted lines with a note in the source. */
-.reader-diagnostics { display: grid; gap: 2px; margin: 0 20px 10px; padding: 6px; border: 1px solid #f1d9a6; border-radius: 8px; background: #fffaf0; }
+/* Native FileReaderView diagnostic list: full-width bar rows above the reader; the selected one takes the accent. */
+.reader-diagnostics { flex: none; display: grid; border-bottom: 1px solid var(--line); background: var(--bar); }
 .reader-diagnostic {
-  display: grid; grid-template-columns: 14px auto minmax(0, 1fr) auto; align-items: baseline; gap: 8px; padding: 5px 8px;
-  border: 0; border-radius: 6px; background: transparent; color: inherit; font-size: 11.5px; text-align: left; cursor: pointer;
+  display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 6px 14px; border: 0; background: transparent;
+  color: inherit; font-size: 12px; text-align: left; white-space: nowrap; cursor: pointer;
 }
-.reader-diagnostic:hover, .reader-diagnostic[aria-pressed="true"] { background: rgb(0 0 0 / 5%); }
-.reader-diagnostic > span:first-child { color: var(--accent); font-size: 10px; }
-.reader-diagnostic[data-severity="warning"] > span:first-child { color: #c27c0e; }
-.reader-diagnostic-title { font-weight: 600; }
-.reader-diagnostic code { overflow: hidden; color: var(--muted); font: 10.5px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
-.reader-diagnostic-line { color: var(--muted); font-size: 10.5px; }
-.source-line[data-severity] { background: rgb(47 111 236 / 7%); }
-.source-line[data-severity="warning"] { background: rgb(234 168 50 / 14%); }
-.line-diagnostic {
-  float: right; max-width: 45%; margin-left: 16px; color: #8a5a00; font: italic 10.5px/1.9 var(--sans, inherit);
-  white-space: normal; overflow-wrap: anywhere; user-select: none;
-}
-.source-line[data-severity="info"] .line-diagnostic { color: var(--accent); }
+.reader-diagnostic[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.reader-diagnostic > span:first-child { color: var(--info); font-size: 10px; }
+.reader-diagnostic[data-severity="warning"] > span:first-child { color: var(--warning); }
+.reader-diagnostic-title { overflow: hidden; text-overflow: ellipsis; }
+.reader-diagnostic code { overflow: hidden; color: var(--muted); font: 11.5px var(--mono); text-overflow: ellipsis; }
+.reader-diagnostic-line { margin-left: auto; padding-left: 8px; color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.json-error { flex: none; margin: 0; padding: 8px; color: var(--danger); user-select: text; }
 /* Native Palette.glyph; locked rows (no data-category) stay secondary grey. */
 .file-icon { width: 16px; height: 16px; color: var(--muted); fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
 .file-icon .knob { fill: currentColor; }
@@ -248,6 +242,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .consistency-identity dd { margin: 0; overflow-wrap: anywhere; font: 10.5px var(--mono); }
 .panel-body .table-scroll { max-width: 100%; margin: 12px 14px 0; border: 1px solid var(--line); }
 .detail-body { min-height: 0; overflow: hidden; }
+.detail-body:has(> .safety-notice) { display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+.safety-notice { height: 34px; display: flex; align-items: center; gap: 7px; padding: 0 20px; border-top: 1px solid var(--line); background: var(--bar); color: var(--muted); font-size: 11px; }
+.safety-notice .file-icon { width: 13px; height: 13px; }
 
 .empty-state, .loading-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; }
 /* Native EmptyStateView: 34pt light symbol, headline, callout message (max 420), prominent action. */
@@ -262,11 +259,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 .reader-layout { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .source-code-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.fold-toolbar { flex: none; display: flex; justify-content: flex-end; padding: 7px 20px; border-bottom: 1px solid var(--line); }
-.fold-toolbar button {
-  height: 25px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel);
-  font-size: 10.5px; cursor: pointer;
-}
+/* Native CodeReaderView: a small borderless "全部展开" above the source, left-aligned. */
+.fold-toolbar { flex: none; display: flex; padding: 4px 12px; }
+.fold-toolbar button { padding: 2px 4px; border: 0; background: none; color: var(--accent); font-size: 11px; cursor: pointer; }
 .source-find {
   flex: none; display: flex; gap: 7px; align-items: center; flex-wrap: wrap; padding: 7px 20px;
   border-bottom: 1px solid var(--line); background: var(--panel);
@@ -282,6 +277,21 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 .source-find button:disabled { cursor: not-allowed; opacity: .5; }
 .source-reader { min-height: 0; margin: 0; overflow: auto; padding: 18px 20px 70px; background: #fff; color: #30343a; font: 11.5px/1.65 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Code never wraps (native 12.5pt, horizontal scroll); plain text wraps by character. Chunks off screen skip layout. */
+.code-reader { padding: 12px 0 70px; font: 12.5px/19px var(--mono); white-space: pre; overflow-wrap: normal; }
+.code-reader.plain-text { white-space: pre-wrap; word-break: break-all; }
+.source-chunk { content-visibility: auto; width: max-content; min-width: 100%; padding-right: 20px; }
+.source-chunk.pending { padding-left: 34px; }
+.source-chunk.forced { content-visibility: visible; }
+.plain-text > .source-chunk { width: auto; }
+.plain-text > .source-chunk.pending, .plain-text .source-line { padding-left: 20px; }
+.line-text[data-severity="warning"] { background: color-mix(in srgb, var(--warning) 20%, transparent); }
+.line-text[data-severity="info"] { background: color-mix(in srgb, var(--info) 14%, transparent); }
+.line-text.flash { animation: find-indicator .9s ease-out; }
+@keyframes find-indicator {
+  0%, 30% { background: #ffe14d; box-shadow: 0 0 0 2px #ffe14d; }
+  100% { box-shadow: 0 0 0 2px transparent; }
+}
 .source-reader.standalone { flex: 1; border-top: 0; }
 .source-reader:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .source-line { position: relative; display: block; padding-left: 34px; }
@@ -327,6 +337,27 @@ mark.find-match.current {
 .source-syntax-operator { color: var(--syntax-operator); }
 .source-syntax-other { color: inherit; }
 .reader-canvas { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: auto; padding-bottom: 70px; }
+.reader-stack { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.reader-stack > .source-code-panel { flex: 1; }
+/* Native ReaderTitle / PropertyGroup / KeyValueRow. */
+.reader-summary { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 18px; overflow: auto; padding: 18px 20px 70px; }
+.reader-title h2 { margin: 0; font-size: 17px; font-weight: 600; }
+.reader-title p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.reader-title.prominent h2 { font: 600 25px ui-rounded, system-ui, sans-serif; }
+.reader-title.prominent p { font-family: var(--mono); }
+.reader-summary > .reader-title.prominent { margin-bottom: 2px; }
+.property-group h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.property-group dl { margin: 0; }
+.key-value-row { display: flex; gap: 20px; align-items: flex-start; padding: 6px 0; }
+.property-group:not(.plain) .key-value-row + .key-value-row { border-top: 1px solid var(--line); }
+.key-value-row dt { flex: 0 0 auto; width: clamp(150px, 30%, 260px); color: var(--muted); }
+.key-value-row dd { flex: 1; min-width: 0; margin: 0; font-family: var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.vocab-search { width: min(380px, 100%); height: 26px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: inherit; }
+.vocab-table { width: 100%; border-collapse: collapse; }
+.vocab-table th { color: var(--muted); font-size: 11px; font-weight: 600; text-align: left; }
+.vocab-table :is(th, td) { padding: 5px 0; border-bottom: 1px solid var(--line); }
+.vocab-table td:first-child { font-family: var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.vocab-table :is(th, td):last-child { width: 90px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 .reader-canvas > .validation-strip { flex: none; }
 .pdf-reader { overflow: hidden; padding-bottom: 0; }
 .pdf-frame { min-height: 0; width: 100%; flex: 1; border: 0; background: var(--panel-alt); }
@@ -722,8 +753,6 @@ tr:last-child td { border-bottom: 0; }
   .pdf-open { padding: 0 12px; text-align: center; }
   .tokenizer-layout { padding: 10px; }
   .selected-token { flex-wrap: wrap; gap: 8px 14px; }
-  /* ponytail: no width for a floated note beside source; the file's problem list above says the same. */
-  .line-diagnostic { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -759,10 +788,6 @@ tr:last-child td { border-bottom: 0; }
   .primary-button:hover { background: #93b4ff; }
   .severity-mark[data-severity="warning"] { color: #e5b454; }
   .file-problems[data-severity="warning"] { background: rgb(229 180 84 / 18%); color: #e5b454; }
-  .reader-diagnostics { border-color: rgb(229 180 84 / 30%); background: rgb(229 180 84 / 7%); }
-  .reader-diagnostic:hover, .reader-diagnostic[aria-pressed="true"] { background: rgb(255 255 255 / 7%); }
-  .reader-diagnostic[data-severity="warning"] > span:first-child, .line-diagnostic { color: #e5b454; }
-  .source-line[data-severity="warning"] { background: rgb(229 180 84 / 12%); }
   .file-icon[data-category] { color: #aab1bd; }
   .file-icon[data-category="configuration"] { color: #8fb4ff; }
   .file-icon[data-category="tokenizer"] { color: #b79cff; }

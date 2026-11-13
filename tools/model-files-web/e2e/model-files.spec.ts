@@ -26,8 +26,7 @@ test('SafeTensors hierarchy keeps two exact ranges without tensor data', async (
   await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
 
-  await expect(page.getByText('2 次 HTTP 206 Range')).toBeVisible()
-  await expect(page.getByText('Tensor 数据').locator('..').getByText('0 bytes', { exact: true })).toBeVisible()
+  await expect(page.getByText(/^只读取了 .+ JSON Header；没有请求 tensor 数据。$/)).toBeVisible()
   await expect(page.getByText('参数总数').locator('..').getByText('2')).toBeVisible()
   await page.getByRole('button', { name: 'Metadata', exact: true }).click()
   await expect(page.getByRole('table', { name: 'SafeTensors Metadata' }).getByText('format')).toBeVisible()
@@ -149,8 +148,7 @@ test('inspects only the 24-byte GGUF basic prefix', async ({ page }) => {
   await expandWeights(page)
   await page.getByRole('button', { name: /model\.gguf/ }).click()
 
-  await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible()
-  await expect(page.getByText('模型数据').locator('..').getByText('0 bytes', { exact: true })).toBeVisible()
+  await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible()
   await expect(page.getByText(/完整 metadata\/tensor directory.*未启用/)).toBeVisible()
   expect(requests.filter(request => request.path === 'model.gguf')).toEqual([
     expect.objectContaining({ range: 'bytes=0-23', responseBytes: 24, status: 206 }),
@@ -1141,7 +1139,7 @@ test('runs official SentencePiece models through Raw IDs Chat comparison and rec
 
   const modelRequestCountBeforeOversize = requests.filter(request => request.path.endsWith('/tokenizer.model')).length
   await page.getByRole('button', { name: /^oversized\/tokenizer\.model/ }).click()
-  await expect(page.getByRole('alert')).toHaveText('Tokenizer 资源超过 32 MiB 上限。', {
+  await expect(page.getByRole('alert')).toHaveText('Tokenizer 资源超过 33.6 MB 上限。', {
     timeout: 10_000,
   })
   expect(requests.filter(request => request.path.endsWith('/tokenizer.model')))
@@ -1202,15 +1200,16 @@ test('opens every supported local directory reader without network upload', { ti
   await expectRepository(page, '本地 · 实时目录', 23)
   await expect(page).toHaveURL('http://127.0.0.1:5173/')
   await expect(page.getByRole('button', { name: '在源站打开' })).toBeDisabled()
-  await expect(page.getByRole('heading', { name: 'Model Config' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'FixtureModel' })).toBeVisible()
 
   await page.getByRole('button', { name: /^README\.md/ }).click()
   await expect(page.getByRole('heading', { name: 'Fixture Model' })).toBeVisible()
   await page.getByRole('button', { name: /^vocab\.json/ }).click()
-  await page.getByRole('button', { name: '全部字段' }).click()
-  await expect(page.getByText('显示 1,000 / 10,005')).toBeVisible()
+  await expect(page.getByText('共 10,005 个 token；列表最多展示当前筛选结果的前 1,000 项。')).toBeVisible()
+  await expect(page.getByRole('table', { name: '词表' }).locator('tbody tr')).toHaveCount(1000)
   await page.getByRole('button', { name: /^merges\.txt/ }).click()
-  await expect(page.getByText('显示 1,000 / 100,002')).toBeVisible()
+  await expect(page.locator('.source-reader.plain-text')).toBeVisible()
+  expect(await page.locator('.source-reader').evaluate(element => element.textContent?.endsWith('token-100001 token-100002'))).toBe(true)
   await page.getByRole('button', { name: /^model\.safetensors\.index\.json/ }).click()
   await expect(page.getByText('分片数量').locator('..')).toContainText('2')
   await page.getByRole('button', { name: /^imatrix-fixture\.dat/ }).click()
@@ -1229,15 +1228,12 @@ test('opens every supported local directory reader without network upload', { ti
 
   await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
-  await expect(page.getByText('读取方式').locator('..')).toContainText('2 次 File.slice()')
-  await expect(page.getByText('Tensor 数据').locator('..').getByText('0 bytes', { exact: true })).toBeVisible()
+  await expect(page.getByText(/^只读取了 .+ JSON Header；没有请求 tensor 数据。$/)).toBeVisible()
   await expandWeights(page)
   await page.getByRole('button', { name: /^model\.gguf/ }).click()
-  await expect(page.getByText('读取方式').locator('..')).toContainText('1 次 File.slice()')
-  await expect(page.getByText('模型数据').locator('..').getByText('0 bytes', { exact: true })).toBeVisible()
 
   await picker.setInputFiles(localFixture)
-  await expect(page.getByRole('heading', { name: 'Model Config' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'FixtureModel' })).toBeVisible()
   expect(externalRequests).toEqual([])
   expect(errors).toEqual([])
 })
@@ -1277,6 +1273,10 @@ test('dispatches local Python and PDF readers safely', async ({ page }, testInfo
   await expect(sourceReader).toHaveAttribute('data-highlighted', 'true')
   await expect(sourceReader.locator('.token.keyword').filter({ hasText: /^def$/ })).toHaveText('def')
   await expect(sourceReader.locator('.token.function')).toHaveText('greet')
+  // Native: code under 128 KB is highlighted only in 概览; 原文 is the plain-text reader.
+  await page.getByRole('button', { name: '原文', exact: true }).click()
+  await expect(page.locator('.source-reader.plain-text')).toHaveAttribute('data-highlighted', 'false')
+  await page.getByRole('button', { name: '概览', exact: true }).click()
 
   const scssStarted = Date.now()
   await page.getByRole('button', { name: /^reader\.scss/ }).click({ timeout: 10_000 })
@@ -1359,7 +1359,8 @@ test('folds Python YAML and JSON while preserving the full source', async ({ pag
   await page.getByRole('button', { name: /^boundary-large\.py/ }).click()
   await expect(page.getByRole('button', { name: /第 \d+ 行结构/ })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '全部展开' })).toHaveCount(0)
-  await expect(page.getByRole('table', { name: '行列表' })).toBeVisible()
+  // Native rule: code over 128 KB is the plain-text reader.
+  await expect(page.locator('.source-reader.plain-text')).toBeVisible()
   expect(errors).toEqual([])
 })
 
@@ -1497,11 +1498,9 @@ test('find works in JSON Markdown and full progressive text', async ({ page }) =
   await expect(search).toBeHidden()
 
   await page.getByRole('button', { name: /^merges\.txt/ }).click()
-  await expect(page.getByText('显示 1,000 / 100,002')).toBeVisible({ timeout: 3_000 })
-  const filter = page.getByPlaceholder('字段或内容包含…')
-  await expect(filter).toHaveValue('')
-  const rowsViewport = page.locator('.table-scroll')
-  await rowsViewport.focus()
+  const plain = page.locator('.source-reader.plain-text')
+  await expect(plain).toBeVisible({ timeout: 3_000 })
+  await plain.focus()
   await page.keyboard.press('Meta+F')
   search = page.getByRole('search', { name: '当前文件查找' })
   searchInput = search.getByRole('textbox', { name: '当前文件查找' })
@@ -1510,27 +1509,13 @@ test('find works in JSON Markdown and full progressive text', async ({ page }) =
   await searchInput.fill(query)
   await expect(search.getByText('1 / 1', { exact: true })).toBeVisible({ timeout: 3_000 })
   expect(Date.now() - findStarted).toBeLessThan(3_000)
-  const row = page.getByRole('row', { name: new RegExp(query.replace(/[$()*+.?[\\\]^{|}]/g, '\\$&')) })
-  const currentMark = row.locator('mark.current')
-  await expect(row).toBeVisible()
-  await expect(currentMark).toHaveCount(1)
+  const currentMark = plain.locator('mark.current')
+  await expect(currentMark).toHaveText(query)
   await expect(currentMark).toHaveAttribute('aria-current', 'true')
-  expect(await currentMark.evaluate((element, selector) => {
-    const viewport = document.querySelector(selector)
-    if (!(element instanceof HTMLElement) || !(viewport instanceof HTMLElement)) return false
-    const mark = element.getBoundingClientRect()
-    const bounds = viewport.getBoundingClientRect()
-    return mark.bottom >= bounds.top && mark.top <= bounds.bottom
-      && mark.right >= bounds.left && mark.left <= bounds.right
-  }, '.table-scroll')).toBe(true)
-
+  await expect(currentMark).toBeInViewport()
+  await expect(currentMark.locator('xpath=ancestor::*[@data-line][1]')).toHaveAttribute('data-line', '100002')
   await searchInput.press('Escape')
   await expect(search).toBeHidden()
-  await expect(filter).toHaveValue('')
-  await filter.fill(query)
-  await expect(filter).toHaveValue(query)
-  await expect(page.getByText('显示 1 / 1', { exact: true })).toBeVisible()
-  await expect(row).toContainText(query)
   expect(errors).toEqual([])
 })
 
@@ -1548,14 +1533,13 @@ test('finds the tail of an almost 32 MiB progressive text within budget', async 
   const picker = page.getByLabel('选择本地目录')
   await picker.setInputFiles(localFixture)
 
-  const table = page.getByRole('table', { name: '行列表' })
-  await expect(table).toBeVisible({ timeout: 10_000 })
+  const reader = page.locator('.source-reader.plain-text')
+  await expect(reader).toBeVisible({ timeout: 10_000 })
   const loadMs = Date.now() - loadStarted
   expect(loadMs).toBeLessThan(10_000)
   expect(exactBytes).toBe(32 * 1024 * 1024 - 1)
 
-  const tableViewport = page.locator('.table-scroll')
-  await tableViewport.focus()
+  await reader.focus()
   const findStarted = Date.now()
   await page.keyboard.press('Meta+F')
   const searchInput = page.getByRole('textbox', { name: '当前文件查找' })
@@ -1564,21 +1548,12 @@ test('finds the tail of an almost 32 MiB progressive text within budget', async 
   const findMs = Date.now() - findStarted
   expect(findMs).toBeLessThan(3_000)
 
-  const row = table.getByRole('row').filter({ hasText: 'PERF_TAIL_NEEDLE' })
-  const currentMark = row.locator('mark.current')
-  await expect(row).toHaveCount(1)
-  const hitLineNumber = Number(((await row.locator('td').first().textContent()) ?? '').replace(/\D/g, ''))
-  expect(hitLineNumber).toBeGreaterThan(1001)
-  await expect(currentMark).toHaveCount(1)
+  const currentMark = reader.locator('mark.current')
+  await expect(currentMark).toHaveText('PERF_TAIL_NEEDLE')
   await expect(currentMark).toHaveAttribute('aria-current', 'true')
-  expect(await currentMark.evaluate((element, selector) => {
-    const viewport = document.querySelector(selector)
-    if (!(element instanceof HTMLElement) || !(viewport instanceof HTMLElement)) return false
-    const mark = element.getBoundingClientRect()
-    const bounds = viewport.getBoundingClientRect()
-    return mark.bottom >= bounds.top && mark.top <= bounds.bottom
-      && mark.right >= bounds.left && mark.left <= bounds.right
-  }, '.table-scroll')).toBe(true)
+  await expect(currentMark).toBeInViewport()
+  const hitLineNumber = Number(await currentMark.locator('xpath=ancestor::*[@data-line][1]').getAttribute('data-line'))
+  expect(hitLineNumber).toBeGreaterThan(1001)
 
   const evidence = { exactBytes, loadMs, findMs, hitLineNumber, consoleErrorsAndWarnings: errors, externalRequests }
   await testInfo.attach('performance-find.json', {
@@ -1666,7 +1641,7 @@ test('config diagnostics point at their line and the full source stays reachable
     contentType: 'application/json', body: content,
   }))
   await openFixture(page)
-  const problems = page.getByRole('region', { name: '此文件的问题' })
+  const problems = page.getByRole('region', { name: '文件问题' })
   await expect(problems.getByRole('button')).toHaveCount(1)
   await expect(problems).toContainText('词表大小不一致')
   await expect(problems).toContainText('第 61 行')
@@ -1677,9 +1652,12 @@ test('config diagnostics point at their line and the full source stays reachable
 
   await problems.getByRole('button').click()
   await expect(page.getByRole('button', { name: '原文', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(problems.getByRole('button')).toHaveAttribute('aria-pressed', 'true')
+  await expect(problems.getByRole('button')).toHaveAttribute('title', /≠ tokenizer\.vocab_count 6/)
   const line = page.locator('.source-line[data-line="61"]')
-  await expect(line).toHaveAttribute('data-severity', 'warning')
-  await expect(line.locator('.line-diagnostic')).toContainText('≠ tokenizer.vocab_count 6')
+  // Native CodeReaderView tints only the line's text; the note lives in the problem list and inspector.
+  await expect(line.locator('.line-text')).toHaveAttribute('data-severity', 'warning')
+  await expect(line.locator('.line-text')).toHaveClass(/flash/)
   await expect(line).toBeInViewport()
   await expect(page.getByRole('complementary', { name: '检查器' })).toContainText('词表大小不一致')
 
@@ -1695,6 +1673,29 @@ test('config diagnostics point at their line and the full source stays reachable
   expect(errors).toEqual([])
 })
 
+test('a far diagnostic jumps its line to the upper third of the reader', async ({ page }, testInfo) => {
+  const errors = collectErrors(page)
+  const directory = testInfo.outputPath('far-diagnostic')
+  await writeFixtureDirectory(directory)
+  await writeFile(join(directory, 'config.json'), '{' + '\n'.repeat(900) + '"vocab_size":1005,' + '\n'.repeat(900) + '"model_type":"fixture"}')
+  await page.goto('/')
+  await page.getByLabel('选择本地目录').setInputFiles(directory)
+  const problems = page.getByRole('region', { name: '文件问题' })
+  await expect(problems).toContainText('第 901 行')
+  await problems.getByRole('button').click()
+  const line = page.locator('.source-line[data-line="901"]')
+  await expect(line).toBeInViewport()
+  await expect(async () => {
+    const ratio = await line.evaluate(element => {
+      const pre = element.closest('pre')!
+      return (element.getBoundingClientRect().top - pre.getBoundingClientRect().top) / pre.clientHeight
+    })
+    expect(ratio).toBeGreaterThan(0.25)
+    expect(ratio).toBeLessThan(0.42)
+  }).toPass({ timeout: 2_000 })
+  expect(errors).toEqual([])
+})
+
 test('reads semantic JSON, progressive text, and safe Markdown views', async ({ page }) => {
   const errors = collectErrors(page)
   const thirdPartyRequests: string[] = []
@@ -1704,43 +1705,42 @@ test('reads semantic JSON, progressive text, and safe Markdown views', async ({ 
   await installFixtureRoutes(page)
   await openFixture(page)
 
-  await expect(page.getByRole('heading', { name: 'Model Config' })).toBeVisible()
-  await expect(page.getByText('模型类型').locator('..')).toContainText('fixture')
+  await expect(page.getByRole('heading', { name: 'FixtureModel' })).toBeVisible()
+  await expect(page.getByText('fixture · 2 layers', { exact: true })).toBeVisible()
+  await expect(page.getByText('隐藏层维度（hidden_size）').locator('..')).toContainText('8')
+  await expect(page.getByText('最大上下文长度（max_position_embeddings）').locator('..')).toContainText('4096')
   await page.getByRole('button', { name: '全部字段' }).click()
-  await page.getByPlaceholder('字段或内容包含…').fill('hidden_size')
-  await expect(page.getByRole('row', { name: /hidden_size.*8/ })).toBeVisible()
+  await expect(page.locator('.source-reader')).toContainText('"hidden_size": 8')
   await page.getByRole('button', { name: '原文' }).click()
   await expect(page.locator('.source-reader')).toContainText('"model_type":"fixture"')
 
   await page.getByRole('button', { name: /^generation_config\.json/ }).click()
-  await expect(page.getByRole('heading', { name: 'Generation Config' })).toBeVisible()
-  await expect(page.getByText('最大长度').locator('..')).toContainText('64')
+  await expect(page.getByRole('heading', { name: '生成默认值' })).toBeVisible()
+  await expect(page.getByText('最大新 token').locator('..')).toContainText('64')
+  await expect(page.getByText('Do sample').locator('..')).toContainText('false')
 
   await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
-  await expect(page.getByRole('heading', { name: 'Tokenizer Config' })).toBeVisible()
-  await expect(page.getByText('Tokenizer Class').locator('..')).toContainText('BertTokenizer')
+  await expect(page.getByRole('heading', { name: 'BertTokenizer' })).toBeVisible()
+  await expect(page.getByText('最大长度', { exact: true }).locator('..')).toContainText('128')
+  await expect(page.getByText('UNK token').locator('..')).toContainText('[UNK]')
 
   await page.getByRole('button', { name: /^metadata\.json/ }).click()
-  await expect(page.getByRole('heading', { name: 'JSON', exact: true })).toBeVisible()
-  await expect(page.getByText('根字段').locator('..')).toContainText('2')
+  // No specialized summary: native 概览 is the formatted JSON reader.
+  await expect(page.locator('.source-reader')).toContainText('"format": "fixture"')
 
   await page.getByRole('button', { name: /^vocab\.json/ }).click()
-  await page.getByRole('button', { name: '全部字段' }).click()
-  await expect(page.getByText('显示 1,000 / 10,005')).toBeVisible()
-  await page.getByRole('button', { name: '再显示 1,000 项' }).click()
-  await expect(page.getByText('显示 2,000 / 10,005')).toBeVisible()
-  await page.getByPlaceholder('字段或内容包含…').fill('token-10004')
+  await page.getByRole('button', { name: '概览' }).click()
+  await page.getByRole('textbox', { name: '搜索 token 或 ID' }).fill('token-10004')
+  await expect(page.getByRole('table', { name: '词表' }).locator('tbody tr')).toHaveCount(1)
   await expect(page.getByRole('row', { name: /token-10004.*10004/ })).toBeVisible()
 
   const largeTextStarted = Date.now()
   await page.getByRole('button', { name: /^merges\.txt/ }).click()
-  await expect(page.getByText('显示 1,000 / 100,002')).toBeVisible()
+  await expect(page.locator('.source-reader.plain-text')).toBeVisible()
   expect(Date.now() - largeTextStarted).toBeLessThan(3000)
-  await page.getByPlaceholder('字段或内容包含…').fill('token-100001')
-  await expect(page.getByRole('row', { name: /token-100001 token-100002/ })).toBeVisible()
 
   await page.getByRole('button', { name: /^model\.safetensors\.index\.json/ }).click()
-  await expect(page.getByRole('heading', { name: 'Weight Index' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '权重分片索引' })).toBeVisible()
   await expect(page.getByText('分片数量').locator('..')).toContainText('2')
 
   await page.getByRole('button', { name: /^README\.md/ }).click()
@@ -1769,7 +1769,7 @@ test('parses bounded legacy Imatrix files and exposes searchable entry details',
   await openFixture(page)
   await page.getByRole('button', { name: /^imatrix-fixture\.dat/ }).click()
 
-  await expect(page.getByText('格式').locator('..')).toContainText('llama.cpp legacy imatrix')
+  await expect(page.getByText(/^读取了完整的 .+ legacy imatrix 文件；只解析，不执行。$/)).toBeVisible()
   await expect(page.getByText('Entry 数量').locator('..')).toContainText('2')
   await expect(page.getByText('数据集').locator('..')).toContainText('calibration.txt')
   await openPerspective(page, 'Entries')
@@ -1842,7 +1842,7 @@ test('consistency background acquires materials once and reports repository warn
   await expect(report).toContainText('EOS Token 不一致')
   await expect(report).toContainText('上下文长度声明不同')
   await expect(report.locator('[data-material]')).toHaveCount(8)
-  await expect(page.getByRole('region', { name: '此文件的问题' })).toContainText('上下文长度声明不同')
+  await expect(page.getByRole('region', { name: '文件问题' })).toContainText('上下文长度声明不同')
   const readerPerspective = page.locator('.detail-header').getByRole('group', { name: '阅读视图' })
   await expect(readerPerspective).toBeVisible()
   for (const button of ['概览', '全部字段', '原文']) {
@@ -1859,9 +1859,9 @@ test('consistency background acquires materials once and reports repository warn
   await badge.click()
 
   await page.getByRole('button', { name: /^generation_config\.json/ }).click()
-  await expect(page.getByRole('heading', { name: 'Generation Config' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '生成默认值' })).toBeVisible()
   await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
-  await expect(page.getByRole('heading', { name: 'Tokenizer Config' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'BertTokenizer' })).toBeVisible()
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
   await expect(page.getByText('Model Type').locator('..')).toContainText('WordPiece')
   for (const path of ['config.json', 'generation_config.json', 'tokenizer_config.json', 'tokenizer.json', 'chat_template.jinja']) {
@@ -1875,7 +1875,7 @@ test('consistency background acquires materials once and reports repository warn
 
   await expandWeights(page)
   await page.getByRole('button', { name: /^model\.gguf/ }).click()
-  await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible()
+  await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible()
   expect(requests.filter(request => request.path === 'model.gguf')).toEqual([
     expect.objectContaining({ range: 'bytes=0-23', responseBytes: 24, status: 206 }),
   ])
@@ -1907,7 +1907,7 @@ test('rejects oversized readers and keeps unsupported weights locked without con
   await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).fill(fixtureModelId)
   await page.getByRole('button', { name: '打开', exact: true }).click()
   await expectRepository(page, 'Hugging Face · main', 15)
-  await expect(page.getByRole('heading', { name: 'Model Config' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'FixtureModel' })).toBeVisible()
   const baselineRequests = contentRequests.length
 
   await page.getByRole('button', { name: /^oversized\.json/ }).click()
@@ -2065,15 +2065,15 @@ test('restores, refreshes, and navigates shareable repository URLs', async ({ pa
   await page.addInitScript("window.open = (url) => { window.__openedUrl = String(url); return null }")
   await installFixtureRoutes(page)
   await page.goto(`/?repo=${encodeURIComponent(fixtureModelId)}&file=model.gguf`)
-  await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible()
+  await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible()
   await page.reload()
-  await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible()
+  await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible()
 
   await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
   await expect(page.getByText('参数总数').locator('..').getByText('2')).toBeVisible()
   await page.goBack()
-  await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible()
+  await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible()
   await page.goForward()
   await expect(page.getByText('参数总数').locator('..').getByText('2')).toBeVisible()
   await page.getByRole('button', { name: '复制路径' }).click()
@@ -2151,7 +2151,7 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
     await page.setViewportSize(viewport)
     await page.goto(`/?repo=${encodeURIComponent(fixtureModelId)}&file=model.gguf`)
     await expect(page.getByRole('heading', { name: 'model.gguf', exact: true })).toBeVisible()
-    await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible()
+    await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     if (capturesScreenshots) {
       const screenshot = testInfo.outputPath(`${viewport.width}x${viewport.height}.png`)
@@ -2226,7 +2226,8 @@ test('renders image files and verifies blob url within CSP without console error
   await page.getByLabel('选择本地目录').setInputFiles(dir)
   await page.getByRole('button', { name: /^logo\.png/ }).click()
   await expect(page.locator('.inspected-image')).toBeVisible()
-  await expect(page.getByText('1 × 1 像素')).toBeVisible()
+  await expect(page.getByText('1 × 1 px', { exact: true })).toBeVisible()
+  await expect(page.getByText(/^读取了完整的 .+ 图片数据，在本地直接渲染。$/)).toBeVisible()
   await page.getByRole('button', { name: /^icon\.svg/ }).click()
   await expect(page.locator('.inspected-image')).toBeVisible()
   await openPerspective(page, '源码')

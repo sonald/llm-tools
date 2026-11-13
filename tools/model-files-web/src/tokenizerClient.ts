@@ -1,4 +1,4 @@
-import { readWholeFile, type RepositoryFile, type RepositorySnapshot } from './core/huggingface.ts'
+import { formatBytes, readWholeFile, type RepositoryFile, type RepositorySnapshot } from './core/huggingface.ts'
 import type { ChatAttributionMessage, ChatTokenOverhead, ChatTokenRole } from './core/tokenAttribution.ts'
 import {
   parseTokenIds,
@@ -137,7 +137,7 @@ class ClientTokenizerSession implements TokenizerSession {
     onStartRequest?: () => void,
   ): Promise<TokenizerStructure> {
     this.assertUsable()
-    if (tokenizerData.byteLength > 32 * 1024 * 1024) throw new Error(t('tokenizerDataTooLarge'))
+    if (tokenizerData.byteLength > 32 * 1024 * 1024) throw new Error(t('tokenizerDataTooLarge', { limit: formatBytes(32 * 1024 * 1024) }))
     signal?.throwIfAborted()
     onStartRequest?.()
     const reply = await this.request({

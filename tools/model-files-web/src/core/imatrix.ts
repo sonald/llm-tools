@@ -1,3 +1,4 @@
+import { formatBytes } from './huggingface.ts'
 import { translate as t } from '../i18n.ts'
 
 export type ImatrixEntry = {
@@ -17,7 +18,7 @@ export type ImatrixSummary = {
 }
 
 export function inspectImatrix(data: ArrayBuffer): ImatrixSummary {
-  if (data.byteLength > 32 * 1024 * 1024) throw new Error(t('imatrixFileTooLarge'))
+  if (data.byteLength > 32 * 1024 * 1024) throw new Error(t('imatrixFileTooLarge', { limit: formatBytes(32 * 1024 * 1024) }))
   const cursor = new Cursor(data)
   const entryCount = cursor.int32()
   if (entryCount < 1 || entryCount > 100_000) throw new Error(t('imatrixEntryCountInvalid'))

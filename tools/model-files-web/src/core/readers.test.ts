@@ -4,15 +4,15 @@ import {
   decodeStrictText,
   forEachTextMatch,
   inspectionPerspectives,
-  jsonRows,
+  jsonSummary,
+  jsonSummaryKind,
   repositoryMarkdownUrl,
   navigateTextMatches,
   perspectiveLabel,
-  summarizeJson,
   textLineAtOffset,
-  textLines,
+  sourceChunks,
   validatePdfData,
-  visibleRows,
+  vocabEntries,
 } from './readers.ts'
 import { imageMimeType, isImagePath, type RepositorySnapshot } from './huggingface.ts'
 
@@ -23,28 +23,70 @@ const snapshot: RepositorySnapshot = {
   files: [],
 }
 
-test('summarizes configs and sharded weight indexes without expanding collections', () => {
-  assert.deepEqual(summarizeJson('config.json', {
-    model_type: 'fixture', architectures: ['FixtureModel'], hidden_size: 8, num_hidden_layers: 2,
-  }).facts, [
-    ['模型类型', 'fixture'], ['架构', 'FixtureModel'], ['Hidden Size', '8'], ['层数', '2'],
+test('summaries follow native readers, keeping exact numbers and inline collections', () => {
+  const config = jsonSummary('config', '{"architectures":["Qwen3ForCausalLM"],"model_type":"qwen3","torch_dtype":"bfloat16",'
+    + '"num_hidden_layers":28,"hidden_size":1024,"vocab_size":151936,"rope_theta":1000000,"head_dim":128,"big":1e30}')
+  assert.equal(config.title, 'Qwen3ForCausalLM')
+  assert.equal(config.subtitle, 'qwen3 · bfloat16 · 28 layers')
+  assert.deepEqual(config.groups.map(group => [group.title, group.rows]), [
+    ['模型规模', [['隐藏层维度（hidden_size）', '1024'], ['词表大小（vocab_size）', '151936']]],
+    ['Attention', [['头维度（head_dim）', '128']]],
+    ['上下文', [['RoPE θ（rope_theta）', '1000000']]],
   ])
-  assert.deepEqual(summarizeJson('model.safetensors.index.json', {
-    metadata: { total_size: 12 },
-    weight_map: { a: 'one.safetensors', b: 'two.safetensors', c: 'one.safetensors' },
-  }).facts, [
-    ['Tensor 条目', '3'], ['分片数量', '2'], ['声明总大小', '12'], ['Metadata 字段', '1'],
+  assert.equal(jsonSummary('config', '{"model_type":"llama"}').title, 'llama')
+  assert.equal(jsonSummary('config', '{"broken":').title, '模型配置')
+
+  const generation = jsonSummary('generation', '{"eos_token_id":[151645,151643],"top_k":20,"bos_token_id":1,"max_length":9}')
+  assert.deepEqual(generation.groups.map(group => group.rows), [
+    [['Top K', '20']],
+    [['EOS token', '[   151645,   151643 ]']],
   ])
+
+  const tokenizer = jsonSummary('tokenizerConfig', '{"tokenizer_class":"Qwen2Tokenizer","padding_side":"right",'
+    + '"unk_token":null,"eos_token":{"content":"</s>","lstrip":false}}')
+  assert.equal(tokenizer.title, 'Qwen2Tokenizer')
+  assert.deepEqual(tokenizer.groups[0].rows, [
+    ['Padding side', 'right'], ['EOS token', '{   "content" : "<\\/s>",   "lstrip" : false }'], ['UNK token', 'null'],
+  ])
+
+  const index = jsonSummary('weightIndex', '{"metadata":{"total_size":1503300328},'
+    + '"weight_map":{"b":"two.safetensors","a":"one.safetensors","c":"one.safetensors"}}')
+  assert.deepEqual(index.groups[0].rows, [['参数张量', '3'], ['分片数量', '2'], ['权重总大小', '1.5 GB']])
+  assert.deepEqual(index.mappings, [['a', 'one.safetensors'], ['b', 'two.safetensors'], ['c', 'one.safetensors']])
+  assert.equal(jsonSummaryKind('nested/config.json', 'configuration'), 'config')
+  assert.equal(jsonSummaryKind('model.safetensors.index.json', 'weightMetadata'), 'weightIndex')
+  assert.equal(jsonSummaryKind('metadata.json', 'other'), null)
 })
 
-test('searches stable JSON rows and text lines with explicit limits', () => {
-  const rows = jsonRows('vocab.json', { beta: 2, alpha: 1, gamma: 3 })
-  assert.deepEqual(rows, [['alpha', '1'], ['beta', '2'], ['gamma', '3']])
-  assert.deepEqual(visibleRows(rows, 'TA', 1), [['beta', '2']])
-  assert.deepEqual(textLines('first\r\n\r\nsecond'), ['first', '', 'second'])
-  assert.deepEqual(jsonRows('model.safetensors.index.json', {
-    metadata: { total_size: 12 }, weight_map: { layer: 'shard.safetensors' },
-  }).map(([key]) => key), ['metadata', 'weight_map'])
+test('vocab entries keep integer IDs, search token or ID and sort by ID', () => {
+  const vocab = { beta: 2, Alpha: 10, gamma: 1, bad: 'x' }
+  assert.deepEqual(vocabEntries(vocab, ''), [['gamma', 1], ['beta', 2], ['Alpha', 10]])
+  assert.deepEqual(vocabEntries(vocab, 'al'), [['Alpha', 10]])
+  assert.deepEqual(vocabEntries(vocab, '1'), [['gamma', 1], ['Alpha', 10]])
+})
+
+test('source chunks cut at line starts by count or size and keep long lines whole', () => {
+  const content = 'a\nb\r\nc\rd\ne'
+  assert.deepEqual(sourceChunks(content, 2), [
+    { start: 0, end: 5, firstLine: 1, lineCount: 2 },
+    { start: 5, end: 9, firstLine: 3, lineCount: 2 },
+    { start: 9, end: 10, firstLine: 5, lineCount: 1 },
+  ])
+  // A long line is cut into pieces that continue line 1; the last piece also holds line 2.
+  assert.deepEqual(sourceChunks('x'.repeat(10) + '\n' + 'y', 400, 4), [
+    { start: 0, end: 4, firstLine: 1, lineCount: 1 },
+    { start: 4, end: 8, firstLine: 1, lineCount: 1 },
+    { start: 8, end: 12, firstLine: 1, lineCount: 2 },
+  ])
+  assert.deepEqual(sourceChunks('ab\nc' + 'x'.repeat(5), 400, 4).map(chunk => [chunk.start, chunk.end, chunk.firstLine, chunk.lineCount]), [
+    [0, 3, 1, 1], [3, 7, 2, 1], [7, 9, 2, 1],
+  ])
+  assert.deepEqual(sourceChunks('abc😀d', 400, 4).map(chunk => [chunk.start, chunk.end]), [[0, 5], [5, 6]])
+  assert.deepEqual(sourceChunks('abc\r\nzz', 400, 4).map(chunk => [chunk.start, chunk.end, chunk.firstLine, chunk.lineCount]), [
+    [0, 5, 1, 1], [5, 7, 2, 1],
+  ])
+  assert.deepEqual(sourceChunks(''), [{ start: 0, end: 0, firstLine: 1, lineCount: 1 }])
+  assert.deepEqual(sourceChunks('a\n'), [{ start: 0, end: 2, firstLine: 1, lineCount: 1 }])
 })
 
 test('finds literal text matches without retaining a match array', () => {

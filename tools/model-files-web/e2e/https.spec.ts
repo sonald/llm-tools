@@ -82,7 +82,7 @@ test('HTTPS file opens exact SafeTensors header and keeps signed URL out of hist
   await page.goto('/')
   await expect(page).toHaveTitle('Model Files Web')
   await openHttps(page, 'file', 'model.safetensors?signature=session-only')
-  await expect(page.getByText('2 次 HTTP 206 Range')).toBeVisible()
+  await expect(page.getByText(/^只读取了 .+ JSON Header；没有请求 tensor 数据。$/)).toBeVisible()
   const headerEnd = 7 + Number(bodies.get('model.safetensors')!.readBigUInt64LE(0))
   expect(requests.filter(item => item.path === 'model.safetensors')).toEqual([
     { path: 'model.safetensors', method: 'HEAD', range: undefined },

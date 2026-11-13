@@ -221,7 +221,7 @@ export function TemplateWorkbench({
             {phase === 'loading' ? <div className="result-empty"><span className="spinner" />{t('templateWorkerRenderingState')}</div> : null}
             {phase === 'error' ? <p className="inline-error" role="alert">{error}</p> : null}
             {phase === 'ready' && outputView === 'raw' ? outputIsJSON
-              ? <SourceInspection content={output} language="json" bytesRead={new TextEncoder().encode(output).byteLength} />
+              ? <SourceInspection content={output} language="json" label={t('templateOutputTitle')} />
               : <pre className="source-reader standalone">{output}</pre> : null}
             {phase === 'ready' && outputView === 'structure' ? (
               <div className="template-structure">

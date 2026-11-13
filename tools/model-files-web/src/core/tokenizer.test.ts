@@ -179,11 +179,11 @@ test('accepts only bounded same-directory tokenizer bundles', () => {
     file('chat_template.jinja', 1)), /同目录/)
   assert.throws(() => tokenizerBundleBytes(file('nested/tokenizer.json', 31), file('nested/tokenizer_config.json', 1),
     { ...template, size: null }), /资源大小/)
-  assert.throws(() => tokenizerBundleBytes(file('nested/tokenizer.json', 32 * 1024 * 1024 + 1)), /32 MiB/)
+  assert.throws(() => tokenizerBundleBytes(file('nested/tokenizer.json', 32 * 1024 * 1024 + 1)), /33\.6 MB/)
   assert.throws(() => tokenizerBundleBytes(file('nested/tokenizer.json', 30 * 1024 * 1024), file('nested/tokenizer_config.json', 2 * 1024 * 1024),
-    file('nested/chat_template.jinja', 1025)), /32 MiB/)
+    file('nested/chat_template.jinja', 1025)), /33\.6 MB/)
   assert.throws(() => tokenizerBundleBytes(tokenizer, file('tokenizer_config.json', 1)), /同目录/)
-  assert.throws(() => tokenizerBundleBytes(tokenizer, file('nested/tokenizer_config.json', 2 * 1024 * 1024 + 1)), /32 MiB/)
+  assert.throws(() => tokenizerBundleBytes(tokenizer, file('nested/tokenizer_config.json', 2 * 1024 * 1024 + 1)), /33\.6 MB/)
   assert.throws(() => tokenizerBundleBytes({ ...tokenizer, size: null }, file('nested/tokenizer_config.json', 1)), /资源大小/)
   assert.equal(tokenizerBundleBytes(file('tokenizer.json', 10)), 10)
 })

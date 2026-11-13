@@ -61,6 +61,10 @@ test('all JSON file routes highlight and fold source, including large tokenizers
   await expect(reader).toHaveAttribute('data-highlighted', 'true')
   await page.getByRole('button', { name: '折叠第 2 行结构' }).click()
   await expect(page.getByRole('button', { name: '展开第 2 行结构' })).toBeVisible()
+  // The fold spans ~30 lazy chunks: unrendered ones hide as blocks, the last one line by line.
+  await expect(reader.getByText('"token-6000"')).toBeHidden()
+  await expect(reader.getByText('"token-11999"')).toBeHidden()
+  await expect(reader.getByText('END_OF_TOKENIZER')).toBeVisible()
   await reader.focus()
   await page.keyboard.press('ControlOrMeta+f')
   await page.getByRole('textbox', { name: '当前文件查找' }).fill('END_OF_TOKENIZER')
@@ -79,7 +83,13 @@ test('JSON roots and malformed input remain inspectable, template JSON shares re
   for (const path of ['null.json', 'array.json', 'invalid.json'] as const) {
     await page.getByRole('button', { name: new RegExp(`^${path.replace('.', '\\.')}`) }).click()
     if (path !== 'invalid.json') await page.getByRole('button', { name: '原文', exact: true }).click()
-    else await expect(page.getByText('JSON 格式无效 · 显示原文')).toBeVisible()
+    // Native JSONReaderView: the parser error above the original text.
+    else {
+      await expect(page.getByRole('alert')).toContainText(/^⚠︎ JSON: /)
+      // Native keeps every perspective for invalid JSON instead of forcing 原文.
+      await expect(page.getByRole('button', { name: '全部字段', exact: true })).toHaveAttribute('aria-pressed', 'false')
+      await expect(page.getByRole('button', { name: '原文', exact: true })).toBeVisible()
+    }
     const reader = page.locator('.source-reader')
     await expect(reader).toHaveAttribute('data-highlighted', 'true')
     expect(await reader.textContent()).toBe(contents[path])
@@ -93,23 +103,23 @@ test('JSON roots and malformed input remain inspectable, template JSON shares re
   await expect(page.getByRole('button', { name: '展开第 2 行结构' })).toBeVisible()
 })
 
-test('nested JSON fields preserve full values and searchable numeric spelling', async ({ page }, testInfo) => {
+test('JSON fields show lexeme-preserving formatted source like native JSONReaderView', async ({ page }, testInfo) => {
   const directory = testInfo.outputPath('json-fields')
   await mkdir(directory, { recursive: true })
   await writeFile(join(directory, 'metadata.json'), `{"nested":{"padding":"${'x'.repeat(600)}","needle":"LATE_FIELD","exact":9007199254740993},"one":1,"yes":true}`)
   await page.goto('/')
   await page.getByLabel('选择本地目录').setInputFiles(directory)
   await page.getByRole('button', { name: '全部字段' }).click()
-  await page.getByPlaceholder('字段或内容包含…').fill('LATE_FIELD')
-  const row = page.getByRole('row').filter({ has: page.locator('details') })
-  await expect(row).toContainText('nested')
-  await row.locator('summary').click()
-  const reader = row.locator('.source-reader')
+  const reader = page.locator('.source-reader')
   await expect(reader).toHaveAttribute('data-highlighted', 'true')
-  await expect(reader).toContainText('9007199254740993')
-  await expect(reader).toContainText('LATE_FIELD')
-  await row.getByRole('button', { name: '折叠第 1 行结构' }).click()
-  await expect(row.getByRole('button', { name: '展开第 1 行结构' })).toBeVisible()
+  await expect(reader).toContainText('"exact": 9007199254740993')
+  expect(await reader.textContent()).toMatch(/^\{\n {2}"nested": \{\n {4}"padding": "x+",\n/)
+  await reader.focus()
+  await page.keyboard.press('ControlOrMeta+f')
+  await page.getByRole('textbox', { name: '当前文件查找' }).fill('LATE_FIELD')
+  await expect(reader.locator('mark.current')).toHaveText('LATE_FIELD')
+  await page.getByRole('button', { name: '折叠第 2 行结构' }).click()
+  await expect(page.getByRole('button', { name: '展开第 2 行结构' })).toBeVisible()
 })
 
 test('YAML null literals share the literal syntax color', async ({ page }, testInfo) => {
@@ -129,4 +139,32 @@ test('YAML null literals share the literal syntax color', async ({ page }, testI
   expect(colors.literal).toHaveLength(1)
   expect(colors.null).toEqual(colors.literal)
   expect(colors.null[0]).not.toBe(colors.plain)
+})
+
+test('a minified multi-megabyte vocab stays highlighted, complete and searchable in 原文', async ({ page }, testInfo) => {
+  const directory = testInfo.outputPath('minified-vocab')
+  await mkdir(directory, { recursive: true })
+  const source = JSON.stringify({ ...Object.fromEntries(Array.from({ length: 150_000 }, (_, i) => [`Ġtoken${i}`, i])), TAIL_NEEDLE: 150_000 })
+  await writeFile(join(directory, 'vocab.json'), source)
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.goto('/')
+  await page.getByLabel('选择本地目录').setInputFiles(directory)
+  await expect(page.getByText('共 150,001 个 token；列表最多展示当前筛选结果的前 1,000 项。')).toBeVisible()
+  const started = Date.now()
+  await page.getByRole('button', { name: '原文', exact: true }).click()
+  const reader = page.locator('.source-reader')
+  // One 3 MB line is cut into 4K-character pieces; only the first renders tokens up front.
+  await expect(reader.locator('.source-chunk')).toHaveCount(Math.ceil(source.length / 4096))
+  await expect(reader.locator('.source-chunk').first().locator('.token').first()).toBeVisible()
+  expect(Date.now() - started).toBeLessThan(3_000)
+  expect(await reader.evaluate(element => element.textContent!.length)).toBe(source.length)
+  await reader.focus()
+  await page.keyboard.press('ControlOrMeta+f')
+  await page.getByRole('textbox', { name: '当前文件查找' }).fill('TAIL_NEEDLE')
+  await expect(reader.locator('mark.current')).toHaveText('TAIL_NEEDLE')
+  await expect(reader.locator('mark.current')).toBeInViewport()
+  await page.getByRole('button', { name: '全部字段', exact: true }).click()
+  await expect(reader).toContainText('"TAIL_NEEDLE": 150000')
+  expect(errors).toEqual([])
 })

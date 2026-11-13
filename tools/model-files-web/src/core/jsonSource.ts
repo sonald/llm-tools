@@ -1,43 +1,39 @@
 // Tokens retain their original spelling: parsing/stringifying rounds large JSON numbers.
 const tokens = /"(?:\\[\s\S]|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}[\],:]|\s+|./g
 
+// Native JSONFormatter.formattedSource: re-indent by characters, keeping every lexeme as written.
+// Empty containers open onto an indented blank line, as native does.
 export function formatJsonSource(source: string): string {
+  const parts: string[] = []
+  const indents: string[] = []
+  const newline = (depth: number) => indents[depth] ??= '\n' + '  '.repeat(depth)
   let depth = 0
-  let previous = ''
-  const output: string[] = []
-  for (const match of source.matchAll(tokens)) {
-    const token = match[0]
-    if (/^\s+$/.test(token)) continue
-    if (token === '}' || token === ']') depth = Math.max(0, depth - 1)
-    if (previous === ',' || ((previous === '{' || previous === '[') && token !== '}' && token !== ']')
-      || ((token === '}' || token === ']') && previous !== '{' && previous !== '[')) {
-      output.push('\n', '  '.repeat(Math.min(depth, 100)))
+  let verbatim = 0 // start of the pending run copied as is (scalars and whole strings)
+  for (let index = 0; index < source.length; index += 1) {
+    const code = source.charCodeAt(index)
+    if (code === 34) { // a string: jump to its closing quote, skipping escaped ones
+      let end = index
+      do {
+        end = source.indexOf('"', end + 1)
+        if (end === -1) end = source.length
+        let slashes = 0
+        while (source.charCodeAt(end - 1 - slashes) === 92) slashes += 1
+        if (slashes % 2 === 0) break
+      } while (end < source.length)
+      index = end
+      continue
     }
-    output.push(token === ':' ? ': ' : token)
-    if (token === '{' || token === '[') depth += 1
-    previous = token
+    if (code !== 123 && code !== 91 && code !== 125 && code !== 93 && code !== 44 && code !== 58
+      && code !== 32 && code !== 9 && code !== 10 && code !== 13) continue
+    if (index > verbatim) parts.push(source.slice(verbatim, index))
+    verbatim = index + 1
+    if (code === 123 || code === 91) parts.push(source[index], newline(++depth))
+    else if (code === 125 || code === 93) parts.push(newline(depth = Math.max(0, depth - 1)), source[index])
+    else if (code === 44) parts.push(',', newline(depth))
+    else if (code === 58) parts.push(': ')
   }
-  return output.join('')
-}
-
-export function jsonFieldSources(source: string): Map<string, string> {
-  const fields = new Map<string, string>()
-  if (!source.trimStart().startsWith('{')) return fields.set('$', source)
-  let depth = 0
-  let key = ''
-  let valueStart = -1
-  for (const match of source.matchAll(tokens)) {
-    const token = match[0]
-    if (depth === 1 && valueStart === -1 && token.startsWith('"')) key = JSON.parse(token) as string
-    if (depth === 1 && token === ':' && valueStart === -1) valueStart = match.index + 1
-    if (depth === 1 && (token === ',' || token === '}') && valueStart !== -1) {
-      fields.set(key, source.slice(valueStart, match.index).trim())
-      valueStart = -1
-    }
-    if (token === '{' || token === '[') depth += 1
-    if (token === '}' || token === ']') depth -= 1
-  }
-  return fields
+  if (verbatim < source.length) parts.push(source.slice(verbatim))
+  return parts.join('')
 }
 
 // Top-level object keys → source range of the key token. Later duplicates win, as in JSON.parse.
@@ -68,23 +64,21 @@ export function jsonTopLevelKeyRanges(source: string): Map<string, { start: numb
 
 export function highlightJsonWindow(source: string, start = 0, end = source.length) {
   const segments: Array<{ text: string; className: string }> = []
-  for (const match of source.matchAll(tokens)) {
+  // Valid JSON never breaks a token across lines, so a window that starts a line can scan from there.
+  const scanner = new RegExp(tokens.source, 'g')
+  const colon = /\s*:/y // tested in place: slicing the rest of a multi-megabyte source per string is O(n²) in WebKit
+  scanner.lastIndex = start === 0 || source[start - 1] === '\n' || source[start - 1] === '\r' ? start : 0
+  for (let match = scanner.exec(source); match !== null; match = scanner.exec(source)) {
     if (match.index >= end) break
     const token = match[0]
     if (match.index + token.length <= start) continue
     const text = token.slice(Math.max(0, start - match.index), end - match.index)
+    colon.lastIndex = match.index + token.length
     const category = token.startsWith('"')
-      ? /^\s*:/.test(source.slice(match.index + token.length)) ? 'name' : 'string'
+      ? colon.test(source) ? 'name' : 'string'
       : /^[-\d]|^(true|false|null)$/.test(token) ? 'literal'
       : /^[{}[\],:]$/.test(token) ? 'operator' : ''
     segments.push({ text, className: category === '' ? '' : `token source-syntax-${category}` })
   }
   return segments
-}
-
-// Keep raw-source pages contiguous without splitting a Unicode code point or CRLF.
-export function sourceBoundary(source: string, offset: number): number {
-  return (source[offset] === '\n' && source[offset - 1] === '\r')
-    || (/[\uDC00-\uDFFF]/.test(source[offset] ?? '') && /[\uD800-\uDBFF]/.test(source[offset - 1] ?? ''))
-    ? offset + 1 : offset
 }

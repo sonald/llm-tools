@@ -1,8 +1,10 @@
-import { formatNumber, translate as t } from '../i18n.ts'
+import { translate as t } from '../i18n.ts'
 
-import type { RepositorySnapshot } from './huggingface.ts'
+import { formatBytes, type FileCategory, type RepositorySnapshot } from './huggingface.ts'
+import { nativeInline, parseJsonNode } from './jsonValue.ts'
 
-export type JsonSummary = { title: string; facts: Array<[string, string]> }
+export type JsonSummaryGroup = { title: string; rows: Array<[string, string]> }
+export type JsonSummary = { title: string; subtitle: string; prominent: boolean; groups: JsonSummaryGroup[]; mappings?: Array<[string, string]> }
 
 export type Perspective = 'overview' | 'metadata' | 'tensors' | 'entries' | 'source' | 'playground' | 'fields' | 'raw'
 export type PerspectiveDocument = 'generic' | 'safetensors' | 'gguf' | 'imatrix' | 'jinja' | 'pdf' | 'image'
@@ -57,70 +59,155 @@ export function validatePdfData(data: ArrayBuffer): void {
     || bytes[3] !== 70 || bytes[4] !== 45) throw new Error(t('invalidPdfSignature'))
 }
 
-export function summarizeJson(path: string, value: unknown): JsonSummary {
+export type JsonSummaryKind = 'config' | 'generation' | 'tokenizerConfig' | 'vocab' | 'weightIndex'
+
+// Native FileReaderView.hasSpecializedSummary (tokenizer.json and Markdown have their own readers here).
+export function jsonSummaryKind(path: string, category: FileCategory): JsonSummaryKind | null {
   const name = path.split('/').at(-1)?.toLocaleLowerCase() ?? ''
-  if (!isRecord(value)) return {
-    title: 'JSON',
-    facts: [[t('jsonRootType'), Array.isArray(value) ? t('arrayTypeLabel') : value === null ? 'null' : typeof value]],
-  }
-  if (name === 'config.json' || name === 'configuration.json') {
-    return { title: 'Model Config', facts: compactFacts([
-      [t('modelTypeLabel'), scalar(value.model_type)],
-      [t('architectureLabel'), stringList(value.architectures)],
-      ['Hidden Size', scalar(value.hidden_size)],
-      [t('layerCountLabel'), scalar(value.num_hidden_layers ?? value.n_layer)],
-      [t('vocabularySizeLabel'), scalar(value.vocab_size)],
-      [t('dataTypeLabel'), scalar(value.torch_dtype ?? value.dtype)],
-    ]) }
-  }
-  if (name === 'generation_config.json') {
-    return { title: 'Generation Config', facts: compactFacts([
-      [t('maxLengthLabel'), scalar(value.max_new_tokens ?? value.max_length)],
-      [t('samplingLabel'), scalar(value.do_sample)],
-      ['Temperature', scalar(value.temperature)],
-      ['Top P', scalar(value.top_p)],
-      ['BOS Token ID', scalar(value.bos_token_id)],
-      ['EOS Token ID', scalar(value.eos_token_id)],
-    ]) }
-  }
-  if (name === 'tokenizer_config.json') {
-    return { title: 'Tokenizer Config', facts: compactFacts([
-      ['Tokenizer Class', scalar(value.tokenizer_class)],
-      [t('maxLengthLabel'), scalar(value.model_max_length)],
-      ['BOS Token', tokenText(value.bos_token)],
-      ['EOS Token', tokenText(value.eos_token)],
-      ['Chat Template', typeof value.chat_template === 'string' ? `${new TextEncoder().encode(value.chat_template).byteLength} bytes` : undefined],
-    ]) }
-  }
-  if (isWeightIndex(name)) {
-    const weightMap = isRecord(value.weight_map) ? value.weight_map : {}
-    const shards = new Set(Object.values(weightMap).filter((item): item is string => typeof item === 'string'))
-    const metadata = isRecord(value.metadata) ? value.metadata : {}
-    return { title: 'Weight Index', facts: compactFacts([
-      [t('tensorEntryCountLabel'), formatNumber(Object.keys(weightMap).length)],
-      [t('shardCountLabel'), formatNumber(shards.size)],
-      [t('declaredTotalSizeLabel'), scalar(metadata.total_size)],
-      [t('metadataFieldCountLabel'), formatNumber(Object.keys(metadata).length)],
-    ]) }
-  }
-  return { title: 'JSON', facts: [[t('jsonRootFieldCount'), formatNumber(Object.keys(value).length)]] }
+  if (name === 'config.json' || name === 'configuration.json') return 'config'
+  if (name === 'generation_config.json') return 'generation'
+  if (name === 'tokenizer_config.json') return 'tokenizerConfig'
+  if (name === 'vocab.json') return 'vocab'
+  return category === 'weightMetadata' ? 'weightIndex' : null
 }
 
-export function jsonRows(_path: string, value: unknown): Array<[string, string]> {
-  if (!isRecord(value)) return [['$', preview(value)]]
+// Native ConfigSummaryView / GenerationSummaryView / TokenizerSummaryView / WeightIndexSummaryView.
+// An invalid or non-object source yields the empty summary, as native's `as? [String: Any] ?? [:]` does.
+export function jsonSummary(kind: Exclude<JsonSummaryKind, 'vocab'>, source: string): JsonSummary {
+  const root = parseJsonNode(source)
+  const fields = new Map(root?.kind === 'object' ? root.entries : [])
+  const value = (key: string) => {
+    const node = fields.get(key)
+    return node === undefined ? undefined : nativeInline(node)
+  }
+  const string = (key: string) => {
+    const node = fields.get(key)
+    return node?.kind === 'string' ? node.value : undefined
+  }
+  const group = (title: string, rows: Array<[string, string | undefined]>): JsonSummaryGroup => ({
+    title, rows: rows.filter((row): row is [string, string] => row[1] !== undefined),
+  })
+  switch (kind) {
+    case 'config': {
+      const architectures = fields.get('architectures')
+      const first = architectures?.kind === 'array' && architectures.items.every(item => item.kind === 'string')
+        ? (architectures.items[0] as { value: string } | undefined)?.value : undefined
+      const layers = value('num_hidden_layers')
+      return {
+        title: first ?? string('model_type') ?? t('summaryModelConfigTitle'),
+        subtitle: [string('model_type'), string('torch_dtype'), layers === undefined ? undefined : `${layers} layers`]
+          .filter(part => part !== undefined).join(' · '),
+        prominent: true,
+        groups: [
+          group(t('summaryModelScale'), [
+            [t('summaryHiddenSize'), value('hidden_size')],
+            [t('summaryIntermediateSize'), value('intermediate_size')],
+            [t('summaryVocabSize'), value('vocab_size')],
+          ]),
+          group('Attention', [
+            [t('summaryAttentionHeads'), value('num_attention_heads')],
+            [t('summaryKeyValueHeads'), value('num_key_value_heads')],
+            [t('summaryHeadDim'), value('head_dim')],
+          ]),
+          group(t('summaryContext'), [
+            [t('summaryMaxPositions'), value('max_position_embeddings')],
+            [t('summaryRopeTheta'), value('rope_theta')],
+          ]),
+        ],
+      }
+    }
+    case 'generation':
+      return {
+        title: t('summaryGenerationTitle'), subtitle: t('summaryGenerationSubtitle'), prominent: false,
+        groups: [
+          group(t('summarySampling'), [
+            ['Do sample', value('do_sample')], ['Temperature', value('temperature')],
+            ['Top P', value('top_p')], ['Top K', value('top_k')],
+          ]),
+          group(t('summaryStopAndLength'), [
+            ['EOS token', value('eos_token_id')], ['PAD token', value('pad_token_id')],
+            [t('summaryMaxNewTokens'), value('max_new_tokens')], [t('summaryRepetitionPenalty'), value('repetition_penalty')],
+          ]),
+        ],
+      }
+    case 'tokenizerConfig':
+      return {
+        title: string('tokenizer_class') ?? t('summaryTokenizerConfigTitle'), subtitle: t('summaryTokenizerConfigSubtitle'),
+        prominent: false,
+        groups: [group(t('summaryCoreSettings'), [
+          [t('summaryMaxLength'), value('model_max_length')], ['Padding side', value('padding_side')],
+          ['BOS token', value('bos_token')], ['EOS token', value('eos_token')], ['UNK token', value('unk_token')],
+        ])],
+      }
+    case 'weightIndex': {
+      const map = fields.get('weight_map')
+      const entries = map?.kind === 'object' && map.entries.every(([, item]) => item.kind === 'string')
+        ? map.entries.map(([key, item]): [string, string] => [key, (item as { value: string }).value]) : []
+      const metadata = fields.get('metadata')
+      const total = metadata?.kind === 'object' ? new Map(metadata.entries).get('total_size') : undefined
+      return {
+        title: t('summaryWeightIndexTitle'), subtitle: t('summaryWeightIndexSubtitle'), prominent: false,
+        groups: [group(t('summaryOverview'), [
+          [t('summaryParameterTensors'), String(entries.length)],
+          [t('summaryShardCount'), String(new Set(entries.map(([, shard]) => shard)).size)],
+          // NSNumber → Int64(truncating:) → ByteCountFormatter.
+          [t('summaryTotalWeightSize'), total?.kind === 'number' ? formatBytes(Math.trunc(Number(total.lexeme))) : undefined],
+        ])],
+        mappings: entries.toSorted(([left], [right]) => left < right ? -1 : left > right ? 1 : 0).slice(0, 80),
+      }
+    }
+  }
+}
+
+// Native VocabView: integer IDs only, filtered by token (case-insensitive) or ID digits, sorted by ID.
+export function vocabEntries(value: unknown, query: string): Array<[string, number]> {
+  if (!isRecord(value)) return []
+  const term = query.toLocaleLowerCase()
   return Object.entries(value)
-    .map(([key, item]): [string, string] => [key, preview(item)])
-    .toSorted(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
+    .filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]))
+    .filter(([token, id]) => term === '' || token.toLocaleLowerCase().includes(term) || String(id).includes(query))
+    .toSorted(([, left], [, right]) => left - right)
 }
 
-export function visibleRows(rows: Array<[string, string]>, query: string, limit: number): Array<[string, string]> {
-  const term = query.trim().toLocaleLowerCase()
-  return rows.filter(([key, value]) => term === '' || key.toLocaleLowerCase().includes(term)
-    || value.toLocaleLowerCase().includes(term)).slice(0, limit)
-}
+export type SourceChunk = { start: number; end: number; firstLine: number; lineCount: number }
 
-export function textLines(content: string): string[] {
-  return content.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n')
+// Lazy-rendering units: cut at line starts after `maxLines` lines or before passing `maxChars`.
+// A line longer than `maxLineChars` (minified JSON) is cut into pieces; a piece's first row continues the
+// previous chunk's last line (same line number). Cuts never split a surrogate pair or CRLF.
+// ponytail: 4K-character pieces keep WebKit's no-wrap text layout fast; native shows one unbroken line.
+export function sourceChunks(content: string, maxLines = 400, maxChars = 64 * 1024, maxLineChars = 4 * 1024): SourceChunk[] {
+  const chunks: SourceChunk[] = []
+  const breaks = /\r\n|\r|\n/g
+  let start = 0
+  let firstLine = 1
+  let lineCount = 0
+  let line = 1
+  const flush = (end: number, rows: number) => {
+    chunks.push({ start, end, firstLine, lineCount: rows })
+    start = end
+  }
+  for (let lineStart = 0; lineStart < content.length; line += 1) {
+    breaks.lastIndex = lineStart
+    const match = breaks.exec(content)
+    const lineEnd = match === null ? content.length : match.index + match[0].length
+    if (lineCount > 0 && (lineCount >= maxLines || lineEnd - start > maxChars)) {
+      flush(lineStart, lineCount)
+      firstLine = line
+      lineCount = 0
+    }
+    while (lineEnd - start > Math.min(maxChars, maxLineChars)) {
+      let cut = start + Math.min(maxChars, maxLineChars)
+      if (/[\uDC00-\uDFFF]/.test(content[cut]) && /[\uD800-\uDBFF]/.test(content[cut - 1]) || content.startsWith('\r\n', cut - 1)) cut += 1
+      flush(cut, lineCount + 1)
+      firstLine = line
+      lineCount = 0
+    }
+    if (start === lineEnd) firstLine = line + 1 // the last cut swallowed a CRLF ending
+    else lineCount += 1
+    lineStart = lineEnd
+  }
+  if (start < content.length || chunks.length === 0) chunks.push({ start, end: content.length, firstLine, lineCount: Math.max(lineCount, 1) })
+  return chunks
 }
 
 export type TextFindNavigation = 'initial' | 'next' | 'previous'
@@ -205,36 +292,15 @@ export function repositoryMarkdownUrl(
   }
 }
 
-function compactFacts(facts: Array<[string, string | undefined]>): Array<[string, string]> {
-  return facts.filter((fact): fact is [string, string] => fact[1] !== undefined)
-}
 
-function scalar(value: unknown): string | undefined {
-  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : undefined
-}
 
-function stringList(value: unknown): string | undefined {
-  return Array.isArray(value) && value.every(item => typeof item === 'string') ? value.join(', ') : undefined
-}
 
-function tokenText(value: unknown): string | undefined {
-  if (typeof value === 'string') return value
-  return isRecord(value) && typeof value.content === 'string' ? value.content : undefined
-}
 
-function preview(value: unknown): string {
-  const rendered = typeof value === 'string' ? value : JSON.stringify(value)
-  if (rendered === undefined) return String(value)
-  return rendered.length > 500 ? `${rendered.slice(0, 500)}…` : rendered
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isWeightIndex(name: string): boolean {
-  return name.endsWith('.index.json') && (name.includes('safetensors') || name.includes('pytorch_model'))
-}
 
 function encodePath(path: string): string {
   return path.split('/').map(encodeURIComponent).join('/')
