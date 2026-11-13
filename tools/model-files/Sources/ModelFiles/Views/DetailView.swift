@@ -42,9 +42,15 @@ struct DetailView: View {
                 .frame(minHeight: 160)
             if store.showsBottomPanel, store.snapshot != nil {
                 PanelResizeHandle(height: $panelHeight)
-                ProblemsPanelView(store: store)
+                BottomPanelView(store: store)
                     .frame(height: panelHeight)
             }
+        }
+        // Leaving the playground (or opening comparison) takes its docked tabs away; close what they showed.
+        .onChange(of: store.docksTokenizerResults) { _, docks in
+            guard !docks, store.bottomPanelTab != .problems else { return }
+            store.showsBottomPanel = false
+            store.bottomPanelTab = .problems
         }
     }
 
@@ -167,7 +173,10 @@ private struct DetailHeader: View {
             if store.snapshot != nil {
                 let badge = consistencyBadgeState(report: store.consistencyReport)
                 Button {
-                    store.showsBottomPanel.toggle()
+                    let showsProblems = store.showsBottomPanel
+                        && (store.bottomPanelTab == .problems || !store.docksTokenizerResults)
+                    store.bottomPanelTab = .problems
+                    store.showsBottomPanel = !showsProblems
                 } label: {
                     Label(badge.title, systemImage: badgeSystemImage(badge))
                         .font(.caption.weight(.semibold))
@@ -1661,28 +1670,28 @@ private struct PanelResizeHandle: View {
     }
 }
 
-private struct ProblemsPanelView: View {
+private struct BottomPanelView: View {
     @ObservedObject var store: ModelFilesStore
 
     private var report: RepositoryConsistencyReport? { store.consistencyReport }
+    private var activeTab: BottomPanelTab {
+        store.docksTokenizerResults ? store.bottomPanelTab : .problems
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Text("问题")
-                    .font(.callout.weight(.semibold))
-                if let count = report?.findings.count {
-                    Text(count.formatted())
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(.quaternary, in: Capsule())
+            HStack(spacing: 4) {
+                tabButton(.problems, title: Text("问题"), count: report?.findings.count)
+                if store.docksTokenizerResults {
+                    tabButton(.tokens, title: Text("Token 表"), count: nil)
+                    tabButton(.tokenIDs, title: Text(verbatim: "Token IDs"), count: store.tokenizationResult?.tokenCount)
                 }
                 Spacer()
-                Text(consistencyBadgeState(report: report).title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if activeTab == .problems {
+                    Text(consistencyBadgeState(report: report).title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Button {
                     store.showsBottomPanel = false
                 } label: {
@@ -1699,14 +1708,65 @@ private struct ProblemsPanelView: View {
 
             Divider()
 
-            ScrollView {
-                details
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            switch activeTab {
+            case .problems:
+                ScrollView {
+                    details
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            case .tokens, .tokenIDs:
+                if let result = store.tokenizationResult, !result.tokenIDs.isEmpty {
+                    if activeTab == .tokens {
+                        TokenizerTokenTableView(
+                            result: result,
+                            showWhitespace: store.showsTokenWhitespace,
+                            selectedTokenIndex: $store.selectedTokenIndex
+                        )
+                    } else {
+                        TokenIDChipsView(
+                            result: result,
+                            showWhitespace: store.showsTokenWhitespace,
+                            selectedTokenIndex: $store.selectedTokenIndex
+                        )
+                    }
+                } else {
+                    Text("输入内容后显示 token。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("底部面板"))
+    }
+
+    private func tabButton(_ tab: BottomPanelTab, title: Text, count: Int?) -> some View {
+        let active = activeTab == tab
+        return Button {
+            store.bottomPanelTab = tab
+        } label: {
+            HStack(spacing: 5) {
+                title
+                    .font(.callout.weight(active ? .semibold : .regular))
+                    .foregroundStyle(active ? .primary : .secondary)
+                if let count {
+                    Text(count.formatted())
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(.quaternary, in: Capsule())
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(active ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(active ? .isSelected : [])
     }
 
     @ViewBuilder

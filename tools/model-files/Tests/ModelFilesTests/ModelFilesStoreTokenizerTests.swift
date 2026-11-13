@@ -344,6 +344,13 @@ final class ModelFilesStoreTokenizerTests: XCTestCase {
         XCTAssertEqual(store.tokenizationResult?.input, "path")
         XCTAssertNil(store.tokenizationResult?.overhead)
         XCTAssertNil(store.tokenizationResult?.roles)
+
+        XCTAssertTrue(store.docksTokenizerResults)
+        store.selectedTokenIndex = 0
+        store.tokenize("offline")
+        XCTAssertNil(store.selectedTokenIndex, "a new result drops the docked selection")
+        store.perspective = .overview
+        XCTAssertFalse(store.docksTokenizerResults)
     }
 
     func testChatEncodePublishesApproximateOverheadWithoutReplacingMainResult() async throws {

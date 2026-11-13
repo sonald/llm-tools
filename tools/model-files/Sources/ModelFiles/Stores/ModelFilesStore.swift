@@ -1,6 +1,12 @@
 import AppKit
 import Foundation
 
+enum BottomPanelTab: Hashable {
+    case problems
+    case tokens
+    case tokenIDs
+}
+
 @MainActor
 final class ModelFilesStore: ObservableObject {
     @Published var repositoryInput = UserDefaults.standard.string(forKey: "ModelFiles.lastRepositoryInput")
@@ -21,7 +27,12 @@ final class ModelFilesStore: ObservableObject {
     @Published private(set) var loadingPath: String?
     @Published private(set) var errorMessage: String?
     @Published private(set) var tokenizerPhase: TokenizerPlaygroundPhase = .idle
-    @Published private(set) var tokenizationResult: TokenizationResult?
+    @Published private(set) var tokenizationResult: TokenizationResult? {
+        didSet { if tokenizationResult != oldValue { selectedTokenIndex = nil } }
+    }
+    /// Token picked in the playground, the docked token table/IDs or shown in the inspector.
+    @Published var selectedTokenIndex: Int?
+    @Published var showsTokenWhitespace = false
     @Published private(set) var tokenizerChatCatalog: ChatTemplateCatalog?
     @Published private(set) var tokenizerConfigData: Data?
     @Published private(set) var tokenizerClassOverride: String?
@@ -30,6 +41,7 @@ final class ModelFilesStore: ObservableObject {
     @Published private(set) var fileDiagnostics: [String: [FileDiagnostic]] = [:]
     @Published private(set) var comparison: TokenizerComparisonSession?
     @Published var showsBottomPanel = false
+    @Published var bottomPanelTab: BottomPanelTab = .problems
     @Published var selectedFindingID: String?
 
     private let service: RepositoryService
@@ -95,6 +107,12 @@ final class ModelFilesStore: ObservableObject {
             components.append(String(localized: "实时目录"))
         }
         return components.joined(separator: " · ")
+    }
+
+    /// The playground docks its token table, IDs and selection into the bottom panel and inspector.
+    /// Independent of the result itself, which is cleared on every keystroke; comparison keeps its results inline.
+    var docksTokenizerResults: Bool {
+        perspective == .playground && comparison == nil && selectedFile?.isTokenizerPlaygroundEntryPoint == true
     }
 
     var selectedFinding: ConsistencyFinding? {

@@ -173,3 +173,47 @@ struct TokenizerTokenTableView: View {
         NSPasteboard.general.setString(text, forType: .string)
     }
 }
+
+/// Token IDs as selectable chips; shares the selection with the token table and segment stream.
+struct TokenIDChipsView: View {
+    let result: TokenizationResult
+    let showWhitespace: Bool
+    @Binding var selectedTokenIndex: Int?
+
+    var body: some View {
+        ScrollView {
+            TokenizerWrapLayout(spacing: 3) {
+                ForEach(result.tokenIDs.indices, id: \.self) { index in
+                    let selected = selectedTokenIndex == index
+                    let tokenText = result.tokenPieces[index]
+                        ?? result.segment(containing: index)?.text
+                        ?? String(localized: "无")
+                    Button {
+                        selectedTokenIndex = toggleTokenSelection(selectedTokenIndex, clicked: index)
+                    } label: {
+                        Text(result.tokenIDs[index].formatted())
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .foregroundStyle(selectedTokenIndex == nil || selected ? .primary : .secondary)
+                            .background(selected ? Color.accentColor.opacity(0.16) : .clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            .overlay {
+                                if selected {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .stroke(Color.accentColor.opacity(0.65))
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(
+                        String(localized: "Token \(index)，ID \(result.tokenIDs[index])，文本 \(visibleTokenizerText(tokenText, showWhitespace: showWhitespace))")
+                    )
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}

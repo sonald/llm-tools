@@ -43,16 +43,6 @@ struct TokenizerPlaygroundView: View {
         case tokenIDs(String)
     }
 
-    private enum ResultMode: String, CaseIterable, Identifiable {
-        case segments
-        case table
-
-        var id: Self { self }
-        var title: String {
-            self == .segments ? String(localized: "片段") : String(localized: "Token 表")
-        }
-    }
-
     @ObservedObject var store: ModelFilesStore
     let file: RepositoryFile
 
@@ -75,9 +65,7 @@ struct TokenizerPlaygroundView: View {
     @State private var renderedText = ""
     @State private var renderError: String?
     @State private var isRendering = false
-    @State private var showWhitespace = false
-    @State private var resultMode: ResultMode = .segments
-    @State private var selectedTokenIndex: Int?
+    @State private var didAutoOpenPanel = false
     @State private var tokenizerClassChoice = "GPT2Tokenizer"
     @State private var customTokenizerClass = ""
     @State private var comparisonRepositoryInput = ""
@@ -119,7 +107,11 @@ struct TokenizerPlaygroundView: View {
             initializeVariablesIfNeeded()
         }
         .onChange(of: store.tokenizationResult) { _, _ in
-            selectedTokenIndex = nil
+            // Open the panel for the first docked result only; a panel the user closed stays closed while they type.
+            guard !didAutoOpenPanel, store.docksTokenizerResults, store.tokenizationResult?.tokenIDs.isEmpty == false else { return }
+            didAutoOpenPanel = true
+            store.bottomPanelTab = .tokens
+            store.showsBottomPanel = true
         }
         .onAppear {
             initializeVariablesIfNeeded()
@@ -300,7 +292,7 @@ struct TokenizerPlaygroundView: View {
                     }
                     TokenizerComparisonView(
                         session: comparison,
-                        showWhitespace: showWhitespace,
+                        showWhitespace: store.showsTokenWhitespace,
                         selectChatTemplate: { id in
                             store.selectComparisonChatTemplate(id: id)
                         }
@@ -312,15 +304,10 @@ struct TokenizerPlaygroundView: View {
                     TokenizerPanelHeader(title: String(localized: "分词结果"), detail: resultStatus) {
                         HStack(spacing: 10) {
                             comparisonControl
-                            Picker("结果视图", selection: $resultMode) {
-                                ForEach(ResultMode.allCases) { mode in
-                                    Text(mode.title).tag(mode)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
-                            .frame(width: 128)
-                            Toggle("显示空白符", isOn: $showWhitespace)
+                            Button("复制 IDs") { copyTokenIDs() }
+                                .controlSize(.small)
+                                .disabled(store.tokenizationResult?.tokenIDs.isEmpty != false)
+                            Toggle("显示空白符", isOn: $store.showsTokenWhitespace)
                                 .toggleStyle(.checkbox)
                                 .font(.caption)
                         }
@@ -330,19 +317,6 @@ struct TokenizerPlaygroundView: View {
                     resultBody
                 }
                 .frame(maxHeight: .infinity)
-
-                TokenizerPanel {
-                    TokenizerPanelHeader(
-                        title: "Token IDs",
-                        detail: String(localized: "\(store.tokenizationResult?.tokenCount ?? 0) 个 token")
-                    ) {
-                        Button("复制") { copyTokenIDs() }
-                            .controlSize(.small)
-                            .disabled(store.tokenizationResult?.tokenIDs.isEmpty != false)
-                    }
-                    idsBody
-                }
-                .frame(minHeight: 164, idealHeight: 198, maxHeight: 250)
             }
         }
     }
@@ -351,7 +325,7 @@ struct TokenizerPlaygroundView: View {
     private var comparisonControl: some View {
         if store.comparison != nil {
             HStack(spacing: 8) {
-                Toggle("显示空白符", isOn: $showWhitespace)
+                Toggle("显示空白符", isOn: $store.showsTokenWhitespace)
                     .toggleStyle(.checkbox)
                     .font(.caption)
                 Button("关闭对照") { store.setComparisonSource(nil) }
@@ -471,102 +445,52 @@ struct TokenizerPlaygroundView: View {
                             .background(Color(nsColor: .controlBackgroundColor))
                             .overlay(alignment: .bottom) { Divider() }
                     }
-                    if resultMode == .segments {
-                        ScrollView {
-                            TokenizerWrapLayout(spacing: 3) {
-                                ForEach(Array(result.segments.enumerated()), id: \.element.id) { index, segment in
-                                    let selected = selectedTokenIndex.map(segment.tokenRange.contains) == true
-                                    let role = segmentRole(segment, result: result)
-                                    Button {
-                                        selectedTokenIndex = toggleTokenSelection(
-                                            selectedTokenIndex,
-                                            clicked: segment.tokenRange.lowerBound
-                                        )
-                                    } label: {
-                                        HStack(spacing: 2) {
-                                            if let role {
-                                                RoundedRectangle(cornerRadius: 1)
-                                                    .fill(roleColor(role))
-                                                    .frame(width: 3, height: 14)
-                                            }
-                                            Text(visible(segment.text))
-                                                .font(.system(size: 12.5, design: .monospaced))
-                                                .padding(.horizontal, 3)
-                                        }
-                                        .padding(.vertical, 2)
-                                        .background(segmentColor(index), in: RoundedRectangle(cornerRadius: 3))
-                                        .overlay {
-                                            if selected {
-                                                RoundedRectangle(cornerRadius: 3)
-                                                    .stroke(.primary.opacity(0.7), lineWidth: 2)
-                                            }
-                                        }
-                                        .opacity(selectedTokenIndex == nil || selected ? 1 : 0.28)
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel(
-                                        String(localized: "Token \(segment.tokenRange.lowerBound) 到 \(segment.tokenRange.upperBound - 1)，ID \(segment.tokenIDs.map(String.init).joined(separator: ", "))，文本 \(visible(segment.text))，角色 \(role?.title ?? String(localized: "无"))")
+                    ScrollView {
+                        TokenizerWrapLayout(spacing: 3) {
+                            ForEach(Array(result.segments.enumerated()), id: \.element.id) { index, segment in
+                                let selected = store.selectedTokenIndex.map(segment.tokenRange.contains) == true
+                                let role = segmentRole(segment, result: result)
+                                Button {
+                                    store.selectedTokenIndex = toggleTokenSelection(
+                                        store.selectedTokenIndex,
+                                        clicked: segment.tokenRange.lowerBound
                                     )
-                                    .accessibilityAddTraits(selected ? .isSelected : [])
+                                } label: {
+                                    HStack(spacing: 2) {
+                                        if let role {
+                                            RoundedRectangle(cornerRadius: 1)
+                                                .fill(roleColor(role))
+                                                .frame(width: 3, height: 14)
+                                        }
+                                        Text(visible(segment.text))
+                                            .font(.system(size: 12.5, design: .monospaced))
+                                            .padding(.horizontal, 3)
+                                    }
+                                    .padding(.vertical, 2)
+                                    .background(segmentColor(index), in: RoundedRectangle(cornerRadius: 3))
+                                    .overlay {
+                                        if selected {
+                                            RoundedRectangle(cornerRadius: 3)
+                                                .stroke(.primary.opacity(0.7), lineWidth: 2)
+                                        }
+                                    }
+                                    .opacity(store.selectedTokenIndex == nil || selected ? 1 : 0.28)
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(
+                                    String(localized: "Token \(segment.tokenRange.lowerBound) 到 \(segment.tokenRange.upperBound - 1)，ID \(segment.tokenIDs.map(String.init).joined(separator: ", "))，文本 \(visible(segment.text))，角色 \(role?.title ?? String(localized: "无"))")
+                                )
+                                .accessibilityAddTraits(selected ? .isSelected : [])
                             }
-                            .padding(13)
-                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                    } else {
-                        TokenizerTokenTableView(
-                            result: result,
-                            showWhitespace: showWhitespace,
-                            selectedTokenIndex: $selectedTokenIndex
-                        )
+                        .padding(13)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             } else {
                 stateView(title: String(localized: "输入内容后显示 token。"), systemImage: "text.word.spacing")
             }
-        }
-    }
-
-    @ViewBuilder
-    private var idsBody: some View {
-        if let result = store.tokenizationResult, !result.tokenIDs.isEmpty {
-            ScrollView {
-                TokenizerWrapLayout(spacing: 3) {
-                    ForEach(result.tokenIDs.indices, id: \.self) { index in
-                        let selected = selectedTokenIndex == index
-                        let tokenText = result.tokenPieces[index]
-                            ?? result.segment(containing: index)?.text
-                            ?? String(localized: "无")
-                        Button {
-                            selectedTokenIndex = toggleTokenSelection(selectedTokenIndex, clicked: index)
-                        } label: {
-                            Text(result.tokenIDs[index].formatted())
-                                .font(.system(size: 11.5, design: .monospaced))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .foregroundStyle(selectedTokenIndex == nil || selected ? .primary : .secondary)
-                                .background(selected ? Color.accentColor.opacity(0.16) : .clear)
-                                .clipShape(RoundedRectangle(cornerRadius: 4))
-                                .overlay {
-                                    if selected {
-                                        RoundedRectangle(cornerRadius: 4)
-                                            .stroke(Color.accentColor.opacity(0.65))
-                                    }
-                                }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(
-                            String(localized: "Token \(index)，ID \(result.tokenIDs[index])，文本 \(visible(tokenText))")
-                        )
-                        .accessibilityAddTraits(selected ? .isSelected : [])
-                    }
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        } else {
-            stateView(title: String(localized: "暂无 token ID。"), systemImage: "number")
         }
     }
 
@@ -749,7 +673,7 @@ struct TokenizerPlaygroundView: View {
     }
 
     private func visible(_ text: String) -> String {
-        visibleTokenizerText(text, showWhitespace: showWhitespace)
+        visibleTokenizerText(text, showWhitespace: store.showsTokenWhitespace)
     }
 
     private func segmentRole(_ segment: TokenSegment, result: TokenizationResult) -> TokenRole? {
@@ -861,7 +785,7 @@ private struct TokenizerPanelHeader<Trailing: View>: View {
     }
 }
 
-private struct TokenizerWrapLayout: Layout {
+struct TokenizerWrapLayout: Layout {
     var spacing: CGFloat = 4
 
     func sizeThatFits(

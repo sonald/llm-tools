@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Trailing inspector: the problem picked in the Problems panel, then the open file's facts.
@@ -7,6 +8,13 @@ struct InspectorView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                if store.docksTokenizerResults,
+                   let result = store.tokenizationResult,
+                   let index = store.selectedTokenIndex,
+                   result.tokenIDs.indices.contains(index) {
+                    selectedToken(result, index: index)
+                }
+
                 if let finding = store.selectedFinding {
                     section("选中问题") {
                         Label {
@@ -57,6 +65,33 @@ struct InspectorView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityLabel(Text("检查器"))
+    }
+
+    private func selectedToken(_ result: TokenizationResult, index: Int) -> some View {
+        let id = result.tokenIDs[index]
+        let visible = { (text: String) in visibleTokenizerText(text, showWhitespace: store.showsTokenWhitespace) }
+        return section("选中 Token") {
+            fact("序号", index.formatted())
+            fact("ID", id.formatted())
+            if let piece = result.tokenPieces[index] {
+                fact("Token Piece", visible(piece))
+            }
+            if let segment = result.segment(containing: index) {
+                fact("解码片段", visible(segment.text))
+            }
+            if let roles = result.roles, roles.indices.contains(index) {
+                let role = roles[index]
+                fact("角色", role.title)
+            }
+            if result.flags[index].isSpecial {
+                fact("Special", result.flags[index].specialName ?? "—")
+            }
+            Button("复制 ID") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(String(id), forType: .string)
+            }
+            .controlSize(.small)
+        }
     }
 
     private func section<Content: View>(
