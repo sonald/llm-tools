@@ -7,6 +7,11 @@ enum ConsistencyBadgeState: Equatable {
     case insufficient
     case consistent
 
+    var isWarning: Bool {
+        if case .warnings = self { return true }
+        return false
+    }
+
     var title: String {
         switch self {
         case .checking: String(localized: "检查中")
@@ -182,6 +187,7 @@ private struct DetailHeader: View {
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
+                        .foregroundStyle(badge.isWarning ? Color.paletteWarningText : .primary)
                         .background(badgeColor(badge).opacity(0.14), in: Capsule())
                         .fixedSize()
                 }
@@ -308,8 +314,8 @@ private struct DetailHeader: View {
     private func badgeColor(_ badge: ConsistencyBadgeState) -> Color {
         switch badge {
         case .checking, .insufficient: .gray
-        case .warnings: .orange
-        case .consistent: .green
+        case .warnings: .paletteWarning
+        case .consistent: .paletteOK
         }
     }
 }
@@ -1078,7 +1084,7 @@ private struct JinjaWorkspaceView: View {
             if isModified {
                 Text("临时修改")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.paletteWarningText)
             }
             Spacer()
             Button("恢复来源原文") { source = document.source }
@@ -1913,7 +1919,7 @@ private struct BottomPanelView: View {
 
     private func coverageColor(_ status: ConsistencyCoverageStatus) -> Color {
         switch status {
-        case .checked: .green
+        case .checked: .paletteOK
         case .missing, .skipped: .gray
         case .failed: .red
         }

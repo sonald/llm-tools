@@ -403,7 +403,7 @@ struct CodeReaderTextView: NSViewRepresentable {
             layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
             for mark in marks {
                 guard let range = lineRange(mark.line) else { continue }
-                let color: NSColor = mark.severity == .warning ? .systemOrange : .systemBlue
+                let color = mark.severity == .warning ? Palette.warning : Palette.info
                 layoutManager.addTemporaryAttribute(
                     .backgroundColor,
                     value: color.withAlphaComponent(mark.severity == .warning ? 0.2 : 0.14),
@@ -681,34 +681,7 @@ struct CodeReaderTextView: NSViewRepresentable {
         ]
 
         private static func color(for type: String) -> NSColor {
-            switch type {
-            case "keyword", "boolean", "literal", "null":
-                .systemPink
-            case "string", "char", "regex", "attr-value":
-                .systemRed
-            case "comment", "block-comment", "doc-comment":
-                .secondaryLabelColor
-            case "number":
-                .systemPurple
-            case "function", "function-name", "function-definition":
-                .systemTeal
-            case "class-name":
-                .systemGreen
-            case "builtin":
-                .systemIndigo
-            case "constant", "directive", "preprocessor", "important":
-                .systemOrange
-            case "variable", "property", "symbol", "operator", "punctuation", "attr-name", "attribute":
-                .systemCyan
-            case "tag", "selector", "atrule":
-                .systemBlue
-            case "inserted":
-                .systemGreen
-            case "deleted":
-                .systemRed
-            default:
-                .labelColor
-            }
+            Palette.syntax(type)
         }
     }
 }

@@ -81,7 +81,6 @@ struct SidebarView: View {
                     }
                 }
                 .listStyle(.sidebar)
-                .tint(.teal)
             }
         }
         .searchable(text: $store.filter, placement: .sidebar, prompt: "筛选文件")
@@ -117,7 +116,7 @@ private struct SidebarFileRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
-                .foregroundStyle(file.isBlocked ? Color.secondary : Color.teal)
+                .foregroundStyle(file.isBlocked ? Color.secondary : Color(nsColor: Palette.glyph(file.category)))
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
                 Text(file.name)
@@ -134,9 +133,9 @@ private struct SidebarFileRow: View {
                 let isWarning = problems.contains { $0.severity == .warning }
                 Text(problems.count, format: .number)
                     .font(.caption2.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(isWarning ? Color.orange : Color.blue)
+                    .foregroundStyle(isWarning ? Color.paletteWarningText : Color.paletteInfo)
                     .padding(.horizontal, 5)
-                    .background((isWarning ? Color.orange : Color.blue).opacity(0.16), in: Capsule())
+                    .background((isWarning ? Color.paletteWarning : Color.paletteInfo).opacity(0.16), in: Capsule())
                     .accessibilityLabel(Text("\(problems.count) 个问题"))
             }
             if let size = file.size {

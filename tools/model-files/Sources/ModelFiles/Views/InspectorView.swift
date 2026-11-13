@@ -139,7 +139,7 @@ struct SeverityIcon: View {
 
     var body: some View {
         Image(systemName: severity == .warning ? "exclamationmark.triangle.fill" : "info.circle.fill")
-            .foregroundStyle(severity == .warning ? Color.orange : Color.blue)
+            .foregroundStyle(Color.severity(severity))
             .accessibilityLabel(Text(severity == .warning ? "警告" : "提示"))
     }
 }
