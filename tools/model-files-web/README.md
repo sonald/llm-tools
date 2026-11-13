@@ -25,7 +25,7 @@ JSON 原文保留数字和字符串的原始写法；长文件按约 128K 字符
 
 Tokenizer 支持同快照对照、第二公开 Hugging Face 仓库、HTTPS 文件/清单或用户主动选择的第二本地目录；两侧 session 隔离，可比较 token 数、ID 序列、Chat overhead 与 JSON 词表差集。仓库一致性报告覆盖 findings 与 checked/missing/skipped/failed coverage，但不读取权重或扩展 GGUF boundary。界面跟随浏览器语言提供简体中文和 English，没有应用内语言选择器。
 
-不支持 ModelScope（浏览器清单 CORS 门失败）、FTP/FTPS、SSH/SFTP、私有仓库登录/token 管理、模型推理、转换/量化/上传或完整权重下载；不会引入后端、代理、浏览器扩展或桌面桥接。SafeTensors 保持精确 Header Range 且 tensor 数据请求为 0 bytes；GGUF 只读 24-byte prefix。完整支持矩阵和证据见 [产品化计划](docs/productization-plan.md)、[本地功能完整性验收记录](docs/local-functionality-acceptance.md) 与 [原生追平验收记录](docs/native-parity-acceptance.md)。
+不支持 ModelScope（浏览器清单 CORS 门失败）、FTP/FTPS、SSH/SFTP、私有仓库登录/token 管理、模型推理、转换/量化/上传或完整权重下载；不会引入后端、代理、浏览器扩展或桌面桥接。SafeTensors 保持精确 Header Range 且 tensor 数据请求为 0 bytes；GGUF 只读 24-byte prefix。与原生版的全量差异和对齐进度见 [全量对照矩阵](docs/full-parity-matrix.md)（产品目标是与原生版一模一样，仅平台约束例外）。已有支持矩阵和证据见 [产品化计划](docs/productization-plan.md)、[本地功能完整性验收记录](docs/local-functionality-acceptance.md) 与 [原生追平验收记录](docs/native-parity-acceptance.md)。
 
 ## HTTPS 加载
 

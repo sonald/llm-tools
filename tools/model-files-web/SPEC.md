@@ -8,7 +8,11 @@ Web 基线：`11e1086 feat(model-files-web): add complete browser inspector`
 
 ## 1. 目标
 
-把 `tools/model-files/` 在 Web 基线之后新增、且能保持纯浏览器与只读安全合同的用户可见能力移植到 `tools/model-files-web/`，当前增量包含 `ef90a92` 的 SafeTensors Tensor 层级浏览；并用离线三浏览器 E2E、固定 revision 的真实 Hugging Face smoke 以及真实 Chromium 交互完成独立验收。
+**Web 版与原生版的用户可见功能、布局与交互尽可能一模一样，以当前原生版为准；只有在浏览器平台约束下才做调整，且每处调整必须在 [全量对照矩阵](docs/full-parity-matrix.md) 中写明约束依据。**
+
+> 范围更正（2026-11-12）：本文件此前的第 1–7 节只覆盖原生 `11e1086..ef90a92` 的**增量**功能，早于 Web 基线的原生功能（例如 tokenizer_config 概览的「核心设置」与内嵌 Chat Template 试验台、侧栏分组与副标题、顶层「概览/全部字段/原文」切换）从未进入对照，也因「不重设计产品」被排除在布局对照之外。下方第 3 节矩阵中的 PASS 只证明那批增量功能，不证明整体对齐。全量差异以 `docs/full-parity-matrix.md` 为准。
+
+历史范围（已完成）：把 `tools/model-files/` 在 Web 基线之后新增、且能保持纯浏览器与只读安全合同的用户可见能力移植到 `tools/model-files-web/`，当前增量包含 `ef90a92` 的 SafeTensors Tensor 层级浏览；并用离线三浏览器 E2E、固定 revision 的真实 Hugging Face smoke 以及真实 Chromium 交互完成独立验收。
 
 主代理负责编排、规格、审查、独立验证和提交边界；功能代码由 `gpt-5.6-luna`（max）编写。每个可独立验证的批次必须在 focused tests、`npm run check` 和相关浏览器检查通过后单独提交。
 
@@ -17,10 +21,14 @@ Web 基线：`11e1086 feat(model-files-web): add complete browser inspector`
 - 纯浏览器，不增加后端、桌面桥、SSH、私有 token 代理或仓库自定义代码执行。
 - 远端只支持匿名公开 Hugging Face。每次加载先取得清单返回的 40-hex SHA，当前会话的所有内容请求固定到该 SHA；live 验收记录实际 SHA，不宣称能选择任意历史 revision。本地只处理用户主动选择的目录。
 - 可读文件和单个 tokenizer bundle 上限 32 MiB；Tokenizer、Token ID、Jinja 输入上限 64 KiB；搜索/差集结果最多 1,000 条。
-- SafeTensors 只读 `bytes=0-7` 与精确 Header Range；GGUF 产品路径只读 `bytes=0-23`。
+- SafeTensors 只读 `bytes=0-7` 与精确 Header Range。GGUF 改为与原生相同的读取策略：每次读 1 MiB，最多读到 min(文件大小, 32 MiB)，直到 directory 解析完成，接受最后一块的少量越读（2026-11-13 用户裁决 D-1）。
 - 不读取或展示权重内容，不运行推理、转换、上传或远程代码。
 - Worker 请求 latest-only；旧仓库、旧文件、旧输入或旧对照结果不得覆盖新状态。
-- 保持现有工作台视觉语言、深色模式、键盘路径和响应式布局，不重设计产品。
+- 布局、信息架构和交互以原生版为准；Web 现有设计不再是保留理由。深色模式、键盘路径和响应式布局继续保留。
+- 32 MiB 文件/bundle、64 KiB tokenizer 输入、1,000 条搜索结果这三项上限与原生一致。2026-11-13 用户裁决（详见 `docs/full-parity-matrix.md` §2）：
+  - 源码分页、Token 分页、Tensor 渐进加载全部取消，界面上与原生一样一次显示全部，内部用懒渲染保证性能（D-4 至 D-6）
+  - Markdown 图片 CSP 放宽到 `img-src https:`（D-7）
+  - Web 独有功能：不与原生布局冲突的保留，冲突的删除或改回原生样式（D-9、D-11）
 
 ## 3. 功能差异矩阵
 
@@ -191,6 +199,11 @@ Web 继续只读取 GGUF 24-byte prefix，因此 `gguf-context-mismatch` 与 `gg
 性能证据至少记录：128 KiB 折叠扫描、接近 32 MiB 文本查找、Qwen 级 150k 词表首次索引/查询、10k token、双 session 首次加载、SentencePiece WASM 冷启动，以及 10,000 Tensor 层级构树。Tensor 构树 `<1 s`；现有 10k token `<10 s`、100k 行 `<3 s` 门不回退。
 
 ## 7. 非目标
+
+> 2026-11-12 复核：
+> - 有平台证据：ModelScope、SSH，见 `docs/full-parity-matrix.md` §1。
+> - 原生同样没有，因此不构成差异：私有仓库/token、Tensor 平面/层级双模式、折叠状态/查找历史持久化、应用内语言选择器、可编辑保存源码。
+> - 是产品选择、原生有而 Web 没有：完整 GGUF metadata，列入矩阵 §2 D-1「待裁决」，裁决前不作为排除理由。
 
 - ModelScope、SSH、私有仓库/token、后端代理、桌面桥。
 - 完整 GGUF metadata/tensor directory、推理、转换、上传和权重读取。

@@ -1,5 +1,7 @@
 # ModelFiles Web 原生追平验收记录
 
+> 范围说明：本记录只验收原生 `11e1086..ef90a92` 的增量功能，不证明 Web 与原生整体一致；全量差异见 [full-parity-matrix.md](full-parity-matrix.md)。
+
 日期：2026-08-30。结论：功能/运行时/文档验收 `PASS`；Tensor hierarchy 已完成 fresh unit、离线三浏览器、响应式 Chromium 与 Qwen live 验收。本轮提交为 `6eb16a8`、`4c52e76`、`1c2ad4b`、`5e08c4a`；本记录固化当前 fresh evidence。SPEC 第 3 节全部为 `PASS` 或用户批准的 `N/A`（仅 `tokenizer_class` override）。
 
 ## 总体矩阵

@@ -1,3 +1,5 @@
+> **已完成并被取代（2026-11-12）**：本 GOAL 只覆盖原生 `11e1086..ef90a92` 的增量功能，不代表 Web 与原生整体一致。新的目标是全量对齐原生版（仅平台约束例外），见 `SPEC.md` 第 1 节与 `docs/full-parity-matrix.md`。
+
 <goal>
 Bring tools/model-files-web to verified user-visible parity with every applicable feature added to tools/model-files after Web baseline 11e1086 through native baseline ef90a92, including the accepted baseline through b889ae5 plus SafeTensors Tensor hierarchy browsing. Functional code is written by gpt-5.6-luna at max reasoning; the primary agent owns orchestration, review, atomic commits, independent tests, and final PASS/FAIL/BLOCKED audit.
 </goal>
