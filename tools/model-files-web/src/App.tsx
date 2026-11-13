@@ -34,7 +34,14 @@ import {
   filterTensorSummaries,
   flattenTensorHierarchy,
 } from './core/tensorHierarchy.ts'
-import { decodeStrictText, validatePdfData } from './core/readers.ts'
+import {
+  decodeStrictText,
+  inspectionPerspectives,
+  perspectiveLabel,
+  validatePdfData,
+  type Perspective,
+  type PerspectiveDocument,
+} from './core/readers.ts'
 import {
   activeChatTemplate,
   mergeChatTemplates,
@@ -108,7 +115,6 @@ type Inspection =
     source: string
     sourceOrigin: string
     bytesRead: number
-    config: { content: string; parsed: unknown; bytesRead: number } | null
   }
 
 type SourceMode = 'huggingface' | 'file' | 'manifest'
@@ -166,6 +172,10 @@ export default function App() {
     if (wasProblems) badgeRef.current?.focus()
   }
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null)
+  // Native ModelFilesStore.perspective: one header switch for every file kind, reset whenever a file is picked.
+  const [perspective, setPerspective] = useState<Perspective>('overview')
+  const perspectives = inspectionPerspectivesFor(inspection)
+  const shownPerspective = perspectives.includes(perspective) ? perspective : perspectives[0]
   const [fileMenu, setFileMenu] = useState<{ x: number; y: number; file: RepositoryFile } | null>(null)
 
   useEffect(() => {
@@ -256,6 +266,7 @@ export default function App() {
       setSnapshot(next)
       const preferred = next.files.find(file => file.path === 'config.json') ?? next.files.find(file => !isBlocked(file))
       if (preferred !== undefined) {
+        setPerspective('overview')
         setSelectedPath(preferred.path)
         void (async () => {
           await inspectFile(next, preferred)
@@ -310,6 +321,7 @@ export default function App() {
         return
       }
       if (preferred !== undefined) {
+        setPerspective('overview')
         setSelectedPath(preferred.path)
         await inspectFile(next, preferred)
         if (consistencySnapshotIdentity.current !== snapshotIdentity(next)) return
@@ -332,6 +344,7 @@ export default function App() {
 
   function selectFile(file: RepositoryFile) {
     if (snapshot === null || selectedPath === file.path) return
+    setPerspective('overview')
     setSelectedPath(file.path)
     if (snapshot.source === 'huggingface') writeRoute(snapshot.modelId, file.path, 'push')
     void inspectFile(snapshot, file)
@@ -408,30 +421,7 @@ export default function App() {
         const data = await readWholeFile(activeSnapshot, file, controller.signal, 64 * 1024)
         next = {
           kind: 'template', file, source: decodeStrictText(data),
-          sourceOrigin: file.path, bytesRead: data.byteLength, config: null,
-        }
-      } else if (file.path.split('/').at(-1)?.toLocaleLowerCase() === 'tokenizer_config.json') {
-        const data = await readWholeFile(activeSnapshot, file, controller.signal)
-        const decoded = decodeStrictText(data)
-        const parsed = parseDisplayJSON(decoded)
-        const directory = file.path.split('/').slice(0, -1).join('/')
-        const templatePath = directory === '' ? 'chat_template.jinja' : `${directory}/chat_template.jinja`
-        const independent = activeSnapshot.files.find(candidate => candidate.path === templatePath)
-        const embedded = isUnknownRecord(parsed) && typeof parsed.chat_template === 'string' ? parsed.chat_template : null
-        if (independent !== undefined || embedded !== null) {
-          const templateData = independent === undefined
-            ? null
-            : await readWholeFile(activeSnapshot, independent, controller.signal, 64 * 1024)
-          next = {
-            kind: 'template',
-            file,
-            source: templateData === null ? embedded ?? '' : decodeStrictText(templateData),
-            sourceOrigin: independent?.path ?? `${file.path} · chat_template`,
-            bytesRead: data.byteLength + (templateData?.byteLength ?? 0),
-            config: { content: decoded, parsed, bytesRead: data.byteLength },
-          }
-        } else {
-          next = { kind: 'text', file, content: decoded, parsed, bytesRead: data.byteLength, json: true }
+          sourceOrigin: file.path, bytesRead: data.byteLength,
         }
       } else if (isImatrixPath(file.path)) {
         const data = await readWholeFile(activeSnapshot, file, controller.signal)
@@ -501,9 +491,11 @@ export default function App() {
   ) {
     try {
       const selected = selectConsistencyFiles(activeSnapshot.files)
-      // Only files that open in the JSON reader can show their problem list; tokenizer_config.json opens in the
-      // template workbench, so its findings stay in the Problems tab rather than leaving a count that leads nowhere.
-      setConsistencyPaths({ config: selected.config?.path, generationConfig: selected.generationConfig?.path })
+      setConsistencyPaths({
+        config: selected.config?.path,
+        generationConfig: selected.generationConfig?.path,
+        tokenizerConfig: selected.tokenizerConfig?.path,
+      })
       const json = async (file?: RepositoryFile) => {
         if (file === undefined) return { state: 'missing' } as ConsistencyMaterial<unknown>
         try {
@@ -659,19 +651,31 @@ export default function App() {
             }}>{t('appClearHistoryAction')}</button>
           ) : null}
         </form>
-        <FileHeader
-          inspection={inspection}
-          snapshot={snapshot}
-          report={consistencyReport}
-          reportOpen={problemsOpen}
-          badgeRef={badgeRef}
-          inspectorOpen={inspectorShown}
-          inspectorAvailable={!isPhone}
-          panelOpen={panelOpen}
-          onTogglePanel={() => setPanelOpen(open => !open)}
-          onToggleInspector={() => setInspectorOpen(open => !open)}
-          onToggleConsistency={toggleProblems}
-        />
+        <div className="toolbar-end">
+          <div className="repository-status" aria-live="polite">
+            {snapshot !== null ? (
+              snapshot.source === 'huggingface'
+                ? <><i />{t('appPublicRepositoryStatus', {
+                  revision: snapshot.revision.slice(0, 7),
+                  count: formatNumber(snapshot.files.length),
+                })}</>
+                : snapshot.source === 'https'
+                  ? <><i />{t('appHttpsStatus', { count: formatNumber(snapshot.files.length) })}</>
+                : <><i />{t('appLocalDirectoryStatus', { count: formatNumber(snapshot.files.length) })}</>
+            ) : isLoadingRepository ? t('appLoadingManifestStatus') : t('appBrowserReadonlyStatus')}
+          </div>
+          <button className="icon-button panel-toggle" type="button" aria-label={t('appTogglePanelAction')}
+            title={t('appTogglePanelAction')} aria-pressed={panelOpen} disabled={snapshot === null}
+            onClick={() => setPanelOpen(open => !open)}>
+            <PanelIcon />
+          </button>
+          {!isPhone ? (
+            <button className="icon-button inspector-toggle" type="button" aria-label={t('appToggleInspectorAction')}
+              title={t('appToggleInspectorAction')} aria-pressed={inspectorShown} onClick={() => setInspectorOpen(open => !open)}>
+              <InspectorIcon />
+            </button>
+          ) : null}
+        </div>
       </header>
 
       <div className="workspace">
@@ -732,6 +736,17 @@ export default function App() {
           </nav>
         </aside>
         <Detail
+          header={<FileHeader
+            inspection={inspection}
+            perspectives={perspectives}
+            perspective={shownPerspective}
+            onPerspectiveChange={setPerspective}
+            snapshot={snapshot}
+            report={consistencyReport}
+            reportOpen={problemsOpen}
+            badgeRef={badgeRef}
+            onToggleConsistency={toggleProblems}
+          />}
           inspection={inspection}
           snapshot={snapshot}
           report={consistencyReport}
@@ -745,6 +760,8 @@ export default function App() {
             setPanelTab(current => current === 'problems' ? 'tokens' : current)
           }}
           onClosePanel={closePanel}
+          perspective={shownPerspective}
+          onPerspectiveChange={setPerspective}
           diagnostics={(selectedPath === null ? undefined : fileDiagnostics.get(selectedPath)) ?? noDiagnostics}
           inspectorOpen={inspectorShown}
           selectedFindingId={selectedFindingId}
@@ -756,25 +773,6 @@ export default function App() {
           if (snapshot !== null && inspection.kind !== 'empty') void inspectFile(snapshot, inspection.file)
         }} />
       </div>
-      <footer className="statusbar">
-        <div className="repository-status" aria-live="polite">
-          {snapshot !== null ? (
-            snapshot.source === 'huggingface'
-              ? <><i />{t('appPublicRepositoryStatus', {
-                revision: snapshot.revision.slice(0, 7),
-                count: formatNumber(snapshot.files.length),
-              })}</>
-              : snapshot.source === 'https'
-                ? <><i />{t('appHttpsStatus', { count: formatNumber(snapshot.files.length) })}</>
-              : <><i />{t('appLocalDirectoryStatus', { count: formatNumber(snapshot.files.length) })}</>
-          ) : isLoadingRepository ? t('appLoadingManifestStatus') : t('appBrowserReadonlyStatus')}
-        </div>
-        {inspection.kind !== 'empty' ? (
-          <span className="status-file" title={inspection.file.path}>
-            {inspection.file.path} · {formatName(inspection.file)} · {inspection.file.size === null ? t('appUnknownSize') : formatBytes(inspection.file.size)}
-          </span>
-        ) : null}
-      </footer>
       {fileMenu !== null && snapshot !== null ? (() => {
         const url = fullSourcePath(snapshot, fileMenu.file)
         return (
@@ -813,27 +811,23 @@ export default function App() {
 // The file half of the unified toolbar: breadcrumb, path actions and the consistency badge.
 function FileHeader({
   inspection,
+  perspectives,
+  perspective,
+  onPerspectiveChange,
   snapshot,
   report,
   reportOpen,
   badgeRef,
-  inspectorOpen,
-  inspectorAvailable,
-  panelOpen,
-  onTogglePanel,
-  onToggleInspector,
   onToggleConsistency,
 }: {
   inspection: Inspection
+  perspectives: Perspective[]
+  perspective: Perspective
+  onPerspectiveChange(perspective: Perspective): void
   snapshot: RepositorySnapshot | null
   report: RepositoryConsistencyReport | null
   reportOpen: boolean
   badgeRef: React.RefObject<HTMLButtonElement | null>
-  inspectorOpen: boolean
-  inspectorAvailable: boolean
-  panelOpen: boolean
-  onTogglePanel(): void
-  onToggleInspector(): void
   onToggleConsistency(): void
 }) {
   const [copyLabel, setCopyLabel] = useState(() => t('appCopyPathAction'))
@@ -855,47 +849,40 @@ function FileHeader({
     }
   }
 
+  if (file === null) return null
+  // Native DetailHeader order: title and subtitle, consistency badge, perspective switch, path actions.
   return (
-    <div className="detail-header">
-      {file !== null ? (
-        <>
-          <span className="breadcrumb-separator" aria-hidden="true">›</span>
-          <div className="file-title">
-            <h1 title={file.path}>{file.path.split('/').at(-1)}</h1>
-            <p>{formatName(file)} · {file.size === null ? t('appUnknownSize') : formatBytes(file.size)}</p>
-          </div>
-          <div className="header-actions">
-            <button className="icon-button path-copy" type="button" aria-label={copyLabel} title={copyLabel}
-              onClick={() => void copy(file.path, setCopyLabel)}>
-              {copyLabel === t('templateCopiedState') ? <CheckIcon /> : <CopyIcon />}
-            </button>
-            <button className="icon-button path-copy" type="button" aria-label={fullCopyLabel} title={fullCopyLabel}
-              hidden={fullUrl === null} onClick={() => { if (fullUrl !== null) void copy(fullUrl, setFullCopyLabel) }}>
-              {fullCopyLabel === t('templateCopiedState') ? <CheckIcon /> : <LinkIcon />}
-            </button>
-            <a className="icon-button source-link" href={sourceHref} target="_blank" rel="noreferrer"
-              aria-label={t('appSourceLinkAction')} title={t('appSourceLinkAction')} hidden={sourceHref === undefined}>
-              <ExternalIcon />
-            </a>
-          </div>
-        </>
-      ) : null}
+    <header className="detail-header">
+      <div className="file-title">
+        <h1 title={file.path}>{file.path.split('/').at(-1)}</h1>
+        <p>{formatName(file)} · {file.size === null ? t('appUnknownSize') : formatBytes(file.size)}</p>
+      </div>
       {snapshot !== null ? (
         <ConsistencyBadge ref={badgeRef} report={report} open={reportOpen} onToggle={onToggleConsistency} />
       ) : null}
-      {snapshot !== null ? (
-        <button className="icon-button panel-toggle" type="button" aria-label={t('appTogglePanelAction')}
-          title={t('appTogglePanelAction')} aria-pressed={panelOpen} onClick={onTogglePanel}>
-          <PanelIcon />
+      <div className="perspective header-perspective" role="group" aria-label={t('readerReadingView')}>
+        {perspectives.map(item => (
+          <button type="button" aria-pressed={perspective === item} key={item}
+            disabled={!perspectiveReady(inspection)} onClick={() => onPerspectiveChange(item)}>
+            {perspectiveLabel(item, perspectiveDocument(inspection), file.path)}
+          </button>
+        ))}
+      </div>
+      <div className="header-actions">
+        <button className="icon-button path-copy" type="button" aria-label={copyLabel} title={copyLabel}
+          onClick={() => void copy(file.path, setCopyLabel)}>
+          {copyLabel === t('templateCopiedState') ? <CheckIcon /> : <CopyIcon />}
         </button>
-      ) : null}
-      {inspectorAvailable ? (
-        <button className="icon-button inspector-toggle" type="button" aria-label={t('appToggleInspectorAction')}
-          title={t('appToggleInspectorAction')} aria-pressed={inspectorOpen} onClick={onToggleInspector}>
-          <InspectorIcon />
+        <button className="icon-button path-copy" type="button" aria-label={fullCopyLabel} title={fullCopyLabel}
+          hidden={fullUrl === null} onClick={() => { if (fullUrl !== null) void copy(fullUrl, setFullCopyLabel) }}>
+          {fullCopyLabel === t('templateCopiedState') ? <CheckIcon /> : <LinkIcon />}
         </button>
-      ) : null}
-    </div>
+        <a className="icon-button source-link" href={sourceHref} target="_blank" rel="noreferrer"
+          aria-label={t('appSourceLinkAction')} title={t('appSourceLinkAction')} hidden={sourceHref === undefined}>
+          <ExternalIcon />
+        </a>
+      </div>
+    </header>
   )
 }
 
@@ -909,7 +896,10 @@ function SourceSelect({ value, onChange }: { value: SourceMode; onChange(value: 
 }
 
 function Detail({
+  header,
   inspection,
+  perspective,
+  onPerspectiveChange,
   snapshot,
   report,
   panelOpen,
@@ -923,7 +913,10 @@ function Detail({
   onSelectFinding,
   onRetry,
 }: {
+  header: React.ReactNode
   inspection: Inspection
+  perspective: Perspective
+  onPerspectiveChange(perspective: Perspective): void
   snapshot: RepositorySnapshot | null
   report: RepositoryConsistencyReport | null
   panelOpen: boolean
@@ -964,7 +957,9 @@ function Detail({
     <WorkspaceSlotsContext.Provider value={slots}>
       <section className="detail">
         <div className="detail-main">
-          <DetailBody inspection={inspection} snapshot={snapshot} diagnostics={diagnostics}
+          {header}
+          <DetailBody inspection={inspection} perspective={perspective} onPerspectiveChange={onPerspectiveChange}
+            snapshot={snapshot} diagnostics={diagnostics}
             selectedFindingId={selectedFindingId} onSelectFinding={onSelectFinding} onRetry={onRetry} />
           {panelOpen ? (
             <BottomPanel
@@ -1011,8 +1006,12 @@ function useMediaQuery(query: string): boolean {
   return matches
 }
 
-function DetailBody({ inspection, snapshot, diagnostics, selectedFindingId, onSelectFinding, onRetry }: {
+function DetailBody({
+  inspection, perspective, onPerspectiveChange, snapshot, diagnostics, selectedFindingId, onSelectFinding, onRetry,
+}: {
   inspection: Inspection
+  perspective: Perspective
+  onPerspectiveChange(perspective: Perspective): void
   snapshot: RepositorySnapshot | null
   diagnostics: FileDiagnostic[]
   selectedFindingId: string | null
@@ -1050,13 +1049,16 @@ function DetailBody({ inspection, snapshot, diagnostics, selectedFindingId, onSe
             diagnostics={diagnostics}
             selectedDiagnosticId={selectedFindingId}
             onSelectDiagnostic={onSelectFinding}
+            perspective={perspective}
+            onPerspectiveChange={onPerspectiveChange}
+            overviewExtra={embeddedChatTemplate(file, inspection.parsed)}
           />
         ) : null}
         {inspection.kind === 'safetensors' && snapshot !== null
-          ? <SafeTensorsInspection key={file.path} inspection={inspection} snapshot={snapshot} />
+          ? <SafeTensorsInspection key={file.path} inspection={inspection} snapshot={snapshot} perspective={perspective} />
           : null}
         {inspection.kind === 'gguf' && snapshot !== null ? <GGUFInspection inspection={inspection} snapshot={snapshot} /> : null}
-        {inspection.kind === 'imatrix' ? <ImatrixInspection inspection={inspection} /> : null}
+        {inspection.kind === 'imatrix' ? <ImatrixInspection inspection={inspection} perspective={perspective} /> : null}
         {inspection.kind === 'pdf' ? <PdfInspection data={inspection.data} bytesRead={inspection.bytesRead} /> : null}
         {inspection.kind === 'image' ? (
           <ImageInspection
@@ -1067,6 +1069,7 @@ function DetailBody({ inspection, snapshot, diagnostics, selectedFindingId, onSe
             isSvg={inspection.isSvg}
             textContent={inspection.textContent}
             bytesRead={inspection.bytesRead}
+            perspective={perspective}
           />
         ) : null}
         {inspection.kind === 'source' && snapshot !== null ? (
@@ -1080,12 +1083,10 @@ function DetailBody({ inspection, snapshot, diagnostics, selectedFindingId, onSe
         {inspection.kind === 'template' && snapshot !== null ? (
           <TemplateWorkbench
             key={`${snapshotIdentity(snapshot)}/${file.path}`}
-            snapshot={snapshot}
-            filePath={file.path}
             sourceOrigin={inspection.sourceOrigin}
             initialSource={inspection.source}
             bytesRead={inspection.bytesRead}
-            config={inspection.config === null ? null : { path: file.path, ...inspection.config }}
+            perspective={perspective === 'source' || perspective === 'playground' ? perspective : 'overview'}
           />
         ) : null}
         {inspection.kind === 'tokenizer' && snapshot !== null ? (
@@ -1093,27 +1094,74 @@ function DetailBody({ inspection, snapshot, diagnostics, selectedFindingId, onSe
             key={`${snapshot.source === 'huggingface' ? `${snapshot.modelId}@${snapshot.revision}` : snapshot.selectionId}/${file.path}`}
             snapshot={snapshot}
             file={file}
+            perspective={perspective}
           />
         ) : null}
       </div>
   )
 }
 
+function perspectiveDocument(inspection: Inspection): PerspectiveDocument {
+  switch (inspection.kind) {
+    case 'safetensors': case 'gguf': case 'imatrix': case 'pdf': case 'image': return inspection.kind
+    case 'template': return 'jinja'
+    default: return 'generic'
+  }
+}
+
+// Native disables the switch until the document is read; it still lists only 概览 then.
+function perspectiveReady(inspection: Inspection): boolean {
+  return inspection.kind !== 'empty' && inspection.kind !== 'loading' && inspection.kind !== 'error' && inspection.kind !== 'locked'
+}
+
+function inspectionPerspectivesFor(inspection: Inspection): Perspective[] {
+  if (inspection.kind === 'empty') return ['overview']
+  // A SentencePiece .model opens straight into 试验台 even while loading, like native availablePerspectives.
+  const listed = inspectionPerspectives(perspectiveDocument(inspection), inspection.file.path)
+  return perspectiveReady(inspection) || listed[0] === 'playground' ? listed : ['overview']
+}
+
+// Native TokenizerSummaryView: the config's own chat_template, collapsed, with live inputs once expanded.
+function embeddedChatTemplate(file: RepositoryFile, parsed: unknown): React.ReactNode {
+  if (file.path.split('/').at(-1)?.toLocaleLowerCase() !== 'tokenizer_config.json') return null
+  if (!isUnknownRecord(parsed) || typeof parsed.chat_template !== 'string' || parsed.chat_template === '') return null
+  return (
+    <details className="embedded-playground">
+      <summary>
+        <strong>{t('templateEmbeddedPlaygroundTitle')}</strong>
+        <span>{t('templateEmbeddedPlaygroundHint')}</span>
+      </summary>
+      <TemplateWorkbench
+        sourceOrigin={`${file.path} · chat_template`}
+        initialSource={parsed.chat_template}
+        bytesRead={new TextEncoder().encode(parsed.chat_template).byteLength}
+        perspective="embedded"
+      />
+    </details>
+  )
+}
+
 function SafeTensorsInspection({
   inspection,
   snapshot,
+  perspective,
 }: {
   inspection: Extract<Inspection, { kind: 'safetensors' }>
   snapshot: RepositorySnapshot
+  perspective: Perspective
 }) {
   const { summary } = inspection
-  const [perspective, setPerspective] = useState<'overview' | 'metadata' | 'tensors'>('overview')
   const [filter, setFilter] = useState('')
   const [limit, setLimit] = useState(100)
   const [selectedName, setSelectedName] = useState(summary.tensors[0]?.name ?? '')
   const [manualExpanded, setManualExpanded] = useState<Set<string>>(() => new Set())
   const [searchAutoExpand, setSearchAutoExpand] = useState(false)
   const [showsInspector, setShowsInspector] = useState(true)
+  useEffect(() => {
+    setFilter('')
+    setLimit(100)
+    setSearchAutoExpand(false)
+  }, [perspective])
   const term = filter.trim().toLocaleLowerCase()
   const metadata = Object.entries(summary.metadata).sort(([left], [right]) => left.localeCompare(right))
   const matchingMetadata = metadata.filter(([key, value]) => term === '' || key.toLocaleLowerCase().includes(term)
@@ -1150,16 +1198,6 @@ function SafeTensorsInspection({
         [t('readerActualRead'), formatBytes(inspection.bytesRead)],
         [t('appTensorDataLabel'), t('appZeroBytesValue')],
       ]} />
-      <div className="perspective" role="group" aria-label={t('appSafeTensorsViewAriaLabel')}>
-        {([['overview', t('readerOverview')], ['metadata', t('appMetadataTab')], ['tensors', t('appTensorsTab')]] as const).map(([value, label]) => (
-          <button type="button" aria-pressed={perspective === value} onClick={() => {
-            setPerspective(value)
-            setFilter('')
-            setLimit(100)
-            setSearchAutoExpand(false)
-          }} key={value}>{label}</button>
-        ))}
-      </div>
       {perspective === 'overview' ? (
         <>
           <MetricGrid items={[
@@ -1526,7 +1564,10 @@ function GGUFInspection({
   )
 }
 
-function ImatrixInspection({ inspection }: { inspection: Extract<Inspection, { kind: 'imatrix' }> }) {
+function ImatrixInspection({ inspection, perspective }: {
+  inspection: Extract<Inspection, { kind: 'imatrix' }>
+  perspective: Perspective
+}) {
   const [filter, setFilter] = useState('')
   const [selectedName, setSelectedName] = useState(inspection.summary.entries[0]?.name ?? '')
   const term = filter.trim().toLocaleLowerCase()
@@ -1539,12 +1580,12 @@ function ImatrixInspection({ inspection }: { inspection: Extract<Inspection, { k
         [t('readerActualRead'), formatBytes(inspection.bytesRead)],
         [t('appFormatLabel'), t('appLlamaCppLegacyImatrixValue')],
       ]} />
-      <MetricGrid items={[
+      {perspective === 'overview' ? <MetricGrid items={[
         [t('appEntryCountLabel'), formatNumber(inspection.summary.entries.length)],
         [t('appChunkCountLabel'), inspection.summary.chunkCount === null ? t('appNoneValue') : formatNumber(inspection.summary.chunkCount)],
         [t('appDatasetLabel'), inspection.summary.dataset ?? t('appNoneValue')],
         [t('appFileSizeLabel'), formatBytes(inspection.summary.byteCount)],
-      ]} />
+      ]} /> : <>
       <div className="inspection-toolbar">
         <label>
           <span>{t('appFilterEntryLabel')}</span>
@@ -1581,12 +1622,25 @@ function ImatrixInspection({ inspection }: { inspection: Extract<Inspection, { k
           ]} />
         </section>
       ) : null}
+      </>}
     </div>
   )
 }
 
-function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot; file: RepositoryFile }) {
-  const [view, setView] = useState<'structure' | 'json' | 'raw' | 'decode' | 'chat'>('structure')
+function TokenizerInspection({ snapshot, file, perspective }: {
+  snapshot: RepositorySnapshot
+  file: RepositoryFile
+  perspective: Perspective
+}) {
+  // Native: 概览 / 全部字段 / 原文 come from the header; Raw / IDs / Chat is a mode inside 试验台.
+  const [mode, setMode] = useState<'raw' | 'decode' | 'chat'>('raw')
+  const view = perspective === 'overview' ? 'structure' : perspective === 'playground' ? mode : 'json'
+  const shownView = useRef(view)
+  useEffect(() => {
+    if (shownView.current === view) return
+    shownView.current = view
+    resetResult()
+  })
   const [rawInput, setRawInput] = useState(() => t('appTokenizerRawSample'))
   const [tokenIdInput, setTokenIdInput] = useState('[1, 3, 2]')
   const [chatMessages, setChatMessages] = useState(JSON.stringify([
@@ -1939,6 +1993,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     setComparisonTargetPath(null)
   }
 
+  const comparisonPopover = useRef<HTMLDetailsElement>(null)
   async function loadComparisonRepository(event: React.FormEvent) {
     event.preventDefault()
     const input = comparisonRepositoryInput.trim()
@@ -1964,6 +2019,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
         target.file.path.toLocaleLowerCase() === 'tokenizer.json')?.file.path
         ?? targets[0]?.file.path ?? null)
       setComparisonOpen(true)
+      comparisonPopover.current?.removeAttribute('open')
     } catch (failure) {
       if (!manifestController.signal.aborted && comparisonManifestController.current === manifestController) {
         setComparisonSourceError(errorMessage(failure))
@@ -1998,6 +2054,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
       const targets = selectTokenizerComparisonTargets(next)
       if (targets.length === 0) throw new Error(t('appComparisonLocalDirectoryNoTokenizer'))
       closeExternalSource()
+      comparisonPopover.current?.removeAttribute('open')
       setComparisonExternalSnapshot(next)
       setComparisonSourceError(null)
       setComparisonTargetPath(targets.find(target =>
@@ -2169,9 +2226,10 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
     }
   }
 
-  function changeView(next: typeof view) {
+  function changeMode(next: typeof mode) {
     resetResult()
-    setView(next)
+    shownView.current = next
+    setMode(next)
   }
 
   function changeRawInput(value: string) {
@@ -2375,13 +2433,11 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
 
   return (
     <div className={`tokenizer-workspace ${comparisonOpen ? 'comparison-open' : ''}`}>
-      <div className="tokenizer-header">
-      <div className="tokenizer-tabs" role="tablist" aria-label={t('tokenizerViewsAriaLabel')}>
-        <button type="button" role="tab" aria-selected={view === 'structure'} onClick={() => changeView('structure')}>{t('tokenizerStructureTab')}</button>
-        {!isSentencePieceFile(file) ? <button type="button" role="tab" aria-selected={view === 'json'} onClick={() => changeView('json')}>JSON</button> : null}
-        <button type="button" role="tab" aria-selected={view === 'raw'} onClick={() => changeView('raw')}>{t('tokenizerRawTab')}</button>
-        <button type="button" role="tab" aria-selected={view === 'decode'} onClick={() => changeView('decode')}>{t('tokenizerDecodeTab')}</button>
-        <button type="button" role="tab" aria-selected={view === 'chat'} onClick={() => changeView('chat')}>{t('tokenizerChatTab')}</button>
+      {perspective === 'playground' ? <div className="tokenizer-header">
+      <div className="perspective" role="group" aria-label={t('tokenizerViewsAriaLabel')}>
+        <button type="button" aria-pressed={mode === 'raw'} onClick={() => changeMode('raw')}>{t('tokenizerRawTab')}</button>
+        <button type="button" aria-pressed={mode === 'chat'} onClick={() => changeMode('chat')}>{t('tokenizerChatTab')}</button>
+        <button type="button" aria-pressed={mode === 'decode'} onClick={() => changeMode('decode')}>{t('tokenizerDecodeTab')}</button>
       </div>
       <div className="comparison-toolbar">
         {comparisonOpen ? null : (
@@ -2405,7 +2461,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
         {comparisonSourceLabel !== null ? (
           <span className="comparison-source">{comparisonSourceLabel}</span>
         ) : null}
-        <details className="comparison-repository">
+        <details className="comparison-repository" ref={comparisonPopover}>
           <summary>{t('comparisonOtherPublicRepositoryAction')}</summary>
           <div className="comparison-repository-popover">
           <form onSubmit={loadComparisonRepository}>
@@ -2444,7 +2500,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
         ) : null}
         {comparisonTargets.length === 0 ? <span>{t('comparisonNoTargetsStatus')}</span> : null}
       </div>
-      </div>
+      </div> : null}
       {view === 'structure' ? (
         <TokenizerStructureInspection
           structure={structure}
@@ -2456,7 +2512,7 @@ function TokenizerInspection({ snapshot, file }: { snapshot: RepositorySnapshot;
           config={config}
         />
       ) : null}
-      {view === 'json' ? <TokenizerJSONInspection snapshot={snapshot} file={file} /> : null}
+      {view === 'json' ? <TokenizerJSONInspection snapshot={snapshot} file={file} perspective={perspective} /> : null}
       {view === 'decode' ? (
         <div className={`tokenizer-layout ${comparisonOpen ? 'comparison-open' : ''}`}>
           <section className="input-panel">
@@ -2586,7 +2642,11 @@ function parseDisplayJSON(content: string): unknown {
   try { return JSON.parse(content) } catch { return undefined }
 }
 
-function TokenizerJSONInspection({ snapshot, file }: { snapshot: RepositorySnapshot; file: RepositoryFile }) {
+function TokenizerJSONInspection({ snapshot, file, perspective }: {
+  snapshot: RepositorySnapshot
+  file: RepositoryFile
+  perspective: Perspective
+}) {
   const [document, setDocument] = useState<{ content: string; parsed: unknown; bytesRead: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
@@ -2604,7 +2664,7 @@ function TokenizerJSONInspection({ snapshot, file }: { snapshot: RepositorySnaps
   }, [snapshot, file])
   if (error !== null) return <InlineError>{error}</InlineError>
   if (document === null) return <LoadingState file={file} />
-  return <TextInspection snapshot={snapshot} path={file.path} {...document} json />
+  return <TextInspection snapshot={snapshot} path={file.path} {...document} json perspective={perspective} />
 }
 
 function TokenizerStructureInspection({

@@ -13,6 +13,8 @@ import {
   writeComparisonFixtureDirectory,
   writeFixtureDirectory,
   writePerformanceFindFixture,
+  openPerspective,
+  openPlaygroundMode,
 } from './fixtures.ts'
 
 test('SafeTensors hierarchy keeps two exact ranges without tensor data', async ({ page }) => {
@@ -159,7 +161,7 @@ test('Tokenizer Worker tokenizes and decodes back to the input', async ({ page }
   await expect(page.getByText('Model Type').locator('..')).toContainText('WordPiece')
   await expect(page.getByText('基础词表').locator('..')).toContainText('6')
   await expect(page.getByRole('table', { name: 'Tokenizer 长度分布' })).toBeVisible()
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill('hello worlds')
   await page.getByRole('button', { name: '立即分词' }).click()
 
@@ -185,7 +187,7 @@ test('Tokenizer Worker tokenizes and decodes back to the input', async ({ page }
   await expect(page.getByText('Token 数').locator('..').getByText('0')).toBeVisible()
   await expect(page.getByRole('button', { name: '立即分词' })).toBeDisabled()
 
-  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await openPlaygroundMode(page, 'Chat 工作台')
   await page.getByRole('button', { name: '渲染并分词' }).click()
   const expectedAuthoritative = 'system=You are concise.;user=Hello;thinking=false;mode=chat;assistant='
   await expect(page.getByLabel('Chat 权威输入')).toHaveText(expectedAuthoritative)
@@ -232,7 +234,7 @@ test('attributes Exact Chat tokens to custom message roles', async ({ page }) =>
   await installFixtureRoutes(page, { omitIndependentChatTemplate: true })
   await openFixture(page, 12)
   await page.getByRole('button', { name: /tokenizer\.json/ }).click()
-  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await openPlaygroundMode(page, 'Chat 工作台')
   await page.getByRole('textbox', { name: 'Chat Messages' })
     .fill('[{"role":"critic","content":"hello worlds"}]')
   await page.getByRole('button', { name: '渲染并分词' }).click()
@@ -288,8 +290,8 @@ test('searches vocabulary latest-only without rereading tokenizer resources', as
   await expect(page.getByText('输入 token 或十进制 ID 开始搜索')).toBeVisible()
   await expect(page.getByRole('table', { name: '词表搜索结果' })).toHaveCount(0)
 
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
-  await page.getByRole('tab', { name: '结构与词表' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
+  await openPerspective(page, '概览')
   await expect(page.getByRole('textbox', { name: '词表搜索' })).toHaveValue('')
   await expect(page.getByText('输入 token 或十进制 ID 开始搜索')).toBeVisible()
   expect(requests.filter(request => request.path === 'tokenizer.json')).toHaveLength(1)
@@ -302,7 +304,7 @@ test('selects between independent and tokenizer config chat templates', async ({
   const requests = await installFixtureRoutes(page)
   await openFixture(page)
   await page.getByRole('button', { name: /tokenizer\.json/ }).click()
-  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await openPlaygroundMode(page, 'Chat 工作台')
   const selector = page.getByRole('combobox', { name: 'Chat Template' })
 
   await expect(selector).toHaveValue('jinjaFile:default')
@@ -332,7 +334,7 @@ test('sorts named object templates and switches without rereading the config', a
   })
   await openFixture(page, 12)
   await page.getByRole('button', { name: /tokenizer\.json/ }).click()
-  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await openPlaygroundMode(page, 'Chat 工作台')
   const selector = page.getByRole('combobox', { name: 'Chat Template' })
 
   await expect(selector).toHaveValue('tokenizerConfig:default')
@@ -361,7 +363,7 @@ test('disables chat rendering when every config template is blank', async ({ pag
   })
   await openFixture(page, 12)
   await page.getByRole('button', { name: /tokenizer\.json/ }).click()
-  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await openPlaygroundMode(page, 'Chat 工作台')
   const selector = page.getByRole('combobox', { name: 'Chat Template' })
 
   await expect(selector.locator('option')).toHaveCount(2)
@@ -379,7 +381,7 @@ test('keeps 10k-token Raw results progressive and latest-only', async ({ page },
   await installFixtureRoutes(page)
   await openFixture(page)
   await page.getByRole('button', { name: /tokenizer\.json/ }).click()
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   const input = page.getByRole('textbox', { name: 'Raw 输入' })
   await input.fill('hello')
   await input.fill('worlds')
@@ -429,7 +431,7 @@ test('decodes shared Token IDs with special flags and linked selection', async (
   await installFixtureRoutes(page)
   await openFixture(page)
   await page.getByRole('button', { name: /tokenizer\.json/ }).click()
-  await page.getByRole('tab', { name: 'Token IDs 工作台' }).click()
+  await openPlaygroundMode(page, 'Token IDs 工作台')
   const ids = page.getByRole('textbox', { name: 'Token IDs' })
 
   await expect(ids).toHaveAttribute('placeholder', /逗号、空白、换行或 JSON/)
@@ -504,7 +506,7 @@ test('decodes shared Token IDs with special flags and linked selection', async (
   await expect(detail).toHaveCount(0)
   await expect(page.getByText('Token IDs：[4,5]')).toHaveCount(0)
 
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   const rawInput = page.getByRole('textbox', { name: 'Raw 输入' })
   await rawInput.fill('[CLS] hello')
   await page.getByRole('button', { name: '立即分词' }).click()
@@ -529,7 +531,7 @@ test('compares same-snapshot Raw tokenizers and isolates a failed right target',
   const requests = await installFixtureRoutes(page, { includeComparisonTokenizers: true })
   await openFixture(page, 18)
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
 
   const target = page.getByRole('combobox', { name: '对照 Tokenizer' })
   await expect(target.locator('option')).toHaveText([
@@ -594,7 +596,7 @@ test('keeps the main tokenizer usable while shared workspaces compare both sides
   const requests = await installFixtureRoutes(page, { includeComparisonTokenizers: true })
   await openFixture(page, 18)
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
-  await page.getByRole('tab', { name: 'Token IDs 工作台' }).click()
+  await openPlaygroundMode(page, 'Token IDs 工作台')
   const target = page.getByRole('combobox', { name: '对照 Tokenizer' })
   await target.selectOption('alternate/tokenizer.json')
   await page.getByRole('button', { name: '打开对照' }).click()
@@ -608,7 +610,7 @@ test('keeps the main tokenizer usable while shared workspaces compare both sides
   await expect(mainRows.nth(1)).toContainText('hello')
   await expect(rightRows.nth(1)).not.toContainText('hello')
 
-  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await openPlaygroundMode(page, 'Chat 工作台')
   await page.getByRole('button', { name: '渲染并分词' }).click()
   const leftTemplate = page.getByLabel('Chat 权威输入')
   const rightTemplate = page.getByLabel('对照 Chat Template')
@@ -656,7 +658,7 @@ test('loads an isolated public Hugging Face comparison repository', async ({ pag
   })
   await openFixture(page, 18)
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill('hello worlds')
   await page.getByRole('button', { name: '立即分词' }).click()
   await expect(page.getByRole('table', { name: 'Tokenizer Tokens' })).toBeVisible()
@@ -694,7 +696,7 @@ test('loads an isolated public Hugging Face comparison repository', async ({ pag
   await page.getByRole('combobox', { name: '对照 Tokenizer' }).selectOption('alternate/tokenizer.json')
   await expect(source).toHaveText(`${crossRepositoryModelId} · SHA ${crossRepositoryRevision.slice(0, 7)} · alternate/tokenizer.json`)
   await expect(summary).toContainText('#0 · 3 / 4')
-  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await openPlaygroundMode(page, 'Chat 工作台')
   await page.getByRole('button', { name: '渲染并分词' }).click()
   await expect(page.getByLabel('Chat 权威输入')).toContainText('system=You are concise.')
   const rightResult = page
@@ -704,7 +706,7 @@ test('loads an isolated public Hugging Face comparison repository', async ({ pag
   await expect(rightResult.locator('.decoded-text').filter({ hasText: '权威输入：' }))
     .toHaveText('权威输入：ALT-JINJA You are concise.')
 
-  await page.getByRole('tab', { name: 'Token IDs 工作台' }).click()
+  await openPlaygroundMode(page, 'Token IDs 工作台')
   await page.getByRole('textbox', { name: 'Token IDs' }).fill('[1,3,2]')
   await page.getByRole('button', { name: '解码 ID' }).click()
   const mainRows = page.getByRole('table', { name: '主 Tokenizer Tokens' }).locator('tbody tr')
@@ -713,6 +715,7 @@ test('loads an isolated public Hugging Face comparison repository', async ({ pag
   await expect(mainRows.nth(1)).toContainText('hello')
   await expect(rightRows.nth(1)).not.toContainText('hello')
 
+  await page.getByText('另一公开来源…').click()
   await page.getByLabel('对照 Hugging Face 仓库').fill('fixture/empty')
   await page.getByRole('button', { name: '加载对照' }).click()
   const comparisonForm = page.locator('.comparison-repository form')
@@ -778,6 +781,7 @@ test('keeps the latest explicit comparison repository after a delayed manifest',
   await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).fill(fixtureModelId)
   await page.getByRole('button', { name: '打开' }).click()
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
+  await openPerspective(page, '试验台')
 
   await page.getByText('另一公开来源…').click()
   await page.getByLabel('对照 Hugging Face 仓库').fill('fixture/slow-cross')
@@ -801,7 +805,7 @@ test('loads a second local comparison directory without external requests', asyn
   await writeNoTokenizerFixtureDirectory(noTokenizerFixture)
   await openFixture(page, 18)
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill('hello worlds')
   await page.getByRole('button', { name: '立即分词' }).click()
   await expect(page.getByRole('table', { name: 'Tokenizer Tokens' })).toBeVisible()
@@ -832,6 +836,7 @@ test('loads a second local comparison directory without external requests', asyn
   )
   await expect(page.getByRole('region', { name: 'Tokenizer 对照摘要' })).toContainText('#0 · 3 / 4')
   externalRequests.length = 0
+  await page.getByText('另一公开来源…').click()
   const picker = page.getByLabel('选择第二个本地目录')
   await expect(picker).toBeVisible()
   await picker.dispatchEvent("change")
@@ -855,6 +860,7 @@ test('loads a second local comparison directory without external requests', asyn
   await expect(diff.getByText('显示 1 / 1')).toBeVisible()
   await expect(page.getByRole('table', { name: 'Tokenizer 词表差集' })).toContainText('alt-token')
 
+  await page.getByText('另一公开来源…').click()
   await picker.setInputFiles(noTokenizerFixture)
   await expect(page.locator('.comparison-repository form').getByRole('alert'))
     .toHaveText('对照本地目录没有可用 tokenizer.json 或 SentencePiece .model。')
@@ -863,7 +869,7 @@ test('loads a second local comparison directory without external requests', asyn
   await expect(page.getByRole('table', { name: '对照 Tokenizer Tokens' })).toBeVisible()
   expect(externalRequests).toEqual([])
 
-  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await openPlaygroundMode(page, 'Chat 工作台')
   await page.getByRole('button', { name: '渲染并分词' }).click()
   await expect(page.getByLabel('Chat 权威输入')).toContainText('system=You are concise.')
   const rightResult = page
@@ -873,7 +879,7 @@ test('loads a second local comparison directory without external requests', asyn
   await expect(rightResult.locator('.decoded-text').filter({ hasText: '权威输入：' }))
     .toHaveText('权威输入：ALT-JINJA You are concise.')
 
-  await page.getByRole('tab', { name: 'Token IDs 工作台' }).click()
+  await openPlaygroundMode(page, 'Token IDs 工作台')
   await page.getByRole('textbox', { name: 'Token IDs' }).fill('[1,3,2]')
   await page.getByRole('button', { name: '解码 ID' }).click()
   await expect(summary).toContainText('ID 序列相同')
@@ -928,6 +934,7 @@ test('keeps a valid local comparison after a delayed remote manifest', async ({ 
   })
   await openFixture(page, 18)
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
+  await openPerspective(page, '试验台')
   await page.getByText('另一公开来源…').click()
   await page.getByLabel('对照 Hugging Face 仓库').fill('fixture/slow-cross')
   await page.getByRole('button', { name: '加载对照' }).click()
@@ -936,7 +943,7 @@ test('keeps a valid local comparison after a delayed remote manifest', async ({ 
   await expect(page.locator('.comparison-source')).toHaveText(
     '本地目录 · live · latest-local-fixture · tokenizer.json',
   )
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill('hello worlds')
   await page.getByRole('button', { name: '立即分词' }).click()
   await delay(650)
@@ -963,9 +970,10 @@ test('keeps comparison controls reachable without overflow at product viewports'
     await page.getByRole('button', { name: '打开' }).click()
     await expect(rootTokenizer).toBeVisible()
     await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
+    await openPerspective(page, '试验台')
     await page.getByRole('combobox', { name: '对照 Tokenizer' }).selectOption('alternate/tokenizer.json')
     await page.getByRole('button', { name: '打开对照' }).click()
-    await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+    await openPlaygroundMode(page, 'Raw 工作台')
     await page.getByRole('textbox', { name: 'Raw 输入' }).fill('hello worlds')
     await page.getByRole('button', { name: '立即分词' }).click()
     const summary = page.getByRole('region', { name: 'Tokenizer 对照摘要' })
@@ -1003,7 +1011,7 @@ test('renders CR and LF as visible single-line tokens', async ({ page }) => {
   await installFixtureRoutes(page)
   await openFixture(page)
   await page.getByRole('button', { name: /tokenizer\.json/ }).click()
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill('hello\r\nworlds')
   await page.getByRole('button', { name: '立即分词' }).click()
   await page.getByRole('checkbox', { name: '显示空白符' }).uncheck()
@@ -1023,7 +1031,7 @@ test('runs official SentencePiece models through Raw IDs Chat comparison and rec
 
   const firstResultStarted = Date.now()
   await page.getByRole('button', { name: /^bpe\/tokenizer\.model/ }).click()
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   const rawInput = page.getByRole('textbox', { name: 'Raw 输入' })
   await rawInput.fill('Hello world.')
   await expect(page.getByText('Token 数').locator('..').getByText('6')).toBeVisible({ timeout: 10_000 })
@@ -1035,13 +1043,13 @@ test('runs official SentencePiece models through Raw IDs Chat comparison and rec
   await expect(table.nth(5).locator('td').nth(4)).toContainText('.')
   await expect(page.getByText('Decoded：Hello world.')).toBeVisible()
 
-  await page.getByRole('tab', { name: 'Token IDs 工作台' }).click()
+  await openPlaygroundMode(page, 'Token IDs 工作台')
   await page.getByRole('textbox', { name: 'Token IDs' }).fill('[285,35,934,178,54,951]')
   await page.getByRole('button', { name: '解码 ID' }).click()
   await expect(page.getByText('解码文本：Hello world.')).toBeVisible()
   await expect(page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr')).toHaveCount(6)
 
-  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await openPlaygroundMode(page, 'Chat 工作台')
   await page.getByRole('button', { name: '渲染并分词' }).click()
   await expect(page.getByLabel('Chat 权威输入')).toHaveText('SP-JINJA You are concise.')
   await expect(page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr').first())
@@ -1051,7 +1059,7 @@ test('runs official SentencePiece models through Raw IDs Chat comparison and rec
   await page.getByRole('combobox', { name: '对照 Tokenizer' }).selectOption('unigram/tokenizer.model')
   const dualSessionStarted = Date.now()
   await page.getByRole('button', { name: '打开对照' }).click()
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill('I saw a girl with a telescope.')
   const comparisonSummary = page.getByRole('region', { name: 'Tokenizer 对照摘要' })
   await expect(comparisonSummary).toContainText('Left / Right Count14 / 14', {
@@ -1078,20 +1086,19 @@ test('runs official SentencePiece models through Raw IDs Chat comparison and rec
   })
 
   await page.getByRole('button', { name: /^unigram\/tokenizer\.model/ }).click()
-  await expect(
-    page.getByText('Tokenizer Config').locator('..'),
-  ).toContainText('缺失 · Raw 与 Token IDs 可用')
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  // Native: a SentencePiece .model offers only 试验台.
+  await expect(page.getByRole('group', { name: '阅读视图' }).getByRole('button')).toHaveText(['试验台'])
+  await openPlaygroundMode(page, 'Raw 工作台')
   await rawInput.fill('I saw a girl with a telescope.')
   await expect(page.getByText('Token 数').locator('..').getByText('14')).toBeVisible({ timeout: 10_000 })
   await expect(page.getByText('Decoded：I saw a girl with a telescope.')).toBeVisible()
-  await page.getByRole('tab', { name: 'Token IDs 工作台' }).click()
+  await openPlaygroundMode(page, 'Token IDs 工作台')
   await page.getByRole('textbox', { name: 'Token IDs' })
     .fill('[9,459,11,939,44,11,4,142,82,8,28,21,132,6]')
   await page.getByRole('button', { name: '解码 ID' }).click()
   await expect(page.getByText('解码文本：I saw a girl with a telescope.')).toBeVisible()
   await expect(page.getByRole('table', { name: 'Tokenizer Tokens' }).locator('tbody tr')).toHaveCount(14)
-  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await openPlaygroundMode(page, 'Chat 工作台')
   await expect(page.getByRole('button', { name: '渲染并分词' })).toBeDisabled()
 
   const modelRequestCountBeforeOversize = requests.filter(request => request.path.endsWith('/tokenizer.model')).length
@@ -1128,12 +1135,12 @@ test('cancels a delayed SentencePiece load and keeps only the latest tokenizer s
   await openFixture(page, 20)
   const bpeRequest = page.waitForRequest(request => request.url().endsWith('/bpe/tokenizer.model'))
   await page.getByRole('button', { name: /^bpe\/tokenizer\.model/ }).click()
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill('Hello world.')
   await bpeRequest
 
   await page.getByRole('button', { name: /^unigram\/tokenizer\.model/ }).click()
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill('I saw a girl with a telescope.')
   await delay(350)
   await expect(page.getByText('Decoded：I saw a girl with a telescope.')).toBeVisible({ timeout: 10_000 })
@@ -1171,13 +1178,13 @@ test('opens every supported local directory reader without network upload', { ti
   await page.getByRole('button', { name: /^imatrix-fixture\.dat/ }).click()
   await expect(page.getByText('Entry 数量').locator('..')).toContainText('2')
   await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
-  await page.getByRole('tab', { name: '试验台' }).click()
+  await page.getByText('Chat Template 试验台').click()
   await page.getByRole('button', { name: '渲染', exact: true }).click()
   await expect(page.getByRole('table', { name: 'Template 输出结构' })).toContainText('You are concise.')
 
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
   await expect(page.getByText('Model Type').locator('..')).toContainText('WordPiece')
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill('hello worlds')
   await page.getByRole('button', { name: '立即分词' }).click()
   await expect(page.getByText('Decoded：hello worlds')).toBeVisible()
@@ -1548,8 +1555,8 @@ test('Jinja source find preserves query while editing and resets on file switch'
   await installFixtureRoutes(page)
   await openFixture(page)
 
-  await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
-  await page.getByRole('tab', { name: '源码' }).click()
+  await page.getByRole('button', { name: /^chat_template\.jinja/ }).click()
+  await openPerspective(page, '源码')
   const jinjaSource = page.getByLabel('Jinja 源码')
   await jinjaSource.focus()
   await page.keyboard.press('Meta+F')
@@ -1599,8 +1606,8 @@ test('Jinja source find preserves query while editing and resets on file switch'
 
   await page.getByRole('button', { name: /^config\.json/ }).click()
   await expect(search).toBeHidden()
-  await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
-  await page.getByRole('tab', { name: '源码' }).click()
+  await page.getByRole('button', { name: /^chat_template\.jinja/ }).click()
+  await openPerspective(page, '源码')
   await expect(search).toBeHidden()
   await expect(page.locator('.jinja-highlight mark')).toHaveCount(0)
   await jinjaSource.focus()
@@ -1625,8 +1632,8 @@ test('config diagnostics point at their line and the full source stays reachable
   await expect(problems).toContainText('第 61 行')
   await expect(page.getByRole('button', { name: /^config\.json/ }).locator('.file-problems')).toContainText('1 个问题')
   await expect(page.getByRole('button', { name: /^generation_config\.json/ }).locator('.file-problems')).toContainText('1 个问题')
-  // tokenizer_config.json opens in the template workbench, which has no problem list to lead to.
-  await expect(page.getByRole('button', { name: /^tokenizer_config\.json/ }).locator('.file-problems')).toHaveCount(0)
+  // Native anchors tokenizer_config.json findings too; it opens in the JSON reader with its problem list.
+  await expect(page.getByRole('button', { name: /^tokenizer_config\.json/ }).locator('.file-problems')).toHaveCount(1)
 
   await problems.getByRole('button').click()
   await expect(page.getByRole('button', { name: '原文', exact: true })).toHaveAttribute('aria-pressed', 'true')
@@ -1725,6 +1732,7 @@ test('parses bounded legacy Imatrix files and exposes searchable entry details',
   await expect(page.getByText('格式').locator('..')).toContainText('llama.cpp legacy imatrix')
   await expect(page.getByText('Entry 数量').locator('..')).toContainText('2')
   await expect(page.getByText('数据集').locator('..')).toContainText('calibration.txt')
+  await openPerspective(page, 'Entries')
   await page.getByPlaceholder('Tensor 名称包含…').fill('ffn')
   await page.getByRole('button', { name: 'blk.0.ffn.weight' }).click()
   await expect(page.getByRole('heading', { name: '选中项 · blk.0.ffn.weight' })).toBeVisible()
@@ -1740,14 +1748,13 @@ test('edits and renders the authoritative Jinja source in a Worker', async ({ pa
   await installFixtureRoutes(page)
   await openFixture(page)
 
-  await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
-  await expect(page.getByRole('heading', { name: 'Tokenizer Config' })).toBeVisible()
-  await page.getByRole('tab', { name: '源码' }).click()
+  await page.getByRole('button', { name: /^chat_template\.jinja/ }).click()
+  await openPerspective(page, '源码')
   await expect(page.locator('.template-source > header')).toContainText('chat_template.jinja')
   await expect(page.getByLabel('Jinja 源码')).toContainText('mode={{ mode }}')
   await expect(page.getByLabel('Jinja 源码')).not.toContainText('embedded=')
 
-  await page.getByRole('tab', { name: '试验台' }).click()
+  await openPerspective(page, '试验台')
   await page.getByLabel('Preset').selectOption('tools')
   await page.getByRole('button', { name: '渲染', exact: true }).click()
   await expect(page.getByRole('table', { name: 'Template 输出结构' })).toContainText('mode=tools')
@@ -1755,14 +1762,14 @@ test('edits and renders the authoritative Jinja source in a Worker', async ({ pa
   await page.getByRole('button', { name: '原始输出' }).click()
   await expect(page.locator('.template-output .source-reader')).toContainText('assistant=')
 
-  await page.getByRole('tab', { name: '源码' }).click()
+  await openPerspective(page, '源码')
   await page.getByLabel('Jinja 源码').fill('{% include "remote.jinja" %}')
   await expect(page.locator('.jinja-statement')).toContainText('include')
-  await page.getByRole('tab', { name: '试验台' }).click()
+  await openPerspective(page, '试验台')
   await page.getByRole('button', { name: '渲染', exact: true }).click()
   await expect(page.getByRole('alert')).toContainText('include')
   await expect(page.locator('.template-output .source-reader')).toHaveCount(0)
-  await page.getByRole('tab', { name: '源码' }).click()
+  await openPerspective(page, '源码')
   await page.getByRole('button', { name: '恢复来源' }).click()
   await expect(page.getByLabel('Jinja 源码')).toContainText('mode={{ mode }}')
   expect(errors).toEqual([])
@@ -1795,7 +1802,7 @@ test('consistency background acquires materials once and reports repository warn
   await expect(report).toContainText('上下文长度声明不同')
   await expect(report.locator('[data-material]')).toHaveCount(8)
   await expect(page.getByRole('region', { name: '此文件的问题' })).toContainText('上下文长度声明不同')
-  const readerPerspective = page.locator('.reader-canvas').getByRole('group', { name: '阅读视图' })
+  const readerPerspective = page.locator('.detail-header').getByRole('group', { name: '阅读视图' })
   await expect(readerPerspective).toBeVisible()
   for (const button of ['概览', '全部字段', '原文']) {
     await expect(readerPerspective.getByRole('button', { name: button, exact: true })).toBeVisible()
@@ -2123,14 +2130,14 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
 
   await filter.press('ControlOrMeta+A')
   await filter.press('Backspace')
-  await page.keyboard.type('tokenizer_config')
-  await page.getByRole('button', { name: /^tokenizer_config\.json/ }).press('Enter')
-  await page.getByRole('tab', { name: '源码' }).press('Enter')
+  await page.keyboard.type('chat_template')
+  await page.getByRole('button', { name: /^chat_template\.jinja/ }).press('Enter')
+  await page.getByRole('group', { name: '阅读视图' }).getByRole('button', { name: '源码', exact: true }).press('Enter')
   const source = page.getByLabel('Jinja 源码')
   await source.focus()
   await source.press('ControlOrMeta+A')
   await page.keyboard.insertText('{{ messages | length }}')
-  await page.getByRole('tab', { name: '试验台' }).press('Enter')
+  await page.getByRole('group', { name: '阅读视图' }).getByRole('button', { name: '试验台', exact: true }).press('Enter')
   await page.getByRole('button', { name: '渲染', exact: true }).press('Enter')
   await expect(page.getByRole('table', { name: 'Template 输出结构' })).toContainText('2')
 
@@ -2168,7 +2175,7 @@ test('renders image files and verifies blob url within CSP without console error
   await expect(page.getByText('1 × 1 像素')).toBeVisible()
   await page.getByRole('button', { name: /^icon\.svg/ }).click()
   await expect(page.locator('.inspected-image')).toBeVisible()
-  await page.getByRole('button', { name: '原文' }).click()
+  await openPerspective(page, '源码')
   await expect(page.locator('.source-reader')).toContainText('<svg')
   expect(errors).toEqual([])
 })

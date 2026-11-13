@@ -3,9 +3,11 @@ import test from 'node:test'
 import {
   decodeStrictText,
   forEachTextMatch,
+  inspectionPerspectives,
   jsonRows,
   repositoryMarkdownUrl,
   navigateTextMatches,
+  perspectiveLabel,
   summarizeJson,
   textLineAtOffset,
   textLines,
@@ -141,4 +143,22 @@ test('identifies image files and maps their mime types', () => {
   assert.equal(imageMimeType('bitmap.bmp'), 'image/bmp')
   assert.equal(imageMimeType('photo.avif'), 'image/avif')
   assert.equal(imageMimeType('other.xyz'), 'application/octet-stream')
+})
+
+test('offers the native perspectives for each document kind', () => {
+  assert.deepEqual(inspectionPerspectives('generic', 'config.json'), ['overview', 'fields', 'raw'])
+  assert.deepEqual(inspectionPerspectives('generic', 'nested/tokenizer.json'), ['overview', 'fields', 'raw', 'playground'])
+  assert.deepEqual(inspectionPerspectives('generic', 'tokenizer.model'), ['playground'])
+  assert.deepEqual(inspectionPerspectives('safetensors', 'model.safetensors'), ['overview', 'metadata', 'tensors'])
+  assert.deepEqual(inspectionPerspectives('imatrix', 'imatrix.dat'), ['overview', 'entries'])
+  assert.deepEqual(inspectionPerspectives('jinja', 'chat_template.jinja'), ['overview', 'source', 'playground'])
+  assert.deepEqual(inspectionPerspectives('image', 'logo.svg'), ['overview', 'source'])
+  assert.deepEqual(inspectionPerspectives('image', 'logo.png'), ['overview'])
+  assert.deepEqual(inspectionPerspectives('pdf', 'paper.pdf'), ['overview'])
+  assert.equal(perspectiveLabel('overview', 'generic', 'README.md'), '渲染')
+  assert.equal(perspectiveLabel('overview', 'image', 'logo.svg'), '渲染')
+  assert.equal(perspectiveLabel('overview', 'image', 'logo.png'), '预览')
+  assert.equal(perspectiveLabel('overview', 'pdf', 'paper.pdf'), '预览')
+  assert.equal(perspectiveLabel('overview', 'generic', 'config.json'), '概览')
+  assert.equal(perspectiveLabel('raw', 'generic', 'config.json'), '原文')
 })

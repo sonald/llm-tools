@@ -1,5 +1,9 @@
 import { expect, test } from '@playwright/test'
-import { installFixtureRoutes, fixtureModelId } from './fixtures.ts'
+import {
+  installFixtureRoutes,
+  fixtureModelId,
+  openPlaygroundMode,
+} from './fixtures.ts'
 
 test.use({ locale: 'en-US' })
 
@@ -24,8 +28,8 @@ test('runs the core repository and tokenizer entry points in English', async ({ 
   await expect(page.getByText(/Public repository · SHA 0123456 · 13 files/)).toBeVisible()
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
   await expect(page.getByText('Model Type').locator('..')).toContainText('WordPiece')
-  await expect(page.getByRole('tab', { name: 'Raw workbench' })).toBeVisible()
-  await page.getByRole('tab', { name: 'Raw workbench' }).click()
+  await expect(page.getByRole('group', { name: 'Reading view' }).getByRole('button', { name: 'Playground', exact: true })).toBeVisible()
+  await openPlaygroundMode(page, 'Raw workbench', 'Playground')
   await expect(page.getByRole('textbox', { name: 'Raw input' })).toBeVisible()
 
   expect(requests.filter(request => request.path === 'config.json')).toHaveLength(1)

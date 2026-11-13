@@ -1,4 +1,5 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
+import { openPlaygroundMode } from './fixtures.ts'
 
 test.skip(process.env.LIVE_HF !== '1', '真实 Hugging Face smoke 不进入确定性 CI。')
 
@@ -52,7 +53,7 @@ test('Chat: Qwen config, README, SafeTensors, Tokenizer Raw, Chat and cross-repo
   const vocabularyRequestsAfter = requests.length
   expect(vocabularyRequestsAfter).toBe(vocabularyRequestsBefore)
 
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill('Hello，世界 👋')
   await page.getByRole('button', { name: '立即分词' }).click()
   await expect(page.getByText(/Decoded：/)).toBeVisible({ timeout: 60_000 })
@@ -97,7 +98,7 @@ test('Chat: Qwen config, README, SafeTensors, Tokenizer Raw, Chat and cross-repo
     localStorageHistory: await page.evaluate(() => localStorage.getItem('model-files.repository-history')),
   }).toEqual(initialState)
 
-  await page.getByRole('tab', { name: 'Chat 工作台' }).click()
+  await openPlaygroundMode(page, 'Chat 工作台')
   await page.getByRole('button', { name: '渲染并分词' }).click()
   await expect(page.getByLabel('Chat 权威输入')).not.toContainText('渲染后，这里显示唯一权威编码输入。', { timeout: 60_000 })
   await expect(page.getByText('Token 数').locator('..')).toBeVisible()
@@ -144,7 +145,7 @@ test('T5 Raw reports normalization as Decoded only', async ({ page }, testInfo) 
   await page.goto('/?repo=google-t5%2Ft5-small&file=tokenizer.json')
   const identity = await (await manifest).json() as { sha: string }
   await expect(page.getByText('Model Type').locator('..')).toBeVisible({ timeout: 60_000 })
-  await page.getByRole('tab', { name: 'Raw 工作台' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   const input = ' Hello   world '
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill(input)
   await page.getByRole('button', { name: '立即分词' }).click()

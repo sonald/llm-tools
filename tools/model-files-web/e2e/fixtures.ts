@@ -557,3 +557,14 @@ function bytes(value: string): Uint8Array {
 function delay(milliseconds: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, milliseconds))
 }
+
+// The file header carries one perspective switch for every file kind, like native DetailHeader.
+export async function openPerspective(page: Page, name: string): Promise<void> {
+  await page.getByRole('group', { name: /^(阅读视图|Reading view)$/ }).getByRole('button', { name, exact: true }).click()
+}
+
+// Raw / Chat / Token IDs are modes inside the 试验台 perspective.
+export async function openPlaygroundMode(page: Page, mode: string, playground = '试验台'): Promise<void> {
+  await openPerspective(page, playground)
+  await page.getByRole('button', { name: mode, exact: true }).click()
+}

@@ -14,7 +14,6 @@
   --sidebar: #f0f0f2;
   --danger: #b5332f;
   --bar: #ececee;
-  --status-bg: #e6e7eb;
   --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 }
 
@@ -36,10 +35,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   background: var(--panel);
   box-shadow: 0 24px 80px rgb(30 35 45 / 18%), 0 2px 8px rgb(30 35 45 / 10%);
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) 24px;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
-/* One toolbar: brand, repository, then the open file's breadcrumb, actions and consistency badge. */
+/* Window toolbar (native ContentView): brand, repository, then status and the panel/inspector toggles. */
 .topbar {
   min-height: 52px;
   display: flex;
@@ -81,12 +80,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .history-button {
   flex: none; border: 0; background: transparent; color: var(--accent); font-size: 10.5px; cursor: pointer; white-space: nowrap;
 }
-.statusbar {
-  min-width: 0; display: flex; align-items: center; gap: 16px; padding: 0 12px; border-top: 1px solid var(--line);
-  background: var(--status-bg); color: var(--muted); font: 10.5px var(--mono); white-space: nowrap;
-}
-.repository-status { flex: none; overflow: hidden; text-overflow: ellipsis; }
-.status-file { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
+.toolbar-end { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.repository-status { min-width: 0; margin-right: 6px; overflow: hidden; color: var(--muted); font: 10.5px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .repository-status i { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: #31a35b; box-shadow: 0 0 0 3px #e3f4e8; }
 
 .workspace { min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr); }
@@ -148,12 +143,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .file-context-menu button:hover { background: rgb(127 127 127 / 18%); }
 
 .detail { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; }
-.detail-main { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
-.detail-header { flex: 1 1 320px; min-width: 0; display: flex; align-items: center; gap: 10px; }
-.breadcrumb-separator { flex: none; color: var(--muted); font-size: 14px; }
-.file-title { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
-.file-title h1 { min-width: 0; overflow: hidden; margin: 0; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.file-title p { flex: none; margin: 0; color: var(--muted); font: 10.5px var(--mono); white-space: nowrap; }
+.detail-main { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.detail-main > .detail-body:first-child { grid-row: 2; }
+/* Native DetailHeader: a bar above the file content. */
+.detail-header { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 11px 20px; border-bottom: 1px solid var(--line); background: var(--bar); }
+.file-title { flex: 1 1 220px; min-width: 0; display: grid; gap: 3px; }
+.file-title h1 { min-width: 0; overflow: hidden; margin: 0; font-size: 18px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.file-title p { min-width: 0; margin: 0; overflow: hidden; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.header-perspective { max-width: 100%; margin: 0; overflow-x: auto; }
+.header-perspective button:disabled { cursor: default; opacity: .55; }
 .header-actions { flex: none; display: flex; gap: 2px; }
 .icon-button {
   width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0;
@@ -164,8 +162,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .icon-button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
 .inspector-toggle, .panel-toggle { flex: none; }
 :is(.inspector-toggle, .panel-toggle)[aria-pressed="true"] { background: rgb(0 0 0 / 7%); color: inherit; }
-.detail-header > :is(.inspector-toggle, .panel-toggle):first-child { margin-left: auto; }
-.consistency-badge { margin-left: auto; flex: none;
+.consistency-badge { flex: none;
 
   height: 27px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 99px;
   background: var(--panel-alt); font-size: 10px; font-weight: 700; cursor: pointer;
@@ -543,7 +540,11 @@ tr:last-child td { border-bottom: 0; }
 .comparison-status .inline-error { display: block; margin: 0 12px; }
 .comparison-diff-table { margin-top: 8px; max-height: 220px; }
 .tokenizer-structure .metric-grid { grid-template-columns: repeat(4, minmax(140px, 1fr)); }
-.template-workspace { height: 100%; min-height: 0; display: grid; grid-template-rows: 42px minmax(0, 1fr); }
+.template-workspace { height: 100%; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); }
+.embedded-playground { margin-top: 18px; }
+.embedded-playground > summary { cursor: pointer; }
+.embedded-playground > summary span { display: block; margin: 2px 0 0 1.1em; color: var(--muted); font-size: 10.5px; }
+.embedded-playground .template-workspace { height: 640px; margin-top: 12px; grid-template-rows: 42px minmax(0, 1fr); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .template-source { min-height: 0; display: grid; grid-template-rows: 40px minmax(180px, 1fr) minmax(120px, .55fr); gap: 0; }
 .template-source > header { display: flex; align-items: center; padding: 0 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 10px; }
 .template-source > header button { margin-left: auto; }
@@ -667,9 +668,7 @@ tr:last-child td { border-bottom: 0; }
 
 @media (max-width: 640px) {
   .brand { display: none; }
-  .status-file { display: none; }
   .workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: 210px minmax(0, 1fr); }
-  .file-title p { display: none; }
   /* ponytail: no room for a third column on phones; the panel rows already show each problem's values. */
   .inspector, .inspector-toggle { display: none; }
   .bottom-panel { height: clamp(150px, 28vh, 220px); }
@@ -711,11 +710,9 @@ tr:last-child td { border-bottom: 0; }
     --sidebar: #1e2128;
     --danger: #ffaaa4;
     --bar: #121418;
-    --status-bg: #232a3a;
   }
   body { background: #0e0f12; }
   .app-shell { border-color: #30343c; box-shadow: 0 24px 80px rgb(0 0 0 / 45%); }
-  .statusbar { color: #c9d2e6; }
   .icon-button:hover, :is(.inspector-toggle, .panel-toggle)[aria-pressed="true"] { background: rgb(255 255 255 / 8%); }
   .primary-button, .zoom-btn.active, .perspective button[aria-pressed="true"] { border-color: var(--accent); color: #0d1424; }
   .primary-button:hover { background: #93b4ff; }

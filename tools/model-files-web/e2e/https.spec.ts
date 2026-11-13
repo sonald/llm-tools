@@ -4,7 +4,11 @@ import { execFileSync } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { installFixtureRoutes, writeFixtureDirectory } from './fixtures.ts'
+import {
+  installFixtureRoutes,
+  writeFixtureDirectory,
+  openPlaygroundMode,
+} from './fixtures.ts'
 
 // A real cross-origin HTTPS server exercises browser CORS and exposed headers.
 // The generated certificate is trusted only by these test browser contexts.
@@ -104,7 +108,7 @@ test('HTTPS manifest reads related tokenizer files, Markdown links and a compari
   await page.getByRole('button', { name: /^README\.md/ }).click()
   await expect(page.getByRole('link', { name: 'Config', exact: true })).toHaveAttribute('href', `${origin}/config.json`)
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
-  await page.getByRole('tab', { name: 'Raw' }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
   await page.getByRole('textbox', { name: 'Raw 输入' }).fill('hello worlds')
   await page.getByRole('button', { name: '立即分词' }).click()
   await expect(page.getByText('Decoded：hello worlds')).toBeVisible()

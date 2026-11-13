@@ -4,6 +4,42 @@ import type { RepositorySnapshot } from './huggingface.ts'
 
 export type JsonSummary = { title: string; facts: Array<[string, string]> }
 
+export type Perspective = 'overview' | 'metadata' | 'tensors' | 'entries' | 'source' | 'playground' | 'fields' | 'raw'
+export type PerspectiveDocument = 'generic' | 'safetensors' | 'gguf' | 'imatrix' | 'jinja' | 'pdf' | 'image'
+
+// Mirrors native InspectionDocument.perspectives plus ModelFilesStore.availablePerspectives.
+export function inspectionPerspectives(document: PerspectiveDocument, path: string): Perspective[] {
+  const name = path.split('/').at(-1)?.toLocaleLowerCase() ?? ''
+  if (name.endsWith('.model')) return ['playground']
+  switch (document) {
+    case 'safetensors': return ['overview', 'metadata', 'tensors']
+    // ponytail: native also has Metadata/Tensors; Web reads only the 24-byte prefix until full GGUF parsing (D-1) lands.
+    case 'gguf': return ['overview']
+    case 'imatrix': return ['overview', 'entries']
+    case 'jinja': return ['overview', 'source', 'playground']
+    case 'pdf': return ['overview']
+    case 'image': return name.endsWith('.svg') ? ['overview', 'source'] : ['overview']
+    case 'generic': return name === 'tokenizer.json' ? ['overview', 'fields', 'raw', 'playground'] : ['overview', 'fields', 'raw']
+  }
+}
+
+export function perspectiveLabel(perspective: Perspective, document: PerspectiveDocument, path: string): string {
+  const name = path.toLocaleLowerCase()
+  switch (perspective) {
+    case 'overview':
+      if (name.endsWith('.svg') || (document === 'generic' && name.endsWith('.md'))) return t('readerRenderedView')
+      if (document === 'pdf' || document === 'image') return t('readerPreviewView')
+      return t('readerOverview')
+    case 'metadata': return 'Metadata'
+    case 'tensors': return 'Tensors'
+    case 'entries': return 'Entries'
+    case 'source': return t('templateSourceTab')
+    case 'playground': return t('templatePlaygroundTab')
+    case 'fields': return t('readerAllFields')
+    case 'raw': return t('readerRawSource')
+  }
+}
+
 export function decodeStrictText(data: ArrayBuffer): string {
   let text: string
   try {

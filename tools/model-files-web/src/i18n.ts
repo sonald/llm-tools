@@ -883,11 +883,23 @@ export const messageCatalog = {
   },
   readerAllFields: {
     'zh-Hans': '全部字段',
-    en: 'All fields',
+    en: 'All Fields',
   },
   readerRawSource: {
     'zh-Hans': '原文',
-    en: 'Raw source',
+    en: 'Raw Text',
+  },
+  templateEmbeddedPlaygroundTitle: {
+    'zh-Hans': 'Chat Template 试验台',
+    en: 'Chat Template playground',
+  },
+  templateEmbeddedPlaygroundHint: {
+    'zh-Hans': '展开后编辑输入并实时查看渲染结果',
+    en: 'Expand to edit input and see rendered results live',
+  },
+  readerPreviewView: {
+    'zh-Hans': '预览',
+    en: 'Preview',
   },
   readerLineColumn: {
     'zh-Hans': '行',
@@ -1040,18 +1052,6 @@ export const messageCatalog = {
   readerShowMoreItems: {
     'zh-Hans': '再显示 {count} 项',
     en: 'Show {count} more items',
-  },
-  templateConfigTab: {
-    'zh-Hans': '配置',
-    en: 'Config',
-  },
-  templateOverviewTabWithConfig: {
-    'zh-Hans': '模板概览',
-    en: 'Template overview',
-  },
-  templateOverviewTab: {
-    'zh-Hans': '概览',
-    en: 'Overview',
   },
   templateSourceTab: {
     'zh-Hans': '源码',
@@ -1389,10 +1389,6 @@ export const messageCatalog = {
     'zh-Hans': '0 bytes',
     en: '0 bytes',
   },
-  appSafeTensorsViewAriaLabel: {
-    'zh-Hans': 'SafeTensors 视图',
-    en: 'SafeTensors views',
-  },
   appParameterTotalLabel: {
     'zh-Hans': '参数总数',
     en: 'Parameter total',
@@ -1633,10 +1629,6 @@ export const messageCatalog = {
     'zh-Hans': 'Metadata',
     en: 'Metadata',
   },
-  appTensorsTab: {
-    'zh-Hans': 'Tensors',
-    en: 'Tensors',
-  },
   appActualReadBytesValue: {
     'zh-Hans': '{count} bytes',
     en: '{count} bytes',
@@ -1820,10 +1812,6 @@ export const messageCatalog = {
   tokenizerViewsAriaLabel: {
     'zh-Hans': 'Tokenizer 视图',
     en: 'Tokenizer views',
-  },
-  tokenizerStructureTab: {
-    'zh-Hans': '结构与词表',
-    en: 'Structure and vocabulary',
   },
   tokenizerRawTab: {
     'zh-Hans': 'Raw 工作台',

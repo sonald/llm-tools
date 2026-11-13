@@ -1,27 +1,26 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { formatBytes, type RepositorySnapshot } from './core/huggingface.ts'
+import { formatBytes } from './core/huggingface.ts'
 import { forEachTextMatch, navigateTextMatches } from './core/readers.ts'
 import { formatNumber, translate as t } from './i18n.ts'
-import { SourceInspection, TextInspection } from './Readers.tsx'
+import { SourceInspection } from './Readers.tsx'
 
-type ConfigView = { path: string; content: string; parsed: unknown; bytesRead: number }
+type TemplateView = 'overview' | 'source' | 'playground'
 
+// `perspective` comes from the header switch for a standalone .jinja. Embedded in the tokenizer_config.json
+// overview (native EmbeddedTemplatePlaygroundView) there is no header switch, so it keeps its own source/playground pick.
 export function TemplateWorkbench({
-  snapshot,
-  filePath,
   sourceOrigin,
   initialSource,
   bytesRead,
-  config,
+  perspective,
 }: {
-  snapshot: RepositorySnapshot
-  filePath: string
   sourceOrigin: string
   initialSource: string
   bytesRead: number
-  config: ConfigView | null
+  perspective: TemplateView | 'embedded'
 }) {
-  const [view, setView] = useState<'config' | 'overview' | 'source' | 'playground'>(config === null ? 'overview' : 'config')
+  const [embeddedView, setEmbeddedView] = useState<'source' | 'playground'>('playground')
+  const view: TemplateView = perspective === 'embedded' ? embeddedView : perspective
   const [source, setSource] = useState(initialSource)
   const [preset, setPreset] = useState<keyof typeof presets>('basic')
   const [messages, setMessages] = useState(JSON.stringify(presets.basic.messages, null, 2))
@@ -122,16 +121,17 @@ export function TemplateWorkbench({
     }
   }
 
-  const views: Array<[typeof view, string]> = config === null
-    ? [['overview', t('templateOverviewTab')], ['source', t('templateSourceTab')], ['playground', t('templatePlaygroundTab')]]
-    : [['config', t('templateConfigTab')], ['overview', t('templateOverviewTabWithConfig')], ['source', t('templateSourceTab')], ['playground', t('templatePlaygroundTab')]]
   return (
     <div className="template-workspace">
-      <div className="tokenizer-tabs" role="tablist" aria-label={t('templateViewsAriaLabel')}>
-        {views.map(([value, label]) => <button type="button" role="tab" aria-selected={view === value} onClick={() => setView(value)} key={value}>{label}</button>)}
-      </div>
-      {view === 'config' && config !== null ? (
-        <TextInspection snapshot={snapshot} path={config.path} content={config.content} parsed={config.parsed} json bytesRead={config.bytesRead} />
+      {perspective === 'embedded' ? (
+        // ponytail: interim source/playground pick until the playground carries its own editor (matrix T-1).
+        <div className="tokenizer-tabs" role="tablist" aria-label={t('templateViewsAriaLabel')}>
+          {(['source', 'playground'] as const).map(value => (
+            <button type="button" role="tab" aria-selected={view === value} onClick={() => setEmbeddedView(value)} key={value}>
+              {t(value === 'source' ? 'templateSourceTab' : 'templatePlaygroundTab')}
+            </button>
+          ))}
+        </div>
       ) : null}
       {view === 'overview' ? (
         <div className="inspection-canvas">

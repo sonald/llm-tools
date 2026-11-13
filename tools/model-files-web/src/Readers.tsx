@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { formatBytes, type RepositoryFile, type RepositorySnapshot } from './core/huggingface.ts'
@@ -14,6 +14,7 @@ import {
   textLineAtOffset,
   textLines,
   visibleRows,
+  type Perspective,
   type TextFindNavigation,
 } from './core/readers.ts'
 
@@ -36,6 +37,10 @@ type Props = {
   diagnostics?: FileDiagnostic[]
   selectedDiagnosticId?: string | null
   onSelectDiagnostic?(id: string): void
+  // Picked in the file header (native DetailHeader). Readers render it; they no longer own a tab row.
+  perspective?: Perspective
+  onPerspectiveChange?(perspective: Perspective): void
+  overviewExtra?: ReactNode
 }
 
 type SourceMark = { line: number; severity: FileDiagnostic['severity']; key: string; note: string }
@@ -50,8 +55,11 @@ export function TextInspection(props: Props) {
   return <LineInspection {...props} />
 }
 
-export function JsonInspection({ path, content, parsed, bytesRead, diagnostics = [], selectedDiagnosticId = null, onSelectDiagnostic }: Props) {
-  const [perspective, setPerspective] = useState<'overview' | 'fields' | 'raw'>(parsed === undefined ? 'raw' : 'overview')
+export function JsonInspection({
+  path, content, parsed, bytesRead, diagnostics = [], selectedDiagnosticId = null, onSelectDiagnostic,
+  perspective = 'overview', onPerspectiveChange, overviewExtra,
+}: Props) {
+  // ponytail: invalid JSON still shows only the source (matrix R-3 tracks native's inline error above every view).
   const shownPerspective = parsed === undefined ? 'raw' : perspective
   const [query, setQuery] = useState('')
   const [limit, setLimit] = useState(1000)
@@ -92,7 +100,7 @@ export function JsonInspection({ path, content, parsed, bytesRead, diagnostics =
               onClick={() => {
                 onSelectDiagnostic?.(item.id)
                 if (item.offset === null) return
-                setPerspective('raw')
+                onPerspectiveChange?.('raw')
                 setJump(current => ({ offset: item.offset!, nonce: (current?.nonce ?? 0) + 1 }))
               }}
             >
@@ -107,15 +115,13 @@ export function JsonInspection({ path, content, parsed, bytesRead, diagnostics =
           ))}
         </section>
       ) : null}
-      {parsed !== undefined ? <Perspective<'overview' | 'fields' | 'raw'> value={perspective} onChange={setPerspective} values={[
-        ['overview', t('readerOverview')], ['fields', t('readerAllFields')], ['raw', t('readerRawSource')],
-      ]} /> : null}
       {shownPerspective === 'overview' ? (
         <section className="reader-section">
           <h2>{summary.title}</h2>
           <dl className="reader-facts">
             {summary.facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
           </dl>
+          {overviewExtra}
         </section>
       ) : null}
       {shownPerspective === 'fields' ? (
@@ -179,7 +185,8 @@ function LineInspection({ content, bytesRead }: Props) {
 }
 
 function MarkdownInspection(props: Props) {
-  const [mode, setMode] = useState<'rendered' | 'raw'>('rendered')
+  // ponytail: 全部字段 and 原文 both show the highlighted source until matrix C-8 makes them native plain text.
+  const mode = (props.perspective ?? 'overview') === 'overview' ? 'rendered' : 'raw'
   const [theme, setTheme] = useState<'github' | 'default' | 'compact'>('github')
   const embeddedPrefix = props.snapshot.source === 'huggingface'
     ? `https://huggingface.co/${props.snapshot.modelId.split('/').map(encodeURIComponent).join('/')}/resolve/${props.snapshot.revision}/`
@@ -187,9 +194,8 @@ function MarkdownInspection(props: Props) {
   return (
     <div className="reader-canvas">
       <ReaderHeader bytesRead={props.bytesRead} result={t('readerMarkdownHtmlDisabled')} />
-      <div className="reader-controls">
-        <Perspective<'rendered' | 'raw'> value={mode} onChange={setMode} values={[['rendered', t('readerRenderedView')], ['raw', t('readerRawSource')]]} />
-        {mode === 'rendered' ? (
+      {mode === 'rendered' ? (
+        <div className="reader-controls">
           <label>{t('readerLayoutLabel')}
             <select value={theme} onChange={event => setTheme(event.target.value as typeof theme)}>
               <option value="github">GitHub</option>
@@ -197,8 +203,8 @@ function MarkdownInspection(props: Props) {
               <option value="compact">{t('readerCompactLayout')}</option>
             </select>
           </label>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       {mode === 'raw' ? <SourceCode content={props.content} language="markdown" bytesRead={props.bytesRead} /> : (
         <article className={`markdown-body markdown-${theme}`}>
           <ReactMarkdown
@@ -246,6 +252,7 @@ export function ImageInspection({
   isSvg,
   textContent,
   bytesRead,
+  perspective,
 }: {
   file: RepositoryFile
   data: ArrayBuffer
@@ -253,9 +260,9 @@ export function ImageInspection({
   isSvg: boolean
   textContent?: string
   bytesRead: number
+  perspective: Perspective
 }) {
   const [url, setUrl] = useState('')
-  const [perspective, setPerspective] = useState<'rendered' | 'raw'>('rendered')
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null)
   const [fit, setFit] = useState(true)
   const [zoom, setZoom] = useState(1.0)
@@ -279,18 +286,7 @@ export function ImageInspection({
   return (
     <div className="reader-canvas image-reader">
       <ReaderHeader bytesRead={bytesRead} result={dimText} />
-      {isSvg && textContent !== undefined ? (
-        <Perspective<'rendered' | 'raw'>
-          value={perspective}
-          onChange={setPerspective}
-          values={[
-            ['rendered', t('readerRenderedView')],
-            ['raw', t('readerRawSource')],
-          ]}
-        />
-      ) : null}
-
-      {perspective === 'raw' && textContent !== undefined ? (
+      {isSvg && perspective === 'source' && textContent !== undefined ? (
         <SourceCode content={textContent} language="markup" bytesRead={bytesRead} />
       ) : (
         <div className="image-workspace">
@@ -773,24 +769,6 @@ function ReaderHeader({ bytesRead, result }: { bytesRead: number; result: string
       <div><dt>{t('readerActualRead')}</dt><dd>{formatBytes(bytesRead)}</dd></div>
       <div><dt>{t('readerParseResult')}</dt><dd>{result}</dd></div>
     </dl>
-  )
-}
-
-function Perspective<T extends string>({
-  value,
-  onChange,
-  values,
-}: {
-  value: T
-  onChange(value: T): void
-  values: Array<[T, string]>
-}) {
-  return (
-    <div className="perspective" role="group" aria-label={t('readerReadingView')}>
-      {values.map(([item, label]) => (
-        <button type="button" aria-pressed={value === item} onClick={() => onChange(item)} key={item}>{label}</button>
-      ))}
-    </div>
   )
 }
 

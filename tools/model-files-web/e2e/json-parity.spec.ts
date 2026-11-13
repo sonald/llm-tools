@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
+import { openPerspective } from './fixtures.ts'
 
 test('tokenizer JSON remains readable without a usable tokenizer runtime', async ({ page }, testInfo) => {
   const directory = testInfo.outputPath('json-parity')
@@ -11,7 +12,6 @@ test('tokenizer JSON remains readable without a usable tokenizer runtime', async
   page.on('pageerror', error => errors.push(error.message))
   await page.goto('/')
   await page.getByLabel('选择本地目录').setInputFiles(directory)
-  await page.getByRole('tab', { name: 'JSON', exact: true }).click()
   await page.getByRole('button', { name: '原文', exact: true }).click()
   const reader = page.locator('.source-reader')
   await expect(reader).toHaveAttribute('data-highlighted', 'true')
@@ -56,7 +56,6 @@ test('all JSON file routes highlight and fold source, including large tokenizers
     await expect(page.getByRole('button', { name: '展开第 2 行结构' })).toBeVisible()
   }
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
-  await page.getByRole('tab', { name: 'JSON', exact: true }).click()
   await page.getByRole('button', { name: '原文', exact: true }).click()
   const reader = page.locator('.source-reader')
   await expect(reader).toHaveAttribute('data-highlighted', 'true')
@@ -86,7 +85,7 @@ test('JSON roots and malformed input remain inspectable, template JSON shares re
     expect(await reader.textContent()).toBe(contents[path])
   }
   await page.getByRole('button', { name: /^chat_template\.jinja/ }).click()
-  await page.getByRole('tab', { name: '试验台' }).click()
+  await openPerspective(page, '试验台')
   await page.getByRole('button', { name: '渲染', exact: true }).click()
   await page.getByRole('button', { name: '原始输出' }).click()
   await expect(page.locator('.template-output .source-reader')).toHaveAttribute('data-highlighted', 'true')
