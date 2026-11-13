@@ -43,10 +43,6 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
   const request = event.data
   if (!isTokenizerRequest(request)) return
   try {
-    if (request.operation === 'render-template') {
-      self.postMessage(reply(request, true, new Template(request.source).render(request.context)))
-      return
-    }
     if (request.operation === 'inspect-structure') {
       const parsedTokenizer: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(request.tokenizerData))
       if (!isRecord(parsedTokenizer)) throw new Error(t('tokenizerRootNotObject'))

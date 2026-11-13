@@ -6,7 +6,6 @@ export type TokenizerOperation =
   | 'tokenize'
   | 'chat-tokenize'
   | 'decode-token-ids'
-  | 'render-template'
   | 'search-vocabulary'
   | 'prepare-vocabulary-diff'
   | 'search-vocabulary-diff'
@@ -25,7 +24,6 @@ export type TokenizerRequest =
     | { operation: 'tokenize'; requestId: number; tokenizerIdentity: string; text: string }
     | { operation: 'chat-tokenize'; requestId: number; tokenizerIdentity: string; template: string; context: Record<string, unknown>; attribution: ChatAttributionMessage[] }
   | { operation: 'decode-token-ids'; requestId: number; tokenizerIdentity: string; ids: number[]; originalInput: string }
-  | { operation: 'render-template'; requestId: number; tokenizerIdentity: ''; source: string; context: Record<string, unknown> }
   | { operation: 'search-vocabulary'; requestId: number; tokenizerIdentity: string; query: string }
   | { operation: 'prepare-vocabulary-diff'; requestId: number; tokenizerIdentity: string; leftFormat: 'json' | 'sentencepiece'; tokenizerData: ArrayBuffer }
   | { operation: 'search-vocabulary-diff'; requestId: number; tokenizerIdentity: string; scope: VocabularyDiffScope; query: string }
@@ -56,8 +54,6 @@ export function isTokenizerRequest(value: unknown): value is TokenizerRequest {
     case 'decode-token-ids':
       return Array.isArray(value.ids) && value.ids.every(isSafeNonNegativeInteger)
         && typeof value.originalInput === 'string'
-    case 'render-template':
-      return typeof value.source === 'string' && isRecord(value.context)
     case 'search-vocabulary':
       return typeof value.query === 'string'
     case 'prepare-vocabulary-diff':

@@ -1069,6 +1069,295 @@ export const messageCatalog = {
     'zh-Hans': '原文',
     en: 'Raw Text',
   },
+  // Native TemplatePlaygroundView / TemplateRenderer / RenderedOutputInspector / JinjaWorkspaceView copy.
+  templateSpecialToken: {
+    'zh-Hans': '特殊 token',
+    en: 'Special token',
+  },
+  templateVariableNameRequired: {
+    'zh-Hans': '变量名不能为空。',
+    en: 'A variable name is required.',
+  },
+  templateVariableReserved: {
+    'zh-Hans': '“{name}”由专用编辑器管理。',
+    en: '"{name}" is managed by its dedicated editor.',
+  },
+  templateVariableDuplicate: {
+    'zh-Hans': '变量“{name}”重复。',
+    en: 'Duplicate variable "{name}".',
+  },
+  templateVariableInteger: {
+    'zh-Hans': '变量“{name}”需要整数。',
+    en: 'Variable "{name}" requires an integer.',
+  },
+  templateVariableNumber: {
+    'zh-Hans': '变量“{name}”需要数字。',
+    en: 'Variable "{name}" requires a number.',
+  },
+  templateVariableLabel: {
+    'zh-Hans': '变量 {name}',
+    en: 'Variable {name}',
+  },
+  templateJsonInvalid: {
+    'zh-Hans': '{label} JSON 无效：{message}',
+    en: 'Invalid {label} JSON: {message}',
+  },
+  templateToolNameRequired: {
+    'zh-Hans': 'Tool 名称不能为空。',
+    en: 'A tool name is required.',
+  },
+  templateToolParametersObject: {
+    'zh-Hans': 'Tool {name} 的 parameters 必须是 JSON 对象。',
+    en: 'The parameters for tool {name} must be a JSON object.',
+  },
+  templateStatusRendering: {
+    'zh-Hans': '渲染中',
+    en: 'Rendering',
+  },
+  templateStatusError: {
+    'zh-Hans': '输入或模板有错误',
+    en: 'Input or template error',
+  },
+  templateStatusLive: {
+    'zh-Hans': '实时预览',
+    en: 'Live preview',
+  },
+  templateLoadExample: {
+    'zh-Hans': '载入示例',
+    en: 'Load example',
+  },
+  templateExampleBasic: {
+    'zh-Hans': '基础对话',
+    en: 'Basic conversation',
+  },
+  templateExampleTools: {
+    'zh-Hans': '工具调用',
+    en: 'Tool calling',
+  },
+  templateExampleMultimodal: {
+    'zh-Hans': '多模态 content',
+    en: 'Multimodal content',
+  },
+  templateRestoreTemplate: {
+    'zh-Hans': '恢复原模板',
+    en: 'Restore original template',
+  },
+  templateTemplatePane: {
+    'zh-Hans': 'Jinja 模板',
+    en: 'Jinja template',
+  },
+  templateLines: {
+    'zh-Hans': '{count} 行',
+    en: '{count} lines',
+  },
+  templateOutputPane: {
+    'zh-Hans': '渲染结果',
+    en: 'Rendered output',
+  },
+  templateBytes: {
+    'zh-Hans': '{count} 字节',
+    en: '{count} bytes',
+  },
+  templateNotGenerated: {
+    'zh-Hans': '未生成',
+    en: 'Not generated',
+  },
+  templateCopyRaw: {
+    'zh-Hans': '复制原始输出',
+    en: 'Copy raw output',
+  },
+  templateEmptyOutput: {
+    'zh-Hans': '模板没有产生输出。',
+    en: 'The template did not produce output.',
+  },
+  templateStructureTitle: {
+    'zh-Hans': '结构索引 · 只读',
+    en: 'Structure index · read-only',
+  },
+  templateNoBoundaries: {
+    'zh-Hans': '未识别可索引的消息边界',
+    en: 'No indexable message boundaries recognized',
+  },
+  templateContentInspector: {
+    'zh-Hans': '内容检查器',
+    en: 'Content inspector',
+  },
+  templateContentInspectorNote: {
+    'zh-Hans': '解析视图，不属于输出',
+    en: 'Parsed view; not part of the output',
+  },
+  templateStructureFooter: {
+    'zh-Hans': '仅引用原文范围；渲染结果未修改',
+    en: 'References original ranges only; rendered output is unchanged',
+  },
+  templateRawTitle: {
+    'zh-Hans': '原始输出 · 权威',
+    en: 'Raw output · authoritative',
+  },
+  templateRawNote: {
+    'zh-Hans': '软换行仅用于显示，不属于输出',
+    en: 'Soft wraps are display-only and are not part of the output',
+  },
+  templateRunOptions: {
+    'zh-Hans': '运行选项',
+    en: 'Run options',
+  },
+  templateAdd: {
+    'zh-Hans': '添加',
+    en: 'Add',
+  },
+  templateDeleteMessage: {
+    'zh-Hans': '删除消息',
+    en: 'Delete message',
+  },
+  templateAddTool: {
+    'zh-Hans': '添加 Tool',
+    en: 'Add tool',
+  },
+  templateDeleteTool: {
+    'zh-Hans': '删除 Tool',
+    en: 'Delete tool',
+  },
+  templateOtherVariables: {
+    'zh-Hans': '其他变量',
+    en: 'Other variables',
+  },
+  templateVariablesHint: {
+    'zh-Hans': '用于特殊 token 和任意 template kwargs。对象与数组使用 JSON。',
+    en: 'For special tokens and arbitrary template kwargs. Objects and arrays use JSON.',
+  },
+  templateDeleteVariable: {
+    'zh-Hans': '删除变量',
+    en: 'Delete variable',
+  },
+  templateFunctionName: {
+    'zh-Hans': '函数名',
+    en: 'Function name',
+  },
+  templateDescription: {
+    'zh-Hans': '描述',
+    en: 'Description',
+  },
+  templateVariableName: {
+    'zh-Hans': '变量名',
+    en: 'Variable name',
+  },
+  templateType: {
+    'zh-Hans': '类型',
+    en: 'Type',
+  },
+  templateValue: {
+    'zh-Hans': '值',
+    en: 'Value',
+  },
+  templateKindString: {
+    'zh-Hans': '字符串',
+    en: 'String',
+  },
+  templateKindInteger: {
+    'zh-Hans': '整数',
+    en: 'Integer',
+  },
+  templateKindDecimal: {
+    'zh-Hans': '小数',
+    en: 'Decimal',
+  },
+  templateKindBoolean: {
+    'zh-Hans': '布尔',
+    en: 'Boolean',
+  },
+  templateContentText: {
+    'zh-Hans': '文本',
+    en: 'Text',
+  },
+  templateContentKind: {
+    'zh-Hans': 'Content 类型',
+    en: 'Content type',
+  },
+  jinjaOverviewSubtitle: {
+    'zh-Hans': '在源码和试验台之间切换时，临时修改会保留。',
+    en: 'Temporary changes are preserved when switching between source and playground.',
+  },
+  jinjaUtf8Size: {
+    'zh-Hans': 'UTF-8 大小',
+    en: 'UTF-8 Size',
+  },
+  jinjaLines: {
+    'zh-Hans': '行数',
+    en: 'Lines',
+  },
+  jinjaSourceLabel: {
+    'zh-Hans': '来源',
+    en: 'Source',
+  },
+  jinjaModelFiles: {
+    'zh-Hans': '模型文件',
+    en: 'Model files',
+  },
+  jinjaCurrentState: {
+    'zh-Hans': '当前状态',
+    en: 'Current status',
+  },
+  jinjaModified: {
+    'zh-Hans': '临时修改',
+    en: 'Temporarily modified',
+  },
+  jinjaUnmodified: {
+    'zh-Hans': '未修改',
+    en: 'Unmodified',
+  },
+  jinjaViewSource: {
+    'zh-Hans': '查看源码',
+    en: 'View source',
+  },
+  jinjaOpenPlayground: {
+    'zh-Hans': '打开试验台',
+    en: 'Open playground',
+  },
+  jinjaSourceDetails: {
+    'zh-Hans': '源码详情',
+    en: 'Source details',
+  },
+  jinjaFormat: {
+    'zh-Hans': '格式',
+    en: 'Format',
+  },
+  jinjaStatus: {
+    'zh-Hans': '状态',
+    en: 'Status',
+  },
+  jinjaSourceOriginal: {
+    'zh-Hans': '来源原文',
+    en: 'Source original',
+  },
+  jinjaChangesNote: {
+    'zh-Hans': '修改只保留在当前文件工作台，不会写回来源。',
+    en: 'Changes remain in the current file workbench and are not written back to the source.',
+  },
+  jinjaSourceTitle: {
+    'zh-Hans': 'Jinja 源码',
+    en: 'Jinja source',
+  },
+  jinjaRestoreSource: {
+    'zh-Hans': '恢复来源原文',
+    en: 'Restore source original',
+  },
+  jinjaOriginDerived: {
+    'zh-Hans': '应用推导',
+    en: 'Derived by app',
+  },
+  jinjaOriginRepository: {
+    'zh-Hans': '来源信息',
+    en: 'Source Information',
+  },
+  jinjaOriginRuntime: {
+    'zh-Hans': '运行结果',
+    en: 'Runtime Result',
+  },
+  templateMessageAria: {
+    'zh-Hans': '{role} 消息',
+    en: '{role} message',
+  },
   templateEmbeddedPlaygroundTitle: {
     'zh-Hans': 'Chat Template 试验台',
     en: 'Chat Template playground',
@@ -1080,10 +1369,6 @@ export const messageCatalog = {
   readerPreviewView: {
     'zh-Hans': '预览',
     en: 'Preview',
-  },
-  readerContentColumn: {
-    'zh-Hans': '内容',
-    en: 'Content',
   },
   readerFieldColumn: {
     'zh-Hans': '字段',
@@ -1231,129 +1516,13 @@ export const messageCatalog = {
     'zh-Hans': '试验台',
     en: 'Playground',
   },
-  templateViewsAriaLabel: {
-    'zh-Hans': 'Template 视图',
-    en: 'Template views',
-  },
-  templateOriginLabel: {
-    'zh-Hans': '模板来源',
-    en: 'Template origin',
-  },
-  templateSourceSizeLabel: {
-    'zh-Hans': '源码大小',
-    en: 'Source size',
-  },
-  templateBytesReadLabel: {
-    'zh-Hans': '读取总量',
-    en: 'Bytes read',
-  },
-  templateLineCountLabel: {
-    'zh-Hans': '行数',
-    en: 'Lines',
-  },
-  templateJinjaExpressionsLabel: {
-    'zh-Hans': 'Jinja 表达式',
-    en: 'Jinja expressions',
-  },
-  templateJinjaStatementsLabel: {
-    'zh-Hans': 'Jinja 语句',
-    en: 'Jinja statements',
-  },
-  templateModificationStatusLabel: {
-    'zh-Hans': '修改状态',
-    en: 'Modification status',
-  },
-  templateOriginalSourceState: {
-    'zh-Hans': '来源原文',
-    en: 'Original source',
-  },
-  templateTemporaryChangesState: {
-    'zh-Hans': '临时修改',
-    en: 'Temporary changes',
-  },
-  templateModifiedState: {
-    'zh-Hans': '已修改',
-    en: 'Modified',
-  },
-  templateScopeNote: {
-    'zh-Hans': '模板只在 Web Worker 中执行；不支持 include，不执行 JavaScript，不写回仓库。',
-    en: 'Templates run only in a Web Worker; includes are unsupported, JavaScript is not executed, and the repository is not written back.',
-  },
-  templateLineCountSuffix: {
-    'zh-Hans': '{count} 行',
-    en: '{count} lines',
-  },
-  templateRestoreSourceAction: {
-    'zh-Hans': '恢复来源',
-    en: 'Restore source',
-  },
-  templateJinjaSourceAriaLabel: {
-    'zh-Hans': 'Jinja 源码',
-    en: 'Jinja source',
-  },
-  templateJinjaHighlightAriaLabel: {
-    'zh-Hans': 'Jinja 高亮预览',
-    en: 'Jinja highlighted preview',
-  },
-  templatePresetLabel: {
-    'zh-Hans': 'Preset',
-    en: 'Preset',
-  },
-  templateBasicConversationOption: {
-    'zh-Hans': '基础对话',
-    en: 'Basic conversation',
-  },
-  templateMultimodalOption: {
-    'zh-Hans': '多模态',
-    en: 'Multimodal',
-  },
-  templateMessagesLabel: {
-    'zh-Hans': 'Messages',
-    en: 'Messages',
-  },
-  templateMessagesInputAriaLabel: {
-    'zh-Hans': 'Template Messages',
-    en: 'Template Messages',
-  },
   templateToolsLabel: {
     'zh-Hans': 'Tools',
     en: 'Tools',
   },
-  templateToolsInputAriaLabel: {
-    'zh-Hans': 'Template Tools',
-    en: 'Template Tools',
-  },
   templateVariablesLabel: {
     'zh-Hans': 'Typed Variables',
     en: 'Typed Variables',
-  },
-  templateVariablesInputAriaLabel: {
-    'zh-Hans': 'Template Variables',
-    en: 'Template Variables',
-  },
-  templateRenderAction: {
-    'zh-Hans': '渲染',
-    en: 'Render',
-  },
-  templateRenderingState: {
-    'zh-Hans': '渲染中…',
-    en: 'Rendering…',
-  },
-  templateOutputTitle: {
-    'zh-Hans': '渲染输出',
-    en: 'Rendered output',
-  },
-  templateStructureIndexAction: {
-    'zh-Hans': '结构索引',
-    en: 'Structure index',
-  },
-  templateRawOutputAction: {
-    'zh-Hans': '原始输出',
-    en: 'Raw output',
-  },
-  templateCopyOutputAction: {
-    'zh-Hans': '复制输出',
-    en: 'Copy output',
   },
   templateCopiedState: {
     'zh-Hans': '已复制',
@@ -1362,30 +1531,6 @@ export const messageCatalog = {
   templateCopyFailedState: {
     'zh-Hans': '复制失败',
     en: 'Copy failed',
-  },
-  templateEditJsonHint: {
-    'zh-Hans': '编辑 JSON 后点击“渲染”。',
-    en: 'Edit the JSON, then click Render.',
-  },
-  templateWorkerRenderingState: {
-    'zh-Hans': 'Worker 正在渲染…',
-    en: 'Worker is rendering…',
-  },
-  templateOutputStructureTableAriaLabel: {
-    'zh-Hans': 'Template 输出结构',
-    en: 'Template output structure',
-  },
-  templateSelectedRowFact: {
-    'zh-Hans': '选中行',
-    en: 'Selected row',
-  },
-  templateCharacterCountFact: {
-    'zh-Hans': '字符',
-    en: 'Characters',
-  },
-  templateUtf8BytesFact: {
-    'zh-Hans': 'UTF-8 Bytes',
-    en: 'UTF-8 bytes',
   },
   tokenizer: {
     'zh-Hans': 'Tokenizer',

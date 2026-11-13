@@ -22,7 +22,6 @@ type OutgoingTokenizerRequest =
   | { operation: 'tokenize'; tokenizerIdentity: string; text: string }
   | { operation: 'chat-tokenize'; tokenizerIdentity: string; template: string; context: Record<string, unknown>; attribution: ChatAttributionMessage[] }
   | { operation: 'decode-token-ids'; tokenizerIdentity: string; ids: number[]; originalInput: string }
-  | { operation: 'render-template'; tokenizerIdentity: ''; source: string; context: Record<string, unknown> }
   | { operation: 'search-vocabulary'; tokenizerIdentity: string; query: string }
   | { operation: 'prepare-vocabulary-diff'; tokenizerIdentity: string; leftFormat: 'json' | 'sentencepiece'; tokenizerData: ArrayBuffer }
   | { operation: 'search-vocabulary-diff'; tokenizerIdentity: string; scope: VocabularyDiffScope; query: string }
@@ -105,7 +104,6 @@ export type TokenizerSession = {
     originalInput?: string,
     signal?: AbortSignal,
   ): Promise<Tokenization>
-  renderTemplate(source: string, context: Record<string, unknown>): Promise<string>
   cancel(): void
   dispose(): void
 }
@@ -289,19 +287,6 @@ class ClientTokenizerSession implements TokenizerSession {
       ids,
       originalInput,
     }, [], signal), false)
-  }
-
-  async renderTemplate(source: string, context: Record<string, unknown>): Promise<string> {
-    this.assertUsable()
-    if (new TextEncoder().encode(source).byteLength > 64 * 1024) throw new Error(t('templateSourceTooLarge'))
-    const serialized = JSON.stringify(context)
-    if (new TextEncoder().encode(serialized).byteLength > 64 * 1024) throw new Error(t('templateContextTooLarge'))
-    return await this.request({
-      operation: 'render-template',
-      tokenizerIdentity: '',
-      source,
-      context,
-    }) as string
   }
 
   cancel(): void {
@@ -532,7 +517,7 @@ function isReplyEnvelope(value: unknown): value is TokenizerReply & { ok: boolea
 
 const operations = new Set<string>([
   'load', 'inspect-structure', 'tokenize', 'chat-tokenize',
-  'decode-token-ids', 'render-template', 'search-vocabulary',
+  'decode-token-ids', 'search-vocabulary',
   'prepare-vocabulary-diff', 'search-vocabulary-diff',
 ] satisfies TokenizerOperation[])
 
@@ -650,9 +635,6 @@ export async function searchTokenizerVocabulary(
   return await mainTokenizerSession.searchTokenizerVocabulary(snapshot, tokenizerFile, configFile, query, signal)
 }
 
-export async function renderTemplate(source: string, context: Record<string, unknown>): Promise<string> {
-  return await mainTokenizerSession.renderTemplate(source, context)
-}
 
 export function cancelTokenizerRequests(): void {
   mainTokenizerSession.cancel()

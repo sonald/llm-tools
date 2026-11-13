@@ -1216,8 +1216,9 @@ test('opens every supported local directory reader without network upload', { ti
   await expect(page.getByText('Entry 数量').locator('..')).toContainText('2')
   await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
   await page.getByText('Chat Template 试验台').click()
-  await page.getByRole('button', { name: '渲染', exact: true }).click()
-  await expect(page.getByRole('table', { name: 'Template 输出结构' })).toContainText('You are concise.')
+  // Native prefills string special tokens from the config; the embedded playground renders live.
+  await expect(page.getByLabel('变量名')).toHaveValue('unk_token')
+  await expect(page.getByLabel('原始输出 · 权威')).toHaveText('You are a helpful assistant.')
 
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
   await expect(page.getByText('Model Type').locator('..')).toContainText('WordPiece')
@@ -1611,13 +1612,11 @@ test('Jinja source find preserves query while editing and resets on file switch'
   await expect(searchInput).toHaveValue('thinking')
   await expect(search.getByText('1 / 3', { exact: true })).toBeVisible()
   await expect(page.locator('.jinja-highlight mark.find-match')).toHaveCount(3)
+  // Typing with the find bar open keeps the caret where the user typed (native NSTextView find bar).
   expect(await jinjaSource.evaluate(element => {
     const source = element as HTMLTextAreaElement
-    return {
-      selected: source.value.slice(source.selectionStart ?? 0, source.selectionEnd ?? 0),
-      length: (source.selectionEnd ?? 0) - (source.selectionStart ?? 0),
-    }
-  })).toEqual({ selected: 'thinking', length: 'thinking'.length })
+    return source.selectionStart === source.value.length && source.selectionEnd === source.value.length
+  })).toBe(true)
 
   await page.getByRole('button', { name: /^config\.json/ }).click()
   await expect(search).toBeHidden()
@@ -1783,35 +1782,152 @@ test('parses bounded legacy Imatrix files and exposes searchable entry details',
   expect(errors).toEqual([])
 })
 
-test('edits and renders the authoritative Jinja source in a Worker', async ({ page }) => {
+test('Jinja workspace shares one temporary source across overview, source and live playground', async ({ page }) => {
   const errors = collectErrors(page)
   await installFixtureRoutes(page)
   await openFixture(page)
 
   await page.getByRole('button', { name: /^chat_template\.jinja/ }).click()
-  await openPerspective(page, '源码')
-  await expect(page.locator('.template-source > header')).toContainText('chat_template.jinja')
-  await expect(page.getByLabel('Jinja 源码')).toContainText('mode={{ mode }}')
-  await expect(page.getByLabel('Jinja 源码')).not.toContainText('embedded=')
+  await expect(page.getByRole('heading', { name: 'Jinja Chat Template' })).toBeVisible()
+  const facts = page.locator('.inspection-facts')
+  await expect(facts).toContainText('行数6应用推导')
+  await expect(facts).toContainText('当前状态未修改运行结果')
+  await page.getByRole('button', { name: '查看源码' }).click()
+  const source = page.getByLabel('Jinja 源码')
+  await expect(source).toHaveValue(/mode=\{\{ mode \}\}/)
+  await expect(page.locator('.jinja-keyword').first()).toHaveText('for')
+  await expect(page.locator('.jinja-delimiter').first()).toHaveText('{%')
+  await expect(page.locator('.jinja-source-details')).toContainText('状态来源原文')
+  await expect(page.getByRole('button', { name: '恢复来源原文' })).toBeDisabled()
 
+  // Native TemplatePlaygroundView renders live after 220 ms; there is no render button.
   await openPerspective(page, '试验台')
-  await page.getByLabel('Preset').selectOption('tools')
-  await page.getByRole('button', { name: '渲染', exact: true }).click()
-  await expect(page.getByRole('table', { name: 'Template 输出结构' })).toContainText('mode=tools')
-  await expect(page.getByRole('table', { name: 'Template 输出结构' })).toContainText('search')
-  await page.getByRole('button', { name: '原始输出' }).click()
-  await expect(page.locator('.template-output .source-reader')).toContainText('assistant=')
+  const raw = page.getByLabel('原始输出 · 权威')
+  const status = page.getByRole('status')
+  await expect(raw).toHaveText('system=You are a helpful assistant.;user=Hello!;thinking=true;mode=;assistant=')
+  await expect(status).toContainText('实时预览')
+  await expect(page.getByText('未识别可索引的消息边界')).toBeVisible()
+  await expect(page.getByRole('button', { name: '渲染', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('checkbox', { name: 'Tools' })).not.toBeChecked()
 
-  await openPerspective(page, '源码')
-  await page.getByLabel('Jinja 源码').fill('{% include "remote.jinja" %}')
-  await expect(page.locator('.jinja-statement')).toContainText('include')
-  await openPerspective(page, '试验台')
-  await page.getByRole('button', { name: '渲染', exact: true }).click()
+  await page.getByLabel('载入示例').selectOption('tools')
+  await expect(page.getByRole('checkbox', { name: 'Tools' })).toBeChecked()
+  await expect(raw).toContainText('tools=[{"type": "function", "function": {"name": "get_weather"')
+  await page.getByRole('checkbox', { name: 'Tools' }).uncheck()
+  await expect(raw).not.toContainText('tools=')
+
+  await page.locator('.request-editor section').filter({ hasText: '其他变量' }).getByRole('button', { name: /添加/ }).click()
+  const name = page.getByLabel('变量名').last()
+  await expect(name).toHaveValue('custom_arg')
+  await name.fill('mode')
+  await page.getByLabel('值', { exact: true }).last().fill('tools')
+  await expect(raw).toContainText(';mode=tools;')
+  await name.fill('messages')
+  await expect(page.getByRole('alert')).toHaveText('⚠︎ “messages”由专用编辑器管理。')
+  await expect(status).toContainText('输入或模板有错误')
+  await expect(page.locator('.pane-header').filter({ hasText: '渲染结果' })).toContainText('未生成')
+  await expect(page.getByRole('button', { name: '复制原始输出' })).toBeDisabled()
+  await name.fill('mode')
+
+  const template = page.getByLabel('Jinja 模板')
+  await template.fill('{% include "remote.jinja" %}')
   await expect(page.getByRole('alert')).toContainText('include')
-  await expect(page.locator('.template-output .source-reader')).toHaveCount(0)
+  await page.getByRole('button', { name: '恢复原模板' }).click()
+  await expect(raw).toContainText(';mode=tools;')
+
+  // The playground edits the same temporary source the 源码 perspective shows.
+  await template.fill('changed {{ mode }}')
+  await expect(raw).toHaveText('changed tools')
   await openPerspective(page, '源码')
-  await page.getByRole('button', { name: '恢复来源' }).click()
-  await expect(page.getByLabel('Jinja 源码')).toContainText('mode={{ mode }}')
+  await expect(source).toHaveValue('changed {{ mode }}')
+  await expect(page.locator('.jinja-modified')).toHaveText('临时修改')
+  await page.getByRole('button', { name: '恢复来源原文' }).click()
+  await expect(source).toHaveValue(/mode=\{\{ mode \}\}/)
+  await expect(page.locator('.jinja-modified')).toHaveCount(0)
+  expect(errors).toEqual([])
+})
+
+test('Chat Template playground indexes message boundaries and inspects JSON content', async ({ page }) => {
+  const errors = collectErrors(page)
+  // Wide enough that the playground keeps its native side-by-side splits beside the sidebar and inspector.
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  await installFixtureRoutes(page)
+  await openFixture(page)
+  await page.getByRole('button', { name: /^chat_template\.jinja/ }).click()
+  await openPerspective(page, '试验台')
+  await page.getByLabel('Jinja 模板').fill(
+    '{% for m in messages %}<|message_{{ m.role }}|>{% if m.content is string %}<|content_text|>{{ m.content }}'
+    + '{% else %}<|content_json|>{{ m.content | tojson }}{% endif %}<|end_message|>{% endfor %}<|message_model|>')
+  await page.getByLabel('载入示例').selectOption('multimodal')
+  const structure = page.getByRole('list', { name: '结构索引 · 只读' })
+  await expect(structure.getByRole('button')).toHaveText(['USER', 'content_json', 'MODEL', 'generation prompt'])
+  // The first item with a JSON payload is selected and parsed in the content inspector.
+  await expect(structure.getByRole('button', { name: 'content_json' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('.content-inspector')).toContainText('"type" : "image"')
+  await expect(page.locator('.output-selected').first()).toHaveText('<|content_json|>')
+  await expect(page.locator('.output-token').first()).toHaveText('<|message_user|>')
+  await structure.getByRole('button', { name: 'USER' }).click()
+  await expect(page.locator('.content-inspector')).toHaveCount(0)
+  await expect(page.locator('.raw-output')).toContainText('软换行仅用于显示，不属于输出')
+
+  // ⌘F inside the authoritative output marks matches there only.
+  const raw = page.getByLabel('原始输出 · 权威')
+  await raw.focus()
+  await page.keyboard.press('ControlOrMeta+f')
+  await page.getByRole('textbox', { name: '当前文件查找' }).fill('content_json')
+  await expect(page.locator('.raw-output mark.find-match')).toHaveCount(1)
+  await page.getByRole('textbox', { name: '当前文件查找' }).press('Escape')
+
+  // The three native split views drag within native bounds: inputs 280–360, structure 190–280, preview ≥ 260.
+  const width = (selector: string) => page.locator(selector).evaluate(element => element.getBoundingClientRect().width)
+  const drag = async (selector: string, dx: number, dy: number) => {
+    const box = (await page.locator(selector).boundingBox())!
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2 + dy, { steps: 4 })
+    await page.mouse.up()
+  }
+  await drag('.playground-body > .resize-x', -40, 0)
+  expect(await width('.playground-inputs')).toBe(350)
+  await drag('.playground-body > .resize-x', -100, 0)
+  expect(await width('.playground-inputs')).toBe(360)
+  await drag('.playground-preview-split > .resize-x', 30, 0)
+  expect(await width('.output-structure')).toBe(250)
+  const previewHeight = await page.locator('.playground-preview').evaluate(element => element.getBoundingClientRect().height)
+  await drag('.playground-main > .resize-y', 0, -40)
+  // The even split starts at a fractional height; the drag lands on whole pixels.
+  expect(Math.abs(await page.locator('.playground-preview').evaluate(element => element.getBoundingClientRect().height) - previewHeight - 40)).toBeLessThanOrEqual(1)
+  expect(errors).toEqual([])
+})
+
+test('Chat Template playground follows the selection in long output and drops superseded renders', async ({ page }) => {
+  const errors = collectErrors(page)
+  await installFixtureRoutes(page)
+  await openFixture(page)
+  await page.getByRole('button', { name: /^chat_template\.jinja/ }).click()
+  await openPerspective(page, '试验台')
+  const template = page.getByLabel('Jinja 模板')
+  const raw = page.getByLabel('原始输出 · 权威')
+  // A runaway render is terminated when a newer request arrives.
+  await template.fill('{% for i in range(100000000) %}{% endfor %}slow')
+  await expect(page.getByRole('status')).toContainText('渲染中')
+  await template.fill('{% for i in range(300) %}line {{ i }}\n{% endfor %}<|message_user|><|content_json|>[1]<|end_message|>')
+  await expect(page.getByRole('status')).toContainText('实时预览')
+  // The selected content item sits at the end of 300 lines, so the output scrolls to it.
+  await expect(page.getByRole('button', { name: 'content_json' })).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => raw.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+  await page.getByRole('button', { name: 'USER' }).click()
+  await expect(raw).not.toContainText('slow')
+
+  // The editor itself scrolls, so arrow keys keep the caret in view; the highlight layer mirrors its offset.
+  await template.fill(Array.from({ length: 200 }, (_, index) => `{{ value_${index} }}`).join('\n'))
+  await template.evaluate(element => { (element as HTMLTextAreaElement).setSelectionRange(0, 0); element.scrollTop = 0 })
+  for (let index = 0; index < 60; index += 1) await template.press('ArrowDown')
+  const offsets = await page.locator('.playground-template .jinja-editor-layers').evaluate(element => ({
+    area: element.querySelector('textarea')!.scrollTop, highlight: element.querySelector('pre')!.scrollTop,
+  }))
+  expect(offsets.area).toBeGreaterThan(0)
+  expect(offsets.highlight).toBe(offsets.area)
   expect(errors).toEqual([])
 })
 
@@ -2192,8 +2308,7 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
   await source.press('ControlOrMeta+A')
   await page.keyboard.insertText('{{ messages | length }}')
   await page.getByRole('group', { name: '阅读视图' }).getByRole('button', { name: '试验台', exact: true }).press('Enter')
-  await page.getByRole('button', { name: '渲染', exact: true }).press('Enter')
-  await expect(page.getByRole('table', { name: 'Template 输出结构' })).toContainText('2')
+  await expect(page.getByLabel('原始输出 · 权威')).toHaveText('2')
 
   await page.emulateMedia({ colorScheme: 'dark' })
   await page.goto(`/?repo=${encodeURIComponent(fixtureModelId)}&file=model.gguf`)

@@ -18,7 +18,8 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 - **W:** = `tools/model-files-web/src/`
 - 原生视图：DV = `Views/DetailView.swift`，CV = `Views/ContentView.swift`，SV = `Views/SidebarView.swift`，IV = `Views/InspectorView.swift`，TPV = `Views/TemplatePlaygroundView.swift`，TKP = `Views/TokenizerPlaygroundView.swift`，TCV = `Views/TokenizerComparisonView.swift`，TTV = `Views/TokenizerTokenTableView.swift`
 - 原生其他：ST = `Stores/ModelFilesStore.swift`，ROI = `Support/RenderedOutputInspector.swift`，TR = `Support/TemplateRenderer.swift`
-- Web：App = `App.tsx`，TW = `TemplateWorkbench.tsx`，CSS = `styles.css`
+- Web：App = `App.tsx`，TW = `TemplateWorkbench.tsx`，TP = `TemplatePlayground.tsx`，TQ = `core/templateRequest.ts`，RO = `core/renderedOutput.ts`，CSS = `styles.css`
+- E2E：MF = `e2e/model-files.spec.ts`，JP = `e2e/json-parity.spec.ts`；单测 TPT = `core/templatePlayground.test.ts`
 
 状态：`缺失`（Web 没有）· `不同`（有，但行为、布局或文案不同）· `平台限制`（已有证据）· `待裁决` · `未验证`（需要实测或黄金用例）· `Web 独有` · `已关闭`
 
@@ -61,6 +62,7 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 - **D-8**：取消 Chat Template 的 64 KiB 上限。
 - **D-10**：Web 不加 ⌘1–4 视角快捷键，保留浏览器原有的切换标签页（2026-11-13 用户裁决）。
 - **D-12**：背景面跟随原生。
+- **D-13**：模板引擎差异，待用户裁决（见表）。批次 3 暂按 Web 引擎（等同 transformers）输出，T-12 不标 PASS。
 
 
 | ID | 原生行为 | Web 现状 | 说明 |
@@ -72,11 +74,12 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | D-5 | Token 流、表、IDs 全部显示（TTV:73-77,185-213） | 每页 1,000 条；>2,000 个 id 折叠成一个片段；>100 个 id 合并成一个片段（`core/tokenizer.ts:222`，App:2821,2831,2870,2887,2899）。停靠的 Token IDs 标签**没有**「再显示」按钮，超过 1,000 条看不到 | 性能选择 |
 | D-6 | Tensor 列表一次全部显示（DV:869-874） | 每次 100 行（App:1112,1275） | SPEC §4.7 |
 | D-7 | Markdown 加载第三方 HTTPS 图片（`MarkdownReaderView.swift:226-259`） | 显示占位；CSP 为 `img-src 'self' data: blob:`（`index.html:9`） | 是否放宽 CSP |
-| D-8 | Chat Template 没有单独上限（只有 32 MiB bundle 上限） | 64 KiB（`tokenizerClient.ts:183-186,296-298`，App:1740,1851） | Tokenizer 输入的 64 KiB 两端一致，不在此列 |
+| D-8 | Chat Template 没有单独上限（只有 32 MiB bundle 上限） | 64 KiB（`tokenizerClient.ts:183-186`，App:540,1812,1923 的 tokenizer Chat 读取）；2026-11-13 已取消 `.jinja` 阅读器和试验台的上限，tokenizer Chat 的随批次 4 处理 | Tokenizer 输入的 64 KiB 两端一致，不在此列 |
 | D-9 | — | Web 独有功能（§4） | 保留、改造还是删除 |
 | D-10 | ⌘1–⌘4 切换视角（DV:262-275） | 没有 | 只查了资料，没有实测：Chrome/Edge、Firefox 页面能拦截（Chromium 保留键列表不含按序号切标签，Mozilla Bug 1074971），Safari 很可能拦不到（只有一篇厂商 KB 佐证）。→ 已裁决：Web 不加，算平台差异（2026-11-13） |
 | D-11 | 状态放在工具栏右侧，原生**没有**底部状态栏（CV:62-77） | 新增底部状态栏：仓库状态，以及与头部重复的「路径 · 格式 · 大小」（App:759-777） | 保留状态栏，还是移回工具栏 → 已移回工具栏右侧，底部状态栏已删除（2026-11-13）；状态内容见 S-6 |
 | D-12 | 原生明确保留系统背景材质（`Support/Palette.swift:5` 注释） | 自定义暗色背景面（CSS:1-19,698-716） | 是否改为接近系统色 |
+| D-13 | swift-jinja：`tojson` 排序键、紧凑分隔符、`\u00e9` 和 `\/` 转义；JSON 变量里的 `true` 变成 `1`；JSON `null` 报错；小数 `1.0`、`7/2→3.0` 保留小数点；`sort_keys=false` 或其他 separators 直接报错（TR:116-130，2026-11-13 金样） | @huggingface/jinja：插入顺序、`", "`/`": "`、不转义；`true`/`null` 正常；JS 数字不区分 `1.0` 和 `1`；kwargs 全部支持 | transformers `chat_template_utils.py` 的 `tojson` 是 `json.dumps(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False)`，Web 与之一致，原生偏离。可选：①Web 保持 transformers 行为，原生另行修复；②Web 模拟原生输出。另：原生 `RenderedOutputInspector.prettyPrintedJSON` 遇到标量 JSON 负载（如 `<\|content_x\|>123`）会抛 ObjC 异常导致崩溃，Web 不复刻 |
 
 ## 3. 缺口矩阵
 
@@ -159,7 +162,7 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | R-5 | 取值格式：null、数组、对象内联显示，大整数完整显示 | DV:2222-2230 | `core/jsonValue.ts` nativeInline/nativeNumberString | PASS | 2026-11-13：单元测试固定了 Swift 输出 |
 | R-6 | config.json：标题为 architectures[0]，没有就用 model_type，再没有就用「模型配置」；副标题 `model_type · torch_dtype · N layers`；分组「模型规模 / Attention / 上下文」，含 intermediate_size、num_attention_heads、num_key_value_heads、head_dim、max_position_embeddings、rope_theta | DV:1929-1973 | `core/readers.ts` jsonSummary(config) | PASS | 2026-11-13 |
 | R-7 | generation_config：「采样」「终止与长度」两组；有 Top K、PAD、重复惩罚，没有 BOS；数组 EOS 照常显示；最大新 token 只读 max_new_tokens | DV:1975-2000 | `core/readers.ts` jsonSummary(generation) | PASS | 2026-11-13 |
-| R-8 | **tokenizer_config：标题为 tokenizer_class；「核心设置」含最大长度 / Padding side / BOS / EOS / UNK；内嵌可折叠的 Chat Template 试验台（只用配置里的 chat_template，变量由配置预填）；有文件内诊断** | DV:2002-2038 | `core/readers.ts:50-57`，App:413-435（有模板时改走 TW 四标签工作台） | 部分 | 2026-11-13：标题、核心设置（含 Padding side、UNK）、诊断已对齐；试验台变量预填留到批次 3 |
+| R-8 | **tokenizer_config：标题为 tokenizer_class；「核心设置」含最大长度 / Padding side / BOS / EOS / UNK；内嵌可折叠的 Chat Template 试验台（只用配置里的 chat_template，变量由配置预填）；有文件内诊断** | DV:2002-2038，TPV:592-606 | `core/readers.ts:50-57`，TW:80-97 | PASS | 2026-11-13：标题、核心设置、诊断已对齐。内嵌试验台是折叠的「Chat Template 试验台」+ 说明，展开时才创建、收起即丢弃临时修改（按 SwiftUI DisclosureGroup 语义，未在原生界面实测），高 640，用配置自己的 chat_template 和 bos/eos/pad/unk 预填（MF「opens every supported local directory reader」：`unk_token` 预填、实时输出） |
 | R-9 | 权重 index：标题「权重分片索引」，总大小格式化，「前 80 条映射」列表 | DV:2040-2065 | `core/readers.ts` jsonSummary(weightIndex) | PASS | 2026-11-13 |
 | R-10 | vocab.json 专用视图：「共 N 个 token」、按 token/ID 搜索、按 ID 排序、显示前 1,000 条 | DV:2067-2107 | `Readers.tsx` VocabSummary + `core/readers.ts` vocabEntries | PASS | 2026-11-13 |
 
@@ -176,7 +179,7 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | C-7 | Markdown 内联 HTML：`<img>`、`<a>`、`<br>` 转成 Markdown，其他标签剥离，保留图片宽度 | `MarkdownReaderView.swift:147-207` | `Readers.tsx:206`（skipHtml） | 不同 | 徽章、logo、链接全部丢失；另见 D-7 |
 | C-8 | Markdown 主题用分段控件；三个视角，全部字段和原文是纯文本 | `MarkdownReaderView.swift:13-25`，DV:601-613 | `Readers.tsx:181-201` | 部分 | 2026-11-13：全部字段/原文改为纯文本；只有 documentation 分类的 .md 渲染；主题仍是下拉框 |
 | C-9 | 图片工具栏「W × H px · 扩展名 · 大小」、1:1、步长 0.25、按尺寸缩放并可滚动 | `ImageReaderView.swift:45-135` | `Readers.tsx:242-362`（CSS transform） | 不同 | |
-| C-10 | Jinja 概览（大小、行数、来源、状态 +「查看源码」「打开试验台」）；就地编辑高亮（6 类 token，系统色）；「源码详情」侧栏 | DV:1009-1103，`Support/JinjaSyntaxHighlighter.swift:128-156` | TW:136-198,254-256，CSS:551-552,759-760 | 不同 | Web 是 textarea + 下方只读预览，只有 3 类 token，表达式和语句的颜色与原生正好相反 |
+| C-10 | Jinja 概览（大小、行数、来源、状态 +「查看源码」「打开试验台」）；就地编辑高亮（6 类 token，系统色）；「源码详情」侧栏 | DV:1009-1103，`Support/JinjaSyntaxHighlighter.swift:128-156` | TW:8-77，TP:88-123，`core/jinjaHighlight.ts` | PASS | 2026-11-13：概览是「Jinja Chat Template」+ 副标题 + 带来源列的「概览」事实表 + 两个按钮（切换视角）；源码视图有「临时修改」标记、「恢复来源原文」、可拖动（260–390）的「源码详情」侧栏（行数按原生含空行）。三个视角共用一份临时源码（MF「Jinja workspace shares one temporary source…」）。高亮按原生分层顺序（TPT），颜色取 macOS 系统色。**平台调整**：浏览器没有可富文本的 textarea，编辑器是透明 textarea 叠在排版相同的高亮 `<pre>` 上，textarea 负责滚动、`<pre>` 同步滚动位置；三个引擎实测：加粗 token 宽度差 0，两层内容高度一致，方向键和输入时光标都在可见区内，滚到底两层偏移相同（MF「…follows the selection in long output…」） |
 | C-11 | 「全部展开」：左对齐，小号无边框 | `CodeReaderView.swift:31-42` | CSS `.fold-toolbar` | PASS | 2026-11-13 |
 
 ### 3.7 SafeTensors / GGUF / imatrix
@@ -192,22 +195,22 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | G-1 | GGUF 完整概览、metadata、tensor | 同 D-1 | App:1503-1527 | 待裁决 | 见 D-1 |
 | I-1 | imatrix：分概览和 Entries 两页；标题「Importance Matrix」；缺失值显示「未记录」；列顺序 Mean / Min / Max；数字取 5 位有效数字 | `Views/IMatrixWorkspaceView.swift:9-103` | App:1529-1586 | 不同 | |
 
-### 3.8 Chat Template 试验台（Web 端代码在本轮重设计中未改动）
+### 3.8 Chat Template 试验台（批次 3，2026-11-13 实现）
 
 | ID | 元素 | 原生 | Web | 状态 | 差异 |
 | --- | --- | --- | --- | --- | --- |
-| T-1 | **布局：左侧 Jinja 编辑器（就地高亮、行数）+ 渲染结果，右侧「运行选项」** | TPV:61-137 | TW:200-233 | 不同 | 试验台里没有模板编辑器 |
-| T-2 | 标题 + 状态（渲染中 / 输入或模板有错误 / 实时预览）+「载入示例」+「恢复原模板」 | TPV:47-58,100-115 | TW:203-205,154 | 不同 | |
-| T-3 | **实时渲染（220 ms）** | TPV:81-97 | TW:209（手动点「渲染」） | 不同 | |
-| T-4 | **Messages 卡片：角色、文本/JSON、删除、添加** | TPV:474-489,591-635 | TW:206（JSON textarea） | 不同 | |
-| T-5 | **Tools 开关（关闭时不传 `tools`）+ Tool 卡片** | TPV:497-515,637-668，TR:138-140 | TW:107-111,207 | 不同 | Web 始终传 `tools`。Web 的 tokenizer Chat 标签却会按 `include_tools` 处理（`core/tokenAttribution.ts:62`），两处不一致 |
-| T-6 | **带类型的其他变量（字符串 / 整数 / 小数 / 布尔 / JSON / Null）+ 说明** | TPV:517-537,670-720 | TW:208（JSON 对象） | 不同 | |
-| T-7 | 变量预填：配置里的 bos/eos/pad/unk；模板提到 enable_thinking 时为 true；提到 documents 时为 `[]` | TPV:365-382（TKP:720-749 同样逻辑） | TW:304，App:1597-1600 | 不同 | 两个 Web 试验台都固定 `enable_thinking:false`，还多一个 `mode` |
-| T-8 | 示例（基础对话 / 工具调用 get_weather / 多模态 content） | TPV:296-350 | TW:300-316 | 不同 | |
-| T-9 | 校验错误：保留名、空名、重名、Tool 字段、数字格式；JSON 错误本地化 | TR:142-215 | TW:99-111 | 不同 | TW 静默覆盖保留名，而 tokenizer Chat 标签会报错（`tokenAttribution.ts:58-60`） |
-| T-10 | **输出：「结构索引·只读」与「原始输出·权威」并排；按消息边界建索引；选中后高亮并滚动；内容检查器；说明文字** | TPV:139-294，ROI:19-208 | TW:211-231（二选一切换，按行建索引） | 不同 | |
-| T-11 | 原始输出：`<\|…\|>` 粉色加粗、查找、「模板没有产生输出。」、字节数、内容为空时复制按钮禁用 | ROI:150-208，TPV:145-177 | TW:213-225 | 不同 | |
-| T-12 | `tojson` 的 sort_keys 和 separators 兼容 | TR:105-130 | `tokenizer.worker.ts`（@huggingface/jinja） | 未验证 | 需要黄金用例 |
+| T-1 | **布局：左侧 Jinja 编辑器（就地高亮、行数）+ 渲染结果，右侧「运行选项」** | TPV:61-137 | TP:200-227，CSS | PASS | 2026-11-13：左列「Jinja 模板 · N 行」（N 不含空行，同原生 `split`）在上、「渲染结果」在下，右列输入，三处分隔都能拖动，范围同原生（MF「Chat Template playground indexes…」拖动断言）。**平台调整**：原生最小宽度 560+280+360 放不进侧栏和检查器之间的详情列，所以按试验台自身宽度（container query）调整：窄于 760px 时输入区移到编辑器下方，窄于 480px 时所有分隔纵向堆叠（已截图检查 1440、1280、1024、390px，均无横向溢出） |
+| T-2 | 标题 + 状态（渲染中 / 输入或模板有错误 / 实时预览）+「载入示例」+「恢复原模板」 | TPV:47-58,100-115 | TP:187-206 | PASS | 2026-11-13：同原生。「载入示例」原生是 Menu，Web 用同名下拉框 |
+| T-3 | **实时渲染（220 ms）** | TPV:81-97 | TP:157-178，`templateRender.ts` | PASS | 2026-11-13：输入变化即显示「渲染中」，220 ms 后在专用 Worker 渲染；新请求到来时终止旧 Worker，失控模板不会卡住输入或 tokenizer Worker（MF「…drops superseded renders」）。渲染后选中第一个带 JSON 的结构项，否则第一项 |
+| T-4 | **Messages 卡片：角色、文本/JSON、删除、添加** | TPV:474-489,591-635 | TP:393-415 | PASS | 2026-11-13：角色 115 宽、类型 80 宽、删除；「添加」追加空 user 消息 |
+| T-5 | **Tools 开关（关闭时不传 `tools`）+ Tool 卡片** | TPV:497-515,637-668，TR:138-140 | TP:356-370,417-432，TQ:76-106 | PASS | 2026-11-13：关闭时 context 里没有 `tools`（TPT、MF 断言输出无 `tools=`），开启后显示 Tool 卡片和「添加 Tool」（new_tool） |
+| T-6 | **带类型的其他变量（字符串 / 整数 / 小数 / 布尔 / JSON / Null）+ 说明** | TPV:517-537,670-720 | TP:434-470，TQ:108-151 | PASS | 2026-11-13：值控件随类型切换；整数/小数解析按 Swift `Int()`/`Double()` 金样（TPT） |
+| T-7 | 变量预填：配置里的 bos/eos/pad/unk；模板提到 enable_thinking 时为 true；提到 documents 时为 `[]` | TPV:365-382（TKP:720-749 同样逻辑） | TQ:61-73 | PASS | 2026-11-13：只预填字符串或显式 null 的 token（TPT）。tokenizer 试验台的同名逻辑属于批次 4 |
+| T-8 | 示例（基础对话 / 工具调用 get_weather / 多模态 content） | TPV:296-350 | TP:180-184，TQ:31-59 | PASS | 2026-11-13：示例只改 messages、Tools 开关、add_generation_prompt（工具示例还重置 tools），不动变量和模板 |
+| T-9 | 校验错误：保留名、空名、重名、Tool 字段、数字格式；JSON 错误本地化 | TR:142-215 | TQ:76-133 | PASS | 2026-11-13：文案取原生目录（TPT 逐条断言；MF 断言保留名错误、状态和「未生成」） |
+| T-10 | **输出：「结构索引·只读」与「原始输出·权威」并排；按消息边界建索引；选中后高亮并滚动；内容检查器；说明文字** | TPV:139-294，ROI:19-208 | TP:240-297，RO | PASS | 2026-11-13：索引规则逐项对齐原生金样（TPT）；内容检查器用共享 CodeReader（MF「Chat Template playground indexes…」）；选中项在长输出里自动滚到可见（MF「…follows the selection in long output…」）。原生遇到标量 JSON 负载会崩溃，Web 不显示检查器 |
+| T-11 | 原始输出：`<\|…\|>` 粉色加粗、查找、「模板没有产生输出。」、字节数、内容为空时复制按钮禁用 | ROI:150-208，TPV:145-177 | TP:299-331 | PASS | 2026-11-13：按字符折行；⌘F 查找只标记、滚动输出区（MF「Chat Template playground indexes…」）；选中范围用强调色 42% |
+| T-12 | `tojson` 的 sort_keys 和 separators 兼容 | TR:105-130 | `templateRender.worker.ts`（@huggingface/jinja） | 待裁决 | 金样已补（见 D-13）：两端输出不同，等用户裁决 |
 
 ### 3.9 Tokenizer 试验台
 

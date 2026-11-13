@@ -81,7 +81,8 @@ import {
   type VocabularyDiffScope,
 } from './core/tokenizer.ts'
 import { ImageInspection, PdfInspection, SourceInspection, TextInspection, type FileDiagnostic } from './Readers.tsx'
-import { TemplateWorkbench } from './TemplateWorkbench.tsx'
+import { ResizeHandle } from './ResizeHandle.tsx'
+import { EmbeddedTemplatePlayground, TemplateWorkbench } from './TemplateWorkbench.tsx'
 import { formatNumber, translate as t, type MessageKey } from './i18n.ts'
 
 const categoryLabels: Record<FileCategory, MessageKey> = {
@@ -113,8 +114,6 @@ type Inspection =
     kind: 'template'
     file: RepositoryFile
     source: string
-    sourceOrigin: string
-    bytesRead: number
   }
 
 type SourceMode = 'huggingface' | 'file' | 'manifest'
@@ -445,11 +444,8 @@ export default function App() {
           bytesRead: data.byteLength,
         }
       } else if (lower.endsWith('.jinja')) {
-        const data = await readWholeFile(activeSnapshot, file, controller.signal, 64 * 1024)
-        next = {
-          kind: 'template', file, source: decodeStrictText(data),
-          sourceOrigin: file.path, bytesRead: data.byteLength,
-        }
+        // D-8: native reads .jinja like any readable file, without a template-specific 64 KiB cap.
+        next = { kind: 'template', file, source: decodeStrictText(await readWholeFile(activeSnapshot, file, controller.signal)) }
       } else if (isImatrixPath(file.path)) {
         const data = await readWholeFile(activeSnapshot, file, controller.signal)
         next = { kind: 'imatrix', file, summary: inspectImatrix(data), bytesRead: data.byteLength }
@@ -1127,10 +1123,9 @@ function DetailBody({
         {inspection.kind === 'template' && snapshot !== null ? (
           <TemplateWorkbench
             key={`${snapshotIdentity(snapshot)}/${file.path}`}
-            sourceOrigin={inspection.sourceOrigin}
             initialSource={inspection.source}
-            bytesRead={inspection.bytesRead}
             perspective={perspective === 'source' || perspective === 'playground' ? perspective : 'overview'}
+            onPerspectiveChange={onPerspectiveChange}
           />
         ) : null}
         {inspection.kind === 'tokenizer' && snapshot !== null ? (
@@ -1171,18 +1166,7 @@ function embeddedChatTemplate(file: RepositoryFile, parsed: unknown): React.Reac
   if (file.path.split('/').at(-1)?.toLocaleLowerCase() !== 'tokenizer_config.json') return null
   if (!isUnknownRecord(parsed) || typeof parsed.chat_template !== 'string' || parsed.chat_template === '') return null
   return (
-    <details className="embedded-playground">
-      <summary>
-        <strong>{t('templateEmbeddedPlaygroundTitle')}</strong>
-        <span>{t('templateEmbeddedPlaygroundHint')}</span>
-      </summary>
-      <TemplateWorkbench
-        sourceOrigin={`${file.path} · chat_template`}
-        initialSource={parsed.chat_template}
-        bytesRead={new TextEncoder().encode(parsed.chat_template).byteLength}
-        perspective="embedded"
-      />
-    </details>
+    <EmbeddedTemplatePlayground key={file.path} template={parsed.chat_template} tokenizerConfig={parsed} />
   )
 }
 
@@ -1443,36 +1427,6 @@ function BottomPanel({ height, tabs, activeTab, onSelectTab, report, selectedFin
 }
 
 // Native draws these splits by hand too; dragging the bottom panel's top edge or the inspector's left edge.
-function ResizeHandle({ axis, value, min, max, onChange }: {
-  axis: 'x' | 'y'
-  value: number
-  min: number
-  max: number
-  onChange(value: number): void
-}) {
-  return (
-    <div className={`resize-handle resize-${axis}`} aria-hidden="true"
-      onPointerDown={event => {
-        event.preventDefault()
-        const start = axis === 'y' ? event.clientY : event.clientX
-        const handle = event.currentTarget
-        handle.setPointerCapture(event.pointerId)
-        const move = (next: PointerEvent) => {
-          const delta = (axis === 'y' ? next.clientY : next.clientX) - start
-          onChange(Math.min(Math.max(value - delta, min), max))
-        }
-        const end = () => {
-          handle.removeEventListener('pointermove', move)
-          handle.removeEventListener('pointerup', end)
-          handle.removeEventListener('pointercancel', end)
-        }
-        handle.addEventListener('pointermove', move)
-        handle.addEventListener('pointerup', end)
-        handle.addEventListener('pointercancel', end)
-      }} />
-  )
-}
-
 function Inspector({ inspection, report, selectedFindingId, slotRef }: {
   inspection: Inspection
   report: RepositoryConsistencyReport | null

@@ -142,27 +142,12 @@ export function CodeReader({ content, language, label, marks = [], jump = null }
         </div>
       ) : null}
       {find.open ? (
-        <section aria-label={t('readerCurrentFileFind')} className="source-find" role="search">
-          <input
-            aria-label={t('readerCurrentFileFind')}
-            autoFocus
-            onChange={event => setFind({ ...closedFind, open: true, query: event.target.value })}
-            onKeyDown={event => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                navigateFind(event.shiftKey ? 'previous' : 'next')
-              } else if (event.key === 'Escape') {
-                event.preventDefault()
-                setFind(closedFind)
-                preRef.current?.focus()
-              }
-            }}
-            value={find.query}
-          />
-          <span>{formatNumber(result.current)} / {formatNumber(result.total)}</span>
-          <button disabled={result.total === 0} onClick={() => navigateFind('previous')} type="button">{t('readerPreviousMatch')}</button>
-          <button disabled={result.total === 0} onClick={() => navigateFind('next')} type="button">{t('readerNextMatch')}</button>
-        </section>
+        <FindBar query={find.query} current={result.current} total={result.total}
+          onQuery={query => setFind({ ...closedFind, open: true, query })} onNavigate={navigateFind}
+          onClose={() => {
+            setFind(closedFind)
+            preRef.current?.focus()
+          }} />
       ) : null}
       <pre
         ref={preRef}
@@ -172,7 +157,7 @@ export function CodeReader({ content, language, label, marks = [], jump = null }
         data-highlighted={highlighted}
         tabIndex={0}
         onKeyDown={event => {
-          if ((!event.metaKey && !event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'f') return
+          if (!isFindShortcut(event)) return
           event.preventDefault()
           setFind(state => state.open ? state : { ...closedFind, open: true })
         }}
@@ -247,6 +232,44 @@ export function CodeReader({ content, language, label, marks = [], jump = null }
       </pre>
     </div>
   )
+}
+
+// The in-file find bar shared by every reader (Enter / Shift+Enter navigate, Escape closes).
+export function FindBar({ query, current, total, onQuery, onNavigate, onClose }: {
+  query: string
+  current: number
+  total: number
+  onQuery(query: string): void
+  onNavigate(navigation: 'next' | 'previous'): void
+  onClose(): void
+}) {
+  return (
+    <section aria-label={t('readerCurrentFileFind')} className="source-find" role="search">
+      <input
+        aria-label={t('readerCurrentFileFind')}
+        autoFocus
+        onChange={event => onQuery(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            onNavigate(event.shiftKey ? 'previous' : 'next')
+          } else if (event.key === 'Escape') {
+            event.preventDefault()
+            onClose()
+          }
+        }}
+        value={query}
+      />
+      <span>{formatNumber(current)} / {formatNumber(total)}</span>
+      <button disabled={total === 0} onClick={() => onNavigate('previous')} type="button">{t('readerPreviousMatch')}</button>
+      <button disabled={total === 0} onClick={() => onNavigate('next')} type="button">{t('readerNextMatch')}</button>
+    </section>
+  )
+}
+
+// Opens the find bar on ⌘F / Ctrl+F.
+export function isFindShortcut(event: { metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; key: string }) {
+  return (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f'
 }
 
 // Prism runs in a Worker over the whole file; the caller only routes ≤128 KB sources here (native rule).

@@ -73,7 +73,7 @@ test('all JSON file routes highlight and fold source, including large tokenizers
   expect(errors).toEqual([])
 })
 
-test('JSON roots and malformed input remain inspectable, template JSON shares reader', async ({ page }, testInfo) => {
+test('JSON roots and malformed input remain inspectable, template JSON renders verbatim', async ({ page }, testInfo) => {
   const directory = testInfo.outputPath('json-roots')
   await mkdir(directory, { recursive: true })
   const contents = { 'null.json': 'null', 'array.json': '[\n  {"a": true}\n]', 'invalid.json': '{"broken":', 'chat_template.jinja': '{\n  "items": [\n    true, null\n  ]\n}' }
@@ -96,11 +96,9 @@ test('JSON roots and malformed input remain inspectable, template JSON shares re
   }
   await page.getByRole('button', { name: /^chat_template\.jinja/ }).click()
   await openPerspective(page, '试验台')
-  await page.getByRole('button', { name: '渲染', exact: true }).click()
-  await page.getByRole('button', { name: '原始输出' }).click()
-  await expect(page.locator('.template-output .source-reader')).toHaveAttribute('data-highlighted', 'true')
-  await page.getByRole('button', { name: '折叠第 2 行结构' }).click()
-  await expect(page.getByRole('button', { name: '展开第 2 行结构' })).toBeVisible()
+  // Native RenderedOutputTextView shows the raw output verbatim; JSON is only parsed for indexed content payloads.
+  await expect(page.getByLabel('原始输出 · 权威')).toHaveText(contents['chat_template.jinja'])
+  await expect(page.getByText('未识别可索引的消息边界')).toBeVisible()
 })
 
 test('JSON fields show lexeme-preserving formatted source like native JSONReaderView', async ({ page }, testInfo) => {

@@ -69,21 +69,22 @@ export function nativeInline(node: JsonNode): string {
 }
 
 // JSONSerialization .prettyPrinted + .sortedKeys: two-space indent, `"key" : value`, doubles as %.17g.
-export function nativePretty(node: JsonNode, depth = 0): string {
+// `escapeSlash: false` is .withoutEscapingSlashes.
+export function nativePretty(node: JsonNode, depth = 0, escapeSlash = true): string {
   const indent = '  '.repeat(depth)
   const inner = '  '.repeat(depth + 1)
   switch (node.kind) {
-    case 'string': return escapeString(node.value)
+    case 'string': return escapeString(node.value, escapeSlash)
     case 'number': return /^-?\d+$/.test(node.lexeme) ? integerString(node.lexeme) : formatG(Number(node.lexeme), 17)
     case 'boolean': return String(node.value)
     case 'null': return 'null'
     case 'array':
       if (node.items.length === 0) return `[\n\n${indent}]`
-      return `[\n${node.items.map(item => inner + nativePretty(item, depth + 1)).join(',\n')}\n${indent}]`
+      return `[\n${node.items.map(item => inner + nativePretty(item, depth + 1, escapeSlash)).join(',\n')}\n${indent}]`
     case 'object': {
       if (node.entries.length === 0) return `{\n\n${indent}}`
       const sorted = node.entries.toSorted(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
-      return `{\n${sorted.map(([key, value]) => `${inner}${escapeString(key)} : ${nativePretty(value, depth + 1)}`).join(',\n')}\n${indent}}`
+      return `{\n${sorted.map(([key, value]) => `${inner}${escapeString(key, escapeSlash)} : ${nativePretty(value, depth + 1, escapeSlash)}`).join(',\n')}\n${indent}}`
     }
   }
 }
@@ -105,13 +106,13 @@ export function formatG(value: number, precision: number): string {
   return trim(value.toFixed(Math.max(0, precision - 1 - exponent)))
 }
 
-function escapeString(value: string): string {
+function escapeString(value: string, escapeSlash = true): string {
   let result = '"'
   for (const character of value) {
     const code = character.codePointAt(0)!
     if (character === '"') result += '\\"'
     else if (character === '\\') result += '\\\\'
-    else if (character === '/') result += '\\/'
+    else if (character === '/') result += escapeSlash ? '\\/' : '/'
     else if (character === '\n') result += '\\n'
     else if (character === '\r') result += '\\r'
     else if (character === '\t') result += '\\t'
