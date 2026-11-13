@@ -27,6 +27,8 @@ final class ModelFilesStore: ObservableObject {
     @Published private(set) var tokenizerClassOverride: String?
     @Published private(set) var consistencyReport: RepositoryConsistencyReport?
     @Published private(set) var comparison: TokenizerComparisonSession?
+    @Published var showsBottomPanel = false
+    @Published var selectedFindingID: String?
 
     private let service: RepositoryService
     private var contents: [String: InspectionDocument] = [:]
@@ -93,6 +95,11 @@ final class ModelFilesStore: ObservableObject {
         return components.joined(separator: " · ")
     }
 
+    var selectedFinding: ConsistencyFinding? {
+        guard let selectedFindingID else { return nil }
+        return consistencyReport?.findings.first { $0.id == selectedFindingID }
+    }
+
     var hasMatchingFiles: Bool {
         FileCategory.allCases.contains { !files(in: $0).isEmpty }
     }
@@ -115,6 +122,7 @@ final class ModelFilesStore: ObservableObject {
         errorMessage = nil
         snapshot = nil
         consistencyReport = nil
+        selectedFindingID = nil
         selectedPath = nil
         loadingPath = nil
         contents.removeAll()

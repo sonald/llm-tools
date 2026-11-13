@@ -4,6 +4,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var store = ModelFilesStore()
+    @State private var showsInspector = true
 
     var body: some View {
         NavigationSplitView {
@@ -11,8 +12,16 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 255, ideal: 292, max: 360)
         } detail: {
             DetailView(store: store)
+                .inspector(isPresented: $showsInspector) {
+                    InspectorView(store: store)
+                        .inspectorColumnWidth(min: 220, ideal: 260, max: 380)
+                }
         }
         .navigationSplitViewStyle(.balanced)
+        // Sidebar, detail header and inspector do not all fit below ~1100 pt; drop the inspector first.
+        .onGeometryChange(for: Bool.self) { $0.size.width >= 1_100 } action: { isWide in
+            if !isWide { showsInspector = false }
+        }
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 HStack(spacing: 6) {
@@ -65,6 +74,19 @@ struct ContentView: View {
                     ProgressView()
                         .controlSize(.small)
                 }
+            }
+
+            ToolbarItemGroup(placement: .primaryAction) {
+                Toggle(isOn: $store.showsBottomPanel) {
+                    Label("显示或隐藏底部面板", systemImage: "rectangle.bottomthird.inset.filled")
+                }
+                .help(String(localized: "显示或隐藏底部面板"))
+                .disabled(store.snapshot == nil)
+
+                Toggle(isOn: $showsInspector) {
+                    Label("显示或隐藏检查器", systemImage: "sidebar.trailing")
+                }
+                .help(String(localized: "显示或隐藏检查器"))
             }
         }
         .task {

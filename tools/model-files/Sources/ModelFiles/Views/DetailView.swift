@@ -34,7 +34,21 @@ func consistencyBadgeState(report: RepositoryConsistencyReport?) -> ConsistencyB
 struct DetailView: View {
     @ObservedObject var store: ModelFilesStore
 
+    @State private var panelHeight: CGFloat = 240
+
     var body: some View {
+        VStack(spacing: 0) {
+            content
+                .frame(minHeight: 160)
+            if store.showsBottomPanel, store.snapshot != nil {
+                PanelResizeHandle(height: $panelHeight)
+                ProblemsPanelView(store: store)
+                    .frame(height: panelHeight)
+            }
+        }
+    }
+
+    private var content: some View {
         Group {
             if let file = store.selectedFile {
                 VStack(spacing: 0) {
@@ -118,7 +132,6 @@ struct DetailView: View {
 private struct DetailHeader: View {
     @ObservedObject var store: ModelFilesStore
     let file: RepositoryFile
-    @State private var showsConsistencyReport = false
 
     var body: some View {
         HStack(spacing: 14) {
@@ -154,23 +167,17 @@ private struct DetailHeader: View {
             if store.snapshot != nil {
                 let badge = consistencyBadgeState(report: store.consistencyReport)
                 Button {
-                    showsConsistencyReport.toggle()
+                    store.showsBottomPanel.toggle()
                 } label: {
                     Label(badge.title, systemImage: badgeSystemImage(badge))
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(badgeColor(badge).opacity(0.14), in: Capsule())
+                        .fixedSize()
                 }
                 .buttonStyle(.plain)
                 .help("查看仓库一致性报告")
-                .popover(isPresented: $showsConsistencyReport) {
-                    ScrollView {
-                        ConsistencyReportView(report: store.consistencyReport)
-                            .padding(16)
-                    }
-                    .frame(width: 540, height: 560)
-                }
             }
 
             if let formatTitle = store.selectedInspection?.formatTitle
@@ -357,8 +364,7 @@ private struct InspectionWorkspaceView: View {
                         file: file,
                         data: data,
                         perspective: store.perspective,
-                        baseURL: baseURL,
-                        consistencyReport: store.consistencyReport
+                        baseURL: baseURL
                     )
                 }
             }
@@ -436,7 +442,6 @@ private struct FileReaderView: View {
     let data: Data
     let perspective: InspectionPerspective
     let baseURL: URL?
-    let consistencyReport: RepositoryConsistencyReport?
 
     var body: some View {
         if isJSON && (perspective == .fields || (perspective == .overview && !hasSpecializedSummary)) {
@@ -476,7 +481,7 @@ private struct FileReaderView: View {
     private var summary: some View {
         let name = file.name.lowercased()
         if name == "config.json" || name == "configuration.json" {
-            ConfigSummaryView(object: jsonDictionary, consistencyReport: consistencyReport)
+            ConfigSummaryView(object: jsonDictionary)
         } else if name == "generation_config.json" {
             GenerationSummaryView(object: jsonDictionary)
         } else if name == "tokenizer_config.json" {
@@ -1548,75 +1553,169 @@ private struct TokenizerVocabularyAnalysisView: View {
     }
 }
 
-private struct ConsistencyReportView: View {
-    let report: RepositoryConsistencyReport?
+// VSplitView ignores ideal heights and opens the panel at its minimum, so the split is drawn by hand.
+private struct PanelResizeHandle: View {
+    @Binding var height: CGFloat
+    @State private var startHeight: CGFloat?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("一致性")
-                    .font(.headline)
+        Divider()
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+            .padding(.vertical, -3)
+            .onHover { inside in
+                if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { value in
+                        let start = startHeight ?? height
+                        startHeight = start
+                        height = min(max(start - value.translation.height, 110), 600)
+                    }
+                    .onEnded { _ in startHeight = nil }
+            )
+            .accessibilityHidden(true)
+    }
+}
+
+private struct ProblemsPanelView: View {
+    @ObservedObject var store: ModelFilesStore
+
+    private var report: RepositoryConsistencyReport? { store.consistencyReport }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Text("问题")
+                    .font(.callout.weight(.semibold))
+                if let count = report?.findings.count {
+                    Text(count.formatted())
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(.quaternary, in: Capsule())
+                }
                 Spacer()
                 Text(consistencyBadgeState(report: report).title)
-                    .font(.caption.weight(.semibold))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                Button {
+                    store.showsBottomPanel = false
+                } label: {
+                    Label("关闭", systemImage: "xmark")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
+                .help(String(localized: "关闭"))
             }
+            .padding(.horizontal, 14)
+            .frame(height: 32)
+            .background(.bar)
 
-            if let report {
+            Divider()
+
+            ScrollView {
+                details
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text("底部面板"))
+    }
+
+    @ViewBuilder
+    private var details: some View {
+        if let report {
+            VStack(alignment: .leading, spacing: 14) {
                 if consistencyBadgeState(report: report) == .insufficient {
                     Label("核心材料不足；以下 coverage 显示缺失、跳过或失败项。", systemImage: "questionmark.circle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
-                if !report.identityFields.isEmpty {
-                    sectionTitle(String(localized: "身份"))
-                    VStack(spacing: 6) {
-                        ForEach(report.identityFields) { field in
-                            fieldRow(field)
-                        }
-                    }
-                }
-
-                sectionTitle(String(localized: "发现"))
                 if report.findings.isEmpty {
                     Text("未发现可报告的不一致。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    VStack(spacing: 10) {
+                    VStack(spacing: 2) {
                         ForEach(report.findings) { finding in
-                            findingView(finding)
+                            findingRow(finding)
                         }
                     }
                 }
 
-                sectionTitle("Coverage")
-                VStack(spacing: 6) {
-                    ForEach(report.coverage) { coverage in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Image(systemName: coverageIcon(coverage.status))
-                                .foregroundStyle(coverageColor(coverage.status))
-                                .frame(width: 16)
-                            Text(materialTitle(coverage.material))
-                            Spacer()
-                            Text(coverageTitle(coverage.status))
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.trailing)
+                HStack(alignment: .top, spacing: 28) {
+                    if !report.identityFields.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            sectionTitle(String(localized: "身份"))
+                            ForEach(report.identityFields) { field in
+                                fieldRow(field)
+                            }
                         }
-                        .font(.caption)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                }
-            } else {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("正在检查仓库材料…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        sectionTitle("Coverage")
+                        ForEach(report.coverage) { coverage in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Image(systemName: coverageIcon(coverage.status))
+                                    .foregroundStyle(coverageColor(coverage.status))
+                                    .frame(width: 16)
+                                Text(materialTitle(coverage.material))
+                                Spacer()
+                                Text(coverageTitle(coverage.status))
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.trailing)
+                            }
+                            .font(.caption)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+        } else {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("正在检查仓库材料…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func findingRow(_ finding: ConsistencyFinding) -> some View {
+        let isSelected = store.selectedFindingID == finding.id
+        return Button {
+            store.selectedFindingID = finding.id
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                SeverityIcon(severity: finding.severity)
+                Text(finding.title)
+                    .fontWeight(.medium)
+                Text(verbatim: "\(finding.left.key) = \(finding.left.value) · \(finding.right.key) = \(finding.right.value)")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            .font(.callout)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                isSelected ? Color.accentColor.opacity(0.16) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 6)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -1637,46 +1736,6 @@ private struct ConsistencyReportView: View {
                 .foregroundStyle(.tertiary)
         }
         .font(.caption)
-    }
-
-    private func findingView(_ finding: ConsistencyFinding) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Label(
-                finding.title,
-                systemImage: finding.severity == .warning
-                    ? "exclamationmark.triangle.fill"
-                    : "info.circle"
-            )
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(finding.severity == .warning ? Color.orange : Color.blue)
-            Text(finding.detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack(spacing: 8) {
-                findingField(finding.left)
-                Image(systemName: "arrow.right")
-                    .foregroundStyle(.tertiary)
-                findingField(finding.right)
-            }
-        }
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func findingField(_ field: InspectionField) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(field.key)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(field.value)
-                .fontWeight(.medium)
-                .textSelection(.enabled)
-            Text(field.origin.title)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-        .font(.caption)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func materialTitle(_ material: ConsistencyMaterialKind) -> String {
@@ -1721,12 +1780,9 @@ private struct ConsistencyReportView: View {
 
 private struct ConfigSummaryView: View {
     let object: [String: Any]
-    let consistencyReport: RepositoryConsistencyReport?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            ConsistencyReportView(report: consistencyReport)
-
             VStack(alignment: .leading, spacing: 6) {
                 Text(architecture)
                     .font(.system(size: 25, weight: .semibold, design: .rounded))
