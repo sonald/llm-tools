@@ -44,7 +44,7 @@ struct SidebarView: View {
                         if !files.isEmpty {
                             Section(category.title) {
                                 ForEach(files) { file in
-                                    SidebarFileRow(file: file)
+                                    SidebarFileRow(file: file, problems: store.fileDiagnostics[file.path] ?? [])
                                         .tag(file.path)
                                         .contextMenu { rowContextMenu(for: file) }
                                 }
@@ -112,6 +112,7 @@ struct SidebarView: View {
 
 private struct SidebarFileRow: View {
     let file: RepositoryFile
+    var problems: [FileDiagnostic] = []
 
     var body: some View {
         HStack(spacing: 8) {
@@ -129,6 +130,15 @@ private struct SidebarFileRow: View {
                 }
             }
             Spacer(minLength: 4)
+            if !problems.isEmpty {
+                let isWarning = problems.contains { $0.severity == .warning }
+                Text(problems.count, format: .number)
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(isWarning ? Color.orange : Color.blue)
+                    .padding(.horizontal, 5)
+                    .background((isWarning ? Color.orange : Color.blue).opacity(0.16), in: Capsule())
+                    .accessibilityLabel(Text("\(problems.count) 个问题"))
+            }
             if let size = file.size {
                 Text(size.formattedByteCount)
                     .font(.caption2.monospacedDigit())

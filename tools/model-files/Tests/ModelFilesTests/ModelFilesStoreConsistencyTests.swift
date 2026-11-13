@@ -48,6 +48,7 @@ final class ModelFilesStoreConsistencyTests: XCTestCase {
         XCTAssertTrue(store.consistencyReport?.findings.contains { $0.id == "missing-chat-template" } == true)
         XCTAssertFalse(store.consistencyReport?.findings.contains { $0.id.hasPrefix("gguf-") } == true)
         XCTAssertEqual(status(.gguf, in: try XCTUnwrap(store.consistencyReport)), .missing)
+        XCTAssertEqual(store.fileDiagnostics["config.json"]?.map(\.findingID), ["vocab-mismatch"])
         let configReads = await access.readCount(for: "config.json")
         XCTAssertEqual(configReads, 1)
         let tokenizerReads = await access.readCount(for: "tokenizer.json")

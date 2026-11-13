@@ -26,6 +26,8 @@ final class ModelFilesStore: ObservableObject {
     @Published private(set) var tokenizerConfigData: Data?
     @Published private(set) var tokenizerClassOverride: String?
     @Published private(set) var consistencyReport: RepositoryConsistencyReport?
+    /// Findings anchored in each repository file, keyed by path.
+    @Published private(set) var fileDiagnostics: [String: [FileDiagnostic]] = [:]
     @Published private(set) var comparison: TokenizerComparisonSession?
     @Published var showsBottomPanel = false
     @Published var selectedFindingID: String?
@@ -122,6 +124,7 @@ final class ModelFilesStore: ObservableObject {
         errorMessage = nil
         snapshot = nil
         consistencyReport = nil
+        fileDiagnostics = [:]
         selectedFindingID = nil
         selectedPath = nil
         loadingPath = nil
@@ -823,13 +826,14 @@ final class ModelFilesStore: ObservableObject {
                     await initialFileTask.value
                     try Task.checkCancellation()
                 }
-                let report = try await self.buildConsistencyReport(for: snapshot)
+                let (report, paths) = try await self.buildConsistencyReport(for: snapshot)
                 try Task.checkCancellation()
                 guard generation == self.consistencyGeneration,
                       self.snapshot?.location == snapshot.location,
                       self.snapshot?.version == snapshot.version,
                       self.snapshot?.files == snapshot.files else { return }
                 self.consistencyReport = report
+                self.fileDiagnostics = report.diagnostics(paths: paths)
             } catch is CancellationError {
                 return
             } catch {
@@ -838,13 +842,14 @@ final class ModelFilesStore: ObservableObject {
                       self.snapshot?.version == snapshot.version,
                       self.snapshot?.files == snapshot.files else { return }
                 self.consistencyReport = nil
+                self.fileDiagnostics = [:]
             }
         }
     }
 
     private func buildConsistencyReport(
         for snapshot: RepositorySnapshot
-    ) async throws -> RepositoryConsistencyReport {
+    ) async throws -> (RepositoryConsistencyReport, [ConsistencyMaterialKind: String]) {
         let configFile = consistencyFile(named: ["config.json", "configuration.json"], in: snapshot)
         let generationFile = consistencyFile(
             named: ["generation_config.json"],
@@ -904,7 +909,12 @@ final class ModelFilesStore: ObservableObject {
             snapshot: snapshot
         )
         let gguf = consistencyGGUF(in: snapshot)
-        return ConsistencyAnalyzer.analyze(materials: RepositoryConsistencyMaterials(
+        let paths = [
+            ConsistencyMaterialKind.config: configFile?.path,
+            .generationConfig: generationFile?.path,
+            .tokenizerConfig: tokenizerConfigFile?.path,
+        ].compactMapValues(\.self)
+        let report = ConsistencyAnalyzer.analyze(materials: RepositoryConsistencyMaterials(
             config: config,
             generationConfig: generationConfig,
             tokenizerConfig: tokenizerConfig,
@@ -914,6 +924,7 @@ final class ModelFilesStore: ObservableObject {
             chatTemplates: chatTemplates,
             gguf: gguf
         ))
+        return (report, paths)
     }
 
     private func readConsistencyData(

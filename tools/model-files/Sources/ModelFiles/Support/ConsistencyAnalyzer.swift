@@ -59,6 +59,26 @@ struct ConsistencyFinding: Identifiable, Sendable, Equatable {
     let left: InspectionField
     let right: InspectionField
     let detail: String
+    var anchors: [ConsistencyAnchor] = []
+}
+
+/// Where a finding shows up inside a repository file: a top-level key of that material's JSON.
+struct ConsistencyAnchor: Sendable, Equatable {
+    enum Side: Sendable { case left, right }
+    let material: ConsistencyMaterialKind
+    let key: String
+    let side: Side
+}
+
+/// A finding as seen from one file, located at a top-level key.
+struct FileDiagnostic: Identifiable, Sendable, Equatable {
+    let findingID: String
+    let severity: ConsistencySeverity
+    let title: String
+    let key: String
+    let note: String
+
+    var id: String { findingID + "/" + key }
 }
 
 struct RepositoryConsistencyReport: Sendable, Equatable {
@@ -167,7 +187,8 @@ enum ConsistencyAnalyzer {
                 title: String(localized: "词表大小不一致"),
                 left: field("config.vocab_size", "count", String(configVocab), .embedded),
                 right: field("tokenizer.vocab_count", "count", String(tokenizerVocab), .derived),
-                detail: String(localized: "config.json 与 tokenizer.json 的词表项数不同。")
+                detail: String(localized: "config.json 与 tokenizer.json 的词表项数不同。"),
+                anchors: [ConsistencyAnchor(material: .config, key: "vocab_size", side: .left)]
             ))
         }
 
@@ -189,7 +210,8 @@ enum ConsistencyAnalyzer {
                     String(localized: "缺失"),
                     .embedded
                 ),
-                detail: String(localized: "严格 tokenizer runtime 无法在未显式指定 class 时构造。")
+                detail: String(localized: "严格 tokenizer runtime 无法在未显式指定 class 时构造。"),
+                anchors: [ConsistencyAnchor(material: .tokenizerConfig, key: "tokenizer_class", side: .right)]
             ))
         }
 
@@ -210,7 +232,10 @@ enum ConsistencyAnalyzer {
                     String(localized: "不可用"),
                     .derived
                 ),
-                detail: String(localized: "仓库中没有可用的独立或内嵌 Chat Template。")
+                detail: String(localized: "仓库中没有可用的独立或内嵌 Chat Template。"),
+                anchors: tokenizerConfig.object == nil
+                    ? []
+                    : [ConsistencyAnchor(material: .tokenizerConfig, key: "chat_template", side: .right)]
             ))
         }
 
@@ -228,11 +253,18 @@ enum ConsistencyAnalyzer {
                     .embedded
                 ),
                 right: tokenizerEOS.field,
-                detail: String(localized: "generation_config 与 tokenizer 的可靠 EOS ID 不同。")
+                detail: String(localized: "generation_config 与 tokenizer 的可靠 EOS ID 不同。"),
+                anchors: [ConsistencyAnchor(material: .generationConfig, key: "eos_token_id", side: .left)]
+                    + (tokenizerEOS.field.key == "tokenizer_config.eos_token_id"
+                        ? [ConsistencyAnchor(material: .tokenizerConfig, key: "eos_token_id", side: .right)]
+                        : [])
             ))
         }
 
         let configContext = config.object.flatMap(contextValue)
+        let configContextAnchor = config.object.flatMap(contextKey).map {
+            ConsistencyAnchor(material: .config, key: $0, side: .left)
+        }
         let tokenizerContext = tokenizerConfig.object.flatMap { unsigned($0["model_max_length"]) }
         if let configContext, let tokenizerContext, configContext != tokenizerContext {
             findings.append(ConsistencyFinding(
@@ -246,7 +278,9 @@ enum ConsistencyAnalyzer {
                     String(tokenizerContext),
                     .embedded
                 ),
-                detail: String(localized: "模型与 tokenizer 的长度上限经常承担不同语义，请人工确认。")
+                detail: String(localized: "模型与 tokenizer 的长度上限经常承担不同语义，请人工确认。"),
+                anchors: [configContextAnchor].compactMap(\.self)
+                    + [ConsistencyAnchor(material: .tokenizerConfig, key: "model_max_length", side: .right)]
             ))
         }
 
@@ -257,7 +291,8 @@ enum ConsistencyAnalyzer {
                 title: String(localized: "GGUF 上下文长度不一致"),
                 left: field("config.context", "count", String(configContext), .embedded),
                 right: field("GGUF context_length", "count", String(ggufContext), .embedded),
-                detail: String(localized: "已检查 GGUF 的 context_length 与 config.json 不同。")
+                detail: String(localized: "已检查 GGUF 的 context_length 与 config.json 不同。"),
+                anchors: [configContextAnchor].compactMap(\.self)
             ))
         }
 
@@ -446,11 +481,14 @@ enum ConsistencyAnalyzer {
         )
     }
 
+    private static let contextKeys = ["max_position_embeddings", "max_sequence_length", "n_positions"]
+
     private static func contextValue(_ config: [String: Any]) -> UInt64? {
-        ["max_position_embeddings", "max_sequence_length", "n_positions"]
-            .lazy
-            .compactMap { unsigned(config[$0]) }
-            .first
+        contextKeys.lazy.compactMap { unsigned(config[$0]) }.first
+    }
+
+    private static func contextKey(_ config: [String: Any]) -> String? {
+        contextKeys.first { unsigned(config[$0]) != nil }
     }
 
     private static func embeddingVocabularyDimension(
@@ -464,5 +502,79 @@ enum ConsistencyAnalyzer {
             ?? gguf.tensors.first { $0.name == "model.embed_tokens.weight" }
         guard let tensor, let dimension = tensor.shape.first else { return nil }
         return (tensor.name, dimension)
+    }
+}
+
+extension RepositoryConsistencyReport {
+    /// Findings grouped by the file each anchor names; the note shows the other side of the comparison.
+    func diagnostics(paths: [ConsistencyMaterialKind: String]) -> [String: [FileDiagnostic]] {
+        var byPath: [String: [FileDiagnostic]] = [:]
+        for finding in findings {
+            for anchor in finding.anchors {
+                guard let path = paths[anchor.material] else { continue }
+                let other = anchor.side == .left ? finding.right : finding.left
+                byPath[path, default: []].append(FileDiagnostic(
+                    findingID: finding.id,
+                    severity: finding.severity,
+                    title: finding.title,
+                    key: anchor.key,
+                    note: "≠ \(other.key) \(other.value)"
+                ))
+            }
+        }
+        return byPath
+    }
+}
+
+enum JSONSourceScanner {
+    /// Top-level object keys → UTF-16 offset of the key token. Later duplicates win, as in JSONSerialization.
+    static func topLevelKeyOffsets(in source: String) -> [String: Int] {
+        var offsets: [String: Int] = [:]
+        let units = Array(source.utf16)
+        var depth = 0
+        var expectKey = false
+        var index = 0
+        while index < units.count {
+            let unit = units[index]
+            switch unit {
+            case 0x22: // "
+                let start = index
+                index += 1
+                while index < units.count, units[index] != 0x22 {
+                    index += units[index] == 0x5C ? 2 : 1
+                }
+                if depth == 1, expectKey {
+                    expectKey = false
+                    let token = String(decoding: units[start...min(index, units.count - 1)], as: UTF16.self)
+                    if let key = try? JSONSerialization.jsonObject(
+                        with: Data(token.utf8), options: .fragmentsAllowed
+                    ) as? String {
+                        offsets[key] = start
+                    }
+                }
+            case 0x7B, 0x5B: // { [
+                depth += 1
+                expectKey = depth == 1 && unit == 0x7B
+            case 0x7D, 0x5D: // } ]
+                depth -= 1
+            case 0x2C where depth == 1: // ,
+                expectKey = true
+            default:
+                break
+            }
+            index += 1
+        }
+        return offsets
+    }
+
+    /// 1-based line containing a UTF-16 offset; CRLF, LF and CR all end a line.
+    static func line(atUTF16Offset offset: Int, in source: String) -> Int {
+        var line = 1
+        var previous: UInt16 = 0
+        for unit in source.utf16.prefix(offset) {
+            if unit == 0x0A, previous != 0x0D { line += 1 } else if unit == 0x0D { line += 1 }
+            previous = unit
+        }
+        return line
     }
 }

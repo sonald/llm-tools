@@ -364,8 +364,14 @@ private struct InspectionWorkspaceView: View {
                         file: file,
                         data: data,
                         perspective: store.perspective,
-                        baseURL: baseURL
-                    )
+                        baseURL: baseURL,
+                        diagnostics: store.fileDiagnostics[file.path] ?? [],
+                        selectedFindingID: store.selectedFindingID
+                    ) { findingID, jumpsToSource in
+                        store.selectedFindingID = findingID
+                        if jumpsToSource { store.perspective = .raw }
+                    }
+                    .id(file.path)
                 }
             }
         }
@@ -442,12 +448,88 @@ private struct FileReaderView: View {
     let data: Data
     let perspective: InspectionPerspective
     let baseURL: URL?
+    var diagnostics: [FileDiagnostic] = []
+    var selectedFindingID: String?
+    var onSelectDiagnostic: (_ findingID: String, _ jumpsToSource: Bool) -> Void = { _, _ in }
+    @State private var jump: CodeReaderJump?
+
+    private struct LocatedDiagnostic: Identifiable {
+        let diagnostic: FileDiagnostic
+        let line: Int?
+        var id: String { diagnostic.id }
+    }
 
     var body: some View {
+        let located = locatedDiagnostics
+        VStack(spacing: 0) {
+            if !located.isEmpty {
+                diagnosticList(located)
+                Divider()
+            }
+            reader(marks: located.compactMap { item in
+                item.line.map { CodeReaderMark(line: $0, severity: item.diagnostic.severity) }
+            })
+        }
+    }
+
+    // ponytail: rescans on every body pass; anchored files are small configs, cache it if tokenizer_config gets slow.
+    private var locatedDiagnostics: [LocatedDiagnostic] {
+        guard !diagnostics.isEmpty else { return [] }
+        let source = text
+        let offsets = JSONSourceScanner.topLevelKeyOffsets(in: source)
+        return diagnostics.map { diagnostic in
+            LocatedDiagnostic(
+                diagnostic: diagnostic,
+                line: offsets[diagnostic.key].map { JSONSourceScanner.line(atUTF16Offset: $0, in: source) }
+            )
+        }
+    }
+
+    private func diagnosticList(_ located: [LocatedDiagnostic]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(located) { item in
+                Button {
+                    onSelectDiagnostic(item.diagnostic.findingID, item.line != nil)
+                    if let line = item.line {
+                        jump = CodeReaderJump(line: line, nonce: (jump?.nonce ?? 0) + 1)
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        SeverityIcon(severity: item.diagnostic.severity)
+                        Text(item.diagnostic.title)
+                        Text(verbatim: item.diagnostic.key)
+                            .font(.callout.monospaced())
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 8)
+                        if let line = item.line {
+                            Text("第 \(line) 行")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .lineLimit(1)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                    .background(
+                        selectedFindingID == item.diagnostic.findingID ? Color.accentColor.opacity(0.16) : .clear
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(item.diagnostic.note)
+            }
+        }
+        .background(.bar)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text("文件问题"))
+    }
+
+    @ViewBuilder
+    private func reader(marks: [CodeReaderMark]) -> some View {
         if isJSON && (perspective == .fields || (perspective == .overview && !hasSpecializedSummary)) {
             JSONReaderView(data: data)
         } else if let language = codeReaderLanguage {
-            CodeReaderView(source: text, language: language)
+            CodeReaderView(source: text, language: language, marks: marks, jump: jump)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             if let textSurface = plainTextSurface {

@@ -124,6 +124,43 @@ final class ConsistencyAnalyzerTests: XCTestCase {
         XCTAssertFalse(malformed.findings.contains { $0.id == "eos-mismatch" })
     }
 
+    func testFindingsAnchorTopLevelKeysAndGroupByFile() throws {
+        let report = ConsistencyAnalyzer.analyze(materials: RepositoryConsistencyMaterials(
+            config: .available(try json(["vocab_size": 100, "n_positions": 4_096])),
+            generationConfig: .available(try json(["eos_token_id": 3])),
+            tokenizerConfig: .available(try json(["eos_token_id": 2, "model_max_length": 8_192])),
+            tokenizer: .available(tokenizer(vocabCount: 99)),
+            gguf: .available(gguf(contextLength: 2_048))
+        ))
+        let anchors = Dictionary(uniqueKeysWithValues: report.findings.map { ($0.id, $0.anchors) })
+        XCTAssertEqual(anchors["vocab-mismatch"], [.init(material: .config, key: "vocab_size", side: .left)])
+        XCTAssertEqual(anchors["eos-mismatch"], [
+            .init(material: .generationConfig, key: "eos_token_id", side: .left),
+            .init(material: .tokenizerConfig, key: "eos_token_id", side: .right),
+        ])
+        XCTAssertEqual(anchors["context-info"], [
+            .init(material: .config, key: "n_positions", side: .left),
+            .init(material: .tokenizerConfig, key: "model_max_length", side: .right),
+        ])
+        XCTAssertEqual(anchors["gguf-context-mismatch"], [.init(material: .config, key: "n_positions", side: .left)])
+
+        let byPath = report.diagnostics(paths: [.config: "config.json", .tokenizerConfig: "tokenizer_config.json"])
+        XCTAssertNil(byPath["generation_config.json"], "unmapped materials stay unanchored")
+        XCTAssertEqual(byPath["config.json"]?.map(\.key), ["vocab_size", "n_positions", "n_positions"])
+        XCTAssertEqual(byPath["config.json"]?.first?.note, "≠ tokenizer.vocab_count 99")
+        XCTAssertEqual(byPath["tokenizer_config.json"]?.map(\.findingID), ["missing-tokenizer-class", "eos-mismatch", "context-info"])
+    }
+
+    func testJSONSourceScannerFindsOnlyTopLevelKeys() {
+        let source = "{\r\n  \"nested\": {\"vocab_size\": 1, \"x\": [\"vocab_size\"]},\r\n  \"a\\\"b\": \"vocab_size\",\n  \"vocab_size\": 2,\n  \"vocab_size\": 3\n}"
+        let offsets = JSONSourceScanner.topLevelKeyOffsets(in: source)
+        XCTAssertEqual(Set(offsets.keys), ["nested", "a\"b", "vocab_size"])
+        let line = offsets["vocab_size"].map { JSONSourceScanner.line(atUTF16Offset: $0, in: source) }
+        XCTAssertEqual(line, 5, "later duplicates win; CRLF counts once")
+        XCTAssertTrue(JSONSourceScanner.topLevelKeyOffsets(in: "[\"a\", {\"b\": 1}]").isEmpty)
+        XCTAssertTrue(JSONSourceScanner.topLevelKeyOffsets(in: "{\"open").isEmpty)
+    }
+
     func testContextRulesHavePositiveAndNegativeCases() throws {
         let mismatch = ConsistencyAnalyzer.analyze(materials: RepositoryConsistencyMaterials(
             config: .available(try json(["max_position_embeddings": 4_096])),

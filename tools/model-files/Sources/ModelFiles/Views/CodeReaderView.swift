@@ -6,9 +6,23 @@ private struct CodeReaderFoldKey: Hashable {
     let language: String
 }
 
+/// A tinted source line, e.g. where a consistency finding is anchored.
+struct CodeReaderMark: Equatable {
+    let line: Int
+    let severity: ConsistencySeverity
+}
+
+/// Scroll request; a new nonce re-jumps to the same line.
+struct CodeReaderJump: Equatable {
+    let line: Int
+    let nonce: Int
+}
+
 struct CodeReaderView: View {
     let source: String
     let language: String
+    var marks: [CodeReaderMark] = []
+    var jump: CodeReaderJump?
     @State private var expandGeneration = 0
     @State private var foldRanges: [FoldRange] = []
 
@@ -30,7 +44,9 @@ struct CodeReaderView: View {
                 source: source,
                 language: language,
                 foldRanges: foldRanges,
-                expandGeneration: expandGeneration
+                expandGeneration: expandGeneration,
+                marks: marks,
+                jump: jump
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -181,6 +197,8 @@ struct CodeReaderTextView: NSViewRepresentable {
     let language: String
     let foldRanges: [FoldRange]
     let expandGeneration: Int
+    var marks: [CodeReaderMark] = []
+    var jump: CodeReaderJump?
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -239,6 +257,8 @@ struct CodeReaderTextView: NSViewRepresentable {
         context.coordinator.load(source: source, language: language, into: textView)
         context.coordinator.updateFoldRanges(foldRanges)
         context.coordinator.applyExpandGeneration(expandGeneration)
+        context.coordinator.updateMarks(marks)
+        context.coordinator.applyJump(jump)
         return scrollView
     }
 
@@ -248,6 +268,8 @@ struct CodeReaderTextView: NSViewRepresentable {
         context.coordinator.load(source: source, language: language, into: textView)
         context.coordinator.updateFoldRanges(foldRanges)
         context.coordinator.applyExpandGeneration(expandGeneration)
+        context.coordinator.updateMarks(marks)
+        context.coordinator.applyJump(jump)
     }
 
     static let font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
@@ -269,6 +291,8 @@ struct CodeReaderTextView: NSViewRepresentable {
         private var hiddenRanges: [NSRange] = []
         private var hiddenByParent = Set<FoldRange>()
         private var positioningButtons = false
+        private var marks: [CodeReaderMark] = []
+        private var appliedJumpNonce: Int?
 
         func observeScrolling(in scrollView: NSScrollView) {
             scrollView.contentView.postsBoundsChangedNotifications = true
@@ -366,6 +390,59 @@ struct CodeReaderTextView: NSViewRepresentable {
             rebuildFoldButtons()
         }
 
+        func updateMarks(_ marks: [CodeReaderMark]) {
+            guard marks != self.marks else { return }
+            self.marks = marks
+            applyMarks()
+        }
+
+        // Temporary attributes survive re-highlighting only if re-added, so apply() calls this too.
+        private func applyMarks() {
+            guard let textView, let layoutManager = textView.layoutManager else { return }
+            let full = NSRange(location: 0, length: (textView.string as NSString).length)
+            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
+            for mark in marks {
+                guard let range = lineRange(mark.line) else { continue }
+                let color: NSColor = mark.severity == .warning ? .systemOrange : .systemBlue
+                layoutManager.addTemporaryAttribute(
+                    .backgroundColor,
+                    value: color.withAlphaComponent(mark.severity == .warning ? 0.2 : 0.14),
+                    forCharacterRange: range
+                )
+            }
+        }
+
+        func applyJump(_ jump: CodeReaderJump?) {
+            guard let jump, jump.nonce != appliedJumpNonce, let range = lineRange(jump.line) else { return }
+            appliedJumpNonce = jump.nonce
+            revealFindRange(range)
+            // A freshly made text view has no size yet; scroll once layout has run.
+            DispatchQueue.main.async { [weak self] in
+                guard let textView = self?.textView,
+                      let layoutManager = textView.layoutManager,
+                      let container = textView.textContainer,
+                      let scrollView = textView.enclosingScrollView else { return }
+                layoutManager.ensureLayout(forCharacterRange: range)
+                let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+                let rect = layoutManager.boundingRect(forGlyphRange: glyphs, in: container)
+                let clip = scrollView.contentView
+                let y = max(0, rect.midY + textView.textContainerOrigin.y - clip.bounds.height / 3)
+                clip.scroll(to: NSPoint(x: 0, y: y))
+                scrollView.reflectScrolledClipView(clip)
+                textView.setSelectedRange(NSRange(location: range.location, length: 0))
+                textView.showFindIndicator(for: range)
+            }
+        }
+
+        /// 1-based line → its UTF-16 range without the line break.
+        private func lineRange(_ line: Int) -> NSRange? {
+            guard let source = loadedSource as NSString?, line >= 1, line <= lineStarts.count else { return nil }
+            let start = lineStarts[line - 1]
+            var end = line < lineStarts.count ? lineStarts[line] : source.length
+            while end > start, [10, 13].contains(source.character(at: end - 1)) { end -= 1 }
+            return NSRange(location: start, length: end - start)
+        }
+
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView,
                   let selection = textView.selectedRanges.first?.rangeValue,
@@ -454,6 +531,7 @@ struct CodeReaderTextView: NSViewRepresentable {
                 clipView.scroll(to: origin)
                 textView.enclosingScrollView?.reflectScrolledClipView(clipView)
             }
+            applyMarks()
             rebuildFoldButtons()
         }
 
