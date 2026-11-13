@@ -8,6 +8,7 @@ import {
   installFixtureRoutes,
   writeFixtureDirectory,
   openPlaygroundMode,
+  expectRepository,
 } from './fixtures.ts'
 
 // A real cross-origin HTTPS server exercises browser CORS and exposed headers.
@@ -104,7 +105,7 @@ test('HTTPS file opens exact SafeTensors header and keeps signed URL out of hist
 test('HTTPS manifest reads related tokenizer files, Markdown links and a comparison source', async ({ page }) => {
   await page.goto('/')
   await openHttps(page, 'manifest', 'files.json')
-  await expect(page.getByText('HTTPS · live · 5 个文件')).toBeVisible()
+  await expectRepository(page, 'HTTPS · 实时来源', 5)
   await page.getByRole('button', { name: /^README\.md/ }).click()
   await expect(page.getByRole('link', { name: 'Config', exact: true })).toHaveAttribute('href', `${origin}/config.json`)
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
@@ -126,9 +127,9 @@ test('HTTPS manifest reads related tokenizer files, Markdown links and a compari
 test('HTTPS explains missing CORS and size, rejects invalid ranges, then switches back to HF', async ({ page }) => {
   await page.goto('/')
   await openHttps(page, 'file', 'config.json?no-cors')
-  await expect(page.locator('.repository-error')).toContainText('CORS')
+  await expect(page.locator('.detail-body .empty-state')).toContainText('CORS')
   await openHttps(page, 'file', 'config.json?no-size')
-  await expect(page.locator('.repository-error')).toContainText('HEAD')
+  await expect(page.locator('.detail-body .empty-state')).toContainText('HEAD')
   for (const query of ['ignore-range', 'hidden-range']) {
     await openHttps(page, 'file', `model.safetensors?${query}`)
     await expect(page.getByRole('heading', { name: '无法读取文件' })).toBeVisible()
@@ -142,5 +143,5 @@ test('HTTPS explains missing CORS and size, rejects invalid ranges, then switche
   await page.locator('.repository-form').getByRole('combobox', { name: '加载方式' }).selectOption('huggingface')
   await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).fill('fixture/model')
   await page.getByRole('button', { name: '打开', exact: true }).click()
-  await expect(page.getByText('公开仓库 · SHA 0123456 · 13 个文件')).toBeVisible()
+  await expectRepository(page, 'Hugging Face · main', 13)
 })

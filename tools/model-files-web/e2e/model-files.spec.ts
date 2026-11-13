@@ -15,12 +15,15 @@ import {
   writePerformanceFindFixture,
   openPerspective,
   openPlaygroundMode,
+  expectRepository,
+  expandWeights,
 } from './fixtures.ts'
 
 test('SafeTensors hierarchy keeps two exact ranges without tensor data', async ({ page }) => {
   const errors = collectErrors(page)
   const requests = await installFixtureRoutes(page)
   await openFixture(page)
+  await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
 
   await expect(page.getByText('2 次 HTTP 206 Range')).toBeVisible()
@@ -74,6 +77,7 @@ test('SafeTensors hierarchy keeps two exact ranges without tensor data', async (
   await expect(page.getByText('显示 108 行 / 匹配 106 个 Tensor（总计 106）')).toBeVisible()
   await page.getByRole('button', { name: '概览' }).click()
   await page.getByRole('button', { name: /^config\.json/ }).click()
+  await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
   await expect(page.getByText('参数总数').locator('..').getByText('2')).toBeVisible()
   expect(requests.filter(request => request.path === 'model.safetensors')).toEqual([
@@ -88,6 +92,7 @@ test('SafeTensors hierarchy stays usable across responsive layouts', async ({ pa
   const errors = collectErrors(page)
   await installFixtureRoutes(page)
   await openFixture(page)
+  await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
   await page.getByRole('button', { name: 'Tensors', exact: true }).click()
   const tensorTable = page.getByRole('table', { name: 'SafeTensors Tensors' })
@@ -141,14 +146,47 @@ test('inspects only the 24-byte GGUF basic prefix', async ({ page }) => {
   const errors = collectErrors(page)
   const requests = await installFixtureRoutes(page)
   await openFixture(page)
+  await expandWeights(page)
   await page.getByRole('button', { name: /model\.gguf/ }).click()
 
   await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible()
-  await expect(page.getByText('模型数据').locator('..').getByText('0 bytes')).toBeVisible()
+  await expect(page.getByText('模型数据').locator('..').getByText('0 bytes', { exact: true })).toBeVisible()
   await expect(page.getByText(/完整 metadata\/tensor directory.*未启用/)).toBeVisible()
   expect(requests.filter(request => request.path === 'model.gguf')).toEqual([
     expect.objectContaining({ range: 'bytes=0-23', responseBytes: 24, status: 206 }),
   ])
+  expect(errors).toEqual([])
+})
+
+test('workbench shell follows native header, sidebar and panel conventions', async ({ page }) => {
+  const errors = collectErrors(page)
+  await installFixtureRoutes(page)
+  await openFixture(page)
+  // Header: name, purpose · size · source · branch · SHA, a badge with help, no format chip for JSON.
+  const header = page.locator('.detail-header')
+  await expect(header.getByRole('heading', { level: 1 })).toHaveText('config.json')
+  await expect(header.locator('.file-title p')).toHaveText(/^模型配置 · 144 字节 · Hugging Face · main · SHA \S{7}$/)
+  await expect(page.getByRole('button', { name: '查看仓库一致性报告' })).toHaveAttribute('title', '查看仓库一致性报告')
+  await expect(header.locator('.format-chip')).toHaveCount(0)
+  // Sidebar: names with notes, weights collapsed behind "N/M 可预览".
+  await expect(page.getByRole('button', { name: /^tokenizer_config\.json 含内嵌 Chat Template/ })).toBeVisible()
+  const weights = page.locator('.weights-group')
+  await expect(weights).not.toHaveAttribute('open', '')
+  await expect(weights.locator('summary')).toContainText('2/2 可预览')
+  await expandWeights(page)
+  await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
+  await expect(header.locator('.format-chip')).toHaveText('SafeTensors')
+  await expect(header.locator('.file-title p')).toHaveText(/^SafeTensors 权重结构 · /)
+  // Panel: Problems first; Esc closes it from any tab.
+  await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
+  await openPlaygroundMode(page, 'Raw 工作台')
+  await page.getByRole('textbox', { name: 'Raw 输入' }).fill('hello worlds')
+  await page.getByRole('button', { name: '立即分词' }).click()
+  const panel = page.getByRole('region', { name: '底部面板' })
+  await expect(panel.getByRole('tab')).toHaveText([/^问题 \d+$/, 'Token 表', 'Token IDs 3'])
+  await expect(panel.getByRole('tab', { name: 'Token 表' })).toHaveAttribute('aria-selected', 'true')
+  await page.getByRole('textbox', { name: 'Raw 输入' }).press('Escape')
+  await expect(panel).toHaveCount(0)
   expect(errors).toEqual([])
 })
 
@@ -779,7 +817,7 @@ test('keeps the latest explicit comparison repository after a delayed manifest',
   })
   await page.goto('/')
   await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).fill(fixtureModelId)
-  await page.getByRole('button', { name: '打开' }).click()
+  await page.getByRole('button', { name: '打开', exact: true }).click()
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
   await openPerspective(page, '试验台')
 
@@ -967,7 +1005,7 @@ test('keeps comparison controls reachable without overflow at product viewports'
     await page.goto('/')
     await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).fill(fixtureModelId)
     const rootTokenizer = page.getByRole('button', { name: /^tokenizer\.json/ })
-    await page.getByRole('button', { name: '打开' }).click()
+    await page.getByRole('button', { name: '打开', exact: true }).click()
     await expect(rootTokenizer).toBeVisible()
     await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
     await openPerspective(page, '试验台')
@@ -1161,9 +1199,9 @@ test('opens every supported local directory reader without network upload', { ti
   const picker = page.getByLabel('选择本地目录')
   await picker.setInputFiles(localFixture)
 
-  await expect(page.getByText('本地目录 · live · 23 个文件')).toBeVisible()
+  await expectRepository(page, '本地 · 实时目录', 23)
   await expect(page).toHaveURL('http://127.0.0.1:5173/')
-  await expect(page.getByRole('link', { name: '源站' })).toBeHidden()
+  await expect(page.getByRole('button', { name: '在源站打开' })).toBeDisabled()
   await expect(page.getByRole('heading', { name: 'Model Config' })).toBeVisible()
 
   await page.getByRole('button', { name: /^README\.md/ }).click()
@@ -1189,9 +1227,11 @@ test('opens every supported local directory reader without network upload', { ti
   await page.getByRole('button', { name: '立即分词' }).click()
   await expect(page.getByText('Decoded：hello worlds')).toBeVisible()
 
+  await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
   await expect(page.getByText('读取方式').locator('..')).toContainText('2 次 File.slice()')
   await expect(page.getByText('Tensor 数据').locator('..').getByText('0 bytes', { exact: true })).toBeVisible()
+  await expandWeights(page)
   await page.getByRole('button', { name: /^model\.gguf/ }).click()
   await expect(page.getByText('读取方式').locator('..')).toContainText('1 次 File.slice()')
   await expect(page.getByText('模型数据').locator('..').getByText('0 bytes', { exact: true })).toBeVisible()
@@ -1778,6 +1818,7 @@ test('edits and renders the authoritative Jinja source in a Worker', async ({ pa
 test('fails closed when a source returns HTTP 200 for a range', async ({ page }) => {
   await installFixtureRoutes(page, { rangeBehavior: 'http200' })
   await openFixture(page)
+  await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
 
   await expect(page.getByRole('heading', { name: '无法读取文件' })).toBeVisible()
@@ -1832,6 +1873,7 @@ test('consistency background acquires materials once and reports repository warn
   await expect(badge).toHaveAttribute('aria-expanded', 'true')
   await expect(report).toContainText('未在当前会话打开')
 
+  await expandWeights(page)
   await page.getByRole('button', { name: /^model\.gguf/ }).click()
   await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible()
   expect(requests.filter(request => request.path === 'model.gguf')).toEqual([
@@ -1844,6 +1886,7 @@ test('consistency background acquires materials once and reports repository warn
 
   await page.getByRole('button', { name: /^generation_config\.json/ }).click()
   await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
+  await expandWeights(page)
   await page.getByRole('button', { name: /^model\.gguf/ }).click()
   for (const path of ['config.json', 'generation_config.json', 'tokenizer_config.json', 'tokenizer.json', 'chat_template.jinja']) {
     expect(requests.filter(request => request.path === path)).toHaveLength(1)
@@ -1862,17 +1905,25 @@ test('rejects oversized readers and keeps unsupported weights locked without con
   await installFixtureRoutes(page, { includeBoundaryFiles: true })
   await page.goto('/')
   await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).fill(fixtureModelId)
-  await page.getByRole('button', { name: '打开' }).click()
-  await expect(page.getByText(/公开仓库 · SHA 0123456 · 15 个文件/)).toBeVisible()
+  await page.getByRole('button', { name: '打开', exact: true }).click()
+  await expectRepository(page, 'Hugging Face · main', 15)
   await expect(page.getByRole('heading', { name: 'Model Config' })).toBeVisible()
   const baselineRequests = contentRequests.length
 
   await page.getByRole('button', { name: /^oversized\.json/ }).click()
   await expect(page.getByRole('heading', { name: '无法读取文件' })).toBeVisible()
-  await expect(page.getByText('文件超过 32 MiB 阅读上限。')).toBeVisible()
-  await page.getByRole('button', { name: /^pytorch_model\.bin/ }).click()
-  await expect(page.getByRole('heading', { name: '权重文件已锁定' })).toBeVisible()
+  await expect(page.getByText('文件超过 33.6 MB 阅读上限。')).toBeVisible()
+  // Native: locked rows are dimmed and unselectable; a deep link still lands on the locked page.
+  await expandWeights(page)
+  const locked = page.getByRole('button', { name: /^pytorch_model\.bin/ })
+  await expect(locked).toHaveAttribute('aria-disabled', 'true')
+  await expect(locked).toContainText('不可预览')
+  await locked.dispatchEvent('click')
+  await expect(page.getByRole('heading', { name: '无法读取文件' })).toBeVisible()
   expect(contentRequests).toHaveLength(baselineRequests)
+  await page.goto(`/?repo=${fixtureModelId}&file=pytorch_model.bin`)
+  await expect(page.getByRole('heading', { name: '权重文件已锁定' })).toBeVisible()
+  expect(contentRequests.filter(url => url.includes('pytorch_model.bin'))).toEqual([])
 })
 
 test('a newer repository request cancels and wins over a slow request', async ({ page }) => {
@@ -1887,7 +1938,7 @@ test('a newer repository request cancels and wins over a slow request', async ({
   await expect(open).toBeEnabled()
   await open.click()
 
-  await expect(page.getByText(/公开仓库 · SHA 0123456 · 13 个文件/)).toBeVisible()
+  await expectRepository(page, 'Hugging Face · main', 13)
   await expect(repository).toHaveValue(fixtureModelId)
 })
 
@@ -1907,7 +1958,7 @@ test('latest empty repository replaces delayed full consistency inspection', asy
   await open.click()
   await Promise.all([
     configRequest,
-    expect(page.getByText(/公开仓库 · SHA 0123456 · 13 个文件/)).toBeVisible(),
+    expectRepository(page, 'Hugging Face · main', 13),
   ])
   const initialConfig = page.getByRole('button', { name: /^config\.json/ })
   await expect(initialConfig).toBeVisible()
@@ -1917,9 +1968,9 @@ test('latest empty repository replaces delayed full consistency inspection', asy
   await repository.fill('fixture/empty')
   await open.click()
 
-  await expect(page.getByText(/公开仓库 · SHA fffffff · 1 个文件/)).toBeVisible()
+  await expectRepository(page, 'Hugging Face · main', 1)
   await delay(300)
-  await expect(page.getByText(/公开仓库 · SHA fffffff · 1 个文件/)).toBeVisible()
+  await expectRepository(page, 'Hugging Face · main', 1)
   await expect(page.getByRole('combobox', { name: 'Hugging Face 仓库' })).toHaveValue('fixture/empty')
   await expect(page).toHaveURL(url => url.pathname === '/'
     && url.searchParams.get('repo') === 'fixture/empty'
@@ -2018,20 +2069,21 @@ test('restores, refreshes, and navigates shareable repository URLs', async ({ pa
   await page.reload()
   await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible()
 
+  await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
   await expect(page.getByText('参数总数').locator('..').getByText('2')).toBeVisible()
   await page.goBack()
   await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible()
   await page.goForward()
   await expect(page.getByText('参数总数').locator('..').getByText('2')).toBeVisible()
-  await page.getByRole('button', { name: '复制相对路径' }).click()
+  await page.getByRole('button', { name: '复制路径' }).click()
   expect(await page.evaluate('window.__copiedPath')).toBe('model.safetensors')
   await expect(page.getByRole('button', { name: '已复制' })).toBeVisible()
   await page.getByRole('button', { name: '复制全路径' }).click()
   expect(await page.evaluate('window.__copiedPath')).toBe(
     `https://huggingface.co/${fixtureModelId}/resolve/${fixtureRevision}/model.safetensors`,
   )
-  await expect(page.getByRole('link', { name: '源站' })).toHaveAttribute(
+  await expect(page.getByRole('link', { name: '在源站打开' })).toHaveAttribute(
     'href',
     `https://huggingface.co/${fixtureModelId}/blob/${fixtureRevision}/model.safetensors`,
   )
@@ -2060,10 +2112,10 @@ test('filters locally, avoids duplicate reads, and retries a failed manifest', a
   await installFixtureRoutes(page, { manifestFailures: 1 })
   await page.goto('/')
   await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).fill(fixtureModelId)
-  await page.getByRole('button', { name: '打开' }).click()
+  await page.getByRole('button', { name: '打开', exact: true }).click()
   await expect(page.getByRole('alert')).toContainText('HTTP 503')
   await page.getByRole('button', { name: '重试' }).press('Enter')
-  await expect(page.getByText(/公开仓库 · SHA 0123456 · 13 个文件/)).toBeVisible()
+  await expectRepository(page, 'Hugging Face · main', 13)
   await expect(page.locator(`datalist option[value="${fixtureModelId}"]`)).toHaveCount(1)
   await expect(page.getByRole('button', { name: '查看仓库一致性报告' })).toHaveText('2 项警告')
 
@@ -2083,7 +2135,8 @@ test('fails safely for invalid deep-link parameters', async ({ page }) => {
   await installFixtureRoutes(page)
   await page.goto('/?repo=invalid&file=..%2Fsecret')
   await expect(page.getByRole('alert')).toContainText('owner/model')
-  await expect(page.getByRole('heading', { level: 2, name: '打开模型仓库' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 2, name: '无法打开位置' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 2, name: '尚未打开模型' })).toBeVisible()
 })
 
 test('keeps controls reachable across target viewports, keyboard, and dark mode', async ({ page }, testInfo) => {
@@ -2115,8 +2168,8 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
   await expect(repository).toBeFocused()
   await repository.fill(fixtureModelId)
   await repository.press('Enter')
-  await expect(page.getByText(/公开仓库 · SHA 0123456 · 13 个文件/)).toBeVisible()
-  const open = page.getByRole('button', { name: '打开' })
+  await expectRepository(page, 'Hugging Face · main', 13)
+  const open = page.getByRole('button', { name: '打开', exact: true })
   await open.focus()
   await expect(open).toBeFocused()
   expect(await open.evaluate(element => getComputedStyle(element).outlineStyle)).not.toBe('none')
@@ -2124,6 +2177,7 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
   const filter = page.getByPlaceholder('筛选文件')
   await filter.focus()
   await page.keyboard.type('safetensors')
+  await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).press('Enter')
   await page.getByRole('button', { name: 'Tensors', exact: true }).press('Enter')
   await expect(page.getByRole('table', { name: 'SafeTensors Tensors' })).toBeVisible()
@@ -2181,14 +2235,16 @@ test('renders image files and verifies blob url within CSP without console error
 })
 
 async function showPanelTab(page: Page, name: string) {
-  await page.getByRole('region', { name: '底部面板' }).getByRole('tab', { name, exact: true }).click()
+  // Tabs may carry a count pill, as in native ("Token IDs 3").
+  const label = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( [\\d,]+)?$`)
+  await page.getByRole('region', { name: '底部面板' }).getByRole('tab', { name: label }).click()
 }
 
 async function openFixture(page: Page, expectedFileCount = 13) {
   await page.goto('/')
   await page.getByRole('combobox', { name: 'Hugging Face 仓库' }).fill(fixtureModelId)
-  await page.getByRole('button', { name: '打开' }).click()
-  await expect(page.getByText(new RegExp(`公开仓库 · SHA 0123456 · ${expectedFileCount} 个文件`))).toBeVisible()
+  await page.getByRole('button', { name: '打开', exact: true }).click()
+  await expectRepository(page, 'Hugging Face · main · SHA', expectedFileCount)
 }
 
 async function delay(milliseconds: number): Promise<void> {

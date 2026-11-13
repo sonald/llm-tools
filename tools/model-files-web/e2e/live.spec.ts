@@ -1,5 +1,5 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
-import { openPlaygroundMode } from './fixtures.ts'
+import { expandWeights, openPlaygroundMode } from './fixtures.ts'
 
 test.skip(process.env.LIVE_HF !== '1', '真实 Hugging Face smoke 不进入确定性 CI。')
 
@@ -15,6 +15,7 @@ test('Chat: Qwen config, README, SafeTensors, Tokenizer Raw, Chat and cross-repo
 
   await page.getByRole('button', { name: /^README\.md/ }).click()
   await expect(page.locator('.markdown-body')).toContainText('Qwen3', { timeout: 30_000 })
+  await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
   await expect(page.getByText('Tensor 数据').locator('..').getByText('0 bytes', { exact: true })).toBeVisible({ timeout: 30_000 })
   const tensorHierarchyStartedAt = Date.now()
@@ -170,7 +171,7 @@ test('GGUF public path reads only the 24-byte basic prefix', async ({ page }, te
   await page.goto('/?repo=bartowski%2FQwen_Qwen3-0.6B-GGUF&file=Qwen_Qwen3-0.6B-IQ2_M.gguf')
   const identity = await (await manifest).json() as { sha: string }
   await expect(page.getByText('实际读取').locator('..').getByText('24 bytes')).toBeVisible({ timeout: 30_000 })
-  await expect(page.getByText('模型数据').locator('..').getByText('0 bytes')).toBeVisible()
+  await expect(page.getByText('模型数据').locator('..').getByText('0 bytes', { exact: true })).toBeVisible()
   const ggufRequests = requests.filter(request => request.modelId === ggufModelId)
   expect(ggufRequests.length).toBeGreaterThan(0)
   for (const request of ggufRequests) {

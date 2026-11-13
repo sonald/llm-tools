@@ -1,4 +1,4 @@
-import type { Page, Route } from '@playwright/test'
+import { expect, type Page, type Route } from '@playwright/test'
 import { Buffer } from 'node:buffer'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -567,4 +567,16 @@ export async function openPerspective(page: Page, name: string): Promise<void> {
 export async function openPlaygroundMode(page: Page, mode: string, playground = '试验台'): Promise<void> {
   await openPerspective(page, playground)
   await page.getByRole('button', { name: mode, exact: true }).click()
+}
+
+// Native shows no file count; the sidebar rows (collapsed weights included) carry it instead.
+export async function expectRepository(page: Page, status: string, fileCount: number) {
+  await expect(page.locator('.repository-status')).toContainText(status)
+  await expect(page.locator('.sidebar nav .file-row')).toHaveCount(fileCount)
+}
+
+// Native keeps weight files in a collapsed disclosure; open it before reaching for a weight row.
+export async function expandWeights(page: Page) {
+  const group = page.locator('.weights-group')
+  if (await group.getAttribute('open') === null) await group.locator('summary').click()
 }

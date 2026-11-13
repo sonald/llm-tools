@@ -3,6 +3,7 @@ import {
   installFixtureRoutes,
   fixtureModelId,
   openPlaygroundMode,
+  expectRepository,
 } from './fixtures.ts'
 
 test.use({ locale: 'en-US' })
@@ -21,11 +22,11 @@ test('runs the core repository and tokenizer entry points in English', async ({ 
   await page.goto('/')
   await expect(page.locator('html')).toHaveAttribute('lang', 'en')
   await expect(page.getByRole('combobox', { name: 'Hugging Face repository' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Open' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open', exact: true })).toBeVisible()
 
   await page.getByRole('combobox', { name: 'Hugging Face repository' }).fill(fixtureModelId)
-  await page.getByRole('button', { name: 'Open' }).click()
-  await expect(page.getByText(/Public repository · SHA 0123456 · 13 files/)).toBeVisible()
+  await page.getByRole('button', { name: 'Open', exact: true }).click()
+  await expectRepository(page, 'Hugging Face · main · SHA', 13)
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
   await expect(page.getByText('Model Type').locator('..')).toContainText('WordPiece')
   await expect(page.getByRole('group', { name: 'Reading view' }).getByRole('button', { name: 'Playground', exact: true })).toBeVisible()

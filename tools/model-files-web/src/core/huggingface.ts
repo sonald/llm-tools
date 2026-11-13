@@ -413,10 +413,17 @@ export function fullSourcePath(snapshot: RepositorySnapshot, file: RepositoryFil
   }
 }
 
+// Native ByteCountFormatter(.file): base 1000, KB whole, MB one decimal, GB and up two; the unit is picked after rounding.
+const byteUnits = [['KB', 0], ['MB', 1], ['GB', 2], ['TB', 2], ['PB', 2]] as const
 export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${formatNumber(bytes)} bytes`
-  const units = bytes < 1024 ** 2 ? ['KiB', 1024] : bytes < 1024 ** 3 ? ['MiB', 1024 ** 2] : ['GiB', 1024 ** 3]
-  return `${formatNumber(bytes / Number(units[1]), { maximumFractionDigits: 1 })} ${units[0]}`
+  if (bytes === 0) return t('byteCountZero')
+  if (bytes < 1000) return t(bytes === 1 ? 'byteCountOne' : 'byteCountMany', { count: formatNumber(bytes) })
+  for (const [index, [unit, digits]] of byteUnits.entries()) {
+    const scale = 10 ** digits
+    const value = Math.round(bytes / 1000 ** (index + 1) * scale) / scale
+    if (value < 1000 || index === byteUnits.length - 1) return `${formatNumber(value, { maximumFractionDigits: digits })} ${unit}`
+  }
+  throw new Error('unreachable')
 }
 
 function encodePath(path: string): string {

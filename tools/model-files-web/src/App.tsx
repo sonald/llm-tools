@@ -148,7 +148,10 @@ export default function App() {
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelTab, setPanelTab] = useState<PanelTabId>('problems')
   const badgeRef = useRef<HTMLButtonElement>(null)
-  const [inspectorOpen, setInspectorOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 1200)
+  // Native: the inspector starts open and closes (never reopens) once the window drops below 1100 pt.
+  const [inspectorOpen, setInspectorOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 1100)
+  const isNarrow = useMediaQuery('(max-width: 1099px)')
+  useEffect(() => { if (isNarrow) setInspectorOpen(false) }, [isNarrow])
   // A JS fact, not CSS: when the inspector is hidden its slot is null and details render inline instead.
   const isPhone = useMediaQuery('(max-width: 640px)')
   const inspectorShown = inspectorOpen && !isPhone
@@ -167,10 +170,25 @@ export default function App() {
   }
 
   function closePanel() {
-    const wasProblems = panelTab === 'problems'
+    // Focus goes back to the badge only when it was in the Problems panel the badge opened.
+    const restoreFocus = panelTab === 'problems' && document.activeElement?.closest('.bottom-panel') != null
     setPanelOpen(false)
-    if (wasProblems) badgeRef.current?.focus()
+    if (restoreFocus) badgeRef.current?.focus()
   }
+  // Native: Esc closes the panel from any tab, anywhere in the window, unless something closer used it.
+  const closePanelRef = useRef(closePanel)
+  closePanelRef.current = closePanel
+  useEffect(() => {
+    if (!panelOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Esc that ends an IME composition belongs to the input method.
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return
+      event.preventDefault()
+      closePanelRef.current()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [panelOpen])
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null)
   // Native ModelFilesStore.perspective: one header switch for every file kind, reset whenever a file is picked.
   const [perspective, setPerspective] = useState<Perspective>('overview')
@@ -182,7 +200,9 @@ export default function App() {
     if (fileMenu === null) return
     const close = () => setFileMenu(null)
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setFileMenu(null)
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setFileMenu(null)
     }
     document.addEventListener('click', close)
     document.addEventListener('contextmenu', close)
@@ -235,10 +255,17 @@ export default function App() {
     }
   }, [])
 
+  function openFileMenu(event: React.MouseEvent, file: RepositoryFile) {
+    if (snapshot === null) return
+    event.preventDefault()
+    event.stopPropagation()
+    setFileMenu({ x: event.clientX, y: event.clientY, file })
+  }
   const visibleFiles = useMemo(() => {
     const term = filter.trim().toLocaleLowerCase()
     return snapshot?.files.filter(file => term === '' || file.path.toLocaleLowerCase().includes(term)) ?? []
   }, [filter, snapshot])
+  const visibleWeights = visibleFiles.filter(file => file.category === 'weights')
 
   async function openRepository(event: React.FormEvent) {
     event.preventDefault()
@@ -653,16 +680,9 @@ export default function App() {
         </form>
         <div className="toolbar-end">
           <div className="repository-status" aria-live="polite">
-            {snapshot !== null ? (
-              snapshot.source === 'huggingface'
-                ? <><i />{t('appPublicRepositoryStatus', {
-                  revision: snapshot.revision.slice(0, 7),
-                  count: formatNumber(snapshot.files.length),
-                })}</>
-                : snapshot.source === 'https'
-                  ? <><i />{t('appHttpsStatus', { count: formatNumber(snapshot.files.length) })}</>
-                : <><i />{t('appLocalDirectoryStatus', { count: formatNumber(snapshot.files.length) })}</>
-            ) : isLoadingRepository ? t('appLoadingManifestStatus') : t('appBrowserReadonlyStatus')}
+            {snapshot !== null
+              ? <><CheckCircleIcon />{sourceStatus(snapshot, inspection.kind === 'empty' ? null : inspection.file)}</>
+              : isLoadingRepository ? <span className="spinner" role="status" aria-label={t('appLoadingManifestStatus')} /> : null}
           </div>
           <button className="icon-button panel-toggle" type="button" aria-label={t('appTogglePanelAction')}
             title={t('appTogglePanelAction')} aria-pressed={panelOpen} disabled={snapshot === null}
@@ -691,48 +711,41 @@ export default function App() {
             <span className="sr-only">{t('appFilterFilesLabel')}</span>
             <input value={filter} onChange={event => setFilter(event.target.value)} placeholder={t('appFilterFilesLabel')} />
           </label>
-          {repositoryError !== null ? (
-            <div className="repository-error">
-              <InlineError>{repositoryError.message}</InlineError>
-              {repositoryError.retryable
-                ? <button type="button" onClick={() => void loadRoute(repositoryInput, readRoute().file, true, sourceMode)}>{t('appRetryAction')}</button>
-                : null}
-            </div>
-          ) : null}
-          {snapshot === null && repositoryError === null ? (
-            <div className="sidebar-empty">{t('appRepositoryEmptyHint')}</div>
+          {isLoadingRepository && snapshot === null ? (
+            <div className="sidebar-loading" role="status"><span className="spinner" />{t('appLoadingManifestStatus')}</div>
+          ) : snapshot === null ? (
+            <EmptyState icon="box" title={t('appNoModelOpenTitle')} message={t('appNoModelOpenMessage')} />
+          ) : filter.trim() !== '' && visibleFiles.length === 0 ? (
+            <EmptyState icon="search" title={t('appNoMatchingFilesTitle')} message={t('appNoMatchingFilesMessage')}
+              action={t('appClearFilterAction')} onAction={() => setFilter('')} />
           ) : null}
           <nav aria-label={t('appRepositoryFilesAriaLabel')}>
-            {Object.entries(categoryLabels).map(([category, messageKey]) => {
+            {(Object.keys(categoryLabels) as FileCategory[]).filter(category => category !== 'weights').map(category => {
               const files = visibleFiles.filter(file => file.category === category)
               if (files.length === 0) return null
               return (
                 <section className="file-group" key={category}>
-                  <h2>{t(messageKey)}</h2>
-                  {files.map(file => (
-                    <button
-                      className={`file-row ${selectedPath === file.path ? 'selected' : ''}`}
-                      type="button"
-                      aria-current={selectedPath === file.path}
-                      key={file.path}
-                      onClick={() => selectFile(file)}
-                      onContextMenu={event => {
-                        if (snapshot === null) return
-                        event.preventDefault()
-                        event.stopPropagation()
-                        setFileMenu({ x: event.clientX, y: event.clientY, file })
-                      }}
-                      title={file.path}
-                    >
-                      <FileGlyph category={file.category} locked={isBlocked(file)} />
-                      <span>{file.path}</span>
-                      <FileProblemCount diagnostics={fileDiagnostics.get(file.path)} />
-                      {file.size !== null ? <small>{formatBytes(file.size)}</small> : null}
-                    </button>
-                  ))}
+                  <h2>{t(categoryLabels[category])}</h2>
+                  {files.map(file => <FileRow key={file.path} file={file} selected={selectedPath === file.path}
+                    diagnostics={fileDiagnostics.get(file.path)} onSelect={() => selectFile(file)} onContextMenu={openFileMenu} />)}
                 </section>
               )
             })}
+            {visibleWeights.length > 0 ? (
+              // Native: a collapsed disclosure; locked rows dimmed and unselectable, no problem counts (B-11).
+              <details className="file-group weights-group">
+                <summary>
+                  <LockIcon />
+                  <span>{t('appCategoryWeights')}</span>
+                  <small>{t('appWeightsPreviewable', {
+                    count: formatNumber(visibleWeights.filter(file => !isBlocked(file)).length),
+                    total: formatNumber(visibleWeights.length),
+                  })}</small>
+                </summary>
+                {visibleWeights.map(file => <FileRow key={file.path} file={file} selected={selectedPath === file.path}
+                  onSelect={() => selectFile(file)} onContextMenu={openFileMenu} />)}
+              </details>
+            ) : null}
           </nav>
         </aside>
         <Detail
@@ -769,6 +782,8 @@ export default function App() {
             setSelectedFindingId(id)
             setInspectorOpen(true)
           }}
+          repositoryError={repositoryError}
+          onRetryRepository={() => void loadRoute(repositoryInput, readRoute().file, true, sourceMode)}
           onRetry={() => {
           if (snapshot !== null && inspection.kind !== 'empty') void inspectFile(snapshot, inspection.file)
         }} />
@@ -850,16 +865,19 @@ function FileHeader({
   }
 
   if (file === null) return null
-  // Native DetailHeader order: title and subtitle, consistency badge, perspective switch, path actions.
+  const chip = formatChip(inspection)
+  // Native DetailHeader order: title and subtitle, consistency badge, format chip, perspective switch, path actions.
   return (
     <header className="detail-header">
       <div className="file-title">
         <h1 title={file.path}>{file.path.split('/').at(-1)}</h1>
-        <p>{formatName(file)} · {file.size === null ? t('appUnknownSize') : formatBytes(file.size)}</p>
+        <p>{[filePurpose(file), file.size === null ? null : formatBytes(file.size), snapshot === null ? null : sourceStatus(snapshot, file)]
+          .filter(part => part !== null).join(' · ')}</p>
       </div>
       {snapshot !== null ? (
         <ConsistencyBadge ref={badgeRef} report={report} open={reportOpen} onToggle={onToggleConsistency} />
       ) : null}
+      {chip !== null ? <span className="format-chip">{chip}</span> : null}
       <div className="perspective header-perspective" role="group" aria-label={t('readerReadingView')}>
         {perspectives.map(item => (
           <button type="button" aria-pressed={perspective === item} key={item}
@@ -869,18 +887,26 @@ function FileHeader({
         ))}
       </div>
       <div className="header-actions">
-        <button className="icon-button path-copy" type="button" aria-label={copyLabel} title={copyLabel}
+        <button className="icon-button path-copy" type="button" aria-label={copyLabel} title={t('appHeaderCopyPathHelp')}
           onClick={() => void copy(file.path, setCopyLabel)}>
           {copyLabel === t('templateCopiedState') ? <CheckIcon /> : <CopyIcon />}
         </button>
-        <button className="icon-button path-copy" type="button" aria-label={fullCopyLabel} title={fullCopyLabel}
-          hidden={fullUrl === null} onClick={() => { if (fullUrl !== null) void copy(fullUrl, setFullCopyLabel) }}>
+        {/* Native disables what the source cannot do; local files have no browser-visible full path (P-4). */}
+        <button className="icon-button path-copy" type="button" aria-label={fullCopyLabel} title={t('appHeaderCopyFullPathHelp')}
+          disabled={fullUrl === null} onClick={() => { if (fullUrl !== null) void copy(fullUrl, setFullCopyLabel) }}>
           {fullCopyLabel === t('templateCopiedState') ? <CheckIcon /> : <LinkIcon />}
         </button>
-        <a className="icon-button source-link" href={sourceHref} target="_blank" rel="noreferrer"
-          aria-label={t('appSourceLinkAction')} title={t('appSourceLinkAction')} hidden={sourceHref === undefined}>
-          <ExternalIcon />
-        </a>
+        {sourceHref !== undefined ? (
+          <a className="icon-button source-link" href={sourceHref} target="_blank" rel="noreferrer"
+            aria-label={t('appSourceLinkAction')} title={t('appHeaderOpenSourceHelp')}>
+            <ExternalIcon />
+          </a>
+        ) : (
+          <button className="icon-button source-link" type="button" aria-label={t('appSourceLinkAction')}
+            title={t('appHeaderOpenSourceHelp')} disabled>
+            <ExternalIcon />
+          </button>
+        )}
       </div>
     </header>
   )
@@ -912,7 +938,11 @@ function Detail({
   selectedFindingId,
   onSelectFinding,
   onRetry,
+  repositoryError,
+  onRetryRepository,
 }: {
+  repositoryError: RepositoryError | null
+  onRetryRepository(): void
   header: React.ReactNode
   inspection: Inspection
   perspective: Perspective
@@ -931,6 +961,9 @@ function Detail({
   onRetry(): void
 }) {
   const [toolTabs, setToolTabs] = useState<ToolTab[]>([])
+  // Native: panel 110–600 pt tall (240 default), inspector 220–380 pt wide (260 ideal).
+  const [panelHeight, setPanelHeight] = useState(240)
+  const [inspectorWidth, setInspectorWidth] = useState(260)
   const [panelBody, setPanelBody] = useState<HTMLElement | null>(null)
   const [inspectorSlot, setInspectorSlot] = useState<HTMLElement | null>(null)
   const activeTab: PanelTabId = toolTabs.some(tab => tab.id === panelTab) ? panelTab : 'problems'
@@ -960,9 +993,12 @@ function Detail({
           {header}
           <DetailBody inspection={inspection} perspective={perspective} onPerspectiveChange={onPerspectiveChange}
             snapshot={snapshot} diagnostics={diagnostics}
-            selectedFindingId={selectedFindingId} onSelectFinding={onSelectFinding} onRetry={onRetry} />
+            selectedFindingId={selectedFindingId} onSelectFinding={onSelectFinding} onRetry={onRetry}
+            repositoryError={repositoryError} onRetryRepository={onRetryRepository} />
+          {panelOpen ? <ResizeHandle axis="y" value={panelHeight} min={110} max={600} onChange={setPanelHeight} /> : null}
           {panelOpen ? (
             <BottomPanel
+              height={panelHeight}
               tabs={toolTabs}
               activeTab={activeTab}
               onSelectTab={onSelectPanelTab}
@@ -975,7 +1011,10 @@ function Detail({
           ) : null}
         </div>
         {inspectorOpen ? (
-          <Inspector inspection={inspection} report={report} selectedFindingId={selectedFindingId} slotRef={setInspectorSlot} />
+          <div className="inspector-column" style={{ '--inspector-width': `${inspectorWidth}px` } as React.CSSProperties}>
+            <ResizeHandle axis="x" value={inspectorWidth} min={220} max={380} onChange={setInspectorWidth} />
+            <Inspector inspection={inspection} report={report} selectedFindingId={selectedFindingId} slotRef={setInspectorSlot} />
+          </div>
         ) : null}
       </section>
     </WorkspaceSlotsContext.Provider>
@@ -983,7 +1022,7 @@ function Detail({
 }
 
 type PanelTabId = 'problems' | 'tokens' | 'ids'
-type ToolTab = { id: Exclude<PanelTabId, 'problems'>; label: string }
+type ToolTab = { id: Exclude<PanelTabId, 'problems'>; label: string; count?: number }
 type WorkspaceSlots = {
   panelBody: HTMLElement | null
   activeTab: PanelTabId
@@ -1008,7 +1047,10 @@ function useMediaQuery(query: string): boolean {
 
 function DetailBody({
   inspection, perspective, onPerspectiveChange, snapshot, diagnostics, selectedFindingId, onSelectFinding, onRetry,
+  repositoryError, onRetryRepository,
 }: {
+  repositoryError: RepositoryError | null
+  onRetryRepository(): void
   inspection: Inspection
   perspective: Perspective
   onPerspectiveChange(perspective: Perspective): void
@@ -1021,21 +1063,22 @@ function DetailBody({
   if (inspection.kind === 'empty') {
     return (
       <div className="detail-body">
-        {snapshot === null
-          ? <EmptyState title={t('appOpenModelRepositoryTitle')} message={t('appOpenModelRepositoryMessage')} />
-          : <EmptyState title={t('appSelectFileTitle')} message={t('appSelectFileMessage')} />}
+        {repositoryError !== null
+          ? <EmptyState icon="warning" title={t('appUnableToOpenLocationTitle')} message={repositoryError.message} tone="error"
+            action={repositoryError.retryable ? t('appRetryAction') : undefined} onAction={onRetryRepository} />
+          : <EmptyState icon="document" title={t('appSelectFileTitle')} message={t('appSelectFileMessage')} />}
       </div>
     )
   }
   const file = inspection.file
   return (
       <div className="detail-body" aria-live="polite" aria-busy={inspection.kind === 'loading'}>
-        {inspection.kind === 'loading' ? <LoadingState file={file} /> : null}
+        {inspection.kind === 'loading' ? <LoadingState file={file} snapshot={snapshot} /> : null}
         {inspection.kind === 'error' ? (
-          <EmptyState title={t('appUnableToReadFileTitle')} message={inspection.message} action={t('appRetryAction')} onAction={onRetry} tone="error" />
+          <EmptyState icon="offline" title={t('appUnableToReadFileTitle')} message={inspection.message} action={t('appRetryAction')} onAction={onRetry} tone="error" />
         ) : null}
         {inspection.kind === 'locked' ? (
-          <EmptyState title={t('appLockedWeightsTitle')} message={t('appLockedWeightsMessage')} />
+          <EmptyState icon="lock" title={t('appLockedWeightsTitle')} message={t('appLockedWeightsMessage')} />
         ) : null}
         {inspection.kind === 'text' && snapshot !== null ? (
           <TextInspection
@@ -1350,13 +1393,15 @@ function ConsistencyBadge({
       aria-label={t('appViewConsistencyReportAriaLabel')}
       aria-expanded={open}
       data-consistency-state={state.state}
+      title={t('appViewConsistencyReportAriaLabel')}
       ref={ref}
       onClick={onToggle}
-    >{state.label}</button>
+    ><BadgeIcon state={state.state} />{state.label}</button>
   )
 }
 
-function BottomPanel({ tabs, activeTab, onSelectTab, report, selectedFindingId, onSelectFinding, onClose, bodyRef }: {
+function BottomPanel({ height, tabs, activeTab, onSelectTab, report, selectedFindingId, onSelectFinding, onClose, bodyRef }: {
+  height: number
   tabs: ToolTab[]
   activeTab: PanelTabId
   onSelectTab(id: PanelTabId): void
@@ -1366,29 +1411,25 @@ function BottomPanel({ tabs, activeTab, onSelectTab, report, selectedFindingId, 
   onClose(): void
   bodyRef(element: HTMLElement | null): void
 }) {
-  const allTabs: Array<{ id: PanelTabId; label: React.ReactNode }> = [
+  // Native order: Problems first, then the docked tool tabs; a count pill only where there is a count.
+  const allTabs: Array<{ id: PanelTabId; label: string; count?: number }> = [
+    { id: 'problems', label: t('appProblemsTab'), count: report?.findings.length },
     ...tabs,
-    { id: 'problems', label: <>{t('appProblemsTab')} <span className="panel-tab-count">{report?.findings.length ?? 0}</span></> },
   ]
   return (
     <section className="bottom-panel" aria-label={t('appBottomPanelAriaLabel')}
-      onKeyDown={event => {
-        // Escape returns to the badge only from Problems, which the badge opened.
-        if (event.key === 'Escape' && activeTab === 'problems') {
-          event.preventDefault()
-          onClose()
-        }
-      }}
-    >
+      style={{ '--panel-height': `${height}px` } as React.CSSProperties}>
       <div className="panel-tabs">
         <div role="tablist" aria-label={t('appBottomPanelAriaLabel')}>
           {allTabs.map(tab => (
             <button key={tab.id} className="panel-tab" type="button" role="tab" id={`panel-tab-${tab.id}`}
               aria-selected={activeTab === tab.id} aria-controls={`panel-${tab.id}`} onClick={() => onSelectTab(tab.id)}>
               {tab.label}
+              {tab.count !== undefined ? <> <span className="panel-tab-count">{formatNumber(tab.count)}</span></> : null}
             </button>
           ))}
         </div>
+        {activeTab === 'problems' ? <span className="panel-state">{consistencyBadgeState(report).label}</span> : null}
         <button className="icon-button" type="button" aria-label={t('appCloseAction')} title={t('appCloseAction')} onClick={onClose}>
           <CloseIcon />
         </button>
@@ -1401,6 +1442,37 @@ function BottomPanel({ tabs, activeTab, onSelectTab, report, selectedFindingId, 
         <div className="panel-body" role="tabpanel" id={`panel-${activeTab}`} aria-labelledby={`panel-tab-${activeTab}`} ref={bodyRef} />
       )}
     </section>
+  )
+}
+
+// Native draws these splits by hand too; dragging the bottom panel's top edge or the inspector's left edge.
+function ResizeHandle({ axis, value, min, max, onChange }: {
+  axis: 'x' | 'y'
+  value: number
+  min: number
+  max: number
+  onChange(value: number): void
+}) {
+  return (
+    <div className={`resize-handle resize-${axis}`} aria-hidden="true"
+      onPointerDown={event => {
+        event.preventDefault()
+        const start = axis === 'y' ? event.clientY : event.clientX
+        const handle = event.currentTarget
+        handle.setPointerCapture(event.pointerId)
+        const move = (next: PointerEvent) => {
+          const delta = (axis === 'y' ? next.clientY : next.clientX) - start
+          onChange(Math.min(Math.max(value - delta, min), max))
+        }
+        const end = () => {
+          handle.removeEventListener('pointermove', move)
+          handle.removeEventListener('pointerup', end)
+          handle.removeEventListener('pointercancel', end)
+        }
+        handle.addEventListener('pointermove', move)
+        handle.addEventListener('pointerup', end)
+        handle.addEventListener('pointercancel', end)
+      }} />
   )
 }
 
@@ -2663,7 +2735,7 @@ function TokenizerJSONInspection({ snapshot, file, perspective }: {
     return () => controller.abort()
   }, [snapshot, file])
   if (error !== null) return <InlineError>{error}</InlineError>
-  if (document === null) return <LoadingState file={file} />
+  if (document === null) return <LoadingState file={file} snapshot={snapshot} />
   return <TextInspection snapshot={snapshot} path={file.path} {...document} json perspective={perspective} />
 }
 
@@ -2856,12 +2928,16 @@ function TokenizerResultView({
   const slots = useContext(WorkspaceSlotsContext)
   const dock = docked ? slots : null
   const registerTabs = dock?.registerTabs
+  const tokenCount = result?.ids.length
   useEffect(() => {
     if (registerTabs === undefined) return
     registerTabs([
       { id: 'tokens', label: t('appPanelTokensTab') },
-      { id: 'ids', label: t('appPanelTokenIdsTab') },
+      { id: 'ids', label: t('appPanelTokenIdsTab'), count: tokenCount },
     ])
+  }, [registerTabs, tokenCount])
+  useEffect(() => {
+    if (registerTabs === undefined) return
     return () => registerTabs([])
   }, [registerTabs])
   const openToolPanel = useRef(dock?.openToolPanel)
@@ -3099,17 +3175,51 @@ function DataTable({ columns, rows, label }: { columns: string[]; rows: string[]
   )
 }
 
-function LoadingState({ file }: { file: RepositoryFile }) {
-  return <div className="loading-state" role="status"><span className="spinner" /><h2>{t('appLoadingFileTitle', { name: file.path.split('/').at(-1) })}</h2><p>{t('appLoadingSwitchHint')}</p></div>
+const loadingDescriptions: Record<StructuredFormat, MessageKey> = {
+  safetensors: 'appLoadingSafeTensors', gguf: 'appLoadingGGUF', imatrix: 'appLoadingImatrix',
+  jinja: 'appLoadingJinja', pdf: 'appLoadingPdf', image: 'appLoadingImage',
+}
+
+// Native DetailView loading page: format-specific line, then size · source · how to cancel.
+function LoadingState({ file, snapshot }: { file: RepositoryFile; snapshot: RepositorySnapshot | null }) {
+  const format = structuredFormat(file)
+  const details = [file.size === null ? null : formatBytes(file.size), snapshot === null ? t('appSourceGeneric') : sourceTitle(snapshot)]
+    .filter(part => part !== null).join(' · ')
+  return (
+    <div className="loading-state" role="status">
+      <span className="spinner" />
+      <p>{format === null ? t('appLoadingFileTitle', { name: file.path.split('/').at(-1) }) : t(loadingDescriptions[format])}</p>
+      <small>{details} · {t('appLoadingSwitchHint')}</small>
+    </div>
+  )
+}
+
+type StateIconName = 'document' | 'warning' | 'lock' | 'offline' | 'box' | 'search'
+
+// Line drawings standing in for the native SF Symbols (doc.text, exclamationmark.triangle, lock.shield,
+// wifi.exclamationmark, shippingbox, doc.text.magnifyingglass).
+function StateIcon({ name }: { name: StateIconName }) {
+  return (
+    <svg className="state-icon" viewBox="0 0 32 32" aria-hidden="true">
+      {name === 'document' ? <><path d="M9 4h10l6 6v18H9z" /><path d="M19 4v6h6M13 16h8M13 20h8M13 24h5" /></> : null}
+      {name === 'warning' ? <><path d="M16 4 29 27H3z" /><path d="M16 12v8M16 23.5v.5" /></> : null}
+      {name === 'lock' ? <><path d="M16 3 26 7v8c0 7-4.5 11.5-10 14C10.5 26.5 6 22 6 15V7z" /><rect x="11.5" y="14" width="9" height="7" rx="1.5" /><path d="M13.5 14v-2a2.5 2.5 0 0 1 5 0v2" /></> : null}
+      {name === 'offline' ? <><path d="M4 12a17 17 0 0 1 20 0M8 16.5a11 11 0 0 1 12 0M12 21a5 5 0 0 1 4-1" /><path d="M26 15v7M26 25.5v.5" /></> : null}
+      {name === 'box' ? <><path d="M4 10 16 4l12 6v12l-12 6-12-6z" /><path d="M4 10l12 6 12-6M16 16v12M10 7l12 6" /></> : null}
+      {name === 'search' ? <><path d="M7 4h9l5 5v5M7 4v24h8" /><circle cx="21" cy="21" r="4.5" /><path d="m24.5 24.5 3.5 3.5" /></> : null}
+    </svg>
+  )
 }
 
 function EmptyState({
+  icon,
   title,
   message,
   action,
   onAction,
   tone = 'neutral',
 }: {
+  icon: StateIconName
   title: string
   message: string
   action?: string
@@ -3117,11 +3227,11 @@ function EmptyState({
   tone?: 'neutral' | 'error'
 }) {
   return (
-    <div className={`empty-state ${tone}`}>
-      <AppMark />
+    <div className={`empty-state ${tone}`} role={tone === 'error' ? 'alert' : undefined}>
+      <StateIcon name={icon} />
       <h2>{title}</h2>
       <p>{message}</p>
-      {action !== undefined ? <button type="button" onClick={onAction}>{action}</button> : null}
+      {action !== undefined ? <button className="primary-button" type="button" onClick={onAction}>{action}</button> : null}
     </div>
   )
 }
@@ -3134,24 +3244,66 @@ function SearchIcon() {
   return <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
 }
 
-const categoryGlyphs: Record<FileCategory, string> = {
-  configuration: '{ }',
-  tokenizer: 'Aa',
-  templates: '{%',
-  weightMetadata: '≡',
-  documentation: '¶',
-  other: '·',
-  weights: '≡',
+// Native SidebarFileRow: icon, name with an optional note below, problem count, size; the path is the tooltip.
+function FileRow({ file, selected, diagnostics, onSelect, onContextMenu }: {
+  file: RepositoryFile
+  selected: boolean
+  diagnostics?: FileDiagnostic[]
+  onSelect(): void
+  onContextMenu(event: React.MouseEvent, file: RepositoryFile): void
+}) {
+  const locked = isBlocked(file)
+  const note = fileNote(file)
+  const size = file.size === null ? null : formatBytes(file.size)
+  // The accessible name leads with the full path so nested files stay distinguishable.
+  const label = [file.path, note === file.path ? null : note,
+    diagnostics === undefined ? null : t('appFileProblemCount', { count: formatNumber(diagnostics.length) }), size]
+    .filter(part => part !== null).join(' ')
+  return (
+    <button className={`file-row${selected ? ' selected' : ''}`} type="button" aria-current={selected}
+      aria-disabled={locked || undefined} aria-label={label} title={file.path}
+      onClick={locked ? undefined : onSelect} onContextMenu={event => onContextMenu(event, file)}>
+      <FileIcon file={file} locked={locked} />
+      <span className="file-row-text">
+        <span>{file.path.split('/').at(-1)}</span>
+        {note !== null ? <small>{note}</small> : null}
+      </span>
+      <FileProblemCount diagnostics={diagnostics} />
+      {size !== null ? <small className="file-size">{size}</small> : null}
+    </button>
+  )
 }
 
-function FileGlyph({ category, locked }: { category: FileCategory; locked: boolean }) {
+function fileNote(file: RepositoryFile): string | null {
+  const name = file.path.split('/').at(-1) ?? file.path
+  const format = structuredFormat(file)
+  if (name === 'tokenizer_config.json') return t('appNoteEmbeddedChatTemplate')
+  if (format === 'safetensors') return t('appNoteSafeTensors')
+  if (format === 'gguf') return t('appNoteGGUF')
+  if (format === 'imatrix') return 'legacy importance matrix'
+  if (isBlocked(file)) return t('appNoteLocked')
+  return file.path === name ? null : file.path
+}
+
+// Line drawings standing in for the native SF Symbols, tinted with Palette.glyph; locked rows stay grey.
+function FileIcon({ file, locked }: { file: RepositoryFile; locked: boolean }) {
+  const shape = locked ? 'locked' : file.category === 'weights' ? 'previewable' : file.category
   return (
-    <span className="file-glyph" data-category={category} aria-hidden="true">
-      {locked
-        ? <svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5" /><path d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7" /></svg>
-        : categoryGlyphs[category]}
-    </span>
+    <svg className="file-icon" data-category={locked ? undefined : file.category} viewBox="0 0 16 16" aria-hidden="true">
+      {shape === 'configuration' ? <><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" /><circle className="knob" cx="5.5" cy="4.5" r="1.4" /><circle className="knob" cx="10.5" cy="8" r="1.4" /><circle className="knob" cx="7" cy="11.5" r="1.4" /></> : null}
+      {shape === 'tokenizer' ? <text x="8" y="11" textAnchor="middle">abc</text> : null}
+      {shape === 'templates' ? <><rect x="1.5" y="1.5" width="13" height="13" rx="3" /><path d="M6.5 4.5c-1.2 0-1.5.5-1.5 1.5v.8c0 .8-.4 1.2-1 1.2.6 0 1 .4 1 1.2v.8c0 1 .3 1.5 1.5 1.5M9.5 4.5c1.2 0 1.5.5 1.5 1.5v.8c0 .8.4 1.2 1 1.2-.6 0-1 .4-1 1.2v.8c0 1-.3 1.5-1.5 1.5" /></> : null}
+      {shape === 'weightMetadata' ? <><path d="M8 2 14 5 8 8 2 5z" /><path d="m2 8 6 3 6-3M2 11l6 3 6-3" /></> : null}
+      {shape === 'documentation' ? <><path d="M3.5 1.5h6l3 3v10h-9z" /><path d="M9.5 1.5v3h3M5.5 8h5M5.5 10.5h5M5.5 13h3" /></> : null}
+      {shape === 'other' ? <><path d="M3.5 1.5h6l3 3v10h-9z" /><path d="M9.5 1.5v3h3" /></> : null}
+      {shape === 'previewable' ? <><rect x="1.5" y="2.5" width="13" height="11" rx="2" /><path d="M6 5.5h6M6 8h6M6 10.5h6" /><circle className="knob" cx="4" cy="5.5" r=".6" /><circle className="knob" cx="4" cy="8" r=".6" /><circle className="knob" cx="4" cy="10.5" r=".6" /></> : null}
+      {shape === 'locked' ? <><rect className="knob" x="3" y="7" width="10" height="7.5" rx="1.6" /><path d="M5 7V5a3 3 0 0 1 6 0v2" /></> : null}
+    </svg>
   )
+}
+
+function LockIcon() {
+  return <svg className="file-icon" viewBox="0 0 16 16" aria-hidden="true"><rect className="knob" x="3" y="7" width="10" height="7.5" rx="1.6" /><path d="M5 7V5a3 3 0 0 1 6 0v2" /></svg>
 }
 
 function CopyIcon() {
@@ -3178,6 +3330,20 @@ function InspectorIcon() {
   return <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M10 3v10" /></svg>
 }
 
+function CheckCircleIcon() {
+  return <svg className="status-ok" viewBox="0 0 16 16" aria-hidden="true"><circle className="filled" cx="8" cy="8" r="6.5" /><path className="cut" d="m5.2 8.2 2 2 3.6-4.2" /></svg>
+}
+
+// Native badge symbols: clock, exclamationmark.triangle.fill, questionmark.circle, checkmark.circle.fill.
+function BadgeIcon({ state }: { state: 'checking' | 'warnings' | 'insufficient' | 'consistent' }) {
+  return <svg className="badge-icon" viewBox="0 0 16 16" aria-hidden="true">
+    {state === 'checking' ? <><circle cx="8" cy="8" r="6" /><path d="M8 4.5V8l2.3 1.5" /></> : null}
+    {state === 'warnings' ? <><path className="filled" d="M8 1.8 15 14H1z" /><path className="cut" d="M8 6v3.6M8 11.3v.4" /></> : null}
+    {state === 'insufficient' ? <><circle cx="8" cy="8" r="6" /><path d="M6.3 6.3a1.8 1.8 0 1 1 2.4 1.7c-.5.2-.7.6-.7 1.1M8 11.2v.3" /></> : null}
+    {state === 'consistent' ? <><circle className="filled" cx="8" cy="8" r="6.5" /><path className="cut" d="m5.2 8.2 2 2 3.6-4.2" /></> : null}
+  </svg>
+}
+
 function CheckIcon() {
   return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" /></svg>
 }
@@ -3195,18 +3361,67 @@ function isBlocked(file: RepositoryFile): boolean {
     && !lower.endsWith('.gguf') && !lower.endsWith('.gguf_file')
 }
 
-function formatName(file: RepositoryFile): string {
-  const lower = file.path.toLocaleLowerCase()
-  if (lower.endsWith('.safetensors')) return 'SafeTensors'
-  if (lower.endsWith('.gguf') || lower.endsWith('.gguf_file')) return 'GGUF'
-  if (file.path.split('/').at(-1)?.toLocaleLowerCase() === 'tokenizer.json' || isSentencePieceFile(file)) return 'Tokenizer'
-  if (lower.endsWith('.json')) return 'JSON'
-  if (lower.endsWith('.md')) return 'Markdown'
-  if (lower.endsWith('.pdf')) return 'PDF'
-  if (lower.endsWith('.svg')) return 'SVG'
-  if (isImagePath(file.path)) return 'Image'
-  if (isImatrixPath(file.path)) return 'Imatrix'
-  return 'Text'
+type StructuredFormat = 'safetensors' | 'gguf' | 'imatrix' | 'jinja' | 'pdf' | 'image'
+
+// Native RepositoryFile.structuredInspectionFormat.
+function structuredFormat(file: RepositoryFile): StructuredFormat | null {
+  const name = file.path.split('/').at(-1)?.toLocaleLowerCase() ?? ''
+  if (name.endsWith('.safetensors')) return 'safetensors'
+  if (isGGUF(file)) return 'gguf'
+  if (isImatrixPath(file.path)) return 'imatrix'
+  if (name.endsWith('.pdf')) return 'pdf'
+  if (isImagePath(file.path)) return 'image'
+  if (syntaxLanguage(file.path) !== null) return null
+  return file.category === 'templates' ? 'jinja' : null
+}
+
+const structuredFormatTitles: Record<StructuredFormat, string> = {
+  safetensors: 'SafeTensors', gguf: 'GGUF', imatrix: 'Imatrix', jinja: 'Jinja', pdf: 'PDF', image: 'Image',
+}
+
+// Native: the loaded document's format title, else the file's structured format; JSON, text and tokenizers get none.
+function formatChip(inspection: Inspection): string | null {
+  switch (inspection.kind) {
+    case 'empty': return null
+    case 'safetensors': return 'SafeTensors'
+    case 'gguf': return `GGUF v${inspection.summary.version}`
+    case 'imatrix': return 'Imatrix DAT'
+    case 'template': return 'Jinja'
+    case 'pdf': return 'PDF'
+    case 'image': return inspection.isSvg ? 'SVG' : 'Image'
+    default: {
+      const format = structuredFormat(inspection.file)
+      return format === null ? null : structuredFormatTitles[format]
+    }
+  }
+}
+
+function filePurpose(file: RepositoryFile): string {
+  const format = structuredFormat(file)
+  switch (file.category) {
+    case 'configuration': return t('appPurposeConfiguration')
+    case 'tokenizer': return t('appPurposeTokenizer')
+    case 'templates': return t('appPurposeTemplates')
+    case 'weightMetadata': return format === 'imatrix' ? 'Importance Matrix' : t('appPurposeWeightIndex')
+    case 'documentation': return t('appPurposeDocumentation')
+    case 'other': return t('appPurposeOther')
+    case 'weights':
+      return format === 'safetensors' ? t('appPurposeSafeTensors')
+        : format === 'gguf' ? t('appPurposeGGUF')
+          : format === 'imatrix' ? 'Importance Matrix' : t('appPurposeLockedWeights')
+  }
+}
+
+function sourceTitle(snapshot: RepositorySnapshot): string {
+  return snapshot.source === 'huggingface' ? 'Hugging Face' : snapshot.source === 'https' ? 'HTTPS' : t('appSourceLocal')
+}
+
+// Native statusText: source · branch · SHA of the open file (else the commit), or source · live.
+function sourceStatus(snapshot: RepositorySnapshot, file: RepositoryFile | null): string {
+  if (snapshot.source !== 'huggingface') {
+    return `${sourceTitle(snapshot)} · ${t(snapshot.source === 'https' ? 'appLiveSourceStatus' : 'appLiveDirectoryStatus')}`
+  }
+  return `Hugging Face · main · SHA ${(file?.hash ?? snapshot.revision).slice(0, 7)}`
 }
 
 function formatBigBytes(bytes: bigint): string {

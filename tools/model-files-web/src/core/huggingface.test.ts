@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   classifyFile,
+  formatBytes,
   fullSourcePath,
   loadLocalDirectory,
   loadHttpsSource,
@@ -13,6 +14,7 @@ import {
   type RepositoryFile,
   type RepositorySnapshot,
 } from './huggingface.ts'
+import { initializeLocalization } from '../i18n.ts'
 
 const snapshot: RepositorySnapshot = {
   source: 'huggingface',
@@ -413,4 +415,18 @@ test('range refusal cancels the response stream without consuming whole weights'
     await assert.rejects(readExactRange(snapshot, file, 0, 7), /未确认 Range/)
     assert.equal(cancelled, true)
   })
+})
+
+test('formats sizes like native ByteCountFormatter file style', () => {
+  initializeLocalization(['en'])
+  const cases: Array<[number, string]> = [
+    [0, 'Zero KB'], [1, '1 byte'], [623, '623 bytes'], [999, '999 bytes'], [1000, '1 KB'], [1499, '1 KB'],
+    [1500, '2 KB'], [173_700, '174 KB'], [999_499, '999 KB'], [999_500, '1 MB'], [2_300_000, '2.3 MB'],
+    [23_456_789, '23.5 MB'], [999_950_000, '1 GB'], [1_500_000_000, '1.5 GB'], [15_234_567_890, '15.23 GB'],
+    [1_234_567_890_123, '1.23 TB'],
+  ]
+  for (const [bytes, expected] of cases) assert.equal(formatBytes(bytes), expected, String(bytes))
+  initializeLocalization(['zh-Hans'])
+  assert.equal(formatBytes(623), '623 字节')
+  assert.equal(formatBytes(0), '0 KB')
 })

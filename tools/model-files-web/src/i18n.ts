@@ -1,6 +1,150 @@
 export type Locale = 'zh-Hans' | 'en'
 
 export const messageCatalog = {
+  appWeightsPreviewable: {
+    'zh-Hans': '{count}/{total} 可预览',
+    en: '{count}/{total} previewable',
+  },
+  appNoteEmbeddedChatTemplate: {
+    'zh-Hans': '含内嵌 Chat Template（如有）',
+    en: 'Includes the embedded chat template (if any)',
+  },
+  appNoteSafeTensors: {
+    'zh-Hans': '只读取 JSON Header',
+    en: 'Reads only the JSON header',
+  },
+  appNoteGGUF: {
+    'zh-Hans': '只读取 metadata 前缀',
+    en: 'Reads only the metadata prefix',
+  },
+  appNoteLocked: {
+    'zh-Hans': '不可预览',
+    en: 'Not previewable',
+  },
+  appUnableToOpenLocationTitle: {
+    'zh-Hans': '无法打开位置',
+    en: 'Unable to open location',
+  },
+  appNoModelOpenTitle: {
+    'zh-Hans': '尚未打开模型',
+    en: 'No model open',
+  },
+  appNoModelOpenMessage: {
+    'zh-Hans': '输入模型 ID 或 HTTPS 地址，或选择本地目录后打开。',
+    en: 'Enter a model ID or HTTPS address, or choose a local folder, then open it.',
+  },
+  appNoMatchingFilesTitle: {
+    'zh-Hans': '没有匹配文件',
+    en: 'No matching files',
+  },
+  appNoMatchingFilesMessage: {
+    'zh-Hans': '换个关键词，或清除当前筛选。',
+    en: 'Try another keyword, or clear the filter.',
+  },
+  appClearFilterAction: {
+    'zh-Hans': '清除筛选',
+    en: 'Clear filter',
+  },
+  appSourceGeneric: {
+    'zh-Hans': '来源',
+    en: 'Source',
+  },
+  appLoadingSafeTensors: {
+    'zh-Hans': '正在读取 SafeTensors Header…',
+    en: 'Reading SafeTensors header…',
+  },
+  appLoadingGGUF: {
+    'zh-Hans': '正在读取 GGUF metadata 前缀…',
+    en: 'Reading GGUF metadata prefix…',
+  },
+  appLoadingImatrix: {
+    'zh-Hans': '正在读取 Imatrix 数据…',
+    en: 'Reading Imatrix data…',
+  },
+  appLoadingJinja: {
+    'zh-Hans': '正在读取 Jinja 源码…',
+    en: 'Reading Jinja source…',
+  },
+  appLoadingPdf: {
+    'zh-Hans': '正在读取 PDF 文档…',
+    en: 'Reading PDF document…',
+  },
+  appLoadingImage: {
+    'zh-Hans': '正在读取图片…',
+    en: 'Reading image…',
+  },
+  appHeaderCopyPathHelp: {
+    'zh-Hans': '复制文件路径',
+    en: 'Copy file path',
+  },
+  appHeaderCopyFullPathHelp: {
+    'zh-Hans': '复制文件完整路径或 URL',
+    en: 'Copy the file’s full path or URL',
+  },
+  appHeaderOpenSourceHelp: {
+    'zh-Hans': '在浏览器中打开当前版本',
+    en: 'Open this version in the browser',
+  },
+  appPurposeConfiguration: {
+    'zh-Hans': '模型配置',
+    en: 'Model configuration',
+  },
+  appPurposeTokenizer: {
+    'zh-Hans': '分词器资源',
+    en: 'Tokenizer resource',
+  },
+  appPurposeTemplates: {
+    'zh-Hans': '对话模板',
+    en: 'Chat template',
+  },
+  appPurposeWeightIndex: {
+    'zh-Hans': '权重分片索引',
+    en: 'Weight shard index',
+  },
+  appPurposeDocumentation: {
+    'zh-Hans': '模型文档',
+    en: 'Model documentation',
+  },
+  appPurposeOther: {
+    'zh-Hans': '模型文件',
+    en: 'Model file',
+  },
+  appPurposeSafeTensors: {
+    'zh-Hans': 'SafeTensors 权重结构',
+    en: 'SafeTensors weight structure',
+  },
+  appPurposeGGUF: {
+    'zh-Hans': 'GGUF 模型结构',
+    en: 'GGUF model structure',
+  },
+  appPurposeLockedWeights: {
+    'zh-Hans': '模型权重（禁止加载）',
+    en: 'Model weights (not loaded)',
+  },
+  appSourceLocal: {
+    'zh-Hans': '本地',
+    en: 'Local',
+  },
+  appLiveDirectoryStatus: {
+    'zh-Hans': '实时目录',
+    en: 'Live folder',
+  },
+  appLiveSourceStatus: {
+    'zh-Hans': '实时来源',
+    en: 'Live source',
+  },
+  byteCountZero: {
+    'zh-Hans': '0 KB',
+    en: 'Zero KB',
+  },
+  byteCountOne: {
+    'zh-Hans': '{count} 字节',
+    en: '{count} byte',
+  },
+  byteCountMany: {
+    'zh-Hans': '{count} 字节',
+    en: '{count} bytes',
+  },
   appHttpsFileHint: {
     'zh-Hans': '文件模式需要 HEAD 返回 Content-Length；不会自动寻找相邻配置或词表。',
     en: 'File mode needs HEAD with Content-Length; adjacent configs and vocabularies are not discovered automatically.',
@@ -16,10 +160,6 @@ export const messageCatalog = {
   appHttpsHelp: {
     'zh-Hans': '使用说明',
     en: 'Loading help',
-  },
-  appHttpsStatus: {
-    'zh-Hans': 'HTTPS · live · {count} 个文件',
-    en: 'HTTPS · live · {count} files',
   },
   appHttpsUrlLabel: {
     'zh-Hans': 'HTTPS 地址',
@@ -1285,21 +1425,9 @@ export const messageCatalog = {
     'zh-Hans': '清除历史',
     en: 'Clear history',
   },
-  appPublicRepositoryStatus: {
-    'zh-Hans': '公开仓库 · SHA {revision} · {count} 个文件',
-    en: 'Public repository · SHA {revision} · {count} files',
-  },
-  appLocalDirectoryStatus: {
-    'zh-Hans': '本地目录 · live · {count} 个文件',
-    en: 'Local directory · live · {count} files',
-  },
   appLoadingManifestStatus: {
-    'zh-Hans': '正在读取清单…',
-    en: 'Loading manifest…',
-  },
-  appBrowserReadonlyStatus: {
-    'zh-Hans': '纯浏览器 · 只读',
-    en: 'Browser-only · read-only',
+    'zh-Hans': '读取文件清单…',
+    en: 'Reading file list…',
   },
   appFilterFilesLabel: {
     'zh-Hans': '筛选文件',
@@ -1309,17 +1437,13 @@ export const messageCatalog = {
     'zh-Hans': '重试',
     en: 'Retry',
   },
-  appRepositoryEmptyHint: {
-    'zh-Hans': '打开公开仓库或选择本地目录后，这里显示真实文件清单。',
-    en: 'After opening a public repository or selecting a local directory, the real file manifest appears here.',
-  },
   appRepositoryFilesAriaLabel: {
     'zh-Hans': '仓库文件',
     en: 'Repository files',
   },
   appCopyPathAction: {
-    'zh-Hans': '复制相对路径',
-    en: 'Copy relative path',
+    'zh-Hans': '复制路径',
+    en: 'Copy path',
   },
   appCopyRelativePathAction: {
     'zh-Hans': '复制相对路径',
@@ -1337,29 +1461,21 @@ export const messageCatalog = {
     'zh-Hans': '文件操作',
     en: 'File actions',
   },
-  appOpenModelRepositoryTitle: {
-    'zh-Hans': '打开模型仓库',
-    en: 'Open model repository',
-  },
   appSelectFileTitle: {
-    'zh-Hans': '选择文件',
+    'zh-Hans': '选择一个文件',
     en: 'Select a file',
   },
-  appOpenModelRepositoryMessage: {
-    'zh-Hans': '打开 Hugging Face 仓库、HTTPS 文件或清单，也可以选择本地模型目录。',
-    en: 'Open a Hugging Face repository, an HTTPS file or manifest, or a local model directory.',
-  },
   appSelectFileMessage: {
-    'zh-Hans': '从左侧选择当前 revision 中的文件。',
-    en: 'Select a file from the current revision on the left.',
+    'zh-Hans': '文件内容只会在选中后加载。',
+    en: 'File contents load only after you select a file.',
   },
   appUnknownSize: {
     'zh-Hans': '未知大小',
     en: 'Unknown size',
   },
   appSourceLinkAction: {
-    'zh-Hans': '源站',
-    en: 'Source',
+    'zh-Hans': '在源站打开',
+    en: 'Open on source',
   },
   appUnableToReadFileTitle: {
     'zh-Hans': '无法读取文件',
@@ -1370,8 +1486,8 @@ export const messageCatalog = {
     en: 'Weight file locked',
   },
   appLockedWeightsMessage: {
-    'zh-Hans': '该格式不在 Web 纵向验证范围内，不会请求文件内容。',
-    en: 'This format is outside web vertical validation; file content is not requested.',
+    'zh-Hans': '为避免意外下载大文件，应用只展示文件名、大小和哈希。',
+    en: 'To avoid downloading large files by accident, the app shows only the file name, size and hash.',
   },
   appReadMethodTwoLocalSlices: {
     'zh-Hans': '2 次 File.slice()',
@@ -1634,12 +1750,12 @@ export const messageCatalog = {
     en: '{count} bytes',
   },
   appLoadingFileTitle: {
-    'zh-Hans': '正在读取 {name}…',
-    en: 'Reading {name}…',
+    'zh-Hans': '正在后台读取 {name}…',
+    en: 'Reading {name} in the background…',
   },
   appLoadingSwitchHint: {
-    'zh-Hans': '切换文件会取消并丢弃旧结果。',
-    en: 'Switching files cancels and discards the previous result.',
+    'zh-Hans': '可切换到其他文件取消',
+    en: 'switch to another file to cancel',
   },
   appModelDataLabel: {
     'zh-Hans': '模型数据',
