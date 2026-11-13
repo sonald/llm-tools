@@ -178,11 +178,7 @@ class ClientTokenizerSession implements TokenizerSession {
     signal?: AbortSignal,
   ): Promise<Tokenization> {
     this.assertUsable()
-    if (new TextEncoder().encode(template).byteLength > 64 * 1024) throw new Error(t('templateSourceTooLarge'))
-    const serializedContext = JSON.stringify(context)
-    if (serializedContext === undefined || new TextEncoder().encode(serializedContext).byteLength > 64 * 1024) {
-      throw new Error(t('templateContextTooLarge'))
-    }
+    // Native D-8: only the rendered input is capped (in the worker), not the template or its context.
     const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
     return validateTokenization(await this.request({
       operation: 'chat-tokenize',

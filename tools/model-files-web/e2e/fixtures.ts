@@ -187,7 +187,8 @@ const alternateTokenizerConfig = JSON.stringify({
   unk_token: '[UNK]',
   eos_token_id: 1,
   model_max_length: 256,
-  chat_template: 'ALT-CONFIG {{ messages[0].content }}',
+  // One extra in-vocabulary word so the right-hand token count tells this template from ALT-JINJA.
+  chat_template: 'ALT-CONFIG hello {{ messages[0].content }}',
 })
 const alternateChatTemplate = 'ALT-JINJA {{ messages[0].content }}'
 
@@ -563,10 +564,17 @@ export async function openPerspective(page: Page, name: string): Promise<void> {
   await page.getByRole('group', { name: /^(阅读视图|Reading view)$/ }).getByRole('button', { name, exact: true }).click()
 }
 
-// Raw / Chat / Token IDs are modes inside the 试验台 perspective.
+// 原始文本 / Chat 对话 / Token IDs are a segmented input-mode group inside the 试验台 perspective.
 export async function openPlaygroundMode(page: Page, mode: string, playground = '试验台'): Promise<void> {
   await openPerspective(page, playground)
-  await page.getByRole('button', { name: mode, exact: true }).click()
+  const button = page.getByRole('group', { name: /^(输入模式|Input mode)$/ }).getByRole('button', { name: mode, exact: true })
+  await button.click()
+  await expect(button).toHaveAttribute('aria-pressed', 'true')
+}
+
+// The value of one tokenizer playground metric card ('Token 数量', '字节 / Token', …).
+export function tokenizerMetric(page: Page, title: string) {
+  return page.locator('.tkp-metric').filter({ has: page.getByText(title, { exact: true }) }).locator('strong')
 }
 
 // Native shows no file count; the sidebar rows (collapsed weights included) carry it instead.

@@ -1,5 +1,5 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
-import { expandWeights, openPlaygroundMode } from './fixtures.ts'
+import { expandWeights, openPlaygroundMode, tokenizerMetric } from './fixtures.ts'
 
 test.skip(process.env.LIVE_HF !== '1', '真实 Hugging Face smoke 不进入确定性 CI。')
 
@@ -35,30 +35,32 @@ test('Chat: Qwen config, README, SafeTensors, Tokenizer Raw, Chat and cross-repo
   await expect(page.getByRole('heading', { name: `选中 Tensor · ${qProjectionName}` })).toBeVisible()
 
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
-  await expect(page.getByText('Model Type').locator('..')).toContainText('BPE', { timeout: 60_000 })
-  const search = page.getByRole('textbox', { name: '词表搜索' })
+  await expect(page.locator('.key-value-row').filter({ hasText: '模型类型' })).toContainText('BPE', { timeout: 60_000 })
+  const searchCard = page.getByRole('region', { name: '词表搜索' })
+  const search = searchCard.getByRole('textbox', { name: '搜索 token 或 ID' })
+  const searchResults = searchCard.getByRole('list', { name: '词表搜索' }).getByRole('listitem')
   const vocabularyRequestsBefore = requests.length
   const firstSearchStarted = Date.now()
   await search.fill('1')
-  await expect(page.getByText('匹配 1,000 条')).toBeVisible({ timeout: 10_000 })
-  await expect(page.getByRole('table', { name: '词表搜索结果' }).locator('tbody tr')).toHaveCount(1000)
+  await expect(searchCard.getByText('匹配 1,000 条')).toBeVisible({ timeout: 10_000 })
+  await expect(searchResults).toHaveCount(1000)
   const firstVocabularyQueryMs = Date.now() - firstSearchStarted
   expect(firstVocabularyQueryMs).toBeLessThan(10_000)
 
   const cachedSearchStarted = Date.now()
   await search.fill('0')
-  await expect(page.getByText('匹配 1,000 条')).toBeVisible({ timeout: 10_000 })
-  await expect(page.getByRole('table', { name: '词表搜索结果' }).locator('tbody tr')).toHaveCount(1000)
+  await expect(searchCard.getByText('匹配 1,000 条')).toBeVisible({ timeout: 10_000 })
+  await expect(searchResults).toHaveCount(1000)
   const cachedVocabularyQueryMs = Date.now() - cachedSearchStarted
   expect(cachedVocabularyQueryMs).toBeLessThan(10_000)
   const vocabularyRequestsAfter = requests.length
   expect(vocabularyRequestsAfter).toBe(vocabularyRequestsBefore)
 
-  await openPlaygroundMode(page, 'Raw 工作台')
-  await page.getByRole('textbox', { name: 'Raw 输入' }).fill('Hello，世界 👋')
-  await page.getByRole('button', { name: '立即分词' }).click()
-  await expect(page.getByText(/Decoded：/)).toBeVisible({ timeout: 60_000 })
-  await expect(page.getByText('映射').locator('..')).toContainText('Exact')
+  await openPlaygroundMode(page, '原始文本')
+  await page.getByRole('textbox', { name: '原始文本' }).fill('Hello，世界 👋')
+  const result = page.getByRole('region', { name: '分词结果' })
+  await expect(result.locator('.tkp-stream-content')).toHaveText('Hello，世界 👋', { timeout: 60_000 })
+  await expect(result).toContainText('tokenizer.json · Exact')
 
   const initialState = {
     url: page.url(),
@@ -71,24 +73,23 @@ test('Chat: Qwen config, README, SafeTensors, Tokenizer Raw, Chat and cross-repo
 
   const comparisonManifest = page.waitForResponse(response => response.url()
     .includes('/api/models/google-t5/t5-small'))
-  await page.getByText('另一公开来源…').click()
-  await page.getByLabel('对照 Hugging Face 仓库').fill('google-t5/t5-small')
-  await page.getByRole('button', { name: '加载对照' }).click()
+  await page.getByRole('button', { name: '对照', exact: true }).click()
+  await page.getByRole('menuitem', { name: '选择另一仓库…' }).click()
+  const form = page.getByRole('form', { name: '另一仓库' })
+  await form.getByRole('textbox', { name: '另一仓库' }).fill('google-t5/t5-small')
+  await form.getByRole('button', { name: '加载对照' }).click()
   const comparisonIdentity = await (await comparisonManifest).json() as { sha: string }
-  await expect(page.locator('.comparison-source')).toHaveText(
-    `google-t5/t5-small · SHA ${comparisonIdentity.sha.slice(0, 7)} · tokenizer.json`,
-  )
-  await expect(page.getByRole('region', { name: 'Tokenizer 对照摘要' })).toContainText(
-    /#0 · \d+(?:,\d{3})* \/ \d+(?:,\d{3})*/,
-    { timeout: 60_000 },
-  )
-  await expect(page.getByRole('region', { name: 'Tokenizer 词表差集统计' })).toBeVisible({ timeout: 60_000 })
-  await expect(page.getByRole('table', { name: '主 Tokenizer Tokens' })).toBeVisible({ timeout: 60_000 })
-  await expect(page.getByRole('table', { name: '对照 Tokenizer Tokens' })).toBeVisible({ timeout: 60_000 })
+  const comparison = page.getByRole('region', { name: '对照', exact: true })
+  const right = comparison.getByRole('region', { name: 'google-t5/t5-small · tokenizer.json' })
+  await expect(comparison.getByText(/^第一处不同：/)).toBeVisible({ timeout: 60_000 })
+  await expect(comparison.getByRole('heading', { name: '词表差集' })).toBeVisible({ timeout: 60_000 })
+  const tokenTable = /^Token 表，共 [\d,]+ 行$/
+  await expect(comparison.getByRole('region', { name: '主侧' }).getByRole('table', { name: tokenTable })).toBeVisible({ timeout: 60_000 })
+  await expect(right.getByRole('table', { name: tokenTable })).toBeVisible({ timeout: 60_000 })
 
-  await page.getByRole('button', { name: '关闭 Tokenizer 对照' }).click()
-  await expect(page.locator('.comparison-source')).toHaveCount(0)
-  await expect(page.getByRole('table', { name: 'Tokenizer Tokens' })).toBeVisible()
+  await comparison.getByRole('button', { name: '关闭对照' }).click()
+  await expect(comparison).toHaveCount(0)
+  await expect(result.locator('.tkp-stream-content')).toHaveText('Hello，世界 👋')
 
   expect({
     url: page.url(),
@@ -99,10 +100,10 @@ test('Chat: Qwen config, README, SafeTensors, Tokenizer Raw, Chat and cross-repo
     localStorageHistory: await page.evaluate(() => localStorage.getItem('model-files.repository-history')),
   }).toEqual(initialState)
 
-  await openPlaygroundMode(page, 'Chat 工作台')
-  await page.getByRole('button', { name: '渲染并分词' }).click()
-  await expect(page.getByLabel('Chat 权威输入')).not.toContainText('渲染后，这里显示唯一权威编码输入。', { timeout: 60_000 })
-  await expect(page.getByText('Token 数').locator('..')).toBeVisible()
+  await openPlaygroundMode(page, 'Chat 对话')
+  await expect(page.getByRole('region', { name: '送入 tokenizer 的文本', exact: true }).locator('pre'))
+    .toContainText('解释一下：分词为什么会影响上下文长度？', { timeout: 60_000 })
+  await expect(tokenizerMetric(page, 'Token 数量')).not.toHaveText('—', { timeout: 60_000 })
 
   const qwenRequests = requests.filter(request => request.modelId === qwenModelId)
   const comparisonRequests = requests.filter(request => request.modelId === comparisonModelId)
@@ -145,13 +146,13 @@ test('T5 Raw reports normalization as Decoded only', async ({ page }, testInfo) 
   const manifest = page.waitForResponse(response => response.url().includes('/api/models/google-t5/t5-small'))
   await page.goto('/?repo=google-t5%2Ft5-small&file=tokenizer.json')
   const identity = await (await manifest).json() as { sha: string }
-  await expect(page.getByText('Model Type').locator('..')).toBeVisible({ timeout: 60_000 })
-  await openPlaygroundMode(page, 'Raw 工作台')
+  await expect(page.locator('.key-value-row').filter({ hasText: '模型类型' })).toBeVisible({ timeout: 60_000 })
+  await openPlaygroundMode(page, '原始文本')
   const input = ' Hello   world '
-  await page.getByRole('textbox', { name: 'Raw 输入' }).fill(input)
-  await page.getByRole('button', { name: '立即分词' }).click()
-  await expect(page.getByText('映射').locator('..')).toContainText('Decoded only', { timeout: 60_000 })
-  await expect(page.getByText(`Decoded：${input}`)).toHaveCount(0)
+  await page.getByRole('textbox', { name: '原始文本' }).fill(input)
+  const result = page.getByRole('region', { name: '分词结果' })
+  await expect(result).toContainText('tokenizer.json · Decoded only', { timeout: 60_000 })
+  await expect(result.locator('.tkp-stream-content')).not.toHaveText(input)
   const t5Requests = requests.filter(request => request.modelId === comparisonModelId)
   expect(t5Requests.length).toBeGreaterThan(0)
   for (const request of t5Requests) {

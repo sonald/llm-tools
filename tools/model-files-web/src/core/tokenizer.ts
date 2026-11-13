@@ -2,6 +2,7 @@ import { formatBytes, type RepositoryFile, type RepositorySnapshot } from './hug
 import type { ChatTokenOverhead, ChatTokenRole } from './tokenAttribution.ts'
 import type { ChatTemplateCatalog } from './chatTemplates.ts'
 import { formatNumber, translate as t } from '../i18n.ts'
+import { swiftInt } from './templateRequest.ts'
 
 export type TokenSegment = {
   start: number
@@ -218,8 +219,6 @@ export function buildTokenization(
 ): Tokenization {
   if (ids.length !== pieces.length) throw new Error(t('tokenizerIdPieceCountMismatch'))
   if (ids.length !== flags.length) throw new Error(t('tokenizerIdFlagCountMismatch'))
-  // ponytail: Large runs stay one grapheme-safe authoritative group; chunk them only if per-token highlighting becomes necessary.
-  if (ids.length > 2_000) return authoritativeTokenization(input, ids, pieces, decoded, flags, direction, overhead)
   const provisional: TokenSegment[] = []
   for (let start = 0; start < ids.length;) {
     let end = start + 1
@@ -232,12 +231,10 @@ export function buildTokenization(
     start = end
   }
 
-  let segments = provisional
-  if (provisional.map(segment => segment.text).join('') !== decoded) {
-    segments = ids.length === 0 ? [] : [{ start: 0, end: ids.length, ids: [...ids], text: decoded }]
-  } else {
-    segments = mergeAcrossGraphemeBoundaries(provisional, decoded)
-  }
+  // Native TokenizerRuntime.makeSegments: every run that decodes on its own is a segment; if the runs do not
+  // rebuild the decoded text, the whole result is one segment.
+  const segments = provisional.map(segment => segment.text).join('') === decoded ? provisional
+    : ids.length === 0 ? [] : [{ start: 0, end: ids.length, ids: [...ids], text: decoded }]
   return {
     ids,
     pieces,
@@ -252,57 +249,45 @@ export function buildTokenization(
   }
 }
 
-function authoritativeTokenization(
-  input: string,
-  ids: number[],
-  pieces: Array<string | null>,
-  decoded: string,
-  flags: TokenFlag[],
-  direction: 'encode' | 'decode',
-  overhead: ChatTokenOverhead | null = null,
-): Tokenization {
-  return {
-    direction,
-    input,
-    ids,
-    pieces,
-    decoded,
-    segments: ids.length === 0 ? [] : [{ start: 0, end: ids.length, ids: [...ids], text: decoded }],
-    mapping: direction === 'encode' && decoded === input ? 'Exact' : 'Decoded only',
-    flags,
-    overhead,
-    roles: null,
+export class InputTooLargeError extends Error {
+  readonly limit: number
+  constructor(message: string, limit: number) {
+    super(message)
+    this.limit = limit
   }
 }
 
+// Native TokenIDParser: commas/whitespace or a JSON array, each token read with Swift Int().
 export function parseTokenIds(input: string): number[] {
-  if (new TextEncoder().encode(input).byteLength > 64 * 1024) throw new Error(t('tokenIdInputTooLarge'))
-  const trimmed = input.trim()
-  if (trimmed.length === 0) throw new Error(t('tokenIdInputEmpty'))
-  let rawValues: unknown[]
-  if (trimmed.startsWith('[')) {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(trimmed)
-    } catch (error) {
-      throw new Error(t('tokenIdJsonParseFailed', { reason: error instanceof Error ? error.message : String(error) }))
-    }
-    if (!Array.isArray(parsed)) throw new Error(t('tokenIdJsonMustBeArray'))
-    if (parsed.length === 0) throw new Error(t('tokenIdInputEmpty'))
-    rawValues = parsed
-  } else {
-    rawValues = trimmed.split(/[\s,]+/)
+  const limit = 64 * 1024
+  if (new TextEncoder().encode(input).byteLength > limit) {
+    throw new InputTooLargeError(t('tokenIdInputTooLarge', { limit: formatBytes(limit) }), limit)
   }
-  return rawValues.map((value, index): number => {
-    const id = typeof value === 'string' ? Number(value.trim()) : value
-    if (typeof value === 'boolean' || typeof id !== 'number' || !Number.isSafeInteger(id) || id < 0) {
-      throw new Error(t('tokenInvalid', {
-        index: index + 1,
-        zeroBasedIndex: index,
-        token: String(value),
-      }))
+  let tokens: string[]
+  if (input.trim().startsWith('[')) {
+    let value: unknown
+    try {
+      value = JSON.parse(input)
+    } catch (error) {
+      throw new Error(t('tokenIdJsonInvalid', { message: error instanceof Error ? error.message : String(error) }))
     }
-    return id
+    if (!Array.isArray(value)) throw new Error(t('tokenIdJsonInvalid', { message: t('tokenIdJsonRootArray') }))
+    tokens = value.map(item => item === null ? 'null' : typeof item === 'string' ? `"${item}"`
+      : typeof item === 'object' ? JSON.stringify(item) : String(item))
+  } else {
+    tokens = input.split(/[,\s]+/).filter(token => token !== '')
+  }
+  if (tokens.length === 0) throw new Error(t('tokenIdInputEmpty'))
+  return tokens.map((token, index) => {
+    const names = { index: index + 1, zeroBasedIndex: index, token }
+    const value = swiftInt(token)
+    // ponytail: IDs past 2^53 are valid Swift Ints but not exact JS numbers; they report as out of range.
+    if (value !== null && Number.isSafeInteger(value)) {
+      if (value < 0) throw new Error(t('tokenNegative', names))
+      return value
+    }
+    if (/^[+-]?[0-9]+$/.test(token)) throw new Error(t(token.startsWith('-') ? 'tokenNegative' : 'tokenOverflow', names))
+    throw new Error(t('tokenInvalid', names))
   })
 }
 
@@ -414,30 +399,6 @@ function summarizeAddedTokens(value: unknown): AddedTokenSummary[] {
   return tokens
 }
 
-function mergeAcrossGraphemeBoundaries(segments: TokenSegment[], decoded: string): TokenSegment[] {
-  const boundaries = new Set(Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(decoded), item => (
-    item.index + item.segment.length
-  )))
-  const result: TokenSegment[] = []
-  let current: TokenSegment | null = null
-  let decodedOffset = 0
-  for (const segment of segments) {
-    if (current === null) {
-      current = { ...segment, ids: [...segment.ids] }
-    } else {
-      current.end = segment.end
-      current.ids.push(...segment.ids)
-      current.text += segment.text
-    }
-    decodedOffset += segment.text.length
-    if (boundaries.has(decodedOffset)) {
-      result.push(current)
-      current = null
-    }
-  }
-  if (current !== null) result.push(current)
-  return result
-}
 
 function vocabularyEntries(value: unknown): {
   entries: Array<{ id: number; token: string }> | null

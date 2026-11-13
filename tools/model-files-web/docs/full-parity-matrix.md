@@ -18,7 +18,7 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 - **W:** = `tools/model-files-web/src/`
 - 原生视图：DV = `Views/DetailView.swift`，CV = `Views/ContentView.swift`，SV = `Views/SidebarView.swift`，IV = `Views/InspectorView.swift`，TPV = `Views/TemplatePlaygroundView.swift`，TKP = `Views/TokenizerPlaygroundView.swift`，TCV = `Views/TokenizerComparisonView.swift`，TTV = `Views/TokenizerTokenTableView.swift`
 - 原生其他：ST = `Stores/ModelFilesStore.swift`，ROI = `Support/RenderedOutputInspector.swift`，TR = `Support/TemplateRenderer.swift`
-- Web：App = `App.tsx`，TW = `TemplateWorkbench.tsx`，TP = `TemplatePlayground.tsx`，TQ = `core/templateRequest.ts`，RO = `core/renderedOutput.ts`，CSS = `styles.css`
+- Web：App = `App.tsx`，TK = `TokenizerPlayground.tsx`，TW = `TemplateWorkbench.tsx`，TP = `TemplatePlayground.tsx`，TQ = `core/templateRequest.ts`，RO = `core/renderedOutput.ts`，CSS = `styles.css`
 - E2E：MF = `e2e/model-files.spec.ts`，JP = `e2e/json-parity.spec.ts`；单测 TPT = `core/templatePlayground.test.ts`
 
 状态：`缺失`（Web 没有）· `不同`（有，但行为、布局或文案不同）· `平台限制`（已有证据）· `待裁决` · `未验证`（需要实测或黄金用例）· `Web 独有` · `已关闭`
@@ -50,6 +50,7 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 - **D-1**：跟原生一样。接入完整 GGUF 解析，按原生的 1 MiB 分块、32 MiB 上限读取，接受少量越读；同时补 Q-9。
 - **D-4 / D-5 / D-6**：对齐原生，界面一次显示全部，内部做懒渲染。
 - **D-7**：CSP 的 `img-src` 放宽到 `https:`。
+- **D-13**（2026-11-13）：方案 ①。Web 保持 transformers 的 `tojson` 行为，原生的 swift-jinja 偏差另行修复。
 - **D-9 / D-11**：
   - 保留不与原生冲突的：HTTPS 来源、深链、清除历史、复制反馈。
   - 删除或改回原生样式：底部状态栏移回工具栏；读取信息条改成原生的底部提示；去掉占比条和行内问题说明。
@@ -62,7 +63,6 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 - **D-8**：取消 Chat Template 的 64 KiB 上限。
 - **D-10**：Web 不加 ⌘1–4 视角快捷键，保留浏览器原有的切换标签页（2026-11-13 用户裁决）。
 - **D-12**：背景面跟随原生。
-- **D-13**：模板引擎差异，待用户裁决（见表）。批次 3 暂按 Web 引擎（等同 transformers）输出，T-12 不标 PASS。
 
 
 | ID | 原生行为 | Web 现状 | 说明 |
@@ -71,15 +71,16 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | D-2 | 历史不限条数，含本地路径和 ssh（ST:160-166,1163-1189） | 最多 10 条，只存 HF ID（`core/history.ts:17,27`） | 本地路径无法重开（P-3），条数上限可以对齐 |
 | D-3 | 启动时重开上次输入，默认 **Qwen/Qwen3-4B**（ST:12-14,97） | 固定 Qwen/Qwen3-0.6B，只有带 `?repo=` 时才自动打开（App:121,198-226） | |
 | D-4 | JSON 不限大小整份渲染；其他语言 ≤128 KB 进代码阅读器，否则用纯文本全量显示（DV:633-650） | 按 128K 字符分页（`Readers.tsx:369,419-422,674-680`） | 性能选择 |
-| D-5 | Token 流、表、IDs 全部显示（TTV:73-77,185-213） | 每页 1,000 条；>2,000 个 id 折叠成一个片段；>100 个 id 合并成一个片段（`core/tokenizer.ts:222`，App:2821,2831,2870,2887,2899）。停靠的 Token IDs 标签**没有**「再显示」按钮，超过 1,000 条看不到 | 性能选择 |
+| D-5 | Token 流、表、IDs 全部显示（TTV:73-77,185-213） | 每页 1,000 条；>2,000 个 id 折叠成一个片段；>100 个 id 合并成一个片段（`core/tokenizer.ts:222`，App:2821,2831,2870,2887,2899）。停靠的 Token IDs 标签**没有**「再显示」按钮，超过 1,000 条看不到 | 性能选择。→ 已裁决：全部显示，内部懒渲染（2026-11-13）。批次 4 已按原生 makeSegments 切片（去掉 100/2,000 合并），Token 表只渲染可见行，Token 流和 IDs 全部渲染 |
 | D-6 | Tensor 列表一次全部显示（DV:869-874） | 每次 100 行（App:1112,1275） | SPEC §4.7 |
 | D-7 | Markdown 加载第三方 HTTPS 图片（`MarkdownReaderView.swift:226-259`） | 显示占位；CSP 为 `img-src 'self' data: blob:`（`index.html:9`） | 是否放宽 CSP |
-| D-8 | Chat Template 没有单独上限（只有 32 MiB bundle 上限） | 64 KiB（`tokenizerClient.ts:183-186`，App:540,1812,1923 的 tokenizer Chat 读取）；2026-11-13 已取消 `.jinja` 阅读器和试验台的上限，tokenizer Chat 的随批次 4 处理 | Tokenizer 输入的 64 KiB 两端一致，不在此列 |
+| D-8 | Chat Template 没有单独上限（只有 32 MiB bundle 上限） | 64 KiB（`tokenizerClient.ts:183-186`，App:540,1812,1923 的 tokenizer Chat 读取）；2026-11-13 已取消 `.jinja` 阅读器和试验台的上限，批次 4 又取消了 tokenizer Chat 和一致性检查读取的上限（只保留渲染后输入的 64 KiB，同原生） | Tokenizer 输入的 64 KiB 两端一致，不在此列 |
 | D-9 | — | Web 独有功能（§4） | 保留、改造还是删除 |
 | D-10 | ⌘1–⌘4 切换视角（DV:262-275） | 没有 | 只查了资料，没有实测：Chrome/Edge、Firefox 页面能拦截（Chromium 保留键列表不含按序号切标签，Mozilla Bug 1074971），Safari 很可能拦不到（只有一篇厂商 KB 佐证）。→ 已裁决：Web 不加，算平台差异（2026-11-13） |
 | D-11 | 状态放在工具栏右侧，原生**没有**底部状态栏（CV:62-77） | 新增底部状态栏：仓库状态，以及与头部重复的「路径 · 格式 · 大小」（App:759-777） | 保留状态栏，还是移回工具栏 → 已移回工具栏右侧，底部状态栏已删除（2026-11-13）；状态内容见 S-6 |
 | D-12 | 原生明确保留系统背景材质（`Support/Palette.swift:5` 注释） | 自定义暗色背景面（CSS:1-19,698-716） | 是否改为接近系统色 |
-| D-13 | swift-jinja：`tojson` 排序键、紧凑分隔符、`\u00e9` 和 `\/` 转义；JSON 变量里的 `true` 变成 `1`；JSON `null` 报错；小数 `1.0`、`7/2→3.0` 保留小数点；`sort_keys=false` 或其他 separators 直接报错（TR:116-130，2026-11-13 金样） | @huggingface/jinja：插入顺序、`", "`/`": "`、不转义；`true`/`null` 正常；JS 数字不区分 `1.0` 和 `1`；kwargs 全部支持 | transformers `chat_template_utils.py` 的 `tojson` 是 `json.dumps(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False)`，Web 与之一致，原生偏离。可选：①Web 保持 transformers 行为，原生另行修复；②Web 模拟原生输出。另：原生 `RenderedOutputInspector.prettyPrintedJSON` 遇到标量 JSON 负载（如 `<\|content_x\|>123`）会抛 ObjC 异常导致崩溃，Web 不复刻 |
+| D-13 | swift-jinja：`tojson` 排序键、紧凑分隔符、`\u00e9` 和 `\/` 转义；JSON 变量里的 `true` 变成 `1`；JSON `null` 报错；小数 `1.0`、`7/2→3.0` 保留小数点；`sort_keys=false` 或其他 separators 直接报错（TR:116-130，2026-11-13 金样） | @huggingface/jinja：插入顺序、`", "`/`": "`、不转义；`true`/`null` 正常；JS 数字不区分 `1.0` 和 `1`；kwargs 全部支持 | transformers `chat_template_utils.py` 的 `tojson` 是 `json.dumps(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False)`，Web 与之一致，原生偏离。可选：①Web 保持 transformers 行为，原生另行修复；②Web 模拟原生输出。→ 已裁决 ①（2026-11-13）。另：原生 `RenderedOutputInspector.prettyPrintedJSON` 遇到标量 JSON 负载（如 `<\|content_x\|>123`）会抛 ObjC 异常导致崩溃，Web 不复刻 |
+| D-14 | swift-transformers 要求显式 `tokenizer_class` 时，失败页给出 Picker + 自定义输入，「使用指定的 tokenizer_class 重试」（TKP:520-545,626，`Support/TokenizerRuntime.swift:23,145`） | Web 没有这个界面 | Web 用 `@huggingface/tokenizers`（`tokenizer.worker.ts:105` `new Tokenizer(tokenizer.json, config)`），按 tokenizer.json 的 model 类型构造，库里没有任何地方读 `tokenizer_class`（dist 中 0 处引用）；实测 config 为 `{}` 或 `tokenizer_class: "NoSuchTokenizerClass"` 时都能正常编码。原生的失败场景在 Web 不会出现。→ 已裁决：算引擎差异，Web 不做（2026-11-13） |
 
 ## 3. 缺口矩阵
 
@@ -210,55 +211,61 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | T-9 | 校验错误：保留名、空名、重名、Tool 字段、数字格式；JSON 错误本地化 | TR:142-215 | TQ:76-133 | PASS | 2026-11-13：文案取原生目录（TPT 逐条断言；MF 断言保留名错误、状态和「未生成」） |
 | T-10 | **输出：「结构索引·只读」与「原始输出·权威」并排；按消息边界建索引；选中后高亮并滚动；内容检查器；说明文字** | TPV:139-294，ROI:19-208 | TP:240-297，RO | PASS | 2026-11-13：索引规则逐项对齐原生金样（TPT）；内容检查器用共享 CodeReader（MF「Chat Template playground indexes…」）；选中项在长输出里自动滚到可见（MF「…follows the selection in long output…」）。原生遇到标量 JSON 负载会崩溃，Web 不显示检查器 |
 | T-11 | 原始输出：`<\|…\|>` 粉色加粗、查找、「模板没有产生输出。」、字节数、内容为空时复制按钮禁用 | ROI:150-208，TPV:145-177 | TP:299-331 | PASS | 2026-11-13：按字符折行；⌘F 查找只标记、滚动输出区（MF「Chat Template playground indexes…」）；选中范围用强调色 42% |
-| T-12 | `tojson` 的 sort_keys 和 separators 兼容 | TR:105-130 | `templateRender.worker.ts`（@huggingface/jinja） | 待裁决 | 金样已补（见 D-13）：两端输出不同，等用户裁决 |
+| T-12 | `tojson` 的 sort_keys 和 separators 兼容 | TR:105-130 | `templateRender.worker.ts`（@huggingface/jinja） | 已关闭 | 2026-11-13 按 D-13 ①：Web 与 transformers 的 `tojson` 一致（金样见 D-13），原生偏差另行修复 |
 
-### 3.9 Tokenizer 试验台
+### 3.9 Tokenizer 试验台（批次 4，2026-11-13 实现）
+批次 4 证据（2026-11-13）：MF 中 tokenizer 相关用例按新界面重写（Raw/Chat/IDs 实时与 latest-only、10k token 虚拟表、选中联动、对照同仓库 / 公开仓库 / 本地目录 / 延迟 manifest、SentencePiece、视口 390–1280、CR/LF），english-core、https 同步；chromium、firefox、webkit 全过。
+
 
 | ID | 元素 | 原生 | Web | 状态 | 差异 |
 | --- | --- | --- | --- | --- | --- |
-| K-1 | **视角「概览 / 全部字段 / 原文 / 试验台」；试验台内用模式选择器切换，默认 Chat，没有模板时退回 Raw；`.model` 直接进试验台** | `InspectionDocument.swift:131-132`，ST:86-94,169,201，TKP:49,99-101,172-180 | App:1589,2379-2385（5 个标签，默认「结构」） | 部分 | 2026-11-13：视角已统一到头部，`.model` 只有试验台，试验台内用 Raw / Chat / IDs 模式选择器。仍缺：默认 Chat，以及没有模板时退回 Raw（现在默认 Raw） |
-| K-2 | **三种模式都实时：Raw 立即编码，IDs 等 225 ms，Chat 立即渲染** | TKP:567-615，ST:205-215 | App:1859-1882（Raw 等 225 ms），2472「解码 ID」，2563「渲染并分词」 | 不同 | 延迟方向也相反 |
-| K-3 | 输入头「输入」+ 实时状态；底部「N 字节 · 清空」/「支持逗号、空白或 JSON 数组 · 清空」；示例文本 | TKP:50,166-239,621-629 | App:1591,2462-2500，i18n:1736 | 不同 | |
-| K-4 | Chat 紧凑编辑器（角色 + 文本 + ✕，添加时 user/assistant 交替）+「高级选项」；默认带 get_weather 工具 | TPV:410-464 | App:2517-2564（JSON） | 不同 | |
-| K-5 | 「送入 tokenizer 的文本 / 解码文本」独立面板：复制、详情、空状态、模板错误 | TKP:241-279,636-644,715-718 | App:2553（只有 Chat 模式，不能复制），2902-2906 | 不同 | |
-| K-6 | 指标：Token 数量 / Unicode 字符 / 字节 / Token（1 位小数）；Chat 模式加「正文 token」「模板开销（近似）」；没有值时显示「—」 | TKP:376-407,654-666 | App:2921-2931，CSS:584-591 | 不同 | Web 缺 Unicode 字符，保留 2 位小数，没有开销时隐藏开销卡，标签文案不同 |
-| K-7 | 结果头「分词结果」+「路径 · 映射」+「对照」菜单 +「复制 IDs」 | TKP:303-319,646-652 | App:2915 | 不同 | 两端都已去掉「片段 / Token 表」切换 |
-| K-8 | 「显示空白符」默认关闭，全局共享；符号 `·` `→` `↵`；关闭时保留 tab | TKP:4-17，ST `showsTokenWhitespace` | App:1610,3161-3165 | 不同 | Web 默认开、每个视图单独设置，符号不同 |
-| K-9 | Token 流：10 色、未选中变暗到 0.28、3 px 角色色条、2 px 描边 | TKP:448-489,690-707 | App:2941-2980，CSS:595-615 | 不同 | Web 是 5 色加文字角色徽章，没有变暗 |
-| K-10 | Token IDs（底部面板）：标签计数、复制全部、数字分组、未选中变暗、显示全部 | DV:1693，TTV:177-219，TKP:307-309,709-713 | App:2802-2803,2867-2881，CSS:626-628 | 不同 | Web 已有 chips，但没有复制全部、计数、分组和变暗，上限见 D-5 |
-| K-11 | 状态：加载 tokenizer / 编码中 / 等待；失败时有「重试」 | TKP:410-434,491-493 | App:2916-2918 | 不同 | |
-| K-12 | Token 表（底部面板）：列顺序 # / ID / Token Piece / Decoded / Role / Special / Mapping；# 从 0 开始并带色块；点击整行选中；右键复制；悬停提示；最小宽 850 | DV:1724-1732，TTV:66-175 | App:2882-2912 | 不同 | 原生右键「复制 ID」复制的是分组后的数字，这是原生的毛病，不照搬 |
-| K-13 | Token ID 错误文案逐项区分 | `Support/TokenIDParser.swift:15-30` | `core/tokenizer.ts:278-307`，i18n:588-607 | 不同 | |
-| K-14 | 第一次出结果时自动打开面板，并切到 Token 表 | TKP:68,109-115 | App:741-746,2809-2819 | 不同 | 原生会抢占已打开的问题标签、只对非空结果、每个文件只触发一次。Web 不抢占、手机上不触发、空结果也触发；切换模式后很可能会再次触发（从代码推断） |
-| K-15 | 底部面板 token 标签的空状态「输入内容后显示 token。」 | DV:1741-1745 | App:2908-2911 | 不同 | |
-| K-16 | 检查器「选中 Token」：序号（从 0 开始）、ID（分组）、Token Piece、解码片段、角色（有才显示）、Special（是才显示）、复制 ID | IV:11-16,70-95 | App:2856-2867,2983-2988 | 不同 | Web 从 1 开始，标签英文，缺解码片段和 Special |
-| K-17 | 模板来源菜单：放在模式选择器旁边，选中项打勾 | TKP:121-164 | App:2520-2536（select） | 不同 | 选项文案一致 |
-| K-18 | Token 流、表、IDs 共享选中；新结果时重置；再点一次取消 | TKP:19-21,453-457 | App:2820-2827,2876,2889,2967 | 一致 | |
-| K-19 | Decoded only 时的角色提示 | TKP:438-447 | App:2938-2940 | 一致 | |
+| K-1 | **视角「概览 / 全部字段 / 原文 / 试验台」；试验台内用模式选择器切换，默认 Chat，没有模板时退回 Raw；`.model` 直接进试验台** | `InspectionDocument.swift:131-132`，ST:86-94,169,201，TKP:49,99-101,172-180 | TK:149-470，App `TokenizerInspection` | PASS | 2026-11-13：「输入模式」分段控件（原始文本 / Chat 对话 / Token IDs），默认 Chat；bundle 加载完仍没有可用模板时退回原始文本，Chat 按钮禁用。浏览器实测 Qwen2.5-0.5B-Instruct |
+| K-2 | **三种模式都实时：Raw、Chat 的编码都等 225 ms（Chat 先立即渲染），IDs 在视图里等 225 ms 再解析并解码；每次新请求先清空结果** | TKP:567-615，ST:205-215 | TK:230-300 | PASS | 2026-11-13：去掉「立即分词」「解码 ID」「渲染并分词」按钮。原表写的「Raw 立即、IDs 等 225 ms」有误，原生三种都等 225 ms |
+| K-3 | 输入头「输入」+ 实时状态；底部「N 字节 · 清空」/「支持逗号、空白或 JSON 数组 · 清空」；示例文本 | TKP:50,166-239,621-629 | TK:387-420 | PASS | 2026-11-13：字节数按原生 `String(localized:)` 插值分组 |
+| K-4 | Chat 紧凑编辑器（角色 + 文本 + ✕，添加时 user/assistant 交替）+「高级选项」；默认带 get_weather 工具 | TPV:410-464 | TP `RequestEditor compact` | PASS | 2026-11-13：与 Chat Template 试验台共用 `RequestEditor`；变量按 tokenizer_config 预填一次（同 T-7） |
+| K-5 | 「送入 tokenizer 的文本 / 解码文本」独立面板：复制、详情、空状态、模板错误 | TKP:241-279,636-644,715-718 | TK:424-433 | PASS | 2026-11-13 |
+| K-6 | 指标：Token 数量 / Unicode 字符 / 字节 / Token（1 位小数）；Chat 模式加「正文 token」「模板开销（近似）」；没有值时显示「—」 | TKP:376-407,654-666 | TK:363-379 | PASS | 2026-11-13：卡片宽 63/105 px 同原生 |
+| K-7 | 结果头「分词结果」+「路径 · 映射」+「对照」菜单 +「复制 IDs」 | TKP:303-319,646-652 | TK:436-450 | PASS | 2026-11-13 |
+| K-8 | 「显示空白符」默认关闭，全局共享；符号 `·` `→` `↵`；关闭时保留 tab | TKP:4-17，ST `showsTokenWhitespace` | TK `visibleTokenizerText`，App `showWhitespace` | PASS | 2026-11-13：状态放在工作区 slots，试验台、对照、底部面板共用 |
+| K-9 | Token 流：10 色、未选中变暗到 0.28、3 px 角色色条、2 px 描边 | TKP:448-489,690-707 | TK:551-630，CSS `.tkp-stream` | PASS | 2026-11-13：10 色取 iOS 系统色（含暗色变体）。**实现调整**：变暗用覆盖层（容器 `::after` 0.72 遮罩，选中项 `z-index: 2` 浮在上面）而非逐个改 opacity；60 KB 输入约 18k 片段时，逐个改样式让选中在 WebKit 要 2.8–3.6 s，现在 Chromium 26 ms、WebKit 42 ms，按键 7 ms。视觉一致 |
+| K-10 | Token IDs（底部面板）：标签计数、复制全部、数字分组、未选中变暗、显示全部 | DV:1693，TTV:177-219，TKP:307-309,709-713 | TK:733-750 | PASS | 2026-11-13：全部显示（D-5），变暗同 K-9 覆盖层 |
+| K-11 | 状态：加载 tokenizer / 编码中 / 超过上限（65,536 字节，`ByteCountFormatter .file` 显示为「66 KB」，Web `formatBytes` 相同）；失败时有「重试」（IDs 模式没有） | TKP:410-434,491-493 | TK:518-549 | PASS | 2026-11-13：Web 没有原生的 idle 阶段（输入变化直接进入编码中，画面相同）；「重试」重新检查整个 bundle，失败结果不缓存 |
+| K-12 | Token 表（底部面板）：列顺序 # / ID / Token Piece / Decoded / Role / Special / Mapping；# 从 0 开始并带色块；点击整行选中；右键复制；悬停提示；最小宽 850 | DV:1724-1732，TTV:66-175 | TK:632-703 | PASS | 2026-11-13：行高 30 px，表头吸顶，只渲染可见行（D-5）。右键「复制 ID」复制不分组的数字（原生复制分组后的数字是毛病，不照搬） |
+| K-13 | Token ID 错误文案逐项区分 | `Support/TokenIDParser.swift:15-30` | `core/tokenizer.ts` `parseTokenIds`，`tokenizer.test.ts` | PASS | 2026-11-13：单测覆盖空输入、`+4`、`05`、`3.0`、`1e1` |
+| K-14 | 第一次出结果时自动打开面板，并切到 Token 表 | TKP:68,109-115 | TK:343-350 | PASS | 2026-11-13：只对非空结果、每个文件一次、对照时不停靠；手机宽度不自动打开（平台调整，底部面板在手机上是全屏层） |
+| K-15 | 底部面板 token 标签的空状态「输入内容后显示 token。」 | DV:1741-1745 | TK `TokenTable`/`TokenIdChips` | PASS | 2026-11-13 |
+| K-16 | 检查器「选中 Token」：序号（从 0 开始）、ID（分组）、Token Piece、解码片段、角色（有才显示）、Special（是才显示）、复制 ID | IV:11-16,70-95 | TK:752-773 | PASS | 2026-11-13：「复制 ID」复制不分组的数字（同 K-12） |
+| K-17 | 模板来源菜单：放在模式选择器旁边，选中项打勾 | TKP:121-164 | TK:392-400 | PASS | 2026-11-13：原生是 Menu，Web 用同名下拉框（同 T-2）；只有一个模板时显示为标签 |
+| K-18 | Token 流、表、IDs 共享选中；新结果时重置；再点一次取消 | TKP:19-21,453-457 | TK | PASS | 2026-11-13 |
+| K-19 | Decoded only 时的角色提示 | TKP:438-447 | TK:540 | PASS | 2026-11-13 |
 
 ### 3.10 tokenizer.json 概览与词表
+批次 4 证据（2026-11-13）：MF 中 tokenizer 相关用例按新界面重写（Raw/Chat/IDs 实时与 latest-only、10k token 虚拟表、选中联动、对照同仓库 / 公开仓库 / 本地目录 / 延迟 manifest、SentencePiece、视口 390–1280、CR/LF），english-core、https 同步；chromium、firefox、webkit 全过。
+
 
 | ID | 元素 | 原生 | Web | 状态 | 差异 |
 | --- | --- | --- | --- | --- | --- |
-| V-1 | 标题、副标题、「结构」组、special 列表（内容在左、ID 在右，空 token 显示「（空 Token）」）、页脚建议 | DV:1192-1248 | App:2673-2706 | 不同 | Web 有英文标签，根字段表放在概览里 |
-| V-2 | 「词表长度」标题 + Base vocab / Added Token 标签 | DV:1365-1378 | 缺 | 缺失 | |
-| V-3 | 6 个指标块 | DV:1399-1426 | App:2713-2718（4 块） | 不同 | |
-| V-4 | 可点击的长度分布柱状图 +「统计口径」说明 | DV:1428-1486 | App:2719-2722（计数表） | 不同 | |
-| V-5 | 最长 Token 表：5 列，排序说明，选中显示详情 +「复制 Raw」，右键菜单 | DV:1488-1602 | App:2723-2733 | 不同 | |
-| V-6 | 可读的 piece 名称（空格 / 换行 / Tab / `\u{..}` / 「x × N」） | DV:1625-1645 | App:3161-3165 | 不同 | |
-| V-7 | 词表搜索副标题；结果为 token 在左、ID 在右 | DV:1250-1293 | App:2736-2762 | 不同 | |
-| V-8 | 「全部字段」= 根字段列表 | DV:1321-1332 | App:2703-2706,2381,2589-2608 | 不同 | 随 H-1 调整 |
+| V-1 | 标题、副标题、「结构」组、special 列表（内容在左、ID 在右，空 token 显示「（空 Token）」）、页脚建议 | DV:1192-1248 | TK `TokenizerOverview` | PASS | 2026-11-13：浏览器实测 Qwen2.5（BPE · 1.0 · 151,643 · 151,387 · 22） |
+| V-2 | 「词表长度」标题 + Base vocab / Added Token 标签 | DV:1365-1378 | TK `VocabularyAnalysis` | PASS | 2026-11-13 |
+| V-3 | 6 个指标块 | DV:1399-1426 | TK `VocabularyAnalysis` | PASS | 2026-11-13：平均 / P50 / P90 / P95 / P99 / 最长 |
+| V-4 | 可点击的长度分布柱状图 +「统计口径」说明 | DV:1428-1486 | TK `VocabularyAnalysis` | PASS | 2026-11-13：点击柱子显示「长度 a–b：N 项，占基础词表 x%。」 |
+| V-5 | 最长 Token 表：5 列，排序说明，选中显示详情 +「复制 Raw」，右键菜单 | DV:1488-1602 | TK `VocabularyAnalysis` | PASS | 2026-11-13：默认 Top 20，可展开 Top 50 |
+| V-6 | 可读的 piece 名称（空格 / 换行 / Tab / `\u{..}` / 「x × N」） | DV:1625-1645 | TK `readablePiece` | PASS | 2026-11-13 |
+| V-7 | 词表搜索副标题；结果为 token 在左、ID 在右 | DV:1250-1293 | TK `VocabularySearch` | PASS | 2026-11-13：匹配数按原生插值分组 |
+| V-8 | 「全部字段」进 JSON 阅读器 | DV:544（`isJSON` 为真时走 `JSONReaderView`） | App `TokenizerJSONInspection` | 已关闭 | 2026-11-13 复核：原表引用的 DV:1321-1332 根字段列表对 tokenizer.json 走不到，原生「全部字段」就是 JSON 阅读器，Web 已一致。概览里的根字段表已删除 |
 
 ### 3.11 Tokenizer 对照
+批次 4 证据（2026-11-13）：MF 中 tokenizer 相关用例按新界面重写（Raw/Chat/IDs 实时与 latest-only、10k token 虚拟表、选中联动、对照同仓库 / 公开仓库 / 本地目录 / 延迟 manifest、SentencePiece、视口 390–1280、CR/LF），english-core、https 同步；chromium、firefox、webkit 全过。
+
 
 | ID | 元素 | 原生 | Web | 状态 | 差异 |
 | --- | --- | --- | --- | --- | --- |
-| X-1 | 入口：结果头的「对照」菜单，只列出未锁定的入口 +「选择另一仓库…」 | TKP:324-374 | App:2386-2446（标签行），`core/tokenizer.ts:102-115` | 不同 | Web 在 5 个标签上都显示入口，但只有 Raw、IDs、Chat 三个标签能显示对照，从「结构」或「JSON」打开后什么都看不到；Web 也不过滤锁定文件 |
-| X-2 | 对照时用「对照」面板替换结果面板，带「显示空白符」和「关闭对照」；对照时不停靠 | TKP:288-301,324-335，ST:113-116 | App:2290-2374,2461（三栏） | 不同 | 不停靠这一点两端一致 |
-| X-3 | 摘要文案；差值为 0 时显示 0 | TCV:148-180,255-261 | App:2309-2322 | 不同 | Web 中文界面出现英文标签，差值显示 +0 |
-| X-4 | 两栏只显示 Token 表；右侧模板菜单只在 Chat 模式出现 | TCV:115-146,182-246 | App:2294-2304,2363-2372 | 不同 | |
-| X-5 | 词表差集：仅主 / 仅对照（默认仅主）、搜索、「显示 N 条，最多 1000 条」、「（空 Token）」 | TCV:73-113 | App:2323-2360 | 不同 | Web 显示原始键名 `leftOnly` 等，默认 `shared` |
-| X-6 | 「另一仓库」popover：一个输入框，空时「加载对照」禁用，提交后关闭 | TKP:354-372 | App:2408-2441 | 部分 | 来源受 P-1 至 P-3 限制。2026-11-13：加载成功后 popover 自动关闭（加载中和出错时保持打开，因为状态和错误显示在里面）；空时仍不禁用 |
+| X-1 | 入口：结果头的「对照」菜单，只列出未锁定的入口 +「选择另一仓库…」 | TKP:324-374 | TK `ComparisonMenu`/`useComparison` | PASS | 2026-11-13：菜单和 popover 挂到 `document.body` 并按按钮位置固定定位，不被面板裁剪 |
+| X-2 | 对照时用「对照」面板替换结果面板，带「显示空白符」和「关闭对照」；对照时不停靠 | TKP:288-301,324-335，ST:113-116 | TK:452-460 | PASS | 2026-11-13 |
+| X-3 | 摘要文案；差值为 0 时显示 0 | TCV:148-180,255-261 | TK `ComparisonView` | PASS | 2026-11-13：计数按原生插值分组 |
+| X-4 | 两栏只显示 Token 表；右侧模板菜单只在 Chat 模式出现 | TCV:115-146,182-246 | TK `ComparisonView` | PASS | 2026-11-13：右侧先用自己的模板渲染再分词；渲染失败、没有模板分别显示原生文案 |
+| X-5 | 词表差集：仅主 / 仅对照（默认仅主）、搜索、「显示 N 条，最多 1,000 条」、「（空 Token）」 | TCV:73-113 | TK `VocabularyDiff` | PASS | 2026-11-13：SentencePiece、词表无法解析、主侧尚未就绪时显示跳过原因（主侧未就绪时直接跳过，同原生 `ModelFilesStore.swift:477-478`，不等待） |
+| X-6 | 「另一仓库」popover：一个输入框，空时「加载对照」禁用，提交后关闭 | TKP:354-372 | TK `ComparisonMenu` | PASS | 2026-11-13：另保留来源选择和本地目录（D-9 Web 独有，不冲突） |
 
 ## 4. Web 独有（D-9 待裁决：保留、改造还是删除）
 

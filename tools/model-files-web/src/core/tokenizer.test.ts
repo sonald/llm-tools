@@ -9,6 +9,7 @@ import {
   filterTokenizerVocabularyDiff,
   filterTokenizerVocabulary,
   inspectTokenizerStructure,
+  InputTooLargeError,
   parseTokenIds,
   selectTokenizerComparisonTargets,
   tokenFlag,
@@ -38,13 +39,14 @@ test('groups partial byte decoding without losing token IDs', () => {
   assert.equal(result.roles, null)
 })
 
-test('keeps combining marks and ZWJ emoji inside grapheme-safe groups', () => {
+// Native TokenizerRuntime.makeSegments splits wherever a run decodes on its own, even inside a grapheme.
+test('segments every run that decodes on its own, like native', () => {
   const decoded = ['e', '\u0301', '👩', '\u200D', '💻', '👩', '\u200D', '💻', '\n', ' ', ' ', '中'].join('')
   const ids = decoded === '' ? [] : Array.from({ length: 12 }, (_, index) => index)
   const pieces = ['e', '\u0301', '👩', '\u200D', '💻', '👩', '\u200D', '💻', '\n', ' ', ' ', '中']
   const result = buildTokenization(decoded, ids, pieces, decoded, group => group.map(id => pieces[id]).join(''), pieces.map(() => ({ isSpecial: false, specialName: null })))
 
-  assert.deepEqual(result.segments.map(segment => segment.text), ['e\u0301', '👩‍💻', '👩‍💻', '\n', ' ', ' ', '中'])
+  assert.deepEqual(result.segments.map(segment => segment.text), pieces)
   assert.deepEqual(result.segments.flatMap(segment => segment.ids), ids)
   assert.equal(result.mapping, 'Exact')
 })
@@ -70,21 +72,30 @@ test('decode direction never claims Exact', () => {
 test('parses delimited and JSON Token IDs at the input boundary', () => {
   assert.deepEqual(parseTokenIds('1, 3\n\t4 5'), [1, 3, 4, 5])
   assert.deepEqual(parseTokenIds('[3,4, 5]'), [3, 4, 5])
-  assert.throws(() => parseTokenIds(' \n\t '), /空/)
+  assert.throws(() => parseTokenIds(' \n\t '), /至少一个/)
 })
 
+// Native TokenIDParser error cases and wording.
 test('rejects malformed Token IDs with the failing position and token', () => {
-  const cases: Array<[string, RegExp]> = [
-    ['', /空/],
-    ['[]', /空/],
-    ['[1,-2]', /第 2 个.*index 1.*-2/s],
-    ['1 2.5', /第 2 个.*index 1.*2\.5/s],
-    ['true,false', /第 1 个.*index 0.*true/s],
-    ['9007199254740992', /第 1 个.*index 0.*9007199254740992/s],
+  const cases: Array<[string, string]> = [
+    ['', '请输入至少一个 Token ID。'],
+    ['[]', '请输入至少一个 Token ID。'],
+    [' , ', '请输入至少一个 Token ID。'],
+    ['[1,-2]', '第 2 个 token（index 1）不能是负数：-2'],
+    ['1 2.5', '第 2 个 token（index 1）不是整数：2.5'],
+    ['[true]', '第 1 个 token（index 0）不是整数：true'],
+    ['["3"]', '第 1 个 token（index 0）不是整数："3"'],
+    ['[null]', '第 1 个 token（index 0）不是整数：null'],
+    ['99999999999999999999', '第 1 个 token（index 0）超过 Int 范围：99999999999999999999'],
+    ['-99999999999999999999', '第 1 个 token（index 0）不能是负数：-99999999999999999999'],
+    ['{"a":1}', '第 1 个 token（index 0）不是整数：{"a":1}'],
   ]
-  for (const [input, pattern] of cases) assert.throws(() => parseTokenIds(input), pattern)
-  assert.throws(() => parseTokenIds('[1,'), /Token ID JSON.*解析失败/s)
-  assert.throws(() => parseTokenIds(`${'0,'.repeat(33_000)}1`), /64 KiB/)
+  for (const [input, message] of cases) assert.throws(() => parseTokenIds(input), { message }, input)
+  assert.throws(() => parseTokenIds('[1,'), /^Error: Token ID JSON 数组无效：/)
+  assert.throws(() => parseTokenIds(' [ '), /^Error: Token ID JSON 数组无效：/)
+  assert.deepEqual(parseTokenIds('3, +4 05'), [3, 4, 5])
+  assert.deepEqual(parseTokenIds('[3.0, 1e1]'), [3, 10])
+  assert.throws(() => parseTokenIds(`${'0,'.repeat(33_000)}1`), InputTooLargeError)
 })
 
 test('keeps decode mappings and positions aligned with null unknown pieces', () => {
@@ -147,19 +158,16 @@ test('cold-decodes only missing pieces for special flags', () => {
   assert.equal(index.byPiece.has('hello'), false)
 })
 
-test('keeps large tokenizations bounded without per-token decode', () => {
+test('segments large tokenizations per token like native (D-5)', () => {
   const ids = Array.from({ length: 2_001 }, (_, index) => index)
   const flags = ids.map(() => ({ isSpecial: false, specialName: null }))
   const overhead = chatTokenOverhead(ids.length, 0, '')
-  const result = buildTokenization('authoritative', ids, ids.map(String), 'authoritative', () => {
-    throw new Error('large tokenizations must not decode each token')
-  }, flags, 'encode', overhead)
+  const decoded = ids.map(id => `t${id}`).join('')
+  const result = buildTokenization(decoded, ids, ids.map(String), decoded, group => group.map(id => `t${id}`).join(''), flags, 'encode', overhead)
 
-  assert.deepEqual(result.segments, [{ start: 0, end: ids.length, ids, text: 'authoritative' }])
+  assert.equal(result.segments.length, ids.length)
   assert.equal(result.mapping, 'Exact')
-  assert.deepEqual(result.flags, flags)
   assert.equal(result.overhead, overhead)
-  assert.equal(result.roles, null)
 })
 
 test('rejects token piece arrays that lose ID positions', () => {

@@ -337,9 +337,79 @@ function RawOutput({ output, highlighted }: { output: string; highlighted: Outpu
 }
 
 // Native TemplateRequestEditor (detailed): run options, message cards, optional tools, typed variables.
-function RequestEditor({ request, onChange }: { request: TemplateRequest; onChange(request: TemplateRequest): void }) {
+// Native TemplateRequestEditor; compact is the tokenizer playground's form (message rows + 高级选项).
+export function RequestEditor({ request, onChange, compact = false }: {
+  request: TemplateRequest
+  onChange(request: TemplateRequest): void
+  compact?: boolean
+}) {
   const set = (change: Partial<TemplateRequest>) => onChange({ ...request, ...change })
   const replace = <T extends { id: string }>(list: T[], item: T) => list.map(entry => entry.id === item.id ? item : entry)
+  const tools = (
+    <section>
+      <label className="request-check">
+        <input type="checkbox" checked={request.includeTools} onChange={event => set({ includeTools: event.target.checked })} />
+        <h3>Tools</h3>
+      </label>
+      {request.includeTools ? (
+        <>
+          {request.tools.map(item => (
+            <ToolCard key={item.id} tool={item}
+              onChange={next => set({ tools: replace(request.tools, next) })}
+              onDelete={() => set({ tools: request.tools.filter(entry => entry.id !== item.id) })} />
+          ))}
+          <button type="button" className="request-add" onClick={() => set({ tools: [...request.tools, emptyTool()] })}>＋ {t('templateAddTool')}</button>
+        </>
+      ) : null}
+    </section>
+  )
+  const variables = (
+    <section>
+      <div className="request-heading">
+        <h3>{t('templateOtherVariables')}</h3>
+        <button type="button" onClick={() => set({ variables: [...request.variables, variable('custom_arg', 'string')] })}>＋ {t('templateAdd')}</button>
+      </div>
+      <p className="request-hint">{t('templateVariablesHint')}</p>
+      {request.variables.map(item => (
+        <VariableRow key={item.id} variable={item}
+          onChange={next => set({ variables: replace(request.variables, next) })}
+          onDelete={() => set({ variables: request.variables.filter(entry => entry.id !== item.id) })} />
+      ))}
+    </section>
+  )
+  if (compact) {
+    const nextRole = request.messages.at(-1)?.role === 'user' ? 'assistant' : 'user'
+    return (
+      <div className="request-editor compact">
+        <div className="compact-messages">
+          {request.messages.map(item => (
+            <div className="compact-message" key={item.id}>
+              <select aria-label={t('templateMessageRole')} className="role-select" value={item.role}
+                onChange={event => set({ messages: replace(request.messages, { ...item, role: event.target.value }) })}>
+                {messageRoles.map(role => <option key={role} value={role}>{role}</option>)}
+              </select>
+              <textarea aria-label={t('templateMessageAria', { role: item.role })} className="request-text" spellCheck={false}
+                value={item.content} onChange={event => set({ messages: replace(request.messages, { ...item, content: event.target.value }) })} />
+              <button type="button" className="request-delete" aria-label={t('templateDeleteMessage')} title={t('templateDeleteMessage')}
+                onClick={() => set({ messages: request.messages.filter(entry => entry.id !== item.id) })}>✕</button>
+            </div>
+          ))}
+          <button type="button" className="compact-add" onClick={() => set({ messages: [...request.messages, message(nextRole, '')] })}>
+            ＋ {t('templateAddMessage')}
+          </button>
+        </div>
+        <details className="compact-advanced">
+          <summary>{t('templateAdvancedOptions')}</summary>
+          <label className="request-check mono">
+            <input type="checkbox" checked={request.addGenerationPrompt} onChange={event => set({ addGenerationPrompt: event.target.checked })} />
+            add_generation_prompt
+          </label>
+          {tools}
+          {variables}
+        </details>
+      </div>
+    )
+  }
   return (
     <div className="request-editor">
       <section>
@@ -360,34 +430,8 @@ function RequestEditor({ request, onChange }: { request: TemplateRequest; onChan
             onDelete={() => set({ messages: request.messages.filter(entry => entry.id !== item.id) })} />
         ))}
       </section>
-      <section>
-        <label className="request-check">
-          <input type="checkbox" checked={request.includeTools} onChange={event => set({ includeTools: event.target.checked })} />
-          <h3>Tools</h3>
-        </label>
-        {request.includeTools ? (
-          <>
-            {request.tools.map(item => (
-              <ToolCard key={item.id} tool={item}
-                onChange={next => set({ tools: replace(request.tools, next) })}
-                onDelete={() => set({ tools: request.tools.filter(entry => entry.id !== item.id) })} />
-            ))}
-            <button type="button" className="request-add" onClick={() => set({ tools: [...request.tools, emptyTool()] })}>＋ {t('templateAddTool')}</button>
-          </>
-        ) : null}
-      </section>
-      <section>
-        <div className="request-heading">
-          <h3>{t('templateOtherVariables')}</h3>
-          <button type="button" onClick={() => set({ variables: [...request.variables, variable('custom_arg', 'string')] })}>＋ {t('templateAdd')}</button>
-        </div>
-        <p className="request-hint">{t('templateVariablesHint')}</p>
-        {request.variables.map(item => (
-          <VariableRow key={item.id} variable={item}
-            onChange={next => set({ variables: replace(request.variables, next) })}
-            onDelete={() => set({ variables: request.variables.filter(entry => entry.id !== item.id) })} />
-        ))}
-      </section>
+      {tools}
+      {variables}
     </div>
   )
 }

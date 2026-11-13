@@ -361,10 +361,6 @@ export const messageCatalog = {
     'zh-Hans': '不是有效的 PDF 文件签名。',
     en: 'Not a valid PDF file signature.',
   },
-  jsonRootFieldCount: {
-    'zh-Hans': '根字段',
-    en: 'Root fields',
-  },
   metadataFieldCountLabel: {
     'zh-Hans': 'Metadata 字段',
     en: 'Metadata fields',
@@ -801,25 +797,33 @@ export const messageCatalog = {
     'zh-Hans': 'Tokenizer 返回的 ID 与 flags 数量不一致。',
     en: 'The IDs and flags returned by the tokenizer have different counts.',
   },
+  tokenNegative: {
+    'zh-Hans': '第 {index} 个 token（index {zeroBasedIndex}）不能是负数：{token}',
+    en: 'Token {index} (index {zeroBasedIndex}) cannot be negative: {token}',
+  },
+  tokenOverflow: {
+    'zh-Hans': '第 {index} 个 token（index {zeroBasedIndex}）超过 Int 范围：{token}',
+    en: 'Token {index} (index {zeroBasedIndex}) exceeds the Int range: {token}',
+  },
+  tokenIdJsonInvalid: {
+    'zh-Hans': 'Token ID JSON 数组无效：{message}',
+    en: 'Invalid Token ID JSON array: {message}',
+  },
+  tokenIdJsonRootArray: {
+    'zh-Hans': '根节点必须是数组。',
+    en: 'The root node must be an array.',
+  },
   tokenIdInputTooLarge: {
-    'zh-Hans': 'Token ID 输入超过 64 KiB 上限。',
-    en: 'Token ID input exceeds the 64 KiB limit.',
+    'zh-Hans': 'Token ID 输入超过 {limit} 上限。',
+    en: 'Token ID input exceeds the {limit} limit.',
   },
   tokenIdInputEmpty: {
-    'zh-Hans': 'Token ID 输入为空。',
-    en: 'Token ID input is empty.',
-  },
-  tokenIdJsonParseFailed: {
-    'zh-Hans': 'Token ID JSON 解析失败：{reason}',
-    en: 'Failed to parse Token ID JSON: {reason}',
-  },
-  tokenIdJsonMustBeArray: {
-    'zh-Hans': 'Token ID JSON 必须是数组。',
-    en: 'Token ID JSON must be an array.',
+    'zh-Hans': '请输入至少一个 Token ID。',
+    en: 'Enter at least one Token ID.',
   },
   tokenInvalid: {
-    'zh-Hans': '第 {index} 个 Token 无效（zero-based index {zeroBasedIndex}）：{token}。',
-    en: 'Token {index} is invalid (zero-based index {zeroBasedIndex}): {token}.',
+    'zh-Hans': '第 {index} 个 token（index {zeroBasedIndex}）不是整数：{token}',
+    en: 'Token {index} (index {zeroBasedIndex}) is not an integer: {token}',
   },
   vocabularyInvalidTokenId: {
     'zh-Hans': '词表包含重复或无效 Token ID，无法分析。',
@@ -916,14 +920,6 @@ export const messageCatalog = {
   textTooLarge: {
     'zh-Hans': '输入超过 64 KiB 上限。',
     en: 'The input exceeds the 64 KiB limit.',
-  },
-  templateSourceTooLarge: {
-    'zh-Hans': '模板源码超过 64 KiB 上限。',
-    en: 'The template source exceeds the 64 KiB limit.',
-  },
-  templateContextTooLarge: {
-    'zh-Hans': '模板输入超过 64 KiB 上限。',
-    en: 'The template input exceeds the 64 KiB limit.',
   },
   vocabularySearchInputTooLarge: {
     'zh-Hans': '词表搜索输入超过 64 KiB 上限。',
@@ -1206,6 +1202,514 @@ export const messageCatalog = {
     'zh-Hans': '添加',
     en: 'Add',
   },
+  templateMessageRole: {
+    'zh-Hans': '消息角色',
+    en: 'Message role',
+  },
+  templateAddMessage: {
+    'zh-Hans': '添加消息',
+    en: 'Add message',
+  },
+  templateAdvancedOptions: {
+    'zh-Hans': '高级选项',
+    en: 'Advanced options',
+  },
+  tkpModeRaw: {
+    'zh-Hans': '原始文本',
+    en: 'Raw text',
+  },
+  tkpModeChat: {
+    'zh-Hans': 'Chat 对话',
+    en: 'Chat conversation',
+  },
+  tkpModeAria: {
+    'zh-Hans': '输入模式',
+    en: 'Input mode',
+  },
+  tkpModeHelp: {
+    'zh-Hans': '选择原始文本、Chat Template 或 Token IDs 输入',
+    en: 'Choose raw text, Chat Template, or Token IDs input',
+  },
+  tkpModeHelpNoTemplate: {
+    'zh-Hans': '当前目录没有可用 Chat Template；Token IDs 仍可用',
+    en: 'No usable Chat Template in this directory; Token IDs remain available',
+  },
+  tkpInput: {
+    'zh-Hans': '输入',
+    en: 'Input',
+  },
+  tkpBytes: {
+    'zh-Hans': '{count} 字节',
+    en: '{count} bytes',
+  },
+  tkpClear: {
+    'zh-Hans': '清空',
+    en: 'Clear',
+  },
+  tkpIdsHint: {
+    'zh-Hans': '支持逗号、空白或 JSON 数组',
+    en: 'Supports commas, whitespace, or a JSON array',
+  },
+  tkpDecodedText: {
+    'zh-Hans': '解码文本',
+    en: 'Decoded text',
+  },
+  tkpTokenizerText: {
+    'zh-Hans': '送入 tokenizer 的文本',
+    en: 'Text sent to the tokenizer',
+  },
+  tkpDecodedDetail: {
+    'zh-Hans': '由 Token ID 解码 · {count} 字节',
+    en: 'Decoded from Token IDs · {count} bytes',
+  },
+  tkpSourceDetail: {
+    'zh-Hans': '{source} · {count} 字节',
+    en: '{source} · {count} bytes',
+  },
+  tkpSourceRendered: {
+    'zh-Hans': 'chat_template 渲染结果',
+    en: 'chat_template render result',
+  },
+  tkpCopy: {
+    'zh-Hans': '复制',
+    en: 'Copy',
+  },
+  tkpDecodedEmpty: {
+    'zh-Hans': '输入 Token ID 后显示解码文本。',
+    en: 'Decoded text appears after entering Token IDs.',
+  },
+  tkpTextEmpty: {
+    'zh-Hans': '输入内容后显示实际编码文本。',
+    en: 'The actual encoded text appears after entering content.',
+  },
+  tkpTokenCount: {
+    'zh-Hans': 'Token 数量',
+    en: 'Token count',
+  },
+  tkpUnicodeCharacters: {
+    'zh-Hans': 'Unicode 字符',
+    en: 'Unicode characters',
+  },
+  tkpBytesPerToken: {
+    'zh-Hans': '字节 / Token',
+    en: 'Bytes / Token',
+  },
+  tkpContentTokens: {
+    'zh-Hans': '正文 token',
+    en: 'Content tokens',
+  },
+  tkpTemplateOverhead: {
+    'zh-Hans': '模板开销（近似）',
+    en: 'Template overhead (approx.)',
+  },
+  tkpCannotSplit: {
+    'zh-Hans': '无法按差量拆分',
+    en: 'Cannot split by difference',
+  },
+  tkpResult: {
+    'zh-Hans': '分词结果',
+    en: 'Tokenization result',
+  },
+  tkpComparison: {
+    'zh-Hans': '对照',
+    en: 'Comparison',
+  },
+  tkpCopyIds: {
+    'zh-Hans': '复制 IDs',
+    en: 'Copy IDs',
+  },
+  tkpShowWhitespace: {
+    'zh-Hans': '显示空白符',
+    en: 'Show whitespace',
+  },
+  tkpCloseComparison: {
+    'zh-Hans': '关闭对照',
+    en: 'Close comparison',
+  },
+  tkpOtherRepositoryMenu: {
+    'zh-Hans': '选择另一仓库…',
+    en: 'Select another repository…',
+  },
+  tkpOtherRepository: {
+    'zh-Hans': '另一仓库',
+    en: 'Another repository',
+  },
+  tkpLoadComparison: {
+    'zh-Hans': '加载对照',
+    en: 'Load comparison',
+  },
+  tkpResultStatusIds: {
+    'zh-Hans': '{path} · 由 Token ID 解码',
+    en: '{path} · Decoded from Token IDs',
+  },
+  tkpResultStatus: {
+    'zh-Hans': '{path} · {mapping}',
+    en: '{path} · {mapping}',
+  },
+  tkpWaitingResult: {
+    'zh-Hans': '等待结果',
+    en: 'Waiting for result',
+  },
+  tkpStatusRendering: {
+    'zh-Hans': '正在渲染',
+    en: 'Rendering',
+  },
+  tkpStatusTemplateError: {
+    'zh-Hans': '模板错误',
+    en: 'Template error',
+  },
+  tkpStatusDecoded: {
+    'zh-Hans': '由 Token ID 解码',
+    en: 'Decoded from Token IDs',
+  },
+  tkpStatusLive: {
+    'zh-Hans': '实时编码',
+    en: 'Live encoding',
+  },
+  tkpLoading: {
+    'zh-Hans': '正在加载 tokenizer…',
+    en: 'Loading tokenizer…',
+  },
+  tkpTokenizing: {
+    'zh-Hans': '正在编码最新输入…',
+    en: 'Encoding latest input…',
+  },
+  tkpInputTooLarge: {
+    'zh-Hans': '输入超过 {limit} 上限',
+    en: 'Input exceeds the {limit} limit',
+  },
+  tkpRetry: {
+    'zh-Hans': '重试',
+    en: 'Retry',
+  },
+  tkpDecodedOnly: {
+    'zh-Hans': '当前映射是 Decoded only，不能按原文划分角色',
+    en: 'The current mapping is Decoded only; roles cannot be split from the original text',
+  },
+  tkpEmptyResult: {
+    'zh-Hans': '输入内容后显示 token。',
+    en: 'Tokens appear after entering content.',
+  },
+  tkpSegmentAria: {
+    'zh-Hans': 'Token {start} 到 {end}，ID {ids}，文本 {text}，角色 {role}',
+    en: 'Token {start} through {end}, IDs {ids}, text {text}, role {role}',
+  },
+  tkpNone: {
+    'zh-Hans': '无',
+    en: 'None',
+  },
+  tkpTableAria: {
+    'zh-Hans': 'Token 表，共 {count} 行',
+    en: 'Token table, {count} rows',
+  },
+  tkpRowAria: {
+    'zh-Hans': 'Token {index}，ID {id}，Piece {piece}，Decoded {decoded}，Role {role}，Special {special}，{mapping}',
+    en: 'Token {index}, ID {id}, Piece {piece}, Decoded {decoded}, Role {role}, Special {special}, {mapping}',
+  },
+  tkpCopyId: {
+    'zh-Hans': '复制 ID',
+    en: 'Copy ID',
+  },
+  tkpCopyPiece: {
+    'zh-Hans': '复制 Token Piece',
+    en: 'Copy Token Piece',
+  },
+  tkpCopyDecoded: {
+    'zh-Hans': '复制解码片段',
+    en: 'Copy decoded segment',
+  },
+  tkpChipAria: {
+    'zh-Hans': 'Token {index}，ID {id}，文本 {text}',
+    en: 'Token {index}, ID {id}, text {text}',
+  },
+  tkpIndex: {
+    'zh-Hans': '序号',
+    en: 'Index',
+  },
+  tkpDecodedFragment: {
+    'zh-Hans': '解码片段',
+    en: 'Decoded',
+  },
+  tkpRole: {
+    'zh-Hans': '角色',
+    en: 'Role',
+  },
+  cmpLoading: {
+    'zh-Hans': '正在加载对照 tokenizer…',
+    en: 'Loading comparison tokenizer…',
+  },
+  cmpEmpty: {
+    'zh-Hans': '输入内容后显示对照结果。',
+    en: 'Comparison results appear after entering content.',
+  },
+  cmpPrimary: {
+    'zh-Hans': '主侧',
+    en: 'Primary',
+  },
+  cmpLeftCount: {
+    'zh-Hans': '主 {count}',
+    en: 'Primary {count}',
+  },
+  cmpRightCount: {
+    'zh-Hans': '对照 {count}',
+    en: 'Comparison {count}',
+  },
+  cmpDelta: {
+    'zh-Hans': '差值 {delta}',
+    en: 'Delta: {delta}',
+  },
+  cmpIdsSame: {
+    'zh-Hans': 'ID 序列相同',
+    en: 'ID sequences match',
+  },
+  cmpIdsDifferent: {
+    'zh-Hans': 'ID 序列不同',
+    en: 'ID sequences differ',
+  },
+  cmpFirstDifference: {
+    'zh-Hans': '第一处不同：index {index}，主 {left}，对照 {right}',
+    en: 'First difference: index {index}, primary {left}, comparison {right}',
+  },
+  cmpFirstDifferenceNone: {
+    'zh-Hans': '第一处不同：无',
+    en: 'First difference: none',
+  },
+  cmpOverhead: {
+    'zh-Hans': '模板开销（近似）：主 {left} · 对照 {right}',
+    en: 'Template overhead (approx.): primary {left} · comparison {right}',
+  },
+  cmpVocabulary: {
+    'zh-Hans': '词表差集',
+    en: 'Vocabulary difference',
+  },
+  cmpPrimaryOnlyCount: {
+    'zh-Hans': '仅主 {count}',
+    en: 'Primary only {count}',
+  },
+  cmpComparisonOnlyCount: {
+    'zh-Hans': '仅对照 {count}',
+    en: 'Comparison only {count}',
+  },
+  cmpSharedCount: {
+    'zh-Hans': '共有 {count}',
+    en: 'Shared {count}',
+  },
+  cmpPrimaryOnly: {
+    'zh-Hans': '仅主',
+    en: 'Primary only',
+  },
+  cmpComparisonOnly: {
+    'zh-Hans': '仅对照',
+    en: 'Comparison only',
+  },
+  cmpDiffSide: {
+    'zh-Hans': '差集侧',
+    en: 'Difference side',
+  },
+  cmpSearch: {
+    'zh-Hans': '搜索 token piece',
+    en: 'Search token piece',
+  },
+  cmpShowing: {
+    'zh-Hans': '显示 {count} 条，最多 {limit} 条',
+    en: 'Showing count: {count}; maximum: {limit}',
+  },
+  cmpEmptyToken: {
+    'zh-Hans': '（空 Token）',
+    en: '(empty token)',
+  },
+  cmpSkipSentencePiece: {
+    'zh-Hans': 'SentencePiece 不提供可解析的 tokenizer.json 词表；编码对照仍可用。',
+    en: 'SentencePiece does not provide a parseable tokenizer.json vocabulary; encoding comparison remains available.',
+  },
+  cmpSkipUnparseable: {
+    'zh-Hans': '一侧 tokenizer.json 的 model.vocab 无法解析，已跳过词表差集。',
+    en: 'The model.vocab in one tokenizer.json could not be parsed; the vocabulary difference was skipped.',
+  },
+  cmpSkipPrimaryNotReady: {
+    'zh-Hans': '主侧 tokenizer 尚未就绪，已跳过词表差集。',
+    en: 'The primary tokenizer is not ready yet; the vocabulary difference was skipped.',
+  },
+  cmpMissingTemplate: {
+    'zh-Hans': '对照侧没有可用 Chat Template。',
+    en: 'No chat template is available on the comparison side.',
+  },
+  cmpRenderFailed: {
+    'zh-Hans': '对照侧模板渲染失败：{message}',
+    en: 'Comparison-side template rendering failed: {message}',
+  },
+  tokenizerComparisonMissingEntry: {
+    'zh-Hans': 'snapshot 中没有可用 tokenizer 入口：{path}',
+    en: 'No usable tokenizer entry found in snapshot: {path}',
+  },
+  cmpNoEntry: {
+    'zh-Hans': '对方仓库没有可用 tokenizer 入口。',
+    en: 'The other repository has no usable tokenizer entry.',
+  },
+  tjvParsing: {
+    'zh-Hans': '正在后台解析 tokenizer.json…',
+    en: 'Parsing tokenizer.json in the background…',
+  },
+  tjvSubtitle: {
+    'zh-Hans': '大型 tokenizer.json 在后台解析；摘要不会展开完整词表和合并规则。',
+    en: 'Large tokenizer.json files are parsed in the background; the summary does not expand the full vocabulary or merge rules.',
+  },
+  tjvStructure: {
+    'zh-Hans': '结构',
+    en: 'Structure',
+  },
+  tjvVersion: {
+    'zh-Hans': '格式版本',
+    en: 'Format version',
+  },
+  tjvModelType: {
+    'zh-Hans': '模型类型',
+    en: 'Model type',
+  },
+  tjvVocabEntries: {
+    'zh-Hans': '词表项',
+    en: 'Vocabulary entries',
+  },
+  tjvMerges: {
+    'zh-Hans': '合并规则',
+    en: 'Merge rules',
+  },
+  tjvAddedTokens: {
+    'zh-Hans': '新增 Token',
+    en: 'Added tokens',
+  },
+  tjvVocabEmpty: {
+    'zh-Hans': 'model.vocab 为空，没有可分析的 Token。',
+    en: 'model.vocab is empty, so there are no tokens to analyze.',
+  },
+  tjvVocabUnsupported: {
+    'zh-Hans': '当前 model.vocab 结构无法进行词表长度分析。',
+    en: 'The current model.vocab structure does not support vocabulary length analysis.',
+  },
+  tjvFooter: {
+    'zh-Hans': '需要逐项查看时，优先使用仓库中的 vocab.json 和 merges.txt；它们有分页阅读器。',
+    en: 'To inspect items individually, prefer vocab.json and merges.txt in the repository; they have paginated readers.',
+  },
+  tjvSearchTitle: {
+    'zh-Hans': '词表搜索',
+    en: 'Vocabulary search',
+  },
+  tjvSearchSubtitle: {
+    'zh-Hans': '首次输入非空查询时按需构建索引；最多显示 1,000 条匹配。',
+    en: 'An index is built on demand for the first nonempty query; at most 1,000 matches are shown.',
+  },
+  tjvSearchPlaceholder: {
+    'zh-Hans': '搜索 token 或 ID',
+    en: 'Search tokens or IDs',
+  },
+  tjvSearchPreparing: {
+    'zh-Hans': '正在准备词表索引…',
+    en: 'Preparing vocabulary index…',
+  },
+  tjvSearchPrompt: {
+    'zh-Hans': '输入 token 或十进制 ID 开始搜索。',
+    en: 'Enter a token or decimal ID to search.',
+  },
+  tjvSearchCount: {
+    'zh-Hans': '匹配 {count} 条',
+    en: '{count} matches',
+  },
+  tjvSearchUnsupported: {
+    'zh-Hans': '当前 vocab 结构无法搜索。',
+    en: 'The current vocab structure cannot be searched.',
+  },
+  tjvLengthTitle: {
+    'zh-Hans': '词表长度',
+    en: 'Vocabulary length',
+  },
+  tjvLengthSubtitle: {
+    'zh-Hans': '基础词表 {count} 项；按原始 Token Piece 的 Unicode 标量计数。',
+    en: 'Base vocabulary: {count} entries; counted in Unicode scalars of the original token pieces.',
+  },
+  tjvAverage: {
+    'zh-Hans': '平均',
+    en: 'Average',
+  },
+  tjvLongest: {
+    'zh-Hans': '最长',
+    en: 'Longest',
+  },
+  tjvDistribution: {
+    'zh-Hans': '长度分布',
+    en: 'Length distribution',
+  },
+  tjvBucketAria: {
+    'zh-Hans': '长度 {label}，{count} 个 Token，占 {percent}',
+    en: 'Length {label}, {count} tokens, {percent}',
+  },
+  tjvBucketSummary: {
+    'zh-Hans': '长度 {label}：{count} 项，占基础词表 {percent}。',
+    en: 'Length {label}: {count} entries, {percent} of the base vocabulary.',
+  },
+  tjvBasis: {
+    'zh-Hans': '统计口径',
+    en: 'Counting basis',
+  },
+  tjvBasisPieces: {
+    'zh-Hans': '统计 tokenizer.json 中 model.vocab 的原始 Piece，不先解码 ByteLevel，也不做 Unicode 归一化。',
+    en: 'Counts original pieces in tokenizer.json model.vocab without decoding ByteLevel first or applying Unicode normalization.',
+  },
+  tjvBasisAdded: {
+    'zh-Hans': 'Added Token 单独计数，不进入本分布。最长 Token 用于理解词表构成，不代表 tokenizer 质量。',
+    en: 'Added tokens are counted separately and excluded from this distribution. The longest tokens help explain vocabulary composition and do not indicate tokenizer quality.',
+  },
+  tjvLongestTitle: {
+    'zh-Hans': '最长 Token',
+    en: 'Longest tokens',
+  },
+  tjvLongestOrder: {
+    'zh-Hans': '长度降序，ID 升序',
+    en: 'Length descending, ID ascending',
+  },
+  tjvCollapse: {
+    'zh-Hans': '收起到 Top 20',
+    en: 'Collapse to Top 20',
+  },
+  tjvExpand: {
+    'zh-Hans': '展开 Top {count}',
+    en: 'Expand Top {count}',
+  },
+  tjvScalars: {
+    'zh-Hans': '标量',
+    en: 'Scalars',
+  },
+  tjvRowAria: {
+    'zh-Hans': '第 {rank} 名，Token ID {id}，{piece}，{count} 个 Unicode 标量',
+    en: 'Rank {rank}, token ID {id}, {piece}, Unicode scalar count: {count}',
+  },
+  tjvCopyRaw: {
+    'zh-Hans': '复制 Raw',
+    en: 'Copy Raw',
+  },
+  tjvEmptyString: {
+    'zh-Hans': '（空字符串）',
+    en: '(empty string)',
+  },
+  tjvTokenDetail: {
+    'zh-Hans': '{piece} · {scalars} 标量 · {bytes} UTF-8 bytes',
+    en: '{piece} · Scalar count: {scalars} · UTF-8 byte count: {bytes}',
+  },
+  tjvEmptyToken: {
+    'zh-Hans': '空 Token',
+    en: 'Empty token',
+  },
+  tjvNewline: {
+    'zh-Hans': '换行',
+    en: 'newline',
+  },
+  tjvReturn: {
+    'zh-Hans': '回车',
+    en: 'carriage return',
+  },
+  tjvSpace: {
+    'zh-Hans': '空格',
+    en: 'space',
+  },
   templateDeleteMessage: {
     'zh-Hans': '删除消息',
     en: 'Delete message',
@@ -1370,10 +1874,6 @@ export const messageCatalog = {
     'zh-Hans': '预览',
     en: 'Preview',
   },
-  readerFieldColumn: {
-    'zh-Hans': '字段',
-    en: 'Field',
-  },
   readerRenderedView: {
     'zh-Hans': '渲染',
     en: 'Rendered',
@@ -1500,10 +2000,6 @@ export const messageCatalog = {
     'zh-Hans': '阅读视图',
     en: 'Reading view',
   },
-  readerSearchFieldsAndContent: {
-    'zh-Hans': '搜索',
-    en: 'Search',
-  },
   readerShowingCount: {
     'zh-Hans': '显示 {visible} / {total}',
     en: 'Showing {visible} / {total}',
@@ -1515,14 +2011,6 @@ export const messageCatalog = {
   templatePlaygroundTab: {
     'zh-Hans': '试验台',
     en: 'Playground',
-  },
-  templateToolsLabel: {
-    'zh-Hans': 'Tools',
-    en: 'Tools',
-  },
-  templateVariablesLabel: {
-    'zh-Hans': 'Typed Variables',
-    en: 'Typed Variables',
   },
   templateCopiedState: {
     'zh-Hans': '已复制',
@@ -1980,241 +2468,9 @@ export const messageCatalog = {
     'zh-Hans': 'Mean',
     en: 'Mean',
   },
-  appTokenizerRawSample: {
-    'zh-Hans': 'Hello，世界 👋',
-    en: 'Hello, world 👋',
-  },
-  appCopyInputAction: {
-    'zh-Hans': '复制输入',
-    en: 'Copy input',
-  },
-  appComparisonCurrentRepositorySource: {
-    'zh-Hans': '当前仓库 · {path}',
-    en: 'Current repository · {path}',
-  },
-  appComparisonLocalDirectorySource: {
-    'zh-Hans': '本地目录 · {revision} · {name} · {path}',
-    en: 'Local directory · {revision} · {name} · {path}',
-  },
-  appComparisonRepositoryNoTokenizer: {
-    'zh-Hans': '对照仓库没有可用 tokenizer.json 或 SentencePiece .model。',
-    en: 'The comparison repository has no usable tokenizer.json or SentencePiece .model.',
-  },
-  appComparisonLocalDirectoryNoTokenizer: {
-    'zh-Hans': '对照本地目录没有可用 tokenizer.json 或 SentencePiece .model。',
-    en: 'The comparison local directory has no usable tokenizer.json or SentencePiece .model.',
-  },
-  appComparisonSourceUnavailable: {
-    'zh-Hans': '对照来源不可用。',
-    en: 'The comparison source is unavailable.',
-  },
-  appComparisonMissingChatTemplate: {
-    'zh-Hans': '对照 Tokenizer 没有可用的 Chat Template。',
-    en: 'The comparison Tokenizer has no usable chat template.',
-  },
-  appChatTemplateLoading: {
-    'zh-Hans': '正在读取独立 Chat Template。',
-    en: 'Reading the standalone chat template.',
-  },
-  appChatTemplateUnavailable: {
-    'zh-Hans': '模板不可用。',
-    en: 'Template unavailable.',
-  },
-  comparisonOpenAction: {
-    'zh-Hans': '打开对照',
-    en: 'Open comparison',
-  },
-  comparisonTokenizerLabel: {
-    'zh-Hans': '对照 Tokenizer',
-    en: 'Comparison Tokenizer',
-  },
-  comparisonOtherPublicRepositoryAction: {
-    'zh-Hans': '另一公开来源…',
-    en: 'Another public source…',
-  },
-  comparisonRepositoryLabel: {
-    'zh-Hans': '对照 Hugging Face 仓库',
-    en: 'Comparison Hugging Face repository',
-  },
-  comparisonLoadAction: {
-    'zh-Hans': '加载对照',
-    en: 'Load comparison',
-  },
-  comparisonRepositoryLoadingStatus: {
-    'zh-Hans': '正在读取对照仓库清单…',
-    en: 'Reading the comparison repository manifest…',
-  },
-  comparisonCancelLoadAction: {
-    'zh-Hans': '取消加载',
-    en: 'Cancel loading',
-  },
   comparisonSecondLocalDirectoryLabel: {
     'zh-Hans': '选择第二个本地目录',
     en: 'Select the second local directory',
-  },
-  comparisonCloseAction: {
-    'zh-Hans': '关闭对照',
-    en: 'Close comparison',
-  },
-  comparisonCloseAriaLabel: {
-    'zh-Hans': '关闭 Tokenizer 对照',
-    en: 'Close Tokenizer comparison',
-  },
-  comparisonNoTargetsStatus: {
-    'zh-Hans': '当前快照没有可用 tokenizer.json 或 SentencePiece .model 对照目标。',
-    en: 'The current snapshot has no usable tokenizer.json or SentencePiece .model comparison targets.',
-  },
-  tokenizerViewsAriaLabel: {
-    'zh-Hans': 'Tokenizer 视图',
-    en: 'Tokenizer views',
-  },
-  tokenizerRawTab: {
-    'zh-Hans': 'Raw 工作台',
-    en: 'Raw workbench',
-  },
-  tokenizerDecodeTab: {
-    'zh-Hans': 'Token IDs 工作台',
-    en: 'Token IDs workbench',
-  },
-  tokenizerChatTab: {
-    'zh-Hans': 'Chat 工作台',
-    en: 'Chat workbench',
-  },
-  tokenIdsLabel: {
-    'zh-Hans': 'Token IDs',
-    en: 'Token IDs',
-  },
-  inputMaxSizeStatus: {
-    'zh-Hans': '最多 64 KiB',
-    en: 'Up to 64 KiB',
-  },
-  tokenIdsInputPlaceholder: {
-    'zh-Hans': '逗号、空白、换行或 JSON 数组，例如 [1,3,2]',
-    en: 'Commas, whitespace, newlines, or a JSON array, such as [1,3,2]',
-  },
-  tokenIdsByteStatus: {
-    'zh-Hans': '{count} bytes · 解析失败不会请求 Worker',
-    en: '{count} bytes · parse failures do not request the Worker',
-  },
-  tokenIdsDecodeAction: {
-    'zh-Hans': '解码 ID',
-    en: 'Decode IDs',
-  },
-  mainTokenizerResultHeading: {
-    'zh-Hans': '主 Tokenizer 结果',
-    en: 'Main Tokenizer result',
-  },
-  mainTokenizerTokensTableLabel: {
-    'zh-Hans': '主 Tokenizer Tokens',
-    en: 'Main Tokenizer Tokens',
-  },
-  rawInputLabel: {
-    'zh-Hans': 'Raw 输入',
-    en: 'Raw input',
-  },
-  rawInputClearAction: {
-    'zh-Hans': '清空',
-    en: 'Clear',
-  },
-  rawInputByteStatus: {
-    'zh-Hans': '{count} bytes · 自动等待 225 ms',
-    en: '{count} bytes · automatic 225 ms wait',
-  },
-  rawInputTokenizeAction: {
-    'zh-Hans': '立即分词',
-    en: 'Tokenize now',
-  },
-  chatMessagesLabel: {
-    'zh-Hans': 'Chat Messages',
-    en: 'Chat Messages',
-  },
-  chatTemplateLabel: {
-    'zh-Hans': 'Chat Template',
-    en: 'Chat Template',
-  },
-  chatTemplateLoadingStatus: {
-    'zh-Hans': '正在读取 chat_template.jinja',
-    en: 'Reading chat_template.jinja',
-  },
-  chatTemplateUnavailableStatus: {
-    'zh-Hans': '模板不可用',
-    en: 'Template unavailable',
-  },
-  chatToolsAndVariablesLabel: {
-    'zh-Hans': 'Tools 与 Variables',
-    en: 'Tools and Variables',
-  },
-  chatToolsInputAriaLabel: {
-    'zh-Hans': 'Chat Tools',
-    en: 'Chat Tools',
-  },
-  chatVariablesInputAriaLabel: {
-    'zh-Hans': 'Chat Typed Variables',
-    en: 'Chat Typed Variables',
-  },
-  chatAuthoritativeInputLabel: {
-    'zh-Hans': 'Chat 权威输入',
-    en: 'Chat authoritative input',
-  },
-  chatPreviewEmptyStatus: {
-    'zh-Hans': '渲染后，这里显示唯一权威编码输入。',
-    en: 'After rendering, this shows the single authoritative encoded input.',
-  },
-  chatRenderAndTokenizeAction: {
-    'zh-Hans': '渲染并分词',
-    en: 'Render and tokenize',
-  },
-  comparisonTitle: {
-    'zh-Hans': '对照',
-    en: 'Comparison',
-  },
-  comparisonChatTemplateAria: {
-    'zh-Hans': '对照 Chat Template',
-    en: 'Comparison Chat Template',
-  },
-  comparisonLoadingTokenizer: {
-    'zh-Hans': '正在加载对照 Tokenizer…',
-    en: 'Loading comparison Tokenizer…',
-  },
-  comparisonLoadingTemplate: {
-    'zh-Hans': '正在读取对照 chat_template.jinja…',
-    en: 'Reading the comparison chat_template.jinja…',
-  },
-  comparisonSummaryAria: {
-    'zh-Hans': 'Tokenizer 对照摘要',
-    en: 'Tokenizer comparison summary',
-  },
-  comparisonSummaryTitle: {
-    'zh-Hans': '对照摘要',
-    en: 'Comparison summary',
-  },
-  comparisonLeftRightCountLabel: {
-    'zh-Hans': 'Left / Right Count',
-    en: 'Left / Right Count',
-  },
-  comparisonDeltaLabel: {
-    'zh-Hans': 'Delta',
-    en: 'Delta',
-  },
-  comparisonIdSequenceLabel: {
-    'zh-Hans': 'ID 序列',
-    en: 'ID sequence',
-  },
-  comparisonIdsSame: {
-    'zh-Hans': '相同',
-    en: 'Same',
-  },
-  comparisonIdsDifferent: {
-    'zh-Hans': '不同',
-    en: 'Different',
-  },
-  comparisonFirstDifferenceLabel: {
-    'zh-Hans': 'First Difference（zero-based）',
-    en: 'First Difference (zero-based)',
-  },
-  comparisonEmDashValue: {
-    'zh-Hans': '—',
-    en: '—',
   },
   consistencyCoverageChecked: {
     'zh-Hans': '已检查',
@@ -2227,90 +2483,6 @@ export const messageCatalog = {
   consistencyCoverageFailed: {
     'zh-Hans': '失败：{message}',
     en: 'Failed: {message}',
-  },
-  comparisonTemplateOverheadLabel: {
-    'zh-Hans': '模板开销（左 / 右）',
-    en: 'Template overhead (left / right)',
-  },
-  comparisonVocabularyDiffStatsAria: {
-    'zh-Hans': 'Tokenizer 词表差集统计',
-    en: 'Tokenizer vocabulary diff statistics',
-  },
-  comparisonVocabularyDiffTitle: {
-    'zh-Hans': '词表差集',
-    en: 'Vocabulary diff',
-  },
-  comparisonVocabularyDiffScopeAria: {
-    'zh-Hans': '词表差集范围',
-    en: 'Vocabulary diff scope',
-  },
-  comparisonVocabularyDiffScopeButton: {
-    'zh-Hans': '{scope} · {count}',
-    en: '{scope} · {count}',
-  },
-  comparisonVocabularySearchAria: {
-    'zh-Hans': '对照词表搜索',
-    en: 'Comparison vocabulary search',
-  },
-  comparisonVocabularySearchPlaceholder: {
-    'zh-Hans': '包含匹配…',
-    en: 'Contains match…',
-  },
-  comparisonPreparingDiffIndex: {
-    'zh-Hans': '正在准备差集索引…',
-    en: 'Preparing diff index…',
-  },
-  comparisonSearchingDiff: {
-    'zh-Hans': '正在搜索…',
-    en: 'Searching…',
-  },
-  comparisonDiffUnavailable: {
-    'zh-Hans': '差集不可用',
-    en: 'Diff unavailable',
-  },
-  comparisonVocabularyDiffTableAria: {
-    'zh-Hans': 'Tokenizer 词表差集',
-    en: 'Tokenizer vocabulary diff',
-  },
-  comparisonTokenPieceColumn: {
-    'zh-Hans': 'Token Piece',
-    en: 'Token Piece',
-  },
-  comparisonTokenizerResultHeading: {
-    'zh-Hans': '对照 Tokenizer 结果',
-    en: 'Comparison Tokenizer result',
-  },
-  comparisonTokenizerTokensTableLabel: {
-    'zh-Hans': '对照 Tokenizer Tokens',
-    en: 'Comparison Tokenizer Tokens',
-  },
-  tokenizerStructureLoadingStatus: {
-    'zh-Hans': '正在 Worker 中分析 Tokenizer…',
-    en: 'Analyzing the Tokenizer in the Worker…',
-  },
-  tokenizerStructureRunLocationLabel: {
-    'zh-Hans': '运行位置',
-    en: 'Run location',
-  },
-  tokenizerStructureWebWorkerValue: {
-    'zh-Hans': 'Web Worker',
-    en: 'Web Worker',
-  },
-  tokenizerStructureConfigLabel: {
-    'zh-Hans': 'Tokenizer Config',
-    en: 'Tokenizer Config',
-  },
-  tokenizerStructureConfigSameDirectoryValue: {
-    'zh-Hans': '同目录',
-    en: 'Same directory',
-  },
-  tokenizerStructureConfigMissingRawUnsupportedValue: {
-    'zh-Hans': '缺失 · Raw 不支持',
-    en: 'Missing · Raw unsupported',
-  },
-  tokenizerStructureConfigMissingValue: {
-    'zh-Hans': '缺失 · Raw 与 Token IDs 可用',
-    en: 'Missing · Raw and Token IDs available',
   },
   sentencepieceVocabularyUnavailable: {
     'zh-Hans': 'SentencePiece 不提供可解析的 tokenizer.json 词表；编码对照仍可用。',
@@ -2359,270 +2531,6 @@ export const messageCatalog = {
   sentencepieceDisposed: {
     'zh-Hans': '已释放',
     en: 'disposed',
-  },
-  tokenizerStructureAddedTokenLabel: {
-    'zh-Hans': 'Added Token',
-    en: 'Added Token',
-  },
-  tokenizerStructureSpecialAddedTokensLabel: {
-    'zh-Hans': 'Special Added Tokens',
-    en: 'Special Added Tokens',
-  },
-  tokenizerStructureIdColumn: {
-    'zh-Hans': 'ID',
-    en: 'ID',
-  },
-  tokenizerStructureTokenColumn: {
-    'zh-Hans': 'Token',
-    en: 'Token',
-  },
-  tokenizerStructureFormatVersionLabel: {
-    'zh-Hans': '格式版本',
-    en: 'Format version',
-  },
-  tokenizerStructureModelTypeLabel: {
-    'zh-Hans': 'Model Type',
-    en: 'Model Type',
-  },
-  tokenizerStructureBaseVocabularyLabel: {
-    'zh-Hans': '基础词表',
-    en: 'Base vocabulary',
-  },
-  tokenizerStructureMergeCountLabel: {
-    'zh-Hans': 'Merge 数量',
-    en: 'Merge count',
-  },
-  tokenizerStructureUnknownValue: {
-    'zh-Hans': '未知',
-    en: 'Unknown',
-  },
-  tokenizerStructureNotApplicableValue: {
-    'zh-Hans': '不适用',
-    en: 'N/A',
-  },
-  tokenizerStructureRootFieldsTableLabel: {
-    'zh-Hans': 'Tokenizer 根字段',
-    en: 'Tokenizer root fields',
-  },
-  tokenizerStructureDetailColumn: {
-    'zh-Hans': 'Detail',
-    en: 'Detail',
-  },
-  tokenizerStructureVocabularyUnavailable: {
-    'zh-Hans': '词表不可分析。',
-    en: 'The vocabulary cannot be analyzed.',
-  },
-  tokenizerStructureVocabularyEmpty: {
-    'zh-Hans': 'model.vocab 为空，没有可分析的 Token。',
-    en: 'model.vocab is empty; there are no Tokens to analyze.',
-  },
-  tokenizerStructureAverageScalarLengthLabel: {
-    'zh-Hans': '平均标量长度',
-    en: 'Average scalar length',
-  },
-  tokenizerStructureP50P90Label: {
-    'zh-Hans': 'P50 / P90',
-    en: 'P50 / P90',
-  },
-  tokenizerStructureP95P99Label: {
-    'zh-Hans': 'P95 / P99',
-    en: 'P95 / P99',
-  },
-  tokenizerStructureMaximumScalarLengthLabel: {
-    'zh-Hans': '最大标量长度',
-    en: 'Maximum scalar length',
-  },
-  tokenizerStructureLengthDistributionLabel: {
-    'zh-Hans': '长度分布（Unicode 标量）',
-    en: 'Length distribution (Unicode scalars)',
-  },
-  tokenizerStructureLengthDistributionTableLabel: {
-    'zh-Hans': 'Tokenizer 长度分布',
-    en: 'Tokenizer length distribution',
-  },
-  tokenizerStructureLengthColumn: {
-    'zh-Hans': '长度',
-    en: 'Length',
-  },
-  tokenizerStructureTokenCountColumn: {
-    'zh-Hans': 'Token 数',
-    en: 'Token count',
-  },
-  tokenizerStructureUnicodeScalarColumn: {
-    'zh-Hans': 'Unicode 标量',
-    en: 'Unicode scalar',
-  },
-  tokenizerStructureLongestTokensLabel: {
-    'zh-Hans': '最长 Token',
-    en: 'Longest Tokens',
-  },
-  tokenizerStructureCollapseTop20Action: {
-    'zh-Hans': '收起到 Top 20',
-    en: 'Collapse to Top 20',
-  },
-  tokenizerStructureExpandTopAction: {
-    'zh-Hans': '展开 Top {count}',
-    en: 'Expand Top {count}',
-  },
-  tokenizerStructureSearchLabel: {
-    'zh-Hans': '词表搜索',
-    en: 'Vocabulary search',
-  },
-  tokenizerStructureSearchPlaceholder: {
-    'zh-Hans': '搜索 token 或十进制 ID',
-    en: 'Search for a token or decimal ID',
-  },
-  tokenizerStructureSearchEmptyStatus: {
-    'zh-Hans': '输入 token 或十进制 ID 开始搜索',
-    en: 'Enter a token or decimal ID to start searching',
-  },
-  tokenizerStructureSearchPreparingStatus: {
-    'zh-Hans': '正在准备词表索引',
-    en: 'Preparing the vocabulary index',
-  },
-  tokenizerStructureSearchMatchCountStatus: {
-    'zh-Hans': '匹配 {count} 条',
-    en: 'Matches: {count}',
-  },
-  tokenizerStructureSearchFailedStatus: {
-    'zh-Hans': '词表搜索失败',
-    en: 'Vocabulary search failed',
-  },
-  tokenizerStructureSearchResultsTableLabel: {
-    'zh-Hans': '词表搜索结果',
-    en: 'Vocabulary search results',
-  },
-  tokenizerResultUnableToSplitValue: {
-    'zh-Hans': '无法拆分',
-    en: 'Unable to split',
-  },
-  tokenizerResultCopyIdAction: {
-    'zh-Hans': '复制 ID',
-    en: 'Copy ID',
-  },
-  tokenizerResultMergedSegmentDecodedSummary: {
-    'zh-Hans': '合并片段（{count} tokens，完整 Decoded 见下方）',
-    en: 'Merged segment ({count} tokens; see the full Decoded below)',
-  },
-  tokenizerResultDecodeHeading: {
-    'zh-Hans': '由 Token ID 解码',
-    en: 'Decoded from Token IDs',
-  },
-  tokenizerResultHeading: {
-    'zh-Hans': 'Token 结果',
-    en: 'Token result',
-  },
-  tokenizerResultShowWhitespaceAction: {
-    'zh-Hans': '显示空白符',
-    en: 'Show whitespace',
-  },
-  tokenizerResultIdleStatus: {
-    'zh-Hans': '等待输入或点击运行。',
-    en: 'Waiting for input or Run.',
-  },
-  tokenizerResultLoadingStatus: {
-    'zh-Hans': 'Web Worker 正在处理 latest-only 请求…',
-    en: 'The Web Worker is processing the latest-only request…',
-  },
-  tokenizerResultDirectionLabel: {
-    'zh-Hans': '方向',
-    en: 'Direction',
-  },
-  tokenizerResultContentTokenLabel: {
-    'zh-Hans': '正文 Token',
-    en: 'Content tokens',
-  },
-  tokenizerResultApproximateTemplateOverheadLabel: {
-    'zh-Hans': '模板开销（近似）',
-    en: 'Template overhead (approximate)',
-  },
-  tokenizerResultBytesPerTokenLabel: {
-    'zh-Hans': 'Bytes / Token',
-    en: 'Bytes / Token',
-  },
-  tokenizerResultMappingLabel: {
-    'zh-Hans': '映射',
-    en: 'Mapping',
-  },
-  tokenizerResultMappingColumn: {
-    'zh-Hans': 'Mapping',
-    en: 'Mapping',
-  },
-  tokenizerResultDecodedOnlyWarning: {
-    'zh-Hans': '当前映射是 {mapping}，不能按原文划分角色',
-    en: 'The current mapping is {mapping}; roles cannot be divided by source text.',
-  },
-  tokenizerResultGraphemeHeading: {
-    'zh-Hans': 'Grapheme-safe 片段',
-    en: 'Grapheme-safe segments',
-  },
-  tokenizerResultMergedSegmentChip: {
-    'zh-Hans': '合并片段 · {count} tokens（完整 Decoded 见下方）',
-    en: 'Merged segment · {count} tokens (see the full Decoded below)',
-  },
-  tokenizerResultSegmentTitleIds: {
-    'zh-Hans': 'Token #{start}–{end} · IDs {ids}',
-    en: 'Token #{start}–{end} · IDs {ids}',
-  },
-  tokenizerResultSegmentTitleCount: {
-    'zh-Hans': 'Token #{start}–{end} · {count} IDs',
-    en: 'Token #{start}–{end} · {count} IDs',
-  },
-  tokenizerResultSelectedTokenLabel: {
-    'zh-Hans': '选中 Token',
-    en: 'Selected token',
-  },
-  tokenizerResultSelectedRoleLabel: {
-    'zh-Hans': 'Role',
-    en: 'Role',
-  },
-  tokenizerResultSelectedPieceLabel: {
-    'zh-Hans': 'Piece',
-    en: 'Piece',
-  },
-  tokenizerResultTokenIdChipsAria: {
-    'zh-Hans': 'Token ID 选择',
-    en: 'Token ID selection',
-  },
-  tokenizerResultTokenIdChipAria: {
-    'zh-Hans': 'Token ID {id}，index {index}',
-    en: 'Token ID {id}, index {index}',
-  },
-  tokenizerResultTokensTableLabel: {
-    'zh-Hans': 'Tokenizer Tokens',
-    en: 'Tokenizer Tokens',
-  },
-  tokenizerResultPositionColumn: {
-    'zh-Hans': '#',
-    en: '#',
-  },
-  tokenizerResultSpecialColumn: {
-    'zh-Hans': 'Special',
-    en: 'Special',
-  },
-  tokenizerResultDecodedColumn: {
-    'zh-Hans': 'Decoded',
-    en: 'Decoded',
-  },
-  tokenizerResultLoadMoreAction: {
-    'zh-Hans': '再显示 {count} 个 Token',
-    en: 'Show {count} more tokens',
-  },
-  tokenizerResultTokenIdsPrefix: {
-    'zh-Hans': 'Token IDs：',
-    en: 'Token IDs: ',
-  },
-  tokenizerResultAuthoritativeInputPrefix: {
-    'zh-Hans': '权威输入：',
-    en: 'Authoritative input: ',
-  },
-  tokenizerResultDecodedTextPrefix: {
-    'zh-Hans': '解码文本：',
-    en: 'Decoded text: ',
-  },
-  tokenizerResultDecodedPrefix: {
-    'zh-Hans': 'Decoded：',
-    en: 'Decoded: ',
   },
 } as const satisfies Record<string, Record<Locale, string>>
 
