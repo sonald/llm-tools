@@ -19,6 +19,7 @@ import {
   expectRepository,
   expandWeights,
   setLaunchInput,
+  onePixelPng,
 } from './fixtures.ts'
 
 test('workbench shell follows native header, sidebar and panel conventions', async ({ page }) => {
@@ -1121,6 +1122,8 @@ test('dispatches local Python and PDF readers safely', async ({ page }, testInfo
   const errors = collectErrors(page)
   const localFixture = testInfo.outputPath("reader-local-fixture")
   await writeFixtureDirectory(localFixture)
+  // The README's https image loads under D-7; keep it off the network (CI reaches example.com and logs a 404).
+  await page.route('https://example.com/**', route => route.fulfill({ status: 200, contentType: 'image/png', body: onePixelPng }))
   await setLaunchInput(page)
   await page.goto('/')
   await page.evaluate(() => {
@@ -2189,8 +2192,8 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
   }
 
   await page.goto('/')
-  // Native toolbar order: the split view's sidebar toggle comes first. WebKit's default Tab skips buttons.
-  if (testInfo.project.name !== 'webkit') {
+  // Native toolbar order: the split view's sidebar toggle comes first. Only macOS WebKit's default Tab skips buttons.
+  if (testInfo.project.name !== 'webkit' || process.platform !== 'darwin') {
     await page.keyboard.press('Tab')
     await expect(page.getByRole('button', { name: '隐藏边栏' })).toBeFocused()
   }
