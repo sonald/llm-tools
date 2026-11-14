@@ -1,3 +1,5 @@
+import { syntaxClassName } from './syntaxTokens.ts'
+
 // Tokens retain their original spelling: parsing/stringifying rounds large JSON numbers.
 const tokens = /"(?:\\[\s\S]|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}[\],:]|\s+|./g
 
@@ -74,11 +76,15 @@ export function highlightJsonWindow(source: string, start = 0, end = source.leng
     if (match.index + token.length <= start) continue
     const text = token.slice(Math.max(0, start - match.index), end - match.index)
     colon.lastIndex = match.index + token.length
-    const category = token.startsWith('"')
-      ? colon.test(source) ? 'name' : 'string'
-      : /^[-\d]|^(true|false|null)$/.test(token) ? 'literal'
-      : /^[{}[\],:]$/.test(token) ? 'operator' : ''
-    segments.push({ text, className: category === '' ? '' : `token source-syntax-${category}` })
+    // Prism json types: property / string / number / boolean / null / punctuation / operator (native Palette.syntax).
+    const type = token.startsWith('"')
+      ? colon.test(source) ? 'property' : 'string'
+      : token === 'true' || token === 'false' ? 'boolean'
+      : token === 'null' ? 'null'
+      : /^[-\d]/.test(token) ? 'number'
+      : token === ':' ? 'operator'
+      : /^[{}[\],]$/.test(token) ? 'punctuation' : ''
+    segments.push({ text, className: type === '' ? '' : `token ${syntaxClassName(type)}` })
   }
   return segments
 }

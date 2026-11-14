@@ -1,5 +1,7 @@
 # ModelFiles Web Tensor 层级浏览增量移植计划
 
+> **部分已被取代（2026-11-14）**：批次 5 按原生对齐 Tensor 列表（全部显示、虚拟渲染、搜索不自动展开分组），以 `full-parity-matrix.md` W-3 / D-6 为准。
+
 状态：已完成
 日期：2026-08-30
 上次 Web 收口：`b889ae5 docs(model-files-web): record native parity acceptance`

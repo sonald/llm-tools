@@ -135,6 +135,7 @@ Web 继续只读取 GGUF 24-byte prefix，因此 `gguf-context-mismatch` 与 `gg
 - 只复用已解析的 `SafeTensorsSummary.tensors`，按 `.` 分段构造 group/leaf；group 显示完整匹配集合的后代 Tensor 数，leaf 显示相对名称并保留完整名称作为选择身份。
 - 自然排序必须保证数字段 `2` 在 `10` 前；名称/dtype 搜索 trim whitespace、不区分大小写，并只保留匹配 leaf 与祖先路径。
 - 保留现有语义 table、Shape/DType/参数/Bytes 列、100 行渐进预算和完整选中详情；不得一次渲染全部 Header 条目或新增树/虚拟列表依赖。
+- **已被取代（2026-11-14）**：D-6 裁决改为对齐原生，全部显示、内部虚拟渲染（见 `docs/full-parity-matrix.md` W-3）。
 - 非空搜索默认展开匹配路径；全部收起可覆盖本次自动展开。选中 Tensor 在搜索、折叠或详情隐藏后保持不变。
 - 宽屏详情右置，窄屏详情下置；隐藏/显示详情、group disclosure、breadcrumb 和计数均进入现有 zh-Hans/en 消息目录与可访问名称。
 - 远端继续只读 `bytes=0-7` 与精确 Header Range，本地继续两次 `File.slice()`；所有层级交互新增请求为 0，Tensor data 保持 0 bytes。

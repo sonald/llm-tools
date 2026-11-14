@@ -21,19 +21,8 @@ import {
 } from './core/huggingface.ts'
 import { addRepositoryHistory, parseRepositoryHistory } from './core/history.ts'
 import { inspectImatrix, type ImatrixSummary } from './core/imatrix.ts'
-import {
-  inspectGGUFPrefix,
-  inspectSafeTensorsHeader,
-  safeTensorsHeaderLength,
-  type GGUFPrefix,
-  type SafeTensorsSummary,
-} from './core/inspectors.ts'
-import {
-  autoExpandMatchingPaths,
-  buildTensorHierarchy,
-  filterTensorSummaries,
-  flattenTensorHierarchy,
-} from './core/tensorHierarchy.ts'
+import { readSafeTensors, type SafeTensorsSummary } from './core/inspectors.ts'
+import { ggufIsIMatrix, loadGGUF, type GGUFOverview } from './core/gguf.ts'
 import {
   decodeStrictText,
   inspectionPerspectives,
@@ -62,6 +51,8 @@ import {
 } from './core/tokenizer.ts'
 import { ImageInspection, PdfInspection, SourceInspection, TextInspection, type FileDiagnostic } from './Readers.tsx'
 import { ResizeHandle } from './ResizeHandle.tsx'
+import { GGUFReader, ImatrixReader, SafeTensorsReader } from './WeightsReaders.tsx'
+import { MiddleTruncated } from './MiddleTruncated.tsx'
 import { EmbeddedTemplatePlayground, TemplateWorkbench } from './TemplateWorkbench.tsx'
 import { isBlocked, SourceSelect, TokenizerOverview, TokenizerPlayground, type SourceMode } from './TokenizerPlayground.tsx'
 import { formatNumber, translate as t, type MessageKey } from './i18n.ts'
@@ -85,8 +76,8 @@ type Inspection =
   | { kind: 'error'; file: RepositoryFile; message: string }
   | { kind: 'locked'; file: RepositoryFile }
   | { kind: 'text'; file: RepositoryFile; content: string; parsed: unknown; bytesRead: number; json: boolean }
-  | { kind: 'safetensors'; file: RepositoryFile; summary: SafeTensorsSummary; bytesRead: number }
-  | { kind: 'gguf'; file: RepositoryFile; summary: GGUFPrefix; bytesRead: number }
+  | { kind: 'safetensors'; file: RepositoryFile; summary: SafeTensorsSummary; headerBytes: number }
+  | { kind: 'gguf'; file: RepositoryFile; overview: GGUFOverview; bytesRead: number }
   | { kind: 'imatrix'; file: RepositoryFile; summary: ImatrixSummary; bytesRead: number }
   | { kind: 'pdf'; file: RepositoryFile; data: ArrayBuffer; bytesRead: number }
   | { kind: 'image'; file: RepositoryFile; data: ArrayBuffer; mimeType: string; isSvg: boolean; textContent?: string; bytesRead: number }
@@ -387,20 +378,9 @@ export default function App() {
       const lower = file.path.toLocaleLowerCase()
       let next: Inspection
       if (lower.endsWith('.safetensors')) {
-        if (file.size === null) throw new Error(t('appSafeTensorsSizeUnavailable'))
-        const prefix = await readExactRange(activeSnapshot, file, 0, 7, controller.signal)
-        const headerLength = safeTensorsHeaderLength(prefix)
-        if (headerLength + 8 > file.size) throw new Error(t('appSafeTensorsHeaderTooLarge'))
-        const header = await readExactRange(activeSnapshot, file, 8, 7 + headerLength, controller.signal)
-        next = {
-          kind: 'safetensors',
-          file,
-          summary: inspectSafeTensorsHeader(header, BigInt(file.size - 8 - headerLength)),
-          bytesRead: prefix.byteLength + header.byteLength,
-        }
+        next = { kind: 'safetensors', file, ...await readSafeTensors(activeSnapshot, file, controller.signal) }
       } else if (lower.endsWith('.gguf') || lower.endsWith('.gguf_file')) {
-        const prefix = await readExactRange(activeSnapshot, file, 0, 23, controller.signal)
-        next = { kind: 'gguf', file, summary: inspectGGUFPrefix(prefix), bytesRead: prefix.byteLength }
+        next = { kind: 'gguf', file, ...await loadGGUF(activeSnapshot, file, controller.signal) }
       } else if (file.path.split('/').at(-1)?.toLocaleLowerCase() === 'tokenizer.json'
         || isSentencePieceFile(file)) {
         next = { kind: 'tokenizer', file }
@@ -585,14 +565,15 @@ export default function App() {
     }))
   }
 
-  function ggufMaterial(activeSnapshot: RepositorySnapshot): ConsistencyMaterial<never> {
+  // Native consistencyGGUF: the first GGUF by path opened in this session; others are skipped, not read.
+  function ggufMaterial(activeSnapshot: RepositorySnapshot): ConsistencyMaterial<GGUFOverview> {
     const ggufFiles = activeSnapshot.files.filter(isGGUF)
     if (ggufFiles.length === 0) return { state: 'missing' }
-    const opened = ggufFiles.some(file => inspectionCache.current
-      .get(`${snapshotIdentity(activeSnapshot)}/${file.path}`)?.kind === 'gguf')
-    return opened
-      ? { state: 'skipped', reason: t('ggufWebSkippedReason') }
-      : { state: 'skipped', reason: t('appGgufNotOpenedThisSession') }
+    for (const file of [...ggufFiles].sort((l, r) => (l.path < r.path ? -1 : l.path > r.path ? 1 : 0))) {
+      const cached = inspectionCache.current.get(`${snapshotIdentity(activeSnapshot)}/${file.path}`)
+      if (cached?.kind === 'gguf') return { state: 'available', value: cached.overview }
+    }
+    return { state: 'skipped', reason: t('appGgufNotOpenedThisSession') }
   }
 
   return (
@@ -759,8 +740,8 @@ export default function App() {
           inspectorOpen={inspectorShown}
           selectedFindingId={selectedFindingId}
           onSelectFinding={id => {
+            // Native: selecting a problem never opens the inspector by itself.
             setSelectedFindingId(id)
-            setInspectorOpen(true)
           }}
           repositoryError={repositoryError}
           onRetryRepository={() => void loadRoute(repositoryInput, readRoute().file, true, sourceMode)}
@@ -1064,11 +1045,11 @@ function DetailBody({
             overviewExtra={embeddedChatTemplate(file, inspection.parsed)}
           />
         ) : null}
-        {inspection.kind === 'safetensors' && snapshot !== null
-          ? <SafeTensorsInspection key={file.path} inspection={inspection} snapshot={snapshot} perspective={perspective} />
-          : null}
-        {inspection.kind === 'gguf' && snapshot !== null ? <GGUFInspection inspection={inspection} snapshot={snapshot} /> : null}
-        {inspection.kind === 'imatrix' ? <ImatrixInspection inspection={inspection} perspective={perspective} /> : null}
+        {inspection.kind === 'safetensors' ? <SafeTensorsReader key={file.path} summary={inspection.summary}
+          headerBytes={inspection.headerBytes} perspective={perspective} onPerspectiveChange={onPerspectiveChange} /> : null}
+        {inspection.kind === 'gguf' ? <GGUFReader key={file.path} overview={inspection.overview}
+          bytesRead={inspection.bytesRead} perspective={perspective} onPerspectiveChange={onPerspectiveChange} /> : null}
+        {inspection.kind === 'imatrix' ? <ImatrixReader key={file.path} summary={inspection.summary} perspective={perspective} /> : null}
         {inspection.kind === 'pdf' ? <PdfInspection data={inspection.data} /> : null}
         {inspection.kind === 'image' ? (
           <ImageInspection
@@ -1138,191 +1119,6 @@ function embeddedChatTemplate(file: RepositoryFile, parsed: unknown): React.Reac
   if (!isUnknownRecord(parsed) || typeof parsed.chat_template !== 'string' || parsed.chat_template === '') return null
   return (
     <EmbeddedTemplatePlayground key={file.path} template={parsed.chat_template} tokenizerConfig={parsed} />
-  )
-}
-
-function SafeTensorsInspection({
-  inspection,
-  snapshot,
-  perspective,
-}: {
-  inspection: Extract<Inspection, { kind: 'safetensors' }>
-  snapshot: RepositorySnapshot
-  perspective: Perspective
-}) {
-  const { summary } = inspection
-  const [filter, setFilter] = useState('')
-  const [limit, setLimit] = useState(100)
-  const [selectedName, setSelectedName] = useState(summary.tensors[0]?.name ?? '')
-  const [manualExpanded, setManualExpanded] = useState<Set<string>>(() => new Set())
-  const [searchAutoExpand, setSearchAutoExpand] = useState(false)
-  const [showsInspector, setShowsInspector] = useState(true)
-  useEffect(() => {
-    setFilter('')
-    setLimit(100)
-    setSearchAutoExpand(false)
-  }, [perspective])
-  const term = filter.trim().toLocaleLowerCase()
-  const metadata = Object.entries(summary.metadata).sort(([left], [right]) => left.localeCompare(right))
-  const matchingMetadata = metadata.filter(([key, value]) => term === '' || key.toLocaleLowerCase().includes(term)
-    || value.toLocaleLowerCase().includes(term))
-  const matchingTensors = useMemo(() => filterTensorSummaries(summary.tensors, filter), [summary.tensors, filter])
-  const hierarchy = useMemo(() => buildTensorHierarchy(matchingTensors), [matchingTensors])
-  const autoExpanded = useMemo(() => searchAutoExpand && term !== ''
-    ? autoExpandMatchingPaths(hierarchy, filter)
-    : new Set<string>(), [filter, hierarchy, searchAutoExpand, term])
-  const expanded = useMemo(() => new Set([...manualExpanded, ...autoExpanded]), [autoExpanded, manualExpanded])
-  const rows = useMemo(() => flattenTensorHierarchy(hierarchy, expanded), [expanded, hierarchy])
-  const visibleRows = rows.slice(0, limit)
-  const selected = summary.tensors.find(tensor => tensor.name === selectedName) ?? null
-  const breadcrumb = selected === null
-    ? ''
-    : (selected.name.split('.').filter(Boolean).length > 0
-      ? selected.name.split('.').filter(Boolean)
-      : selected.name ? [selected.name] : []).join(' › ')
-
-  const toggleGroup = (id: string) => {
-    setManualExpanded(current => {
-      const next = new Set(expanded)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-    if (term !== '') setSearchAutoExpand(false)
-  }
-
-  return (
-    <div className="inspection-canvas">
-      {perspective === 'overview' ? (
-        <>
-          <MetricGrid items={[
-            [t('appTensorCountLabel'), formatNumber(summary.tensors.length)],
-            [t('appParameterTotalLabel'), formatNumber(summary.parameterCount)],
-            [t('appDataRegionSizeLabel'), formatBigBytes(summary.dataBytes)],
-            [t('metadataFieldCountLabel'), formatNumber(metadata.length)],
-          ]} />
-          <p className="scope-note">{t('appSafeTensorsScopeNote')}</p>
-        </>
-      ) : null}
-      {perspective !== 'overview' ? (
-        <div className="inspection-toolbar">
-          <label>
-            <span>{perspective === 'metadata' ? t('appFilterMetadataLabel') : t('appFilterTensorLabel')}</span>
-            <input value={filter} onChange={event => {
-              const nextFilter = event.target.value
-              setFilter(nextFilter)
-              setLimit(100)
-              if (perspective === 'tensors') setSearchAutoExpand(nextFilter.trim() !== '')
-            }} placeholder={perspective === 'metadata' ? t('appKeyOrValueContainsPlaceholder') : t('appNameOrDtypeContainsPlaceholder')} />
-          </label>
-          <span>{perspective === 'metadata'
-            ? t('readerShowingCount', {
-              visible: formatNumber(matchingMetadata.length),
-              total: formatNumber(metadata.length),
-            })
-            : t('appShowingTensorCount', {
-              visible: formatNumber(visibleRows.length),
-              matching: formatNumber(matchingTensors.length),
-              total: formatNumber(summary.tensors.length),
-            })}</span>
-        </div>
-      ) : null}
-      {perspective === 'metadata' ? (
-        <section className="inspection-section">
-          <h2>{t('appMetadataTab')}</h2>
-          <DataTable
-            label={t('appSafeTensorsMetadataTableAriaLabel')}
-            columns={[t('appKeyColumn'), t('appValueColumn')]}
-            rows={matchingMetadata}
-          />
-        </section>
-      ) : null}
-      {perspective === 'tensors' ? (
-        <>
-          <div className="tensor-toolbar-actions">
-            <button className="tensor-action" type="button" onClick={() => {
-              setManualExpanded(new Set())
-              setSearchAutoExpand(false)
-            }}>{t('appCollapseAllAction')}</button>
-            <button className="tensor-action" type="button" onClick={() => setShowsInspector(current => !current)}>
-              {showsInspector ? t('appHideTensorDetailsAction') : t('appShowTensorDetailsAction')}
-            </button>
-          </div>
-          <div className={`tensor-layout${showsInspector ? '' : ' tensor-layout-inspector-hidden'}`}>
-            <section className="tensor-outline">
-              <div className="table-scroll tensor-table-scroll">
-                <table aria-label={t('appSafeTensorsTensorsTableAriaLabel')}>
-                  <thead><tr>
-                    <th>{t('appTensorColumn')}</th><th>{t('appDTypeColumn')}</th><th>{t('appShapeColumn')}</th>
-                    <th>{t('appParametersColumn')}</th><th>{t('appBytesColumn')}</th>
-                  </tr></thead>
-                  <tbody>{visibleRows.map(row => {
-                    const isGroup = row.children.length > 0 || row.tensor === undefined
-                    if (isGroup) {
-                      const isExpanded = expanded.has(row.id)
-                      return (
-                        <tr key={row.id} className="tensor-group-row">
-                          <td colSpan={5}>
-                            <button
-                              className="tensor-group-toggle"
-                              type="button"
-                              aria-expanded={isExpanded}
-                              aria-label={t(isExpanded ? 'appCollapseGroupAction' : 'appExpandGroupAction', {
-                                label: row.label,
-                                count: formatNumber(row.descendantCount),
-                              })}
-                              style={{ paddingLeft: `${8 + row.depth * 16}px` }}
-                              onClick={() => toggleGroup(row.id)}
-                            >
-                              <span aria-hidden="true" className={`tensor-disclosure${isExpanded ? ' expanded' : ''}`} />
-                              <span>{row.label}</span>
-                              <span className="tensor-group-count">{t('appTensorGroupCount', { count: formatNumber(row.descendantCount) })}</span>
-                            </button>
-                          </td>
-                        </tr>
-                      )
-                    }
-                    const tensor = row.tensor
-                    if (tensor === undefined) return null
-                    return (
-                      <tr key={row.id} className={selectedName === tensor.name ? 'tensor-leaf-row selected' : 'tensor-leaf-row'}>
-                        <td>
-                          <button
-                            className="table-link tensor-leaf-link"
-                            type="button"
-                            aria-label={tensor.name}
-                            aria-pressed={selectedName === tensor.name}
-                            title={tensor.name}
-                            style={{ paddingLeft: `${8 + row.depth * 16}px` }}
-                            onClick={() => setSelectedName(tensor.name)}
-                          >{row.label}</button>
-                        </td>
-                        <td>{tensor.dtype}</td><td>{`[${tensor.shape.join(', ')}]`}</td>
-                        <td>{formatNumber(tensor.parameters)}</td><td>{formatNumber(tensor.bytes)}</td>
-                      </tr>
-                    )
-                  })}</tbody>
-                </table>
-              </div>
-              {visibleRows.length < rows.length ? (
-                <button className="load-more" type="button" onClick={() => setLimit(Math.min(limit + 100, rows.length))}>{t('appShowMoreTensorRowsAction')}</button>
-              ) : null}
-            </section>
-            {showsInspector && selected !== null ? (
-              <aside className="tensor-inspector inspection-section">
-                <h2>{t('appSelectedTensorTitle', { name: selected.name })}</h2>
-                <p className="tensor-breadcrumb" aria-label={t('appTensorBreadcrumbAriaLabel', { path: breadcrumb })}>{breadcrumb}</p>
-                <MetricGrid items={[
-                  [t('appDTypeColumn'), selected.dtype], [t('appShapeColumn'), `[${selected.shape.join(', ')}]`],
-                  [t('appDataOffsetsLabel'), `${selected.dataStart}–${selected.dataEnd}`],
-                  [t('appBytesColumn'), formatNumber(selected.bytes)],
-                ]} />
-              </aside>
-            ) : null}
-          </div>
-        </>
-      ) : null}
-    </div>
   )
 }
 
@@ -1413,7 +1209,7 @@ function Inspector({ inspection, report, selectedFindingId, slotRef }: {
       {finding !== null ? (
         <section className="inspector-section" data-severity={finding.severity}>
           <h2>{t('appInspectorSelectedProblem')}</h2>
-          <h3><SeverityMark severity={finding.severity} />{finding.title}</h3>
+          <h3><SeverityIcon severity={finding.severity} />{finding.title}</h3>
           <FindingComparison finding={finding} />
           <p>{finding.detail}</p>
         </section>
@@ -1435,10 +1231,17 @@ function Inspector({ inspection, report, selectedFindingId, slotRef }: {
 function FindingComparison({ finding }: { finding: RepositoryConsistencyReport['findings'][number] }) {
   return (
     <dl className="finding-comparison">
-      <div><dt>{finding.left.key}</dt><dd>{finding.left.value}</dd></div>
-      <div><dt>{finding.right.key}</dt><dd>{finding.right.value}</dd></div>
+      {[finding.left, finding.right].map((field, index) => (
+        <div key={index}><dt>{field.key}</dt><dd>{field.value}</dd><span className="field-origin">{originTitle(field.origin)}</span></div>
+      ))}
     </dl>
   )
+}
+
+// Native InspectionField.Origin.title.
+function originTitle(origin: RepositoryConsistencyReport['findings'][number]['left']['origin'] | 'runtime'): string {
+  return t(origin === 'embedded' ? 'fieldOriginEmbedded' : origin === 'derived' ? 'jinjaOriginDerived'
+    : origin === 'repository' ? 'jinjaOriginRepository' : 'jinjaOriginRuntime')
 }
 
 type ConsistencyPaths = Partial<Record<ConsistencyAnchor['material'], string>>
@@ -1471,13 +1274,35 @@ function FileProblemCount({ diagnostics }: { diagnostics: FileDiagnostic[] | und
   )
 }
 
-function SeverityMark({ severity }: { severity: 'warning' | 'info' }) {
+// Native SeverityIcon: SF Symbols exclamationmark.triangle.fill / info.circle.fill in the palette colours.
+function SeverityIcon({ severity }: { severity: 'warning' | 'info' }) {
   return (
-    <span className="severity-mark" data-severity={severity}>
-      <span aria-hidden="true">{severity === 'warning' ? '▲' : '●'}</span>
-      <span className="sr-only">{t(severity === 'warning' ? 'appSeverityWarning' : 'appSeverityInfo')}</span>
+    <span className="severity-mark" data-severity={severity} role="img" aria-label={t(severity === 'warning' ? 'appSeverityWarning' : 'appSeverityInfo')}>
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        {severity === 'warning'
+          ? <><path d="M7.13 1.9a1 1 0 0 1 1.74 0l6.2 10.9a1 1 0 0 1-.87 1.5H1.8a1 1 0 0 1-.87-1.5Z" fill="currentColor" /><path d="M8 5.6v3.6M8 11.1v.2" stroke="var(--panel)" strokeWidth="1.6" strokeLinecap="round" /></>
+          : <><circle cx="8" cy="8" r="6.8" fill="currentColor" /><path d="M8 7.2v4M8 4.8v.2" stroke="var(--panel)" strokeWidth="1.6" strokeLinecap="round" /></>}
+      </svg>
     </span>
   )
+}
+
+// Native coverageIcon: checkmark.circle.fill / minus.circle / forward.circle / xmark.octagon.fill.
+function CoverageIcon({ state }: { state: RepositoryConsistencyReport['coverage'][number]['status']['state'] }) {
+  return (
+    <svg className="coverage-icon" data-coverage-icon={state} viewBox="0 0 16 16" aria-hidden="true">
+      {state === 'checked' ? <><circle cx="8" cy="8" r="6.8" fill="currentColor" /><path d="m5 8.2 2 2 4-4.2" fill="none" stroke="var(--panel)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></>
+        : state === 'missing' ? <><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M5 8h6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></>
+        : state === 'skipped' ? <><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M4.8 5.6 7.4 8l-2.6 2.4M8.2 5.6 10.8 8l-2.6 2.4" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" /></>
+        : <><path d="M5.3 1.5h5.4l3.8 3.8v5.4l-3.8 3.8H5.3l-3.8-3.8V5.3Z" fill="currentColor" /><path d="m5.8 5.8 4.4 4.4m0-4.4-4.4 4.4" stroke="var(--panel)" strokeWidth="1.5" strokeLinecap="round" /></>}
+    </svg>
+  )
+}
+
+// Native materialTitle: raw lowercase names, not localized.
+const materialTitles: Record<RepositoryConsistencyReport['coverage'][number]['material'], string> = {
+  config: 'config', generationConfig: 'generation_config', tokenizerConfig: 'tokenizer_config', tokenizer: 'tokenizer',
+  adapterConfig: 'adapter_config', processorConfig: 'processor_config', chatTemplates: 'chat template', gguf: 'GGUF',
 }
 
 function ConsistencyReportBody({ report, selectedId, onSelect }: {
@@ -1485,128 +1310,63 @@ function ConsistencyReportBody({ report, selectedId, onSelect }: {
   selectedId: string | null
   onSelect(id: string): void
 }) {
-  if (report === null) return <p>{t('appCheckingRepositoryMaterials')}</p>
+  if (report === null) return <p className="consistency-loading"><span className="spinner" aria-hidden="true" />{t('appCheckingRepositoryMaterials')}</p>
   return (
-    <>
-      {report.findings.map(finding => (
-        <button
-          className="finding-row"
-          type="button"
-          key={finding.id}
-          data-finding-id={finding.id}
-          data-severity={finding.severity}
-          aria-pressed={selectedId === finding.id}
-          onClick={event => {
-            // Safari does not focus buttons on click; keep focus in the panel so Escape still closes it.
-            event.currentTarget.focus()
-            onSelect(finding.id)
-          }}
-        >
-          <SeverityMark severity={finding.severity} />
-          <span className="finding-title">{finding.title}</span>
-          <span className="finding-compare">{`${finding.left.key} = ${finding.left.value} · ${finding.right.key} = ${finding.right.value}`}</span>
-        </button>
-      ))}
-      <dl aria-label={t('appRepositoryIdentityAriaLabel')} className="consistency-identity">
-        {report.identityFields.map(item => (
-          <div key={item.key} data-identity-key={item.key}>
-            <dt>{item.key}</dt>
-            <dd>{`${item.type} · ${item.value}`}</dd>
-          </div>
-        ))}
-      </dl>
-      <div className="table-scroll">
-        <table aria-label={t('appConsistencyCoverageAriaLabel')}>
-          <thead><tr><th>{t('appMaterialColumn')}</th><th>{t('appStatusColumn')}</th></tr></thead>
-          <tbody>
+    <div className="consistency-details">
+      {consistencyBadgeState(report).state === 'insufficient'
+        ? <p className="consistency-note"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M6.3 6.3a1.8 1.8 0 1 1 2.4 1.7c-.5.2-.7.6-.7 1.1M8 11.2v.3" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>{t('consistencyInsufficientNote')}</p> : null}
+      {report.findings.length === 0 ? <p className="consistency-note">{t('consistencyNoFindings')}</p> : (
+        <div className="finding-rows">
+          {report.findings.map(finding => (
+            <button
+              className="finding-row"
+              type="button"
+              key={finding.id}
+              data-finding-id={finding.id}
+              data-severity={finding.severity}
+              aria-pressed={selectedId === finding.id}
+              onClick={event => {
+                // Safari does not focus buttons on click; keep focus in the panel so Escape still closes it.
+                event.currentTarget.focus()
+                onSelect(finding.id)
+              }}
+            >
+              <SeverityIcon severity={finding.severity} />
+              <span className="finding-title">{finding.title}</span>
+              <MiddleTruncated className="finding-compare"
+                text={`${finding.left.key} = ${finding.left.value} · ${finding.right.key} = ${finding.right.value}`} />
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="consistency-columns">
+        {report.identityFields.length > 0 ? (
+          <section aria-label={t('consistencyIdentityTitle')}>
+            <h3>{t('consistencyIdentityTitle')}</h3>
+            <dl className="consistency-identity">
+              {report.identityFields.map(item => (
+                <div key={item.key} data-identity-key={item.key}>
+                  <dt>{item.key}</dt>
+                  <dd>{item.value}</dd>
+                  <span className="field-origin">{originTitle(item.origin)}</span>
+                </div>
+              ))}
+            </dl>
+          </section>
+        ) : null}
+        <section aria-label="Coverage">
+          <h3>Coverage</h3>
+          <ul className="consistency-coverage">
             {report.coverage.map(item => (
-              <tr key={item.material} data-material={item.material} data-coverage-status={item.status.state}>
-                <td>{item.material}</td>
-                <td>{consistencyCoverageText(item.status)}</td>
-              </tr>
+              <li key={item.material} data-material={item.material} data-coverage-status={item.status.state}>
+                <CoverageIcon state={item.status.state} />
+                <span>{materialTitles[item.material]}</span>
+                <span className="coverage-status">{consistencyCoverageText(item.status)}</span>
+              </li>
             ))}
-          </tbody>
-        </table>
-      </div>
-    </>
-  )
-}
-
-function GGUFInspection({
-  inspection,
-  snapshot,
-}: {
-  inspection: Extract<Inspection, { kind: 'gguf' }>
-  snapshot: RepositorySnapshot
-}) {
-  const { summary } = inspection
-  return (
-    <div className="inspection-canvas">
-      <MetricGrid items={[
-        [t('appGgufVersionLabel'), `v${summary.version}`],
-        [t('appTensorCountLabel'), formatNumber(summary.tensorCount)],
-        [t('appGgufMetadataCountLabel'), formatNumber(summary.metadataCount)],
-        [t('appEndiannessLabel'), summary.endianness === 'little' ? t('appLittleEndianValue') : t('appBigEndianValue')],
-      ]} />
-      <p className="scope-note">{t('appGgufScopeNote')}</p>
-    </div>
-  )
-}
-
-function ImatrixInspection({ inspection, perspective }: {
-  inspection: Extract<Inspection, { kind: 'imatrix' }>
-  perspective: Perspective
-}) {
-  const [filter, setFilter] = useState('')
-  const [selectedName, setSelectedName] = useState(inspection.summary.entries[0]?.name ?? '')
-  const term = filter.trim().toLocaleLowerCase()
-  const entries = inspection.summary.entries.filter(entry => term === '' || entry.name.toLocaleLowerCase().includes(term))
-  const selected = inspection.summary.entries.find(entry => entry.name === selectedName) ?? null
-  return (
-    <div className="inspection-canvas">
-      {perspective === 'overview' ? <MetricGrid items={[
-        [t('appEntryCountLabel'), formatNumber(inspection.summary.entries.length)],
-        [t('appChunkCountLabel'), inspection.summary.chunkCount === null ? t('appNoneValue') : formatNumber(inspection.summary.chunkCount)],
-        [t('appDatasetLabel'), inspection.summary.dataset ?? t('appNoneValue')],
-        [t('appFileSizeLabel'), formatBytes(inspection.summary.byteCount)],
-      ]} /> : <>
-      <div className="inspection-toolbar">
-        <label>
-          <span>{t('appFilterEntryLabel')}</span>
-          <input value={filter} onChange={event => setFilter(event.target.value)} placeholder={t('appTensorNameContainsPlaceholder')} />
-        </label>
-        <span>{t('readerShowingCount', {
-          visible: formatNumber(entries.length),
-          total: formatNumber(inspection.summary.entries.length),
-        })}</span>
-      </div>
-      <div className="table-scroll">
-        <table aria-label={t('appImatrixEntriesTableAriaLabel')}>
-          <thead><tr>
-            <th>{t('appTensorColumn')}</th><th>{t('appCallsColumn')}</th><th>{t('appValuesColumn')}</th>
-            <th>{t('appMinColumn')}</th><th>{t('appMaxColumn')}</th><th>{t('appMeanColumn')}</th>
-          </tr></thead>
-          <tbody>{entries.map(entry => (
-            <tr key={entry.name}>
-              <td><button className="table-link" type="button" onClick={() => setSelectedName(entry.name)}>{entry.name}</button></td>
-              <td>{formatNumber(entry.callCount)}</td><td>{formatNumber(entry.valueCount)}</td>
-              <td>{formatFloat(entry.minimum)}</td><td>{formatFloat(entry.maximum)}</td><td>{formatFloat(entry.mean)}</td>
-            </tr>
-          ))}</tbody>
-        </table>
-      </div>
-      {selected !== null ? (
-        <section className="inspection-section">
-          <h2>{t('appSelectedItemTitle', { name: selected.name })}</h2>
-          <MetricGrid items={[
-            [t('appCallCountLabel'), formatNumber(selected.callCount)],
-            [t('appValueCountLabel'), formatNumber(selected.valueCount)],
-            [t('appMinMaxLabel'), `${formatFloat(selected.minimum)} / ${formatFloat(selected.maximum)}`],
-            [t('appMeanLabel'), formatFloat(selected.mean)],
-          ]} />
+          </ul>
         </section>
-      ) : null}
-      </>}
+      </div>
     </div>
   )
 }
@@ -1662,8 +1422,8 @@ function SafetyNotice({ inspection }: { inspection: Inspection }) {
 
 function safetyNotice(inspection: Inspection): string | null {
   switch (inspection.kind) {
-    case 'safetensors': return t('noticeSafeTensors', { size: formatBytes(inspection.bytesRead) })
-    case 'gguf': return t('noticeGguf', { size: formatBytes(inspection.bytesRead) })
+    case 'safetensors': return t('wtSafeTensorsNotice', { size: formatBytes(inspection.headerBytes) })
+    case 'gguf': return t('wtGgufNotice', { size: formatBytes(inspection.bytesRead) })
     case 'imatrix': return t('noticeImatrix', { size: formatBytes(inspection.bytesRead) })
     case 'pdf': return t('noticePdf', { size: formatBytes(inspection.bytesRead) })
     case 'image': return t('noticeImage', { size: formatBytes(inspection.bytesRead) })
@@ -1673,27 +1433,6 @@ function safetyNotice(inspection: Inspection): string | null {
   }
 }
 
-
-function MetricGrid({ items }: { items: Array<[string, string]> }) {
-  return (
-    <dl className="metric-grid">
-      {items.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
-    </dl>
-  )
-}
-
-function DataTable({ columns, rows, label }: { columns: string[]; rows: string[][]; label?: string }) {
-  return (
-    <div className="table-scroll">
-      <table aria-label={label}>
-        <thead><tr>{columns.map(column => <th key={column}>{column}</th>)}</tr></thead>
-        <tbody>{rows.map((row, rowIndex) => (
-          <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>
-        ))}</tbody>
-      </table>
-    </div>
-  )
-}
 
 const loadingDescriptions: Record<StructuredFormat, MessageKey> = {
   safetensors: 'appLoadingSafeTensors', gguf: 'appLoadingGGUF', imatrix: 'appLoadingImatrix',
@@ -1899,7 +1638,7 @@ function formatChip(inspection: Inspection): string | null {
   switch (inspection.kind) {
     case 'empty': return null
     case 'safetensors': return 'SafeTensors'
-    case 'gguf': return `GGUF v${inspection.summary.version}`
+    case 'gguf': return ggufIsIMatrix(inspection.overview) ? 'GGUF Imatrix' : `GGUF v${inspection.overview.version}`
     case 'imatrix': return 'Imatrix DAT'
     case 'template': return 'Jinja'
     case 'pdf': return 'PDF'
@@ -1937,15 +1676,6 @@ function sourceStatus(snapshot: RepositorySnapshot, file: RepositoryFile | null)
     return `${sourceTitle(snapshot)} · ${t(snapshot.source === 'https' ? 'appLiveSourceStatus' : 'appLiveDirectoryStatus')}`
   }
   return `Hugging Face · main · SHA ${(file?.hash ?? snapshot.revision).slice(0, 7)}`
-}
-
-function formatBigBytes(bytes: bigint): string {
-  const value = Number(bytes)
-  return Number.isSafeInteger(value) ? formatBytes(value) : t('appActualReadBytesValue', { count: formatNumber(bytes) })
-}
-
-function formatFloat(value: number): string {
-  return formatNumber(value, { maximumFractionDigits: 6 })
 }
 
 

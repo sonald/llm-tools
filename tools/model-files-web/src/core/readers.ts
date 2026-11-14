@@ -14,9 +14,7 @@ export function inspectionPerspectives(document: PerspectiveDocument, path: stri
   const name = path.split('/').at(-1)?.toLocaleLowerCase() ?? ''
   if (name.endsWith('.model')) return ['playground']
   switch (document) {
-    case 'safetensors': return ['overview', 'metadata', 'tensors']
-    // ponytail: native also has Metadata/Tensors; Web reads only the 24-byte prefix until full GGUF parsing (D-1) lands.
-    case 'gguf': return ['overview']
+    case 'safetensors': case 'gguf': return ['overview', 'metadata', 'tensors']
     case 'imatrix': return ['overview', 'entries']
     case 'jinja': return ['overview', 'source', 'playground']
     case 'pdf': return ['overview']
@@ -212,12 +210,17 @@ export function sourceChunks(content: string, maxLines = 400, maxChars = 64 * 10
 
 export type TextFindNavigation = 'initial' | 'next' | 'previous'
 export type TextFindState = { total: number; current: number; start: number; end: number }
+// AppKit find bar menu (NSTextFinder): 忽略大小写 / 循环查找 (both on by default), 包含 / 开头是 / 整个词.
+export type TextMatchType = 'contains' | 'startsWith' | 'fullWord'
+export type TextFindOptions = { ignoreCase: boolean; wrapAround: boolean; matchType: TextMatchType }
+export const defaultTextFindOptions: TextFindOptions = { ignoreCase: true, wrapAround: true, matchType: 'contains' }
 
 export function navigateTextMatches(
   content: string,
   query: string,
   navigation: TextFindNavigation,
   current = 0,
+  options: TextFindOptions = defaultTextFindOptions,
 ): TextFindState {
   if (query === '') return { total: 0, current: 0, start: 0, end: 0 }
   let total = 0
@@ -225,25 +228,37 @@ export function navigateTextMatches(
   forEachTextMatch(content, query, (index) => {
     if (first === -1) first = index
     total++
-  })
+  }, options)
   if (total === 0) return { total, current: 0, start: 0, end: 0 }
 
+  const wrap = options.wrapAround
   const ordinal = navigation === 'initial'
     ? 0
     : navigation === 'next'
-      ? (current % total + total) % total
-      : ((current - 2) % total + total) % total
+      ? wrap ? (current % total + total) % total : Math.min(Math.max(current, 0), total - 1)
+      : wrap ? ((current - 2) % total + total) % total : Math.min(Math.max(current - 2, 0), total - 1)
   let start = first
   let seen = 0
   forEachTextMatch(content, query, (index) => {
     if (seen++ === ordinal) start = index
-  })
+  }, options)
   return { total, current: ordinal + 1, start, end: start + query.length }
 }
 
-export function forEachTextMatch(content: string, query: string, visit: (start: number) => void): void {
-  const source = query.replace(/[$()*+.?[\\\]^{|}]/g, '\\$&')
-  const pattern = new RegExp(source, 'giu')
+// ponytail: word edges are letters, digits, marks and "_" (close to ICU word breaks, which NSTextFinder uses);
+// scripts without spaces (CJK) count every ideograph as a word character here.
+const wordCharacter = '[\\p{L}\\p{N}\\p{M}_]'
+
+export function forEachTextMatch(
+  content: string,
+  query: string,
+  visit: (start: number) => void,
+  options: TextFindOptions = defaultTextFindOptions,
+): void {
+  let source = query.replace(/[$()*+.?[\\\]^{|}]/g, '\\$&')
+  if (options.matchType !== 'contains') source = `(?<!${wordCharacter})${source}`
+  if (options.matchType === 'fullWord') source = `${source}(?!${wordCharacter})`
+  const pattern = new RegExp(source, options.ignoreCase ? 'giu' : 'gu')
   let match: RegExpExecArray | null
   while ((match = pattern.exec(content)) !== null) {
     visit(match.index)

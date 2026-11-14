@@ -1,138 +1,111 @@
 import { formatNumber, translate as t } from '../i18n.ts'
+import { formatBytes, readExactRange, type RepositoryFile, type RepositorySnapshot } from './huggingface.ts'
 
+// Native TensorDescriptor: SafeTensors fills bytes and offset; GGUF has an offset only.
 export type TensorSummary = {
   name: string
   dtype: string
-  shape: number[]
+  shape: readonly bigint[]
   parameters: bigint
-  bytes: bigint
-  dataStart: bigint
-  dataEnd: bigint
+  bytes: bigint | null
+  offset: bigint | null
 }
 
 export type SafeTensorsSummary = {
   tensors: TensorSummary[]
   metadata: Record<string, string>
+  dtypeCounts: Record<string, number>
   parameterCount: bigint
   dataBytes: bigint
 }
 
-export type GGUFPrefix = {
-  version: number
-  endianness: 'little' | 'big'
-  tensorCount: bigint
-  metadataCount: bigint
-}
+// Native InspectionField.Origin.
+export type FieldOrigin = 'embedded' | 'derived' | 'repository' | 'runtime'
+export type InspectionField = { key: string; type: string; value: string; origin: FieldOrigin }
 
-const maximumSafeTensorsHeader = 25_000_000n
+const maximumSafeTensorsHeader = 25_000_000
 const maximumUInt64 = (1n << 64n) - 1n
-const dtypeBits: Record<string, bigint> = {
-  BOOL: 8n,
-  F4: 4n,
-  F6_E2M3: 6n,
-  F6_E3M2: 6n,
-  U8: 8n,
-  I8: 8n,
-  F8_E5M2: 8n,
-  F8_E4M3: 8n,
-  F8_E8M0: 8n,
-  F8_E4M3FNUZ: 8n,
-  F8_E5M2FNUZ: 8n,
-  I16: 16n,
-  U16: 16n,
-  F16: 16n,
-  BF16: 16n,
-  I32: 32n,
-  U32: 32n,
-  F32: 32n,
-  C64: 64n,
-  F64: 64n,
-  I64: 64n,
-  U64: 64n,
-}
+const maximumInt64 = (1n << 63n) - 1n
 
-export function safeTensorsHeaderLength(prefix: ArrayBuffer): number {
-  if (prefix.byteLength !== 8) throw new Error(t('safeTensorsPrefixLengthInvalid'))
+// Native RepositoryService.loadSafetensorsHeader: length must be 2…25,000,000 and fit the file.
+export function safeTensorsHeaderLength(prefix: ArrayBuffer, fileSize: number | null): number {
+  if (prefix.byteLength !== 8) throw new Error(t('wtSafeTensorsHeaderInvalid'))
   const length = new DataView(prefix).getBigUint64(0, true)
-  if (length < 2n || length > maximumSafeTensorsHeader || length > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new Error(t('safeTensorsHeaderLengthInvalid'))
-  }
+  if (length <= 1n) throw new Error(t('wtSafeTensorsHeaderInvalid'))
+  if (length > BigInt(maximumSafeTensorsHeader)) throw new Error(t('wtSafeTensorsHeaderTooLarge', { size: formatNumber(length) }))
+  if (fileSize !== null && Number(length) + 8 > fileSize) throw new Error(t('wtSafeTensorsHeaderInvalid'))
   return Number(length)
 }
 
-export function inspectSafeTensorsHeader(header: ArrayBuffer, expectedDataBytes?: bigint): SafeTensorsSummary {
-  const root = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(header)) as unknown
+export async function readSafeTensors(snapshot: RepositorySnapshot, file: RepositoryFile, signal?: AbortSignal) {
+  // ponytail: readExactRange needs the declared size; native would still try a sizeless local read.
+  if (file.size === null) throw new Error(t('appSafeTensorsSizeUnavailable'))
+  const headerLength = safeTensorsHeaderLength(await readExactRange(snapshot, file, 0, 7, signal), file.size)
+  const header = await readExactRange(snapshot, file, 8, 7 + headerLength, signal)
+  // Native throws the generic error and drops the inspector's own message.
+  try {
+    return { summary: inspectSafeTensorsHeader(header), headerBytes: header.byteLength }
+  } catch {
+    throw new Error(t('wtSafeTensorsHeaderInvalid'))
+  }
+}
+
+// Native SafetensorsInspector.inspect plus the loader's `{` / JSON check; nothing stricter (W-6).
+export function inspectSafeTensorsHeader(header: ArrayBuffer): SafeTensorsSummary {
+  if (new Uint8Array(header)[0] !== 0x7b) throw new Error(t('wtSafeTensorsHeaderInvalid'))
+  const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(header)
+  const root = JSON.parse(text, exactIntegers as (key: string, value: unknown) => unknown) as unknown
   if (!isRecord(root)) throw new Error(t('safeTensorsRootNotObject'))
   const rawMetadata = root.__metadata__
   const metadata = isStringRecord(rawMetadata) ? rawMetadata : rawMetadata === undefined ? {} : null
   if (metadata === null) throw new Error(t('safeTensorsMetadataNotStringDictionary'))
 
-  const parsed: Array<{ summary: TensorSummary; start: bigint; end: bigint }> = []
-  let parameterCount = 0n
+  const tensors: TensorSummary[] = []
   for (const [name, value] of Object.entries(root)) {
     if (name === '__metadata__') continue
-    if (!isRecord(value) || typeof value.dtype !== 'string' || !isNumberArray(value.shape)
-      || !isNumberArray(value.data_offsets) || value.data_offsets.length !== 2) {
+    const shape = isRecord(value) ? int64Array(value.shape) : null
+    const offsets = isRecord(value) ? int64Array(value.data_offsets) : null
+    if (!isRecord(value) || typeof value.dtype !== 'string' || shape === null || offsets === null || offsets.length !== 2) {
       throw new Error(t('safeTensorsTensorShapeInvalid', { name }))
     }
-    const bits = dtypeBits[value.dtype]
-    if (bits === undefined) throw new Error(t('safeTensorsDtypeUnsupported', { name, dtype: value.dtype }))
-    const [rawStart, rawEnd] = value.data_offsets
-    const start = BigInt(rawStart)
-    const end = BigInt(rawEnd)
-    if (end < start) throw new Error(t('safeTensorsTensorOffsetsInvalid', { name }))
     let parameters = 1n
-    for (const dimension of value.shape) {
-      parameters *= BigInt(dimension)
+    for (const dimension of shape) {
+      parameters *= dimension
       if (parameters > maximumUInt64) throw new Error(t('safeTensorsShapeOverflow', { name }))
     }
-    const bitCount = parameters * bits
-    if (bitCount > maximumUInt64 * 8n) throw new Error(t('safeTensorsShapeOverflow', { name }))
-    if (bitCount % 8n !== 0n) throw new Error(t('safeTensorsByteAlignmentInvalid', { name }))
-    const bytes = end - start
-    if (bytes !== bitCount / 8n) {
-      throw new Error(t('safeTensorsTensorLayoutMismatch', { name }))
-    }
-    parameterCount += parameters
-    if (parameterCount > maximumUInt64) throw new Error(t('safeTensorsParameterTotalOverflow'))
-    parsed.push({ summary: {
-      name, dtype: value.dtype, shape: value.shape, parameters, bytes, dataStart: start, dataEnd: end,
-    }, start, end })
+    const [start, end] = offsets
+    if (end < start) throw new Error(t('safeTensorsTensorOffsetsInvalid', { name }))
+    tensors.push({ name, dtype: value.dtype, shape, parameters, bytes: end - start, offset: start })
   }
-  parsed.sort((left, right) => left.start < right.start ? -1 : left.start > right.start ? 1 : 0)
-  let dataBytes = 0n
-  for (const tensor of parsed) {
-    if (tensor.start !== dataBytes) {
-      throw new Error(t('safeTensorsTensorOffsetsNonContiguous', { name: tensor.summary.name }))
-    }
-    dataBytes = tensor.end
-  }
-  if (expectedDataBytes !== undefined && dataBytes !== expectedDataBytes) {
-    throw new Error(t('safeTensorsDataSizeMismatch', {
-      actual: formatNumber(dataBytes),
-      expected: formatNumber(expectedDataBytes),
-    }))
-  }
-  const tensors = parsed.map(item => item.summary)
   tensors.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
-  return { tensors, metadata, parameterCount, dataBytes }
+  const parameterCount = tensors.reduce((sum, tensor) => sum + tensor.parameters, 0n)
+  const dataBytes = tensors.reduce((sum, tensor) => sum + (tensor.bytes ?? 0n), 0n)
+  if (parameterCount > maximumUInt64 || dataBytes > maximumUInt64) throw new Error(t('wtSafeTensorsTotalOverflow'))
+  const dtypeCounts: Record<string, number> = {}
+  for (const tensor of tensors) dtypeCounts[tensor.dtype] = (dtypeCounts[tensor.dtype] ?? 0) + 1
+  return { tensors, metadata, dtypeCounts, parameterCount, dataBytes }
 }
 
-export function inspectGGUFPrefix(prefix: ArrayBuffer): GGUFPrefix {
-  if (prefix.byteLength < 16) throw new Error(t('ggufPrefixTooShort'))
-  const view = new DataView(prefix)
-  const magic = new TextDecoder().decode(prefix.slice(0, 4))
-  if (magic !== 'GGUF') throw new Error(t('ggufMagicInvalid'))
-  const littleVersion = view.getUint32(4, true)
-  const bigVersion = view.getUint32(4, false)
-  const endianness = littleVersion >= 1 && littleVersion <= 3 ? 'little' : bigVersion === 3 ? 'big' : null
-  if (endianness === null) throw new Error(t('ggufVersionUnsupported'))
-  const version = endianness === 'little' ? littleVersion : bigVersion
-  const little = endianness === 'little'
-  const tensorCount = version === 1 ? BigInt(view.getUint32(8, little)) : view.getBigUint64(8, little)
-  const metadataCount = version === 1 ? BigInt(view.getUint32(12, little)) : view.getBigUint64(16, little)
-  if (tensorCount > 1_000_000n || metadataCount > 100_000n) throw new Error(t('ggufCountExceeded'))
-  return { version, endianness, tensorCount, metadataCount }
+// Native DetailView InspectionWorkspaceView `.safetensors` facts and metadata rows.
+export function safeTensorsFacts(summary: SafeTensorsSummary, headerBytes: number): InspectionField[] {
+  return [
+    { key: t('wtTensorCount'), type: 'count', value: formatNumber(summary.tensors.length), origin: 'derived' },
+    { key: t('wtParameterTotal'), type: 'count', value: formatNumber(summary.parameterCount), origin: 'derived' },
+    { key: t('wtWeightDataSize'), type: 'bytes', value: formatBytes(Number(summary.dataBytes > maximumInt64 ? maximumInt64 : summary.dataBytes)), origin: 'derived' },
+    { key: t('wtPrimaryDataType'), type: 'dtype', value: dtypeSummary(summary.dtypeCounts), origin: 'derived' },
+    { key: t('wtHeaderSize'), type: 'bytes', value: formatBytes(headerBytes), origin: 'runtime' },
+  ]
+}
+
+export function safeTensorsMetadata(summary: SafeTensorsSummary): InspectionField[] {
+  // Native sorts with String `<`, not a locale collation.
+  return Object.entries(summary.metadata).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([key, value]) => ({ key, type: 'string', value, origin: 'embedded' }))
+}
+
+export function dtypeSummary(counts: Record<string, number>): string {
+  return Object.entries(counts).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([dtype, count]) => `${dtype} × ${formatNumber(count)}`).join(' · ')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -143,6 +116,29 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   return isRecord(value) && Object.values(value).every(item => typeof item === 'string')
 }
 
-function isNumberArray(value: unknown): value is number[] {
-  return Array.isArray(value) && value.every(item => Number.isSafeInteger(item) && item >= 0)
+// JSONSerialization keeps integer literals exact; JSON.parse would round them past 2^53. The reviver's source text
+// (JSON.parse source access) restores them where the engine provides it.
+function exactIntegers(_key: string, value: unknown, context?: { source?: string }): unknown {
+  return typeof value === 'number' && !Number.isSafeInteger(value) && /^-?\d+$/.test(context?.source ?? '')
+    ? BigInt(context!.source!) : value
+}
+
+// Native `as? [NSNumber]` then `int64Value >= 0`: numbers and booleans pass, fractions truncate toward zero,
+// doubles past Int64 saturate (1e20 → Int64.max), integer literals past Int64.max wrap negative and fail.
+function int64Array(value: unknown): bigint[] | null {
+  if (!Array.isArray(value)) return null
+  const result: bigint[] = []
+  for (const item of value) {
+    let integer: bigint
+    if (typeof item === 'bigint') {
+      integer = item
+    } else {
+      const number = typeof item === 'boolean' ? Number(item) : item
+      if (typeof number !== 'number' || !Number.isFinite(number)) return null
+      integer = number >= 2 ** 63 ? maximumInt64 : BigInt(Math.trunc(number))
+    }
+    if (integer < 0n || integer > maximumInt64) return null
+    result.push(integer)
+  }
+  return result
 }

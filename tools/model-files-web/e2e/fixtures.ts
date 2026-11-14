@@ -7,6 +7,7 @@ export const fixtureModelId = 'fixture/model'
 export const fixtureRevision = '0123456789abcdef0123456789abcdef01234567'
 export const crossRepositoryModelId = 'fixture/cross-model'
 export const crossRepositoryRevision = '89abcdef0123456789abcdef0123456789abcdef'
+export const ggufFixtureTokenCount = 64_000
 const emptyModelId = 'fixture/empty'
 export const pythonReaderSource = `class Model:
     def greet(self, name):
@@ -239,10 +240,15 @@ const sentencePieceBodies = new Map<string, Uint8Array>([
   ['invalid-config/tokenizer_config.json', bytes('{invalid')],
 ])
 
+const onePixelPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
+
 export async function installFixtureRoutes(page: Page, options: FixtureOptions = {}): Promise<RequestRecord[]> {
   const requests: RequestRecord[] = []
   let manifestFailures = options.manifestFailures ?? 0
   await page.route('https://**', route => route.abort('blockedbyclient'))
+  // D-7: model cards now load HTTPS images. Answer the README's third-party image locally; an aborted
+  // image request intermittently surfaces in WebKit as a console 404.
+  await page.route('https://example.com/**', route => route.fulfill({ status: 200, contentType: 'image/png', body: onePixelPng }))
   await page.route('https://huggingface.co/**', async route => {
     const url = new URL(route.request().url())
     if (url.pathname.startsWith('/api/models/')) {
@@ -490,21 +496,56 @@ function safeTensorsFixture(): Uint8Array {
   return file
 }
 
+
+// A complete little-endian GGUF v3: the token list pushes the directory past one 1 MiB range, and 4 KiB of
+// tensor data follows it, so the reader needs two ranges and over-reads into the data like native.
 function ggufFixture(): Uint8Array {
-  const file = new Uint8Array(24)
-  file.set(bytes('GGUF'))
-  const view = new DataView(file.buffer)
-  view.setUint32(4, 3, true)
-  view.setBigUint64(8, 1n, true)
-  view.setBigUint64(16, 0n, true)
-  return file
+  const output: number[] = []
+  const integer = (value: bigint | number, size: number) => {
+    for (let index = 0; index < size; index += 1) output.push(Number((BigInt(value) >> BigInt(index * 8)) & 0xffn))
+  }
+  const string = (value: string) => {
+    const encoded = bytes(value)
+    integer(encoded.byteLength, 8)
+    for (const byte of encoded) output.push(byte)
+  }
+  output.push(...bytes('GGUF'))
+  integer(3, 4)
+  const tensors: Array<[string, number, number[]]> = [
+    ['token_embd.weight', 1, [8, 4]],
+    ['blk.0.attn_q.weight', 12, [8, 8]],
+    ['blk.0.attn_k.weight', 12, [8, 8]],
+    ['output_norm.weight', 0, [8]],
+  ]
+  integer(tensors.length, 8)
+  integer(6, 8)
+  string('general.architecture'); integer(8, 4); string('llama')
+  string('general.name'); integer(8, 4); string('Fixture GGUF')
+  string('llama.context_length'); integer(4, 4); integer(4096, 4)
+  string('llama.attention.layer_norm_rms_epsilon'); integer(6, 4)
+  const epsilon = new DataView(new ArrayBuffer(4))
+  epsilon.setFloat32(0, 1e-6, true)
+  output.push(...new Uint8Array(epsilon.buffer))
+  string('general.file_type'); integer(4, 4); integer(15, 4)
+  string('tokenizer.ggml.tokens'); integer(9, 4); integer(8, 4); integer(ggufFixtureTokenCount, 8)
+  for (let index = 0; index < ggufFixtureTokenCount; index += 1) string(`token-${index}`)
+  tensors.forEach(([name, type, shape], index) => {
+    string(name)
+    integer(shape.length, 4)
+    for (const dimension of shape) integer(dimension, 8)
+    integer(type, 4)
+    integer(index * 1024, 8)
+  })
+  while (output.length % 32 !== 0) output.push(0)
+  return Uint8Array.from([...output, ...new Uint8Array(4096).fill(0xab)])
 }
 
 function imatrixFixture(): Uint8Array {
   const output: number[] = []
   appendInt32(output, 2)
   appendImatrixEntry(output, 'blk.0.ffn.weight', 4, [0.5, 1.5])
-  appendImatrixEntry(output, 'blk.0.attn.weight', 8, [1, 2, 3])
+  // Exact binary ties: native ICU rounds half to even (1.03125 → 1.0312, 12344.5 → 12,344).
+  appendImatrixEntry(output, 'blk.0.attn.weight', 8, [12344.5, 1.03125])
   appendInt32(output, 12)
   const dataset = bytes('calibration.txt')
   appendInt32(output, dataset.length)

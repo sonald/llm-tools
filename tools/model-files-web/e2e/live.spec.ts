@@ -20,19 +20,20 @@ test('Chat: Qwen config, README, SafeTensors, Tokenizer Raw, Chat and cross-repo
   await expect(page.getByText(/^只读取了 .+ JSON Header；没有请求 tensor 数据。$/)).toBeVisible({ timeout: 30_000 })
   const tensorHierarchyStartedAt = Date.now()
   await page.getByRole('button', { name: 'Tensors', exact: true }).click()
-  const tensorTable = page.getByRole('table', { name: 'SafeTensors Tensors' })
+  const tensorTable = page.getByRole('table', { name: 'Tensors' })
   await expect(tensorTable).toBeVisible({ timeout: 30_000 })
-  await tensorTable.getByRole('button', { name: /^model/ }).click()
-  await tensorTable.getByRole('button', { name: /^layers/ }).click()
-  await page.getByPlaceholder('名称或 dtype 包含…').fill('q_proj')
-  const qProjectionLeaf = tensorTable.getByRole('button', { name: /^model\.layers\.\d+\.self_attn\.q_proj\.weight$/ }).first()
+  await page.getByPlaceholder('搜索名称或 dtype').fill('q_proj')
+  // Native keeps the outline collapsed while searching; open the path by hand.
+  for (const group of ['model', 'model.layers', 'model.layers.0', 'model.layers.0.self_attn', 'model.layers.0.self_attn.q_proj']) {
+    await tensorTable.getByRole('button', { name: `展开 ${group}`, exact: true }).click()
+  }
+  const qProjectionName = 'model.layers.0.self_attn.q_proj.weight'
+  const qProjectionLeaf = tensorTable.locator(`[title="${qProjectionName}"]`)
   await expect(qProjectionLeaf).toBeVisible({ timeout: 30_000 })
   await qProjectionLeaf.click()
-  const qProjectionName = await qProjectionLeaf.getAttribute('aria-label')
-  if (qProjectionName === null) throw new Error('Qwen q_proj leaf did not expose its full tensor name')
   const tensorHierarchyMs = Date.now() - tensorHierarchyStartedAt
-  await expect(page.getByText(qProjectionName.split('.').filter(Boolean).join(' › '))).toBeVisible()
-  await expect(page.getByRole('heading', { name: `选中 Tensor · ${qProjectionName}` })).toBeVisible()
+  await expect(page.locator('.wt-breadcrumb')).toHaveText(qProjectionName.split('.').join(' › '))
+  await expect(page.locator('.wt-pane')).toContainText(qProjectionName)
 
   await page.getByRole('button', { name: /^tokenizer\.json/ }).click()
   await expect(page.locator('.key-value-row').filter({ hasText: '模型类型' })).toContainText('BPE', { timeout: 60_000 })
@@ -164,21 +165,25 @@ test('T5 Raw reports normalization as Decoded only', async ({ page }, testInfo) 
   console.log(`LIVE T5 revision=${identity.sha}`)
 })
 
-test('GGUF public path reads only the 24-byte basic prefix', async ({ page }, testInfo) => {
+test('GGUF public path reads the directory in sequential 1 MiB ranges', async ({ page }, testInfo) => {
   test.setTimeout(60_000)
   const errors = collectErrors(page)
   const requests = collectRequests(page)
   const manifest = page.waitForResponse(response => response.url().includes('/api/models/bartowski/Qwen_Qwen3-0.6B-GGUF'))
   await page.goto('/?repo=bartowski%2FQwen_Qwen3-0.6B-GGUF&file=Qwen_Qwen3-0.6B-IQ2_M.gguf')
   const identity = await (await manifest).json() as { sha: string }
-  await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText(/^只读取了 .+ GGUF 文件前缀；最后一个 Range/)).toBeVisible({ timeout: 30_000 })
   const ggufRequests = requests.filter(request => request.modelId === ggufModelId)
   expect(ggufRequests.length).toBeGreaterThan(0)
   for (const request of ggufRequests) {
     expect(request.revision).toBe(identity.sha)
   }
   expect(requests.filter(request => request.modelId !== ggufModelId)).toEqual([])
-  expect(ggufRequests.filter(request => request.path.endsWith('.gguf')).map(request => request.range)).toEqual(['bytes=0-23'])
+  const ranges = ggufRequests.filter(request => request.path.endsWith('.gguf')).map(request => request.range)
+  // Native RepositoryService.loadGGUF: consecutive 1 MiB chunks, at most 32 MiB.
+  expect(ranges.length).toBeGreaterThan(0)
+  expect(ranges.length).toBeLessThanOrEqual(32)
+  expect(ranges).toEqual(ranges.map((_, index) => `bytes=${index * 1048576}-${(index + 1) * 1048576 - 1}`))
   expect(errors).toEqual([])
   await attachEvidence(testInfo, 'gguf-live.json', { revision: identity.sha, requests })
   console.log(`LIVE GGUF revision=${identity.sha} ranges=${JSON.stringify(requests.filter(request => request.range !== null))}`)

@@ -18,7 +18,7 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 - **W:** = `tools/model-files-web/src/`
 - 原生视图：DV = `Views/DetailView.swift`，CV = `Views/ContentView.swift`，SV = `Views/SidebarView.swift`，IV = `Views/InspectorView.swift`，TPV = `Views/TemplatePlaygroundView.swift`，TKP = `Views/TokenizerPlaygroundView.swift`，TCV = `Views/TokenizerComparisonView.swift`，TTV = `Views/TokenizerTokenTableView.swift`
 - 原生其他：ST = `Stores/ModelFilesStore.swift`，ROI = `Support/RenderedOutputInspector.swift`，TR = `Support/TemplateRenderer.swift`
-- Web：App = `App.tsx`，TK = `TokenizerPlayground.tsx`，TW = `TemplateWorkbench.tsx`，TP = `TemplatePlayground.tsx`，TQ = `core/templateRequest.ts`，RO = `core/renderedOutput.ts`，CSS = `styles.css`
+- Web：App = `App.tsx`，TK = `TokenizerPlayground.tsx`，WR = `WeightsReaders.tsx`，TW = `TemplateWorkbench.tsx`，TP = `TemplatePlayground.tsx`，TQ = `core/templateRequest.ts`，RO = `core/renderedOutput.ts`，CSS = `styles.css`
 - E2E：MF = `e2e/model-files.spec.ts`，JP = `e2e/json-parity.spec.ts`；单测 TPT = `core/templatePlayground.test.ts`
 
 状态：`缺失`（Web 没有）· `不同`（有，但行为、布局或文案不同）· `平台限制`（已有证据）· `待裁决` · `未验证`（需要实测或黄金用例）· `Web 独有` · `已关闭`
@@ -67,13 +67,13 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 
 | ID | 原生行为 | Web 现状 | 说明 |
 | --- | --- | --- | --- |
-| D-1 | GGUF 完整 metadata + tensor 工作区（DV:348-362,415-459,687-1007） | 只读 24 bytes，显示 4 个计数（App:382-384,1503-1527） | `docs/gguf-feasibility.md` 判 NO-GO，原因是按 1 MiB 顺序读 Range 时，最后一块会越过 tensor 数据起点。Qwen3-0.6B 实测越读了 339,552 字节，但 32 MiB 预算和 2 秒耗时都通过了，没过的只是自定的「0 字节 tensor 数据」规则。原生 `RepositoryService.swift:359-390` 用的正是同一策略，并接受这部分越读。Web 的完整解析器 `core/gguf.ts:42 inspectGGUF()` 已存在，但页面没有调用。连带缺 GGUF 相关一致性问题（Q-9） |
+| D-1 | GGUF 完整 metadata + tensor 工作区（DV:348-362,415-459,687-1007） | 只读 24 bytes，显示 4 个计数（App:382-384,1503-1527） | `docs/gguf-feasibility.md` 判 NO-GO，原因是按 1 MiB 顺序读 Range 时，最后一块会越过 tensor 数据起点。Qwen3-0.6B 实测越读了 339,552 字节，但 32 MiB 预算和 2 秒耗时都通过了，没过的只是自定的「0 字节 tensor 数据」规则。原生 `RepositoryService.swift:359-390` 用的正是同一策略，并接受这部分越读。Web 的完整解析器 `core/gguf.ts:42 inspectGGUF()` 已存在，但页面没有调用。连带缺 GGUF 相关一致性问题（Q-9）。→ 批次 5 已实现（G-1、Q-9），2026-11-14 |
 | D-2 | 历史不限条数，含本地路径和 ssh（ST:160-166,1163-1189） | 最多 10 条，只存 HF ID（`core/history.ts:17,27`） | 本地路径无法重开（P-3），条数上限可以对齐 |
 | D-3 | 启动时重开上次输入，默认 **Qwen/Qwen3-4B**（ST:12-14,97） | 固定 Qwen/Qwen3-0.6B，只有带 `?repo=` 时才自动打开（App:121,198-226） | |
 | D-4 | JSON 不限大小整份渲染；其他语言 ≤128 KB 进代码阅读器，否则用纯文本全量显示（DV:633-650） | 按 128K 字符分页（`Readers.tsx:369,419-422,674-680`） | 性能选择 |
 | D-5 | Token 流、表、IDs 全部显示（TTV:73-77,185-213） | 每页 1,000 条；>2,000 个 id 折叠成一个片段；>100 个 id 合并成一个片段（`core/tokenizer.ts:222`，App:2821,2831,2870,2887,2899）。停靠的 Token IDs 标签**没有**「再显示」按钮，超过 1,000 条看不到 | 性能选择。→ 已裁决：全部显示，内部懒渲染（2026-11-13）。批次 4 已按原生 makeSegments 切片（去掉 100/2,000 合并），Token 表只渲染可见行，Token 流和 IDs 全部渲染 |
-| D-6 | Tensor 列表一次全部显示（DV:869-874） | 每次 100 行（App:1112,1275） | SPEC §4.7 |
-| D-7 | Markdown 加载第三方 HTTPS 图片（`MarkdownReaderView.swift:226-259`） | 显示占位；CSP 为 `img-src 'self' data: blob:`（`index.html:9`） | 是否放宽 CSP |
+| D-6 | Tensor 列表一次全部显示（DV:869-874） | 每次 100 行（App:1112,1275） | SPEC §4.7。→ 已裁决全部显示；批次 5 改为虚拟表，2026-11-14 |
+| D-7 | Markdown 加载第三方 HTTPS 图片（`MarkdownReaderView.swift:226-259`） | 显示占位；CSP 为 `img-src 'self' data: blob:`（`index.html:9`） | 是否放宽 CSP。→ 已裁决；批次 5 `img-src` 加入 `https:`，2026-11-14 |
 | D-8 | Chat Template 没有单独上限（只有 32 MiB bundle 上限） | 64 KiB（`tokenizerClient.ts:183-186`，App:540,1812,1923 的 tokenizer Chat 读取）；2026-11-13 已取消 `.jinja` 阅读器和试验台的上限，批次 4 又取消了 tokenizer Chat 和一致性检查读取的上限（只保留渲染后输入的 64 KiB，同原生） | Tokenizer 输入的 64 KiB 两端一致，不在此列 |
 | D-9 | — | Web 独有功能（§4） | 保留、改造还是删除 |
 | D-10 | ⌘1–⌘4 切换视角（DV:262-275） | 没有 | 只查了资料，没有实测：Chrome/Edge、Firefox 页面能拦截（Chromium 保留键列表不含按序号切标签，Mozilla Bug 1074971），Safari 很可能拦不到（只有一篇厂商 KB 佐证）。→ 已裁决：Web 不加，算平台差异（2026-11-13） |
@@ -140,15 +140,15 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | L-5 | Esc 在任意标签、全局关闭面板 | DV:1708 | App:1337-1343（只在问题标签、焦点在面板内） | PASS | 2026-11-13：窗口级 Esc 在任意标签关闭面板；查找框、右键菜单先消费 Esc。关闭时焦点回到徽章（Web 保留） |
 | L-6 | 检查器：默认打开，窗口 <1100pt 自动关闭，宽 220–380 可调 | CV:7,15-24 | App:145-148，CSS:200-203,650-653,674 | 部分 | 2026-11-13：默认打开，窗口 <1100 自动关闭且不自动重开，宽度 220–380 可拖（默认 260）。平台调整：≤900px 堆到下方，≤640px 隐藏（见 S-10） |
 | L-7 | 检查器「文件」区与空文案 | IV:49-62 | App:1389-1398 | 一致 | 大小格式见 B-9 |
-| Q-1 | 问题面板空状态与「核心材料不足」提示 | DV:1782-1791 | App:1456-1458 | 缺失 | |
-| Q-2 | 问题行：中间截断 | DV:1840-1867 | App:1459-1477 | 不同 | Web 截断在末尾；严重度图标是 ▲/●，不是 SF Symbol |
-| Q-3 | 「身份」区：标题，key、value、来源，与 Coverage 并排 | DV:1800-1809,1875-1887 | App:1478-1485 | 不同 | Web 没有标题，也不显示来源 |
-| Q-4 | Coverage：带状态图标的列表，材料名本地化 | DV:1811-1827,1889-1926 | App:1486-1498 | 不同 | Web 是英文表头「Material / Status」，显示原始键名 |
-| Q-5 | 检查器「选中问题」区（含来源） | IV:18-47,121-134 | App:1381-1388,1403-1410 | 不同 | Web 不显示 origin |
-| Q-6 | 选中问题时不强制打开检查器 | IV:18 | App:751-754 | Web 独有 | Web 会强制打开检查器 |
+| Q-1 | 问题面板空状态与「核心材料不足」提示 | DV:1778-1835 | App `ConsistencyReportBody` | PASS | 2026-11-14：材料不足提示、「未发现可报告的不一致。」、加载中转圈（MF 一致性用例） |
+| Q-2 | 问题行：中间截断 | DV:1840-1867，IV:137-145 | App `ConsistencyReportBody` / `MiddleTruncated` / `SeverityIcon` | PASS | 2026-11-14：中间截断用两段（头部省略号 + 尾部 rtl 裁剪）；严重度图标改为三角 / 圆形 SVG，颜色取原生色板 |
+| Q-3 | 「身份」区：标题，key、value、来源，与 Coverage 并排 | DV:1800-1809,1875-1887 | App `ConsistencyReportBody` | PASS | 2026-11-14：窄屏上下排 |
+| Q-4 | Coverage：带状态图标的列表，材料名同原生 | DV:1811-1827,1889-1926 | App `CoverageIcon`，`materialTitles` | PASS | 2026-11-14：原表写的「材料名本地化」有误，原生显示原始名（config、generation_config、chat template、GGUF…），Web 一致 |
+| Q-5 | 检查器「选中问题」区（含来源） | IV:18-47,121-134 | App `Inspector` / `FindingComparison` | PASS | 2026-11-14：两侧字段都显示来源（文件内嵌 / 应用推导 / 来源信息） |
+| Q-6 | 选中问题时不强制打开检查器 | IV:18，ST `selectedFindingID` | App `onSelectFinding` | 已关闭 | 2026-11-14 按 D-9「删冲突的」：Web 不再强制打开检查器（MF 一致性用例） |
 | Q-7 | 文件内问题列表：贴满宽度的 bar 行，选中底色为 accent 16%，每行有 note tooltip | DV:477-540 | `Readers.tsx` JsonInspection，CSS `.reader-diagnostics` | PASS | 2026-11-13 |
 | Q-8 | 哪些文件显示诊断和侧栏计数：config、generation_config、**tokenizer_config** | ST:930-945 | App:504-506 | PASS | 2026-11-13：tokenizer_config 有问题列表、行标记和侧栏计数（E2E 覆盖） |
-| Q-9 | GGUF 上下文和词表不一致锚定到 config.json | `Support/ConsistencyAnalyzer.swift:287-297` | 缺 | 缺失 | 依赖 D-1 |
+| Q-9 | GGUF 上下文和词表不一致锚定到 config.json | `Support/ConsistencyAnalyzer.swift:287-314,494-505`，ST:1032-1039 | `core/consistency.ts`，App `ggufMaterial` | PASS | 2026-11-14：只用当前会话已打开的 GGUF（按路径第一个），否则「未在当前会话打开」；打开 GGUF 后重新分析；embedding 按原生顺序选 tensor（`consistency.test.ts`，MF 一致性用例）。**原生 bug，Web 照搬**：两端都按文件顺序保存维度，ggml 的 `token_embd.weight` 是 `[n_embd, n_vocab]`，`shape.first` 取到的是 embedding 宽度而不是词表大小；只在仓库同时有 tokenizer 时会误报，应两端一起改成取最后一维 |
 | Q-10 | 原文行标记：只给文字范围着色（warning 20%、info 14%，亮暗自适应） | `CodeReaderView.swift:400-413` | `CodeReader.tsx` `.line-text[data-severity]` | PASS | 2026-11-13：浮动注释已删，注释只在问题列表 tooltip 和检查器里 |
 | Q-11 | 点击问题跳行：放在视口上方 1/3，放置光标并闪烁查找指示 | DV:509-513，`CodeReaderView.swift:415-436` | `CodeReader.tsx` jump effect | PASS | 2026-11-13：行放在上方 1/3，光标落在行首，闪烁动画；最后几行到不了 1/3 时停在底部 |
 
@@ -169,32 +169,38 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 
 ### 3.6 源码、文本与 Markdown
 
+批次 5 证据：`e2e/readers-parity.spec.ts`（RP）、`e2e/weights-parity.spec.ts`（WP）、MF 一致性用例，三个引擎全过。
+
+
 | ID | 元素 | 原生 | Web | 状态 | 差异 |
 | --- | --- | --- | --- | --- | --- |
 | C-1 | 代码文件也有三个视角 | DV:543-560,601-650 | `Readers.tsx` SourceInspection | PASS | 2026-11-13：概览高亮，全部字段/原文是纯文本 |
 | C-2 | >128 KB 代码、`.txt`、merges.txt：完整换行文本 + 系统查找 | `Support/InFileFindTextView.swift:97-157`，DV:601-613 | `CodeReader.tsx`（language=null） | PASS | 2026-11-13：整篇文本懒渲染，按字符换行；查找用 Web 自己的查找条（Cmd/Ctrl+F），32 MiB 尾部查找 <1 s |
 | C-3 | 代码不换行，横向滚动；字号 12.5pt | `CodeReaderView.swift:207-249` | `CodeReader.tsx`，CSS `.code-reader` | PASS | 2026-11-13。平台调整：超过 4K 字符的单行（压缩 JSON）切成 4K 字符一行显示，滚动到时保持纯文本，查找、跳转、标记命中的那段才高亮；原生是一整行全高亮。WebKit 对超长无换行行的排版太慢（64K 字符一行时查找要 8 s） |
-| C-4 | 语法高亮 | `Palette.swift:24-48`，`CodeReaderView.swift:668-684` | `sourceHighlight.worker.ts:94-103`，`core/jsonSource.ts:69-83`，CSS:278-294,746-754 | 不同 | 7 组色值两端已一致。剩下三处：原生会映射 literal、directive、function-name、attribute、variable、inserted、deleted 等类型，Web 归为 other；原生给 keyword、boolean、literal 加粗，Web 只加粗 keyword；Web 的注释是斜体 |
-| C-5 | 查找：增量查找，包含 / 前缀 / 整词选项，⌘G，不需要焦点 | `InFileFindTextView.swift:4-95` | `Readers.tsx:578-606`（需要焦点，没有选项） | 不同 | |
-| C-6 | Markdown 去掉 YAML front matter | `MarkdownReaderView.swift:127-136` | 缺 | 缺失 | 每个 HF README 都受影响 |
-| C-7 | Markdown 内联 HTML：`<img>`、`<a>`、`<br>` 转成 Markdown，其他标签剥离，保留图片宽度 | `MarkdownReaderView.swift:147-207` | `Readers.tsx:206`（skipHtml） | 不同 | 徽章、logo、链接全部丢失；另见 D-7 |
-| C-8 | Markdown 主题用分段控件；三个视角，全部字段和原文是纯文本 | `MarkdownReaderView.swift:13-25`，DV:601-613 | `Readers.tsx:181-201` | 部分 | 2026-11-13：全部字段/原文改为纯文本；只有 documentation 分类的 .md 渲染；主题仍是下拉框 |
-| C-9 | 图片工具栏「W × H px · 扩展名 · 大小」、1:1、步长 0.25、按尺寸缩放并可滚动 | `ImageReaderView.swift:45-135` | `Readers.tsx:242-362`（CSS transform） | 不同 | |
+| C-4 | 语法高亮 | `Palette.swift:24-48`，`CodeReaderView.swift:660-684`，Textual `flattenPrismTokens` | `core/syntaxTokens.ts`，`sourceHighlight.worker.ts`，`core/jsonSource.ts` | PASS | 2026-11-14：按原生表映射 Prism 类型（取最内层 type，忽略 alias；含 literal、directive、function-name、attribute、variable、inserted→string、deleted→structure 等）；keyword、boolean、literal 加粗 600；注释不再斜体（`syntaxTokens.test.ts`，RP「C-4…」） |
+| C-5 | 查找：增量查找，包含 / 前缀 / 整词选项，⌘G，不需要焦点 | `InFileFindTextView.swift:4-95`（AppKit NSTextFinder 查找栏） | `Readers.tsx` FindBar，`core/readers.ts` `TextFindOptions` | 部分 | 2026-11-14：布局和文案按 AppKit 查找栏实测（放大镜菜单：忽略大小写 / 循环查找 / 包含 / 开头是 / 整个词；框内只显示总数；‹ › 与「完成」）；⌘F 不需要焦点，⌘G / ⇧⌘G 上下一个（单测 + RP「C-5…」）。快捷键：三个引擎的合成按键都被页面拦截（preventDefault）；真实按键只在 Chromium 内核的应用内浏览器实测过，Safari / Firefox 是否会先弹出自带查找未验证。渲染 Markdown 没有查找，同原生。**仍缺**：框内清除按钮、插入模式 / 最近搜索；整词边界按 `[\p{L}\p{N}\p{M}_]` 近似（CJK 与 ICU 断词不同）；「开头是 / 整个词」的语义按 Apple 文档实现，原生只实测了默认「包含」 |
+| C-6 | Markdown 去掉 YAML front matter | `MarkdownReaderView.swift:127-136` | `core/modelCardMarkdown.ts` | PASS | 2026-11-14：逐行移植并带原生单测用例。原生按 Character 切行，`\r\n` 算一个字符，CRLF 文件的 front matter 不会被去掉；Web 有意照搬（单测覆盖），属于原生 bug，两端应一起修 |
+| C-7 | Markdown 内联 HTML：`<img>`、`<a>`、`<br>` 转成 Markdown，其他标签剥离，保留图片宽度 | `MarkdownReaderView.swift:147-259` | `core/modelCardMarkdown.ts`，`Readers.tsx` ModelCardImage | PASS | 2026-11-14：顺序同原生；仍不渲染原始 HTML、保留 URL 协议过滤；只加载 `https:` 图片（no-referrer），失败时显示 alt。单测 + RP 断言事件属性、`javascript:`、script/iframe 均被去掉 |
+| C-8 | Markdown 主题用分段控件；三个视角，全部字段和原文是纯文本 | `MarkdownReaderView.swift:8-40,110-123`，DV:543-613 | `Readers.tsx` MarkdownReader | 部分 | 2026-11-14：「Markdown」标题 +「排版主题」+ GitHub / 默认 / 紧凑分段控件，正文最宽 920 px；窄屏不撑宽（RP 宽度用例含长代码行）。**仍缺**：三套主题的排版只近似 Textual 的 `.gitHub` / `.default` 样式 |
+| C-9 | 图片工具栏「W × H px · 扩展名 · 大小」、1:1、步长 0.25、按尺寸缩放并可滚动 | `ImageReaderView.swift:24-180` | `Readers.tsx` ImageReader | PASS | 2026-11-14：适应窗口 / 1:1 / 缩小 / 放大，25%–500%，按实际像素缩放（不用 transform），无固有尺寸的 SVG 以 400 px 为基准；解码失败显示原生文案（RP「C-9…」）。原生 xcstrings 没有这几个词的英文，英文为 Web 自拟 |
 | C-10 | Jinja 概览（大小、行数、来源、状态 +「查看源码」「打开试验台」）；就地编辑高亮（6 类 token，系统色）；「源码详情」侧栏 | DV:1009-1103，`Support/JinjaSyntaxHighlighter.swift:128-156` | TW:8-77，TP:88-123，`core/jinjaHighlight.ts` | PASS | 2026-11-13：概览是「Jinja Chat Template」+ 副标题 + 带来源列的「概览」事实表 + 两个按钮（切换视角）；源码视图有「临时修改」标记、「恢复来源原文」、可拖动（260–390）的「源码详情」侧栏（行数按原生含空行）。三个视角共用一份临时源码（MF「Jinja workspace shares one temporary source…」）。高亮按原生分层顺序（TPT），颜色取 macOS 系统色。**平台调整**：浏览器没有可富文本的 textarea，编辑器是透明 textarea 叠在排版相同的高亮 `<pre>` 上，textarea 负责滚动、`<pre>` 同步滚动位置；三个引擎实测：加粗 token 宽度差 0，两层内容高度一致，方向键和输入时光标都在可见区内，滚到底两层偏移相同（MF「…follows the selection in long output…」） |
 | C-11 | 「全部展开」：左对齐，小号无边框 | `CodeReaderView.swift:31-42` | CSS `.fold-toolbar` | PASS | 2026-11-13 |
 
 ### 3.7 SafeTensors / GGUF / imatrix
 
+批次 5 证据：`e2e/readers-parity.spec.ts`（RP）、`e2e/weights-parity.spec.ts`（WP）、MF 一致性用例，三个引擎全过。
+
+
 | ID | 元素 | 原生 | Web | 状态 | 差异 |
 | --- | --- | --- | --- | --- | --- |
-| W-1 | SafeTensors 概览：标题、带「来源」列的事实行、主要数据类型、Header 大小、两个「查看全部」按钮 | DV:332-347,719-736 | App:1163-1172 | 不同 | Web 只有 4 格计数和一句说明 |
-| W-2 | Metadata 表：类型和来源列、详情检查器、⌘F 聚焦 | DV:705-710,739-813 | App:1197-1206 | 缺失 | |
-| W-3 | Tensor 列表：列顺序（名称 / Shape / 类型 / 参数），默认不选中，面包屑在列表上方，图标按钮 | DV:815-945 | App:1113,1207-1275 | 不同 | |
-| W-4 | Tensor 检查器：参数、格式化大小、offset、说明文字、面板内隐藏按钮 | DV:950-990 | App:1279-1288 | 不同 | |
+| W-1 | SafeTensors 概览：标题、带「来源」列的事实行、主要数据类型、Header 大小、两个「查看全部」按钮 | DV:285-293,323-341,725-729 | `WeightsReaders.tsx`，`core/inspectors.ts` `safeTensorsFacts` | PASS | 2026-11-14（单测 + WP） |
+| W-2 | Metadata 表：类型和来源列、详情检查器、⌘F 聚焦 | DV:705-710,739-813 | `WeightsReaders.tsx` | PASS | 2026-11-14：详情是视图内右侧面板（260–390 px，同原生 HSplitView）。**平台调整**：原生列表最小 520 + 面板最小 260 = 780，窗口会被撑宽；浏览器做不到，内容区窄于 780 px 时面板移到列表下方（WP） |
+| W-3 | Tensor 列表：列顺序（名称 / Shape / 类型 / 参数），默认不选中，面包屑在列表上方，图标按钮 | DV:815-945 | `WeightsReaders.tsx` `VirtualTable` | PASS | 2026-11-14：全部显示（D-6），28 px 行虚拟渲染；↑ / ↓ 逐行移动选中；面包屑中间截断；搜索不自动展开分组，同原生（WP）。窄于 780 px 的布局同 W-2 |
+| W-4 | Tensor 检查器：参数、格式化大小、offset、说明文字、面板内隐藏按钮 | DV:940-990 | `WeightsReaders.tsx` `TensorDetail` | PASS | 2026-11-14：面板 260–390 px 可拖动（WP） |
 | W-5 | 大小以 1000 为底 | `FileClassifier.swift:114-116` | `core/huggingface.ts:416-420` | 部分 | 2026-11-13：随 B-9（`formatBytes` 已改；硬编码的 MiB / bytes 文案随第 2 批） |
-| W-6 | Header 校验严格度 | `Support/SafetensorsInspector.swift:26-108` | `core/inspectors.ts:63-119` | 不同 | Web 更严格，原生能打开的文件 Web 可能拒绝 |
-| G-1 | GGUF 完整概览、metadata、tensor | 同 D-1 | App:1503-1527 | 待裁决 | 见 D-1 |
-| I-1 | imatrix：分概览和 Entries 两页；标题「Importance Matrix」；缺失值显示「未记录」；列顺序 Mean / Min / Max；数字取 5 位有效数字 | `Views/IMatrixWorkspaceView.swift:9-103` | App:1529-1586 | 不同 | |
+| W-6 | Header 校验严格度 | `Support/SafetensorsInspector.swift:1-129`，`RepositoryService.loadSafetensorsHeader` | `core/inspectors.ts` | 部分 | 2026-11-14：按原生逐项移植（长度 ≤1 / >25,000,000 / 超出文件、首字节 `{`、严格 UTF-8、`__metadata__` 字符串字典、`[NSNumber]` → Int64 语义、offsets 恰好 2 个且 end ≥ start、溢出检查），删除 Web 独有的 dtype / 对齐 / 连续性检查；金样由 swiftc 编译原生 inspector 生成（`inspectors.test.ts`）。**仍缺**：>2^53 的整数在不支持 `JSON.parse` source 访问的引擎里按 double 取整；没有声明文件大小时 Web 仍拒绝读取（原生会尝试本地读取） |
+| G-1 | GGUF 完整概览、metadata、tensor | DV:348-362,415-459,687-1007，`RepositoryService.swift:359-392`，`GGUFInspector.swift` | `core/gguf.ts`，`WeightsReaders.tsx` GGUFReader | PASS | 2026-11-14 按 D-1：1 MiB 顺序 Range、32 MiB 上限、接受越读；浮点显示同 Swift `String(Float)`；事实行顺序同原生。HTTP 200 回 Range 仍失败关闭，结果按 snapshot 缓存不重复读取（`gguf.test.ts`、WP、MF） |
+| I-1 | imatrix：分概览和 Entries 两页；标题「Importance Matrix」；缺失值显示「未记录」；列顺序 Mean / Min / Max；数字取 5 位有效数字 | `Views/IMatrixWorkspaceView.swift:1-104` | `WeightsReaders.tsx` ImatrixReader，`core/imatrix.ts` | PASS | 2026-11-14：5 位有效数字用 halfEven，37 个 Swift 打印金样（含 12344.5→12,344、1.03125→1.0312） |
 
 ### 3.8 Chat Template 试验台（批次 3，2026-11-13 实现）
 

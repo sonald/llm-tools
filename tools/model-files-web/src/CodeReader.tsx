@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { highlightJsonWindow } from './core/jsonSource.ts'
-import { forEachTextMatch, navigateTextMatches, sourceChunks, textLineAtOffset, type SourceChunk } from './core/readers.ts'
+import {
+  defaultTextFindOptions, forEachTextMatch, navigateTextMatches, sourceChunks, textLineAtOffset, type SourceChunk, type TextFindOptions,
+} from './core/readers.ts'
 import { foldRanges, type FoldRange } from './core/sourceFolding.ts'
 import { formatNumber, translate as t } from './i18n.ts'
 
@@ -38,15 +40,19 @@ export function CodeReader({ content, language, label, marks = [], jump = null }
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [seen, setSeen] = useState<Set<number>>(() => new Set([0]))
   const [find, setFind] = useState<Find>(closedFind)
+  // Native NSTextFinder keeps its menu options for the reader's lifetime; closing the bar keeps them.
+  const [findOptions, setFindOptions] = useState<TextFindOptions>(defaultTextFindOptions)
   const preRef = useRef<HTMLPreElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     setCollapsed(new Set())
     setSeen(new Set([0]))
     setFind(closedFind)
   }, [content, language])
 
-  const result = useMemo(() => navigateTextMatches(content, find.open ? find.query : '', 'next', Math.max(find.current, 1) - 1),
-    [content, find.current, find.open, find.query])
+  const result = useMemo(
+    () => navigateTextMatches(content, find.open ? find.query : '', 'next', Math.max(find.current, 1) - 1, findOptions),
+    [content, find.current, find.open, find.query, findOptions])
   const activeMatch: Range | null = result.total === 0 ? null : { start: result.start, end: result.end }
   const activeLine = activeMatch === null ? 0 : textLineAtOffset(content, activeMatch.start)
 
@@ -130,19 +136,39 @@ export function CodeReader({ content, language, label, marks = [], jump = null }
   }, [chunks, content])
 
   const navigateFind = (navigation: 'next' | 'previous') => setFind(state => ({
-    ...state, current: navigateTextMatches(content, state.query, navigation, result.current).current,
+    ...state, current: navigateTextMatches(content, state.query, navigation, Math.max(state.current, 1), findOptions).current,
   }))
+  const navigateRef = useRef(navigateFind)
+  navigateRef.current = navigateFind
+  const findOpen = find.open
+
+  // Native InFileFindTextView: ⌘F reaches the reader through performKeyEquivalent without focus; ⌘G / ⇧⌘G
+  // (Find Next / Previous) step through hits while the bar is up. One reader on screen takes them.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const action = findShortcut(event)
+      const panel = panelRef.current
+      if (action === null || event.defaultPrevented || panel === null || !ownsFindShortcut(panel)) return
+      if (action !== 'open' && !findOpen) return
+      event.preventDefault()
+      if (action !== 'open') navigateRef.current(action)
+      else if (!findOpen) setFind({ ...closedFind, open: true })
+      else panel.querySelector<HTMLInputElement>('.source-find input')?.select()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [findOpen])
   const highlighted = plain ? false : language === 'json' || prism !== null
 
   return (
-    <div className="source-code-panel">
+    <div className="source-code-panel" ref={panelRef}>
       {ranges.length > 0 ? (
         <div className="fold-toolbar">
           <button type="button" onClick={() => setCollapsed(new Set())}>{t('readerExpandAllFolds')}</button>
         </div>
       ) : null}
       {find.open ? (
-        <FindBar query={find.query} current={result.current} total={result.total}
+        <FindBar query={find.query} total={result.total} options={findOptions} onOptions={setFindOptions}
           onQuery={query => setFind({ ...closedFind, open: true, query })} onNavigate={navigateFind}
           onClose={() => {
             setFind(closedFind)
@@ -156,11 +182,6 @@ export function CodeReader({ content, language, label, marks = [], jump = null }
         data-language={language ?? 'text'}
         data-highlighted={highlighted}
         tabIndex={0}
-        onKeyDown={event => {
-          if (!isFindShortcut(event)) return
-          event.preventDefault()
-          setFind(state => state.open ? state : { ...closedFind, open: true })
-        }}
       >
         {chunks.map((chunk, index) => {
           const text = content.slice(chunk.start, chunk.end)
@@ -176,7 +197,7 @@ export function CodeReader({ content, language, label, marks = [], jump = null }
               : prism === null ? null : sliceSegments(prism, chunk.start, chunk.end)
           const matches: Range[] = []
           if (find.open && find.query !== '') {
-            forEachTextMatch(text, find.query, start => { matches.push({ start, end: start + find.query.length }) })
+            forEachTextMatch(text, find.query, start => { matches.push({ start, end: start + find.query.length }) }, findOptions)
           }
           const current = activeMatch !== null && activeMatch.start >= chunk.start && activeMatch.start < chunk.end
             ? { start: activeMatch.start - chunk.start, end: activeMatch.end - chunk.start } : null
@@ -234,42 +255,144 @@ export function CodeReader({ content, language, label, marks = [], jump = null }
   )
 }
 
-// The in-file find bar shared by every reader (Enter / Shift+Enter navigate, Escape closes).
-export function FindBar({ query, current, total, onQuery, onNavigate, onClose }: {
+// Native AppKit find bar (NSTextFinder, usesFindBar + incremental search): the magnifier menu holds the options,
+// the field shows the hit count, then ‹ › and 完成. Enter / Shift+Enter navigate, Escape closes.
+// Without `onOptions` (the template playground) matching uses the defaults and the magnifier is only an icon.
+export function FindBar({ query, total, onQuery, onNavigate, onClose, options = defaultTextFindOptions, onOptions }: {
   query: string
-  current: number
+  current?: number
   total: number
   onQuery(query: string): void
   onNavigate(navigation: 'next' | 'previous'): void
   onClose(): void
+  options?: TextFindOptions
+  onOptions?(options: TextFindOptions): void
 }) {
   return (
     <section aria-label={t('readerCurrentFileFind')} className="source-find" role="search">
-      <input
-        aria-label={t('readerCurrentFileFind')}
-        autoFocus
-        onChange={event => onQuery(event.target.value)}
-        onKeyDown={event => {
-          if (event.key === 'Enter') {
-            event.preventDefault()
-            onNavigate(event.shiftKey ? 'previous' : 'next')
-          } else if (event.key === 'Escape') {
-            event.preventDefault()
-            onClose()
-          }
-        }}
-        value={query}
-      />
-      <span>{formatNumber(current)} / {formatNumber(total)}</span>
-      <button disabled={total === 0} onClick={() => onNavigate('previous')} type="button">{t('readerPreviousMatch')}</button>
-      <button disabled={total === 0} onClick={() => onNavigate('next')} type="button">{t('readerNextMatch')}</button>
+      <div className="find-field">
+        <FindOptionsMenu options={options} onOptions={onOptions} />
+        <input
+          aria-label={t('readerCurrentFileFind')}
+          autoFocus
+          onChange={event => onQuery(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              onNavigate(event.shiftKey ? 'previous' : 'next')
+            } else if (event.key === 'Escape') {
+              event.preventDefault()
+              onClose()
+            }
+          }}
+          placeholder={t('readerFindPlaceholder')}
+          spellCheck={false}
+          value={query}
+        />
+        {query === '' ? null : <span className="find-count" aria-live="polite">{formatNumber(total)}</span>}
+      </div>
+      <div className="find-steps">
+        <button aria-label={t('readerFindPrevious')} title={t('readerFindPrevious')} disabled={total === 0}
+          onClick={() => onNavigate('previous')} type="button"><Chevron direction="previous" /></button>
+        <button aria-label={t('readerFindNext')} title={t('readerFindNext')} disabled={total === 0}
+          onClick={() => onNavigate('next')} type="button"><Chevron direction="next" /></button>
+      </div>
+      <button className="find-done" onClick={onClose} type="button">{t('readerFindDone')}</button>
     </section>
   )
 }
 
-// Opens the find bar on ⌘F / Ctrl+F.
+function FindOptionsMenu({ options, onOptions }: { options: TextFindOptions; onOptions?(options: TextFindOptions): void }) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const close = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('pointerdown', close)
+    rootRef.current?.querySelector<HTMLElement>('[role^="menuitem"]')?.focus()
+    return () => document.removeEventListener('pointerdown', close)
+  }, [open])
+  if (onOptions === undefined) return <span className="find-menu-button" aria-hidden="true"><Magnifier /></span>
+  const closeMenu = () => {
+    setOpen(false)
+    rootRef.current?.querySelector<HTMLElement>('.find-menu-button')?.focus()
+  }
+  const item = (role: 'menuitemcheckbox' | 'menuitemradio', checked: boolean, label: string, patch: Partial<TextFindOptions>) => (
+    <button role={role} aria-checked={checked} type="button" tabIndex={-1} onClick={() => {
+      onOptions({ ...options, ...patch })
+      closeMenu()
+    }}>
+      <span aria-hidden="true">{checked ? '✓' : ''}</span>{label}
+    </button>
+  )
+  return (
+    <div className="find-menu" ref={rootRef}>
+      <button className="find-menu-button" aria-label={t('readerFindMenu')} title={t('readerFindMenu')}
+        aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(value => !value)} type="button">
+        <Magnifier /><span aria-hidden="true" className="find-menu-chevron">⌄</span>
+      </button>
+      {open ? (
+        <div className="find-menu-items" role="menu" aria-label={t('readerFindMenu')} onKeyDown={event => {
+          const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role^="menuitem"]')]
+          const index = items.indexOf(document.activeElement as HTMLElement)
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            event.stopPropagation()
+            closeMenu()
+          } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault()
+            items[(index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus()
+          }
+        }}>
+          {item('menuitemcheckbox', options.ignoreCase, t('readerFindIgnoreCase'), { ignoreCase: !options.ignoreCase })}
+          {item('menuitemcheckbox', options.wrapAround, t('readerFindWrapAround'), { wrapAround: !options.wrapAround })}
+          <hr />
+          {item('menuitemradio', options.matchType === 'contains', t('readerFindContains'), { matchType: 'contains' })}
+          {item('menuitemradio', options.matchType === 'startsWith', t('readerFindStartsWith'), { matchType: 'startsWith' })}
+          {item('menuitemradio', options.matchType === 'fullWord', t('readerFindFullWord'), { matchType: 'fullWord' })}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function Magnifier() {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+      <circle cx="6.5" cy="6.5" r="4.75" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M10 10l4.25 4.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function Chevron({ direction }: { direction: 'previous' | 'next' }) {
+  return (
+    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+      <path d={direction === 'previous' ? 'M10 3L5 8l5 5' : 'M6 3l5 5-5 5'} fill="none" stroke="currentColor" strokeWidth="1.6"
+        strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+// Native InFileFindTextView.shouldRouteFindShortcut: ⌘ xor ⌃ with F, no ⌥ or ⇧; plus the menu's ⌘G / ⇧⌘G.
+export function findShortcut(event: { metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; key: string }) {
+  if (event.metaKey === event.ctrlKey || event.altKey) return null
+  const key = event.key.toLowerCase()
+  if (key === 'f') return event.shiftKey ? null : 'open'
+  if (key === 'g') return event.shiftKey ? 'previous' : 'next'
+  return null
+}
+
 export function isFindShortcut(event: { metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; key: string }) {
-  return (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f'
+  return findShortcut(event) === 'open'
+}
+
+// The reader holding focus takes the shortcut, otherwise the first one on screen (AppKit walks the view tree).
+function ownsFindShortcut(panel: HTMLElement): boolean {
+  const panels = [...document.querySelectorAll<HTMLElement>('.source-code-panel')].filter(item => item.getClientRects().length > 0)
+  return (panels.find(item => item.contains(document.activeElement)) ?? panels[0]) === panel
 }
 
 // Prism runs in a Worker over the whole file; the caller only routes ≤128 KB sources here (native rule).

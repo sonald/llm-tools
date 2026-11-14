@@ -1,5 +1,11 @@
 import { formatBytes } from './huggingface.ts'
-import { translate as t } from '../i18n.ts'
+import { formatNumber, translate as t } from '../i18n.ts'
+
+// Native IMatrixWorkspaceView.format: `.number.precision(.significantDigits(5))` — exactly 5 digits,
+// grouped, never exponent form, ICU half-even rounding (12344.5 → 12,344).
+export function formatImatrixValue(value: number): string {
+  return formatNumber(value, { minimumSignificantDigits: 5, maximumSignificantDigits: 5, roundingMode: 'halfEven' } as Intl.NumberFormatOptions)
+}
 
 export type ImatrixEntry = {
   name: string

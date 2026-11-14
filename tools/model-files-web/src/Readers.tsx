@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { CodeReader, type SourceJump } from './CodeReader.tsx'
 import { formatBytes, type FileCategory, type RepositoryFile, type RepositorySnapshot } from './core/huggingface.ts'
 import { formatJsonSource, jsonTopLevelKeyRanges } from './core/jsonSource.ts'
+import { modelCardImageWidth, modelCardRenderable } from './core/modelCardMarkdown.ts'
 import { formatNumber, translate as t } from './i18n.ts'
 import {
   jsonSummary,
@@ -178,26 +179,33 @@ export function SourceInspection({ content, language, label, perspective = 'over
   return <div className="reader-stack"><CodeReader content={content} language={highlighted ? language : null} label={label} /></div>
 }
 
+const markdownThemes = ['github', 'default', 'compact'] as const
+
 function MarkdownInspection(props: Props) {
   // Native: only documentation Markdown renders, and only in 概览; everything else is the plain-text reader.
   const mode = (props.perspective ?? 'overview') === 'overview' && props.category === 'documentation' ? 'rendered' : 'raw'
-  const [theme, setTheme] = useState<'github' | 'default' | 'compact'>('github')
-  const embeddedPrefix = props.snapshot.source === 'huggingface'
-    ? `https://huggingface.co/${props.snapshot.modelId.split('/').map(encodeURIComponent).join('/')}/resolve/${props.snapshot.revision}/`
-    : ''
+  const [theme, setTheme] = useState<typeof markdownThemes[number]>('github')
+  const markdown = useMemo(() => modelCardRenderable(props.content), [props.content])
   if (mode === 'raw') return <div className="reader-stack"><CodeReader content={props.content} language={null} label={props.path} /></div>
   return (
     <div className="reader-canvas">
-      <div className="reader-controls">
-          <label>{t('readerLayoutLabel')}
-            <select value={theme} onChange={event => setTheme(event.target.value as typeof theme)}>
-              <option value="github">GitHub</option>
-              <option value="default">{t('readerDefaultLayout')}</option>
-              <option value="compact">{t('readerCompactLayout')}</option>
-            </select>
-          </label>
-      </div>
-      <article className={`markdown-body markdown-${theme}`}>
+      {/* Native MarkdownReaderView: "Markdown" heading, the 排版主题 segmented picker, a divider, then the card. */}
+      <section className="markdown-card">
+        <header className="markdown-header">
+          <span className="markdown-heading"><DocumentIcon />Markdown</span>
+          <span className="markdown-theme">
+            <span aria-hidden="true">{t('readerMarkdownTheme')}</span>
+            <span className="perspective" role="group" aria-label={t('readerMarkdownThemeLabel')}>
+              {markdownThemes.map(value => (
+                <button aria-pressed={theme === value} key={value} onClick={() => setTheme(value)} type="button">
+                  {value === 'github' ? 'GitHub' : t(value === 'default' ? 'readerDefaultLayout' : 'readerCompactLayout')}
+                </button>
+              ))}
+            </span>
+          </span>
+        </header>
+        <article className={`markdown-body markdown-${theme}`}>
+          {/* Raw HTML stays off: native turns <img>/<a>/<br> into Markdown and strips the rest before rendering. */}
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             skipHtml
@@ -206,13 +214,32 @@ function MarkdownInspection(props: Props) {
               a: ({ href, children }) => href === undefined
                 ? <span>{children}</span>
                 : <a href={href} target="_blank" rel="noreferrer">{children}</a>,
-              img: ({ src, alt }) => src !== undefined && embeddedPrefix !== '' && src.startsWith(embeddedPrefix)
-                ? <img src={src} alt={alt ?? ''} loading="lazy" referrerPolicy="no-referrer" />
-                : <span className="external-image">{t('readerExternalImage', { alt: alt ?? t('readerNoImageAlt') })}{src === undefined ? null : <> · <a href={src} target="_blank" rel="noreferrer">{t('readerOpenLink')}</a></>}</span>,
+              img: ({ src, alt }) => <ModelCardImage src={typeof src === 'string' ? src : undefined} alt={alt ?? ''} />,
             }}
-          >{props.content}</ReactMarkdown>
-      </article>
+          >{markdown}</ReactMarkdown>
+        </article>
+      </section>
     </div>
+  )
+}
+
+// Native ModelCardImageLoader: HTTPS only, width capped by the converted <img> width; a failed load leaves the alt text.
+function ModelCardImage({ src, alt }: { src: string | undefined; alt: string }) {
+  const [failed, setFailed] = useState(false)
+  if (src === undefined || !src.startsWith('https:') || failed) return <>{alt}</>
+  const width = modelCardImageWidth(src)
+  return (
+    <img src={src} alt={alt} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)}
+      style={width === null ? undefined : { width: `min(100%, ${width}px)` }} />
+  )
+}
+
+function DocumentIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+      <path d="M4 1.75h5.25L12.5 5v9.25H4z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="M9 1.75V5.3h3.5M6 8h4.5M6 10.5h4.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
   )
 }
 
@@ -234,6 +261,8 @@ export function PdfInspection({ data }: { data: ArrayBuffer }) {
   )
 }
 
+// Native ImageReaderView: toolbar「W × H px · EXT · size」with 适应窗口 / 1:1 / − 100% +, steps of 0.25 within
+// 0.25–5; scaled images take their real size in a scroll view (centred when smaller) over a checkerboard.
 export function ImageInspection({
   file,
   data,
@@ -268,6 +297,11 @@ export function ImageInspection({
     return () => URL.revokeObjectURL(nextUrl)
   }, [data, mimeType])
 
+  const name = file.path.split('/').at(-1) ?? file.path
+  const extension = name.toUpperCase().split('.').filter(part => part !== '').at(-1) ?? 'IMAGE'
+  // An SVG without an intrinsic size reports 0 × 0: native sizes its SVG web view at 400 pt per zoom step.
+  const base = dimensions !== null && dimensions.width > 0 && dimensions.height > 0 ? dimensions : { width: 400, height: 400 }
+
   return (
     <div className="reader-canvas image-reader">
       {isSvg && perspective === 'source' && textContent !== undefined ? (
@@ -276,67 +310,69 @@ export function ImageInspection({
         <div className="image-workspace">
           <div className="image-toolbar">
             <div className="image-stats">
-              {dimensions ? <span>{dimensions.width} × {dimensions.height} px</span> : null}
+              {dimensions !== null && dimensions.width > 0 ? (
+                <>
+                  <span className="image-dimensions">{formatNumber(dimensions.width)} × {formatNumber(dimensions.height)} px</span>
+                  <span className="image-dot" aria-hidden="true">·</span>
+                </>
+              ) : null}
+              <span className="image-extension">{extension}</span>
+              <span className="image-dot" aria-hidden="true">·</span>
               <span>{formatBytes(bytesRead)}</span>
             </div>
             <div className="image-actions">
-              <button
-                type="button"
-                className={`zoom-btn ${fit ? 'active' : ''}`}
-                onClick={() => { setFit(true); setZoom(1.0); }}
-              >
+              <button type="button" className={`zoom-btn ${fit ? 'active' : ''}`} aria-pressed={fit}
+                onClick={() => { setFit(true); setZoom(1.0) }}>
                 {t('readerImageFit')}
               </button>
-              <button
-                type="button"
-                className={`zoom-btn ${!fit && zoom === 1.0 ? 'active' : ''}`}
-                onClick={() => { setFit(false); setZoom(1.0); }}
-              >
-                {t('readerImageActual')}
+              <button type="button" className={`zoom-btn ${!fit && zoom === 1.0 ? 'active' : ''}`} aria-pressed={!fit && zoom === 1.0}
+                onClick={() => { setFit(false); setZoom(1.0) }}>
+                1:1
               </button>
-              <button
-                type="button"
-                className="zoom-btn"
-                title={t('readerZoomOut')}
-                aria-label={t('readerZoomOut')}
-                onClick={() => { setFit(false); setZoom(z => Math.max(0.2, Number((z - 0.2).toFixed(1)))); }}
-              >
-                −
+              <button type="button" className="zoom-icon" title={t('readerZoomOut')} aria-label={t('readerZoomOut')}
+                onClick={() => { setFit(false); setZoom(z => Math.max(0.25, z - 0.25)) }}>
+                <ZoomIcon sign="minus" />
               </button>
-              <span className="zoom-percentage">{Math.round(zoom * 100)}%</span>
-              <button
-                type="button"
-                className="zoom-btn"
-                title={t('readerZoomIn')}
-                aria-label={t('readerZoomIn')}
-                onClick={() => { setFit(false); setZoom(z => Math.min(5.0, Number((z + 0.2).toFixed(1)))); }}
-              >
-                +
+              <span className="zoom-percentage">{formatNumber(Math.trunc(zoom * 100))}%</span>
+              <button type="button" className="zoom-icon" title={t('readerZoomIn')} aria-label={t('readerZoomIn')}
+                onClick={() => { setFit(false); setZoom(z => Math.min(5.0, z + 0.25)) }}>
+                <ZoomIcon sign="plus" />
               </button>
             </div>
           </div>
 
-          <div className="image-viewport">
-            <div className="image-checkerboard">
-              {hasError ? (
-                <div className="image-error">{t('readerImageFailed')}</div>
-              ) : url !== '' ? (
-                <img
-                  src={url}
-                  alt={file.path}
-                  className={`inspected-image ${fit ? 'fit' : 'scaled'}`}
-                  style={fit ? undefined : { transform: `scale(${zoom})`, transformOrigin: 'center center' }}
-                  onLoad={(event) => {
-                    const img = event.currentTarget
-                    setDimensions({ width: img.naturalWidth, height: img.naturalHeight })
-                  }}
-                  onError={() => setHasError(true)}
-                />
-              ) : null}
-            </div>
+          <div className={`image-viewport${fit ? ' fit' : ''}`}>
+            {hasError ? (
+              <div className="empty-state image-error">
+                <h2>{t('readerImageCannotDisplay')}</h2>
+                <p>{t('readerImageCannotDecode')}</p>
+              </div>
+            ) : url !== '' ? (
+              <img
+                src={url}
+                alt={file.path}
+                className={`inspected-image ${fit ? 'fit' : 'scaled'}`}
+                style={fit ? undefined : { width: Math.max(base.width * zoom, 10), height: Math.max(base.height * zoom, 10) }}
+                onLoad={(event) => {
+                  const img = event.currentTarget
+                  setDimensions({ width: img.naturalWidth, height: img.naturalHeight })
+                }}
+                onError={() => setHasError(true)}
+              />
+            ) : null}
           </div>
         </div>
       )}
     </div>
+  )
+}
+
+function ZoomIcon({ sign }: { sign: 'minus' | 'plus' }) {
+  return (
+    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+      <circle cx="6.75" cy="6.75" r="5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path d={`M14.5 14.5l-4.2-4.2M4.5 6.75h4.5${sign === 'plus' ? 'M6.75 4.5v4.5' : ''}`} stroke="currentColor" strokeWidth="1.4"
+        strokeLinecap="round" />
+    </svg>
   )
 }

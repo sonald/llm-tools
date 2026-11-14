@@ -20,143 +20,6 @@ import {
   expandWeights,
 } from './fixtures.ts'
 
-test('SafeTensors hierarchy keeps two exact ranges without tensor data', async ({ page }) => {
-  const errors = collectErrors(page)
-  const requests = await installFixtureRoutes(page)
-  await openFixture(page)
-  await expandWeights(page)
-  await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
-
-  await expect(page.getByText(/^只读取了 .+ JSON Header；没有请求 tensor 数据。$/)).toBeVisible()
-  await expect(page.getByText('参数总数').locator('..').getByText('2')).toBeVisible()
-  await page.getByRole('button', { name: 'Metadata', exact: true }).click()
-  await expect(page.getByRole('table', { name: 'SafeTensors Metadata' }).getByText('format')).toBeVisible()
-  await page.getByPlaceholder('Key 或 Value 包含…').fill('pt')
-  await expect(page.getByText('显示 1 / 1')).toBeVisible()
-  await page.getByRole('button', { name: 'Tensors', exact: true }).click()
-  await expect(page.getByText('显示 2 行 / 匹配 106 个 Tensor（总计 106）')).toBeVisible()
-  const tensorTable = page.getByRole('table', { name: 'SafeTensors Tensors' })
-  await expect(tensorTable).toBeVisible()
-  await expect(tensorTable.locator('tbody tr')).toHaveCount(2)
-  await expect(tensorTable.getByText('105 个 Tensor')).toBeVisible()
-  await expect(tensorTable.getByRole('button', { name: /^model/ })).toHaveAttribute('aria-expanded', 'false')
-  await expect(tensorTable.getByRole('button', { name: /^model/ })).toHaveAttribute('aria-label', 'model，展开，105 个 Tensor')
-  await tensorTable.getByRole('button', { name: /^model/ }).click()
-  await expect(tensorTable.getByRole('button', { name: /^layer/ })).toHaveAttribute('aria-expanded', 'false')
-  await tensorTable.getByRole('button', { name: /^layer/ }).click()
-  await expect(tensorTable.getByRole('button', { name: /^0/ })).toHaveAttribute('aria-expanded', 'false')
-  await tensorTable.getByRole('button', { name: /^0/ }).click()
-  await expect(tensorTable.getByRole('button', { name: /model\.layer\.0\.weight/ })).toBeVisible()
-  await expect(tensorTable.getByRole('button', { name: /model\.layer\.0\.weight/ })).toContainText('weight')
-  await tensorTable.getByRole('button', { name: /^10/ }).click()
-  await expect(tensorTable.getByRole('button', { name: /model\.layer\.10\.weight/ })).toBeVisible()
-  await page.getByPlaceholder('名称或 dtype 包含…').fill('layer.104')
-  await expect(page.getByText('显示 4 行 / 匹配 1 个 Tensor（总计 106）')).toBeVisible()
-  await expect(tensorTable.getByRole('button', { name: /model\.layer\.104\.weight/ })).toBeVisible()
-  await tensorTable.getByRole('button', { name: /^layer/ }).click()
-  await expect(tensorTable.getByRole('button', { name: /model\.layer\.104\.weight/ })).toHaveCount(0)
-  await tensorTable.getByRole('button', { name: /^layer/ }).click()
-  await expect(tensorTable.getByRole('button', { name: /model\.layer\.104\.weight/ })).toBeVisible()
-  await tensorTable.getByRole('button', { name: /model\.layer\.104\.weight/ }).click()
-  await expect(page.getByText('model › layer › 104 › weight')).toBeVisible()
-  await expect(page.getByRole('heading', { name: '选中 Tensor · model.layer.104.weight' })).toBeVisible()
-  await expect(page.getByText('Data Offsets').locator('..')).toContainText('0–0')
-  await page.getByRole('button', { name: '全部收起' }).click()
-  await expect(tensorTable.getByRole('button', { name: /model\.layer\.104\.weight/ })).toHaveCount(0)
-  await expect(page.getByText('model › layer › 104 › weight')).toBeVisible()
-  await expect(page.getByRole('heading', { name: '选中 Tensor · model.layer.104.weight' })).toBeVisible()
-  await page.getByRole('button', { name: '隐藏详情' }).click()
-  await expect(page.getByRole('button', { name: '显示详情' })).toBeVisible()
-  await page.getByRole('button', { name: '显示详情' }).click()
-  await expect(page.getByRole('heading', { name: '选中 Tensor · model.layer.104.weight' })).toBeVisible()
-  await page.getByPlaceholder('名称或 dtype 包含…').fill('')
-  await tensorTable.getByRole('button', { name: /^model/ }).click()
-  await tensorTable.getByRole('button', { name: /^layer/ }).click()
-  await expect(page.getByText('显示 100 行 / 匹配 106 个 Tensor（总计 106）')).toBeVisible()
-  await page.getByRole('button', { name: '再显示 100 行' }).click()
-  await expect(page.getByText('显示 108 行 / 匹配 106 个 Tensor（总计 106）')).toBeVisible()
-  await page.getByRole('button', { name: '概览' }).click()
-  await page.getByRole('button', { name: /^config\.json/ }).click()
-  await expandWeights(page)
-  await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
-  await expect(page.getByText('参数总数').locator('..').getByText('2')).toBeVisible()
-  expect(requests.filter(request => request.path === 'model.safetensors')).toEqual([
-    expect.objectContaining({ range: 'bytes=0-7', responseBytes: 8, status: 206 }),
-    expect.objectContaining({ range: expect.stringMatching(/^bytes=8-/), status: 206 }),
-  ])
-  expect(errors).toEqual([])
-})
-
-test('SafeTensors hierarchy stays usable across responsive layouts', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== 'chromium', '响应式证据只在 Chromium 采集；Firefox/WebKit 由三浏览器验收单独覆盖。')
-  const errors = collectErrors(page)
-  await installFixtureRoutes(page)
-  await openFixture(page)
-  await expandWeights(page)
-  await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
-  await page.getByRole('button', { name: 'Tensors', exact: true }).click()
-  const tensorTable = page.getByRole('table', { name: 'SafeTensors Tensors' })
-  await expect(tensorTable).toBeVisible()
-  await tensorTable.getByRole('button', { name: /^model/ }).click()
-  await tensorTable.getByRole('button', { name: /^layer/ }).click()
-  await tensorTable.getByRole('button', { name: /^0/ }).click()
-  await tensorTable.getByRole('button', { name: /model\.layer\.0\.weight/ }).click()
-  await expect(page.getByRole('heading', { name: '选中 Tensor · model.layer.0.weight' })).toBeVisible()
-  await expect(tensorTable.locator('.tensor-group-row').filter({ hasText: '105 个 Tensor' }).locator('td').first()).toHaveAttribute('colspan', '5')
-
-  for (const viewport of [
-    { width: 390, height: 844 },
-    { width: 768, height: 1024 },
-    { width: 1280, height: 800 },
-  ]) {
-    await page.setViewportSize(viewport)
-    await expect(tensorTable).toBeVisible()
-    await expect(page.getByRole('heading', { name: '选中 Tensor · model.layer.0.weight' })).toBeVisible()
-    const selectedLeaf = tensorTable.getByRole('button', { name: 'model.layer.0.weight' })
-    await expect(selectedLeaf).toContainText('weight')
-    expect(await selectedLeaf.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-    const outline = await page.locator('.tensor-outline').boundingBox()
-    const inspector = await page.locator('.tensor-inspector').boundingBox()
-    expect(outline).not.toBeNull()
-    expect(inspector).not.toBeNull()
-    if (outline === null || inspector === null) continue
-    if (viewport.width < 900) {
-      expect(inspector.y).toBeGreaterThanOrEqual(outline.y + outline.height - 1)
-    } else {
-      expect(inspector.x).toBeGreaterThanOrEqual(outline.x + outline.width - 1)
-    }
-    const screenshot = testInfo.outputPath(`safetensors-hierarchy-${viewport.width}x${viewport.height}.png`)
-    await page.screenshot({ path: screenshot, fullPage: false })
-    await testInfo.attach(`safetensors-hierarchy-${viewport.width}x${viewport.height}`, {
-      path: screenshot,
-      contentType: 'image/png',
-    })
-    if (viewport.width === 390) {
-      await page.getByRole('button', { name: '隐藏详情' }).click()
-      await expect(page.getByRole('button', { name: '显示详情' })).toBeVisible()
-      await page.getByRole('button', { name: '显示详情' }).click()
-      await expect(page.getByRole('heading', { name: '选中 Tensor · model.layer.0.weight' })).toBeVisible()
-    }
-  }
-  expect(errors).toEqual([])
-})
-
-test('inspects only the 24-byte GGUF basic prefix', async ({ page }) => {
-  const errors = collectErrors(page)
-  const requests = await installFixtureRoutes(page)
-  await openFixture(page)
-  await expandWeights(page)
-  await page.getByRole('button', { name: /model\.gguf/ }).click()
-
-  await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible()
-  await expect(page.getByText(/完整 metadata\/tensor directory.*未启用/)).toBeVisible()
-  expect(requests.filter(request => request.path === 'model.gguf')).toEqual([
-    expect.objectContaining({ range: 'bytes=0-23', responseBytes: 24, status: 206 }),
-  ])
-  expect(errors).toEqual([])
-})
-
 test('workbench shell follows native header, sidebar and panel conventions', async ({ page }) => {
   const errors = collectErrors(page)
   await installFixtureRoutes(page)
@@ -1199,6 +1062,11 @@ test('opens every supported local directory reader without network upload', { ti
     const url = new URL(request.url())
     if (url.hostname !== '127.0.0.1') externalRequests.push(request.url())
   })
+  // D-7: the README's third-party HTTPS image is a GET, as native loads it; served locally, never the network.
+  await page.route('https://example.com/**', route => route.fulfill({
+    status: 200, contentType: 'image/png',
+    body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64'),
+  }))
   const localFixture = testInfo.outputPath('complete-local-fixture')
   await writeFixtureDirectory(localFixture)
   await page.goto('/')
@@ -1206,7 +1074,7 @@ test('opens every supported local directory reader without network upload', { ti
   await picker.setInputFiles(localFixture)
 
   await expectRepository(page, '本地 · 实时目录', 23)
-  await expect(page).toHaveURL('http://127.0.0.1:5173/')
+  await expect(page).toHaveURL(`http://127.0.0.1:${process.env.E2E_PORT ?? 5173}/`)
   await expect(page.getByRole('button', { name: '在源站打开' })).toBeDisabled()
   await expect(page.getByRole('heading', { name: 'FixtureModel' })).toBeVisible()
 
@@ -1221,7 +1089,7 @@ test('opens every supported local directory reader without network upload', { ti
   await page.getByRole('button', { name: /^model\.safetensors\.index\.json/ }).click()
   await expect(page.getByText('分片数量').locator('..')).toContainText('2')
   await page.getByRole('button', { name: /^imatrix-fixture\.dat/ }).click()
-  await expect(page.getByText('Entry 数量').locator('..')).toContainText('2')
+  await expect(page.locator('.wt-fact-grid')).toContainText('条目数2')
   await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
   await page.getByText('Chat Template 试验台').click()
   // Native prefills string special tokens from the config; the embedded playground renders live.
@@ -1243,7 +1111,7 @@ test('opens every supported local directory reader without network upload', { ti
 
   await picker.setInputFiles(localFixture)
   await expect(page.getByRole('heading', { name: 'FixtureModel' })).toBeVisible()
-  expect(externalRequests).toEqual([])
+  expect(externalRequests).toEqual(['https://example.com/tracker.png'])
   expect(errors).toEqual([])
 })
 
@@ -1273,7 +1141,7 @@ test('dispatches local Python and PDF readers safely', async ({ page }, testInfo
   const csp = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content')
   expect(csp).toContain("object-src 'none'")
   expect(csp).toContain('frame-src blob:')
-  expect(csp).toContain("img-src 'self' data: blob:")
+  expect(csp).toContain("img-src 'self' data: blob: https:;")
 
   await page.getByRole('button', { name: /^reader\.py/ }).click()
   const sourceReader = page.locator('.source-reader')
@@ -1298,7 +1166,7 @@ test('dispatches local Python and PDF readers safely', async ({ page }, testInfo
   const pdfFrame = page.locator('iframe[title="PDF 文档"]')
   const blobUrl = await pdfFrame.getAttribute('src')
   if (blobUrl === null) throw new Error('PDF blob URL is missing')
-  expect(blobUrl).toMatch(/^blob:http:\/\/127\.0\.0\.1:5173\//)
+  expect(blobUrl.startsWith(`blob:http://127.0.0.1:${process.env.E2E_PORT ?? 5173}/`)).toBe(true)
   const openPdf = page.getByRole('link', { name: '在新标签页打开 PDF' })
   await expect(openPdf).toBeVisible()
   await expect(openPdf).toHaveAttribute('href', blobUrl)
@@ -1397,7 +1265,7 @@ test('source find navigates matches and reveals collapsed ancestors', async ({ p
 
   await searchInput.fill('needle')
   const current = page.locator('.source-reader mark.current')
-  await expect(search.getByText('1 / 3', { exact: true })).toBeVisible()
+  await expect(search.getByText('3', { exact: true })).toBeVisible()
   await expect(page.locator('.source-reader mark.find-match')).toHaveCount(3)
   await expect(current).toHaveCount(1)
   await expect(current).toHaveAttribute('aria-current', 'true')
@@ -1426,20 +1294,20 @@ test('source find navigates matches and reveals collapsed ancestors', async ({ p
   await searchInput.press('Shift+Enter')
   await expect(current).toHaveText('needle')
 
-  await search.getByRole('button', { name: '下一个命中' }).click()
+  await search.getByRole('button', { name: '查找文本出现的下一个位置' }).click()
   await expect(current).toHaveText('NEEDLE')
-  await search.getByRole('button', { name: '上一个命中' }).click()
+  await search.getByRole('button', { name: '查找文本出现的上一个位置' }).click()
   await expect(current).toHaveText('needle')
-  await expect(search.getByText('3 / 3', { exact: true })).toBeVisible()
+  await expect(search.getByText('3', { exact: true })).toBeVisible()
 
   await searchInput.fill('中文')
-  await expect(search.getByText('1 / 2', { exact: true })).toBeVisible()
+  await expect(search.getByText('2', { exact: true })).toBeVisible()
   await expect(page.locator('.source-reader mark.find-match')).toHaveCount(2)
   await searchInput.fill('🚩')
-  await expect(search.getByText('1 / 1', { exact: true })).toBeVisible()
+  await expect(search.getByText('1', { exact: true })).toBeVisible()
   await expect(page.locator('.source-reader mark.find-match')).toHaveCount(1)
   await searchInput.fill('missing-query')
-  await expect(search.getByText('0 / 0', { exact: true })).toBeVisible()
+  await expect(search.getByText('0', { exact: true })).toBeVisible()
   await expect(page.locator('.source-reader mark')).toHaveCount(0)
 
   await page.getByRole('button', { name: /^reader-copy\.py/ }).click()
@@ -1479,7 +1347,7 @@ test('find works in JSON Markdown and full progressive text', async ({ page }) =
   let searchInput = search.getByRole('textbox', { name: '当前文件查找' })
   await searchInput.fill('hidden_size')
   await expect(search).toBeVisible()
-  await expect(search.getByText('1 / 1', { exact: true })).toBeVisible()
+  await expect(search.getByText('1', { exact: true })).toBeVisible()
   await expect(page.locator('.source-reader mark.find-match')).toHaveCount(1)
   await expect(page.locator('.source-reader mark.current')).toHaveAttribute('aria-current', 'true')
 
@@ -1501,7 +1369,7 @@ test('find works in JSON Markdown and full progressive text', async ({ page }) =
   search = page.getByRole('search', { name: '当前文件查找' })
   searchInput = search.getByRole('textbox', { name: '当前文件查找' })
   await searchInput.fill('Fixture')
-  await expect(search.getByText('1 / 1', { exact: true })).toBeVisible()
+  await expect(search.getByText('1', { exact: true })).toBeVisible()
   await expect(page.locator('.source-reader mark.find-match')).toHaveCount(1)
   await page.getByRole('button', { name: '渲染' }).click()
   await expect(search).toBeHidden()
@@ -1516,7 +1384,7 @@ test('find works in JSON Markdown and full progressive text', async ({ page }) =
   const query = 'token-100001 token-100002'
   const findStarted = Date.now()
   await searchInput.fill(query)
-  await expect(search.getByText('1 / 1', { exact: true })).toBeVisible({ timeout: 3_000 })
+  await expect(search.getByText('1', { exact: true })).toBeVisible({ timeout: 3_000 })
   expect(Date.now() - findStarted).toBeLessThan(3_000)
   const currentMark = plain.locator('mark.current')
   await expect(currentMark).toHaveText(query)
@@ -1553,7 +1421,7 @@ test('finds the tail of an almost 32 MiB progressive text within budget', async 
   await page.keyboard.press('Meta+F')
   const searchInput = page.getByRole('textbox', { name: '当前文件查找' })
   await searchInput.fill('PERF_TAIL_NEEDLE')
-  await expect(page.getByText('1 / 1', { exact: true })).toBeVisible({ timeout: 3_000 })
+  await expect(page.locator('.source-find .find-count')).toHaveText('1', { timeout: 3_000 })
   const findMs = Date.now() - findStarted
   expect(findMs).toBeLessThan(3_000)
 
@@ -1587,7 +1455,7 @@ test('Jinja source find preserves query while editing and resets on file switch'
   const search = page.getByRole('search', { name: '当前文件查找' })
   const searchInput = search.getByRole('textbox', { name: '当前文件查找' })
   await searchInput.fill('thinking')
-  await expect(search.getByText('1 / 2', { exact: true })).toBeVisible()
+  await expect(search.getByText('2', { exact: true })).toBeVisible()
   await expect(page.locator('.jinja-highlight mark.find-match')).toHaveCount(2)
   const firstMatchStart = await jinjaSource.evaluate(element =>
     (element as HTMLTextAreaElement).value.indexOf('thinking'))
@@ -1600,7 +1468,7 @@ test('Jinja source find preserves query while editing and resets on file switch'
   await expect(currentMark).toHaveAttribute('aria-current', 'true')
 
   await searchInput.press('Enter')
-  await expect(search.getByText('2 / 2', { exact: true })).toBeVisible()
+  await expect(search.getByText('2', { exact: true })).toBeVisible()
   const secondMatchStart = await jinjaSource.evaluate(element =>
     (element as HTMLTextAreaElement).value.lastIndexOf('thinking'))
   expect(await jinjaSource.evaluate(element => ({
@@ -1609,7 +1477,7 @@ test('Jinja source find preserves query while editing and resets on file switch'
   }))).toEqual({ start: secondMatchStart, end: secondMatchStart + 'thinking'.length })
 
   await searchInput.press('Shift+Enter')
-  await expect(search.getByText('1 / 2', { exact: true })).toBeVisible()
+  await expect(search.getByText('2', { exact: true })).toBeVisible()
   expect(await jinjaSource.evaluate(element => ({
     start: (element as HTMLTextAreaElement).selectionStart,
     end: (element as HTMLTextAreaElement).selectionEnd,
@@ -1618,7 +1486,7 @@ test('Jinja source find preserves query while editing and resets on file switch'
   const originalSource = await jinjaSource.inputValue()
   await jinjaSource.fill(`${originalSource}\nthinking`)
   await expect(searchInput).toHaveValue('thinking')
-  await expect(search.getByText('1 / 3', { exact: true })).toBeVisible()
+  await expect(search.getByText('3', { exact: true })).toBeVisible()
   await expect(page.locator('.jinja-highlight mark.find-match')).toHaveCount(3)
   // Typing with the find bar open keeps the caret where the user typed (native NSTextView find bar).
   expect(await jinjaSource.evaluate(element => {
@@ -1706,10 +1574,13 @@ test('a far diagnostic jumps its line to the upper third of the reader', async (
 test('reads semantic JSON, progressive text, and safe Markdown views', async ({ page }) => {
   const errors = collectErrors(page)
   const thirdPartyRequests: string[] = []
-  page.on('request', request => {
-    if (request.url().startsWith('https://example.com/')) thirdPartyRequests.push(request.url())
-  })
   await installFixtureRoutes(page)
+  // D-7: third-party HTTPS images load as native does (served locally here; no real network).
+  // Registered after the fixture routes so it takes precedence over their default.
+  await page.route('https://example.com/**', route => {
+    thirdPartyRequests.push(route.request().url())
+    return route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64') })
+  })
   await openFixture(page)
 
   await expect(page.getByRole('heading', { name: 'FixtureModel' })).toBeVisible()
@@ -1754,19 +1625,25 @@ test('reads semantic JSON, progressive text, and safe Markdown views', async ({ 
   await expect(page.getByRole('heading', { name: 'Fixture Model' })).toBeVisible()
   await expect(page.getByRole('table')).toContainText('Markdown')
   await expect(page.locator('.markdown-body script')).toHaveCount(0)
-  await expect(page.locator('.markdown-body img')).toHaveCount(0)
-  await expect(page.getByText('图片：Third-party image')).toBeVisible()
+  // Native strips the <script> tag and keeps its text; nothing runs.
+  await expect(page.locator('.markdown-body')).toContainText('window.__markdownExecuted = true')
+  const image = page.locator('.markdown-body img[alt="Third-party image"]')
+  await expect(image).toHaveAttribute('src', 'https://example.com/tracker.png')
+  await expect(image).toHaveAttribute('referrerpolicy', 'no-referrer')
+  await expect.poll(() => image.evaluate(element => (element as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
   await expect(page.getByRole('link', { name: 'Config' })).toHaveAttribute(
     'href',
     `https://huggingface.co/${fixtureModelId}/blob/${fixtureRevision}/config.json`,
   )
   await expect(page.getByText('Unsafe').locator('a')).toHaveCount(0)
-  await page.getByLabel('排版').selectOption('compact')
+  const theme = page.getByRole('group', { name: 'Markdown 排版主题' })
+  await expect(theme.getByRole('button', { name: 'GitHub' })).toHaveAttribute('aria-pressed', 'true')
+  await theme.getByRole('button', { name: '紧凑' }).click()
   await expect(page.locator('.markdown-body')).toHaveClass(/markdown-compact/)
   await page.getByRole('button', { name: '原文' }).click()
   await expect(page.locator('.source-reader')).toContainText('<script>window.__markdownExecuted = true</script>')
   expect(await page.evaluate('window.__markdownExecuted')).toBeUndefined()
-  expect(thirdPartyRequests).toEqual([])
+  expect(thirdPartyRequests).toEqual(['https://example.com/tracker.png'])
   expect(errors).toEqual([])
 })
 
@@ -1777,13 +1654,12 @@ test('parses bounded legacy Imatrix files and exposes searchable entry details',
   await page.getByRole('button', { name: /^imatrix-fixture\.dat/ }).click()
 
   await expect(page.getByText(/^读取了完整的 .+ legacy imatrix 文件；只解析，不执行。$/)).toBeVisible()
-  await expect(page.getByText('Entry 数量').locator('..')).toContainText('2')
-  await expect(page.getByText('数据集').locator('..')).toContainText('calibration.txt')
+  await expect(page.locator('.wt-fact-grid')).toContainText('条目数2')
+  await expect(page.locator('.wt-fact-grid')).toContainText('数据集calibration.txt')
   await openPerspective(page, 'Entries')
-  await page.getByPlaceholder('Tensor 名称包含…').fill('ffn')
-  await page.getByRole('button', { name: 'blk.0.ffn.weight' }).click()
-  await expect(page.getByRole('heading', { name: '选中项 · blk.0.ffn.weight' })).toBeVisible()
-  await expect(page.getByText('Call Count').locator('..')).toContainText('4')
+  await page.getByPlaceholder('筛选 tensor').fill('ffn')
+  await expect(page.getByRole('table', { name: 'Entries' }).getByRole('row').nth(1)).toContainText('blk.0.ffn.weight')
+  await expect(page.getByRole('table', { name: 'Entries' }).getByRole('row').nth(1).getByRole('cell').nth(1)).toHaveText('4')
   expect(requests.filter(request => request.path === 'imatrix-fixture.dat')).toEqual([
     expect.objectContaining({ range: null, status: 200 }),
   ])
@@ -1966,6 +1842,12 @@ test('consistency background acquires materials once and reports repository warn
   await expect(report).toContainText('EOS Token 不一致')
   await expect(report).toContainText('上下文长度声明不同')
   await expect(report.locator('[data-material]')).toHaveCount(8)
+  // Native ConsistencyReportView: 身份 with origins beside Coverage (raw material names, status icons).
+  await expect(report.getByRole('region', { name: '身份' }).locator('[data-identity-key]').first()).toContainText('文件内嵌')
+  const coverage = report.getByRole('region', { name: 'Coverage' })
+  await expect(coverage.locator('[data-material="generationConfig"]')).toContainText('generation_config')
+  await expect(coverage.locator('[data-material="config"] [data-coverage-icon="checked"]')).toHaveCount(1)
+  await expect(report.getByRole('img', { name: '警告' }).first()).toBeVisible()
   await expect(page.getByRole('region', { name: '文件问题' })).toContainText('上下文长度声明不同')
   const readerPerspective = page.locator('.detail-header').getByRole('group', { name: '阅读视图' })
   await expect(readerPerspective).toBeVisible()
@@ -1976,6 +1858,14 @@ test('consistency background acquires materials once and reports repository warn
   await report.locator('[data-finding-id="eos-mismatch"]').click()
   await expect(report.locator('[data-finding-id="eos-mismatch"]')).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByRole('complementary', { name: '检查器' })).toContainText('EOS Token 不一致')
+  await expect(page.getByRole('complementary', { name: '检查器' })).toContainText('文件内嵌')
+  // Native never opens a closed inspector for a selection.
+  await page.getByRole('button', { name: '显示或隐藏检查器' }).click()
+  await report.locator('[data-finding-id="vocab-mismatch"]').click()
+  await expect(page.getByRole('complementary', { name: '检查器' })).toHaveCount(0)
+  await page.getByRole('button', { name: '显示或隐藏检查器' }).click()
+  await expect(page.getByRole('complementary', { name: '检查器' })).toContainText('词表大小不一致')
+  await report.locator('[data-finding-id="eos-mismatch"]').click()
   await page.keyboard.press('Escape')
   await expect(badge).toHaveAttribute('aria-expanded', 'false')
   await expect(report).toHaveCount(0)
@@ -1999,14 +1889,17 @@ test('consistency background acquires materials once and reports repository warn
 
   await expandWeights(page)
   await page.getByRole('button', { name: /^model\.gguf/ }).click()
-  await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible()
+  await expect(page.getByText(/^只读取了 .+ GGUF 文件前缀；最后一个 Range 可能包含少量首个 tensor 数据。$/)).toBeVisible()
   expect(requests.filter(request => request.path === 'model.gguf')).toEqual([
-    expect.objectContaining({ range: 'bytes=0-23', responseBytes: 24, status: 206 }),
+    expect.objectContaining({ range: 'bytes=0-1048575', status: 206 }),
+    expect.objectContaining({ range: expect.stringMatching(/^bytes=1048576-/), status: 206 }),
   ])
   const reopened = report
-  await expect(reopened).toContainText('Web 仅读取 24-byte prefix，缺少 metadata/tensor directory。')
-  await expect(reopened.locator('[data-material="gguf"]')).toContainText('跳过：Web 仅读取 24-byte prefix，缺少 metadata/tensor directory。')
-  await expect(reopened.locator('[data-finding-id^="gguf-"]')).toHaveCount(0)
+  // Native Q-9: an opened GGUF is checked; its token_embd.weight [8, 4] disagrees with the 6-token fixture vocabulary.
+  await expect(reopened.locator('[data-material="gguf"]')).toContainText('已检查')
+  await expect(reopened.locator('[data-finding-id="gguf-vocab-mismatch"]'))
+    .toContainText('GGUF token_embd.weight[0] = 8 · tokenizer.vocab_count = 6')
+  await expect(reopened.locator('[data-finding-id="gguf-context-mismatch"]')).toHaveCount(0)
 
   await page.getByRole('button', { name: /^generation_config\.json/ }).click()
   await page.getByRole('button', { name: /^tokenizer_config\.json/ }).click()
@@ -2016,7 +1909,8 @@ test('consistency background acquires materials once and reports repository warn
     expect(requests.filter(request => request.path === path)).toHaveLength(1)
   }
   expect(requests.filter(request => request.path === 'model.gguf')).toEqual([
-    expect.objectContaining({ range: 'bytes=0-23', responseBytes: 24, status: 206 }),
+    expect.objectContaining({ range: 'bytes=0-1048575', status: 206 }),
+    expect.objectContaining({ range: expect.stringMatching(/^bytes=1048576-/), status: 206 }),
   ])
   expect(errors).toEqual([])
 })
@@ -2105,7 +1999,9 @@ test('latest empty repository replaces delayed full consistency inspection', asy
   await badge.click()
   const report = page.getByRole('tabpanel', { name: '仓库一致性报告' })
   await expect(report).toContainText('缺少模型配置')
+  await expect(report).toContainText('核心材料不足；以下 coverage 显示缺失、跳过或失败项。')
   await expect(report.locator('[data-material="config"]')).toContainText('缺失')
+  await expect(report.locator('[data-material="config"] [data-coverage-icon="missing"]')).toHaveCount(1)
   await expect(report).not.toContainText('词表大小不一致')
   await expect(report).not.toContainText('EOS Token 不一致')
   expect(requests.filter(request => request.path === 'config.json'))
@@ -2189,15 +2085,15 @@ test('restores, refreshes, and navigates shareable repository URLs', async ({ pa
   await page.addInitScript("window.open = (url) => { window.__openedUrl = String(url); return null }")
   await installFixtureRoutes(page)
   await page.goto(`/?repo=${encodeURIComponent(fixtureModelId)}&file=model.gguf`)
-  await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible()
+  await expect(page.getByText(/^只读取了 .+ GGUF 文件前缀；/)).toBeVisible()
   await page.reload()
-  await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible()
+  await expect(page.getByText(/^只读取了 .+ GGUF 文件前缀；/)).toBeVisible()
 
   await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
   await expect(page.getByText('参数总数').locator('..').getByText('2')).toBeVisible()
   await page.goBack()
-  await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible()
+  await expect(page.getByText(/^只读取了 .+ GGUF 文件前缀；/)).toBeVisible()
   await page.goForward()
   await expect(page.getByText('参数总数').locator('..').getByText('2')).toBeVisible()
   await page.getByRole('button', { name: '复制路径' }).click()
@@ -2275,7 +2171,7 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
     await page.setViewportSize(viewport)
     await page.goto(`/?repo=${encodeURIComponent(fixtureModelId)}&file=model.gguf`)
     await expect(page.getByRole('heading', { name: 'model.gguf', exact: true })).toBeVisible()
-    await expect(page.getByText('只读取了 24 字节 GGUF 文件前缀。')).toBeVisible()
+    await expect(page.getByText(/^只读取了 .+ GGUF 文件前缀；/)).toBeVisible()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     if (capturesScreenshots) {
       const screenshot = testInfo.outputPath(`${viewport.width}x${viewport.height}.png`)
@@ -2304,7 +2200,7 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
   await expandWeights(page)
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).press('Enter')
   await page.getByRole('button', { name: 'Tensors', exact: true }).press('Enter')
-  await expect(page.getByRole('table', { name: 'SafeTensors Tensors' })).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Tensors' })).toBeVisible()
 
   await filter.press('ControlOrMeta+A')
   await filter.press('Backspace')
@@ -2321,7 +2217,7 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
   await page.emulateMedia({ colorScheme: 'dark' })
   await page.goto(`/?repo=${encodeURIComponent(fixtureModelId)}&file=model.gguf`)
   expect(await contrastRatio(page, 'body')).toBeGreaterThanOrEqual(4.5)
-  expect(await contrastRatio(page, '.scope-note')).toBeGreaterThanOrEqual(4.5)
+  expect(await contrastRatio(page, '.reader-title p')).toBeGreaterThanOrEqual(4.5)
   expect(await contrastRatio(page, '.primary-button')).toBeGreaterThanOrEqual(4.5)
   expect(await contrastRatio(page, '.consistency-badge')).toBeGreaterThanOrEqual(4.5)
   if (capturesScreenshots) {
@@ -2350,6 +2246,7 @@ test('renders image files and verifies blob url within CSP without console error
   await page.getByRole('button', { name: /^logo\.png/ }).click()
   await expect(page.locator('.inspected-image')).toBeVisible()
   await expect(page.getByText('1 × 1 px', { exact: true })).toBeVisible()
+  await expect(page.locator('.image-stats')).toHaveText(/^1 × 1 px·PNG·\d+ 字节$/)
   await expect(page.getByText(/^读取了完整的 .+ 图片数据，在本地直接渲染。$/)).toBeVisible()
   await page.getByRole('button', { name: /^icon\.svg/ }).click()
   await expect(page.locator('.inspected-image')).toBeVisible()

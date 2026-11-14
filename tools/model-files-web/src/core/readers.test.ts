@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   decodeStrictText,
+  defaultTextFindOptions,
   forEachTextMatch,
   inspectionPerspectives,
   jsonSummary,
@@ -13,6 +14,7 @@ import {
   sourceChunks,
   validatePdfData,
   vocabEntries,
+  type TextFindOptions,
 } from './readers.ts'
 import { imageMimeType, isImagePath, type RepositorySnapshot } from './huggingface.ts'
 
@@ -203,4 +205,30 @@ test('offers the native perspectives for each document kind', () => {
   assert.equal(perspectiveLabel('overview', 'pdf', 'paper.pdf'), '预览')
   assert.equal(perspectiveLabel('overview', 'generic', 'config.json'), '概览')
   assert.equal(perspectiveLabel('raw', 'generic', 'config.json'), '原文')
+})
+
+test('find bar options: ignore case, wrap around, contains / starts with / full word (NSTextFinder)', () => {
+  // The native find bar shows 4 for "alpha" on this text with its defaults (contains, ignore case).
+  const content = 'alpha beta alphabet\nAlpha gamma alp\nbeta alpha'
+  const count = (query: string, options: Partial<TextFindOptions> = {}, text = content) => {
+    let total = 0
+    forEachTextMatch(text, query, () => { total += 1 }, { ...defaultTextFindOptions, ...options })
+    return total
+  }
+  assert.equal(count('alpha'), 4)
+  assert.equal(count('alpha', { ignoreCase: false }), 3)
+  assert.equal(count('alp'), 5)
+  assert.equal(count('alp', { matchType: 'startsWith' }), 5)
+  assert.equal(count('alp', { matchType: 'fullWord' }), 1)
+  assert.equal(count('pha'), 4)
+  assert.equal(count('pha', { matchType: 'startsWith' }), 0)
+  assert.equal(count('alpha', { matchType: 'fullWord' }), 3)
+  assert.equal(count('alpha beta', { matchType: 'fullWord' }), 1)
+  assert.equal(count('snake', { matchType: 'fullWord' }, 'snake_case snake'), 1)
+
+  const fixed = { ...defaultTextFindOptions, wrapAround: false }
+  assert.equal(navigateTextMatches(content, 'alpha', 'next', 4, fixed).current, 4)
+  assert.equal(navigateTextMatches(content, 'alpha', 'previous', 1, fixed).current, 1)
+  assert.equal(navigateTextMatches(content, 'alpha', 'next', 4).current, 1)
+  assert.equal(navigateTextMatches(content, 'alpha', 'previous', 1).current, 4)
 })

@@ -2,6 +2,7 @@ import { activeChatTemplate } from './chatTemplates.ts'
 import { mergeChatTemplates, parseChatTemplates, type ChatTemplateCatalog } from './chatTemplates.ts'
 import type { RepositoryFile } from './huggingface.ts'
 import type { TokenizerStructure } from './tokenizer.ts'
+import { ggufContextLength, type GGUFOverview } from './gguf.ts'
 import { formatNumber, translate as t } from '../i18n.ts'
 
 export type ConsistencyMaterial<T> =
@@ -38,6 +39,8 @@ export type ConsistencyAnchor = {
 export type ConsistencyFinding = {
   id:
     | 'vocab-mismatch'
+    | 'gguf-context-mismatch'
+    | 'gguf-vocab-mismatch'
     | 'missing-tokenizer-class'
     | 'missing-chat-template'
     | 'eos-mismatch'
@@ -68,7 +71,7 @@ export type RepositoryConsistencyMaterials = {
   adapterConfig: ConsistencyMaterial<unknown>
   processorConfig: ConsistencyMaterial<unknown>
   chatTemplates: ConsistencyMaterial<ChatTemplateCatalog>
-  gguf: ConsistencyMaterial<never>
+  gguf: ConsistencyMaterial<GGUFOverview>
 }
 
 export type RepositoryConsistencyReport = {
@@ -262,6 +265,33 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
     })
   }
 
+  // Native ConsistencyAnalyzer:287-314.
+  const gguf = materials.gguf.state === 'available' ? materials.gguf.value : null
+  const ggufContext = gguf === null ? null : ggufContextLength(gguf)
+  if (configContext !== null && ggufContext !== null && BigInt(configContext) !== ggufContext) {
+    findings.push({
+      id: 'gguf-context-mismatch',
+      severity: 'warning',
+      title: t('ggufContextMismatchTitle'),
+      left: field('config.context', 'count', String(configContext), 'embedded'),
+      right: field('GGUF context_length', 'count', String(ggufContext), 'embedded'),
+      detail: t('ggufContextMismatchDetail'),
+      anchors: configContextKey === null ? [] : [{ material: 'config', key: configContextKey, side: 'left' }],
+    })
+  }
+  const embedding = gguf === null ? null : embeddingVocabularyDimension(gguf)
+  if (tokenizerVocab !== null && embedding !== null && embedding.dimension !== BigInt(tokenizerVocab)) {
+    findings.push({
+      id: 'gguf-vocab-mismatch',
+      severity: 'warning',
+      title: t('ggufVocabMismatchTitle'),
+      left: field(`GGUF ${embedding.name}[0]`, 'count', String(embedding.dimension), 'embedded'),
+      right: field('tokenizer.vocab_count', 'count', String(tokenizerVocab), 'derived'),
+      detail: t('ggufVocabMismatchDetail'),
+      anchors: [],
+    })
+  }
+
   if (materials.config.state === 'missing') {
     findings.push({
       id: 'missing-config',
@@ -285,7 +315,7 @@ export function analyzeRepositoryConsistency(materials: RepositoryConsistencyMat
       coverage('adapterConfig', adapter.status),
       coverage('processorConfig', processor.status),
       coverage('chatTemplates', materialStatus(materials.chatTemplates)),
-      coverage('gguf', ggufStatus(materials.gguf)),
+      coverage('gguf', materialStatus(materials.gguf)),
     ],
   }
 }
@@ -326,11 +356,13 @@ function materialStatus(material: ConsistencyMaterial<unknown>): ConsistencyCove
   }
 }
 
-// ponytail: GGUF is intentionally unavailable in this web slice; add a parser before widening this union.
-function ggufStatus(material: ConsistencyMaterial<never>): ConsistencyCoverage['status'] {
-  return material.state === 'available'
-    ? { state: 'skipped', reason: t('ggufWebSkippedReason') }
-    : material
+// Native embeddingVocabularyDimension: token_embd.weight, else the first *.token_embd.weight by name, else model.embed_tokens.weight.
+function embeddingVocabularyDimension(gguf: GGUFOverview): { name: string; dimension: bigint } | null {
+  const tensor = gguf.tensors.find(item => item.name === 'token_embd.weight')
+    ?? gguf.tensors.filter(item => item.name.endsWith('.token_embd.weight')).sort((l, r) => (l.name < r.name ? -1 : l.name > r.name ? 1 : 0))[0]
+    ?? gguf.tensors.find(item => item.name === 'model.embed_tokens.weight')
+  const dimension = tensor?.shape[0]
+  return tensor === undefined || dimension === undefined ? null : { name: tensor.name, dimension }
 }
 
 function identity(key: string, aliases: string[], object: Record<string, unknown>): ConsistencyField[] {

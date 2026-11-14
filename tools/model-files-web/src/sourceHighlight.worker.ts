@@ -28,6 +28,7 @@ import 'prismjs/components/prism-sql'
 import 'prismjs/components/prism-scss'
 import 'prismjs/components/prism-sass'
 import 'prismjs/components/prism-less'
+import { syntaxClassName } from './core/syntaxTokens.ts'
 
 type SourceSegment = { text: string; className: string }
 
@@ -58,14 +59,14 @@ self.onmessage = (event: MessageEvent<{ content: string; language: string }>) =>
     const flatten = (
       tokens: ReadonlyArray<string | Prism.Token>,
       inheritedTypes: ReadonlyArray<string> = [],
-      inheritedCategory = 'other',
+      inheritedClassName = syntaxClassName('plain'),
     ) => {
       tokens.forEach(token => {
         if (typeof token === 'string') {
           append(token, inheritedTypes.length === 0 ? '' : [
             'token',
             ...inheritedTypes,
-            `source-syntax-${inheritedCategory}`,
+            inheritedClassName,
           ].join(' '))
           return
         }
@@ -75,7 +76,7 @@ self.onmessage = (event: MessageEvent<{ content: string; language: string }>) =>
         flatten(
           Array.isArray(token.content) ? token.content : [token.content],
           [...inheritedTypes, token.type, ...aliases],
-          tokenClassName(token.type),
+          syntaxClassName(token.type),
         )
       })
     }
@@ -84,15 +85,4 @@ self.onmessage = (event: MessageEvent<{ content: string; language: string }>) =>
   } catch {
     self.postMessage({ ok: false } satisfies Reply)
   }
-}
-
-function tokenClassName(type: string): string {
-  if (type.startsWith('comment')) return 'comment'
-  if (['string', 'char', 'attr-value', 'template-variable', 'regex'].includes(type)) return 'string'
-  if (['number', 'boolean', 'null', 'constant', 'builtin', 'symbol'].includes(type)) return 'literal'
-  if (type === 'keyword') return 'keyword'
-  if (['atrule', 'tag', 'important', 'selector'].includes(type)) return 'structure'
-  if (['function', 'class-name', 'maybe-class-name', 'property', 'attr-name'].includes(type)) return 'name'
-  if (['operator', 'punctuation', 'namespace', 'url', 'entity'].includes(type)) return 'operator'
-  return 'other'
 }

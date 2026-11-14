@@ -189,10 +189,9 @@ function tensor(name: string, dtype = 'BF16'): TensorSummary {
   return {
     name,
     dtype,
-    shape: [1],
+    shape: [1n],
     parameters: 1n,
     bytes: 2n,
-    dataStart: 0n,
-    dataEnd: 2n,
+    offset: 0n,
   }
 }

@@ -361,10 +361,6 @@ export const messageCatalog = {
     'zh-Hans': '不是有效的 PDF 文件签名。',
     en: 'Not a valid PDF file signature.',
   },
-  metadataFieldCountLabel: {
-    'zh-Hans': 'Metadata 字段',
-    en: 'Metadata fields',
-  },
   messagesMustBeJsonArray: {
     'zh-Hans': 'Messages 必须是 JSON 数组。',
     en: 'Messages must be a JSON array.',
@@ -445,22 +441,6 @@ export const messageCatalog = {
     'zh-Hans': '仓库中没有可用的独立或内嵌 Chat Template。',
     en: 'The repository has no usable standalone or embedded chat template.',
   },
-  ggufPrefixTooShort: {
-    'zh-Hans': 'GGUF 前缀不足。',
-    en: 'The GGUF prefix is too short.',
-  },
-  ggufCountExceeded: {
-    'zh-Hans': 'GGUF 计数超过安全上限。',
-    en: 'The GGUF count exceeds the safety limit.',
-  },
-  safeTensorsPrefixLengthInvalid: {
-    'zh-Hans': 'SafeTensors 长度前缀必须为 8 bytes。',
-    en: 'The SafeTensors length prefix must be 8 bytes.',
-  },
-  safeTensorsHeaderLengthInvalid: {
-    'zh-Hans': 'SafeTensors Header 长度无效或超过安全上限。',
-    en: 'The SafeTensors header length is invalid or exceeds the safety limit.',
-  },
   safeTensorsRootNotObject: {
     'zh-Hans': 'SafeTensors header 根节点不是对象。',
     en: 'The SafeTensors header root is not an object.',
@@ -473,10 +453,6 @@ export const messageCatalog = {
     'zh-Hans': 'SafeTensors tensor {name} 的结构无效。',
     en: 'The structure of SafeTensors tensor {name} is invalid.',
   },
-  safeTensorsDtypeUnsupported: {
-    'zh-Hans': 'SafeTensors tensor {name} 的 dtype {dtype} 不受支持。',
-    en: 'The dtype {dtype} of SafeTensors tensor {name} is unsupported.',
-  },
   safeTensorsTensorOffsetsInvalid: {
     'zh-Hans': 'SafeTensors tensor {name} 的 data_offsets 无效。',
     en: 'The data_offsets of SafeTensors tensor {name} are invalid.',
@@ -484,26 +460,6 @@ export const messageCatalog = {
   safeTensorsShapeOverflow: {
     'zh-Hans': 'SafeTensors tensor {name} 的 shape 溢出。',
     en: 'The shape of SafeTensors tensor {name} overflows.',
-  },
-  safeTensorsByteAlignmentInvalid: {
-    'zh-Hans': 'SafeTensors tensor {name} 的 dtype 无法按完整字节对齐。',
-    en: 'The dtype of SafeTensors tensor {name} cannot be aligned to complete bytes.',
-  },
-  safeTensorsTensorLayoutMismatch: {
-    'zh-Hans': 'SafeTensors tensor {name} 的 shape、dtype 与 data_offsets 不匹配。',
-    en: 'The shape, dtype, and data_offsets of SafeTensors tensor {name} do not match.',
-  },
-  safeTensorsParameterTotalOverflow: {
-    'zh-Hans': 'SafeTensors 参数汇总值溢出。',
-    en: 'The SafeTensors parameter total overflows.',
-  },
-  safeTensorsTensorOffsetsNonContiguous: {
-    'zh-Hans': 'SafeTensors tensor {name} 的 data_offsets 不连续。',
-    en: 'The data_offsets of SafeTensors tensor {name} are not contiguous.',
-  },
-  safeTensorsDataSizeMismatch: {
-    'zh-Hans': 'SafeTensors 数据区大小无效：Header 索引 {actual} bytes，文件包含 {expected} bytes。',
-    en: 'The SafeTensors data size is invalid: the header declares {actual} bytes; the file contains {expected} bytes.',
   },
   statusNotFound: {
     'zh-Hans': '未发现',
@@ -540,10 +496,6 @@ export const messageCatalog = {
   missingConfigDetail: {
     'zh-Hans': '仓库中没有 config.json 或 configuration.json。',
     en: 'The repository has no config.json or configuration.json.',
-  },
-  ggufWebSkippedReason: {
-    'zh-Hans': 'Web 仅读取 24-byte prefix，缺少 metadata/tensor directory。',
-    en: 'The web reads only the 24-byte prefix and lacks metadata/tensor directories.',
   },
   ggufParseFailed: {
     'zh-Hans': 'GGUF 解析失败：{reason}',
@@ -631,7 +583,7 @@ export const messageCatalog = {
   },
   ggufArrayPreviewDisplay: {
     'zh-Hans': '[{preview}] · {count} 项',
-    en: '[{preview}] · {count} items',
+    en: '[{preview}] · count {count}',
   },
   ggufMetadataTypeInvalid: {
     'zh-Hans': 'GGUF metadata 类型 {typeCode} 无效。',
@@ -1878,10 +1830,6 @@ export const messageCatalog = {
     'zh-Hans': '渲染',
     en: 'Rendered',
   },
-  readerLayoutLabel: {
-    'zh-Hans': '排版',
-    en: 'Layout',
-  },
   readerDefaultLayout: {
     'zh-Hans': '默认',
     en: 'Default',
@@ -1889,18 +1837,6 @@ export const messageCatalog = {
   readerCompactLayout: {
     'zh-Hans': '紧凑',
     en: 'Compact',
-  },
-  readerExternalImage: {
-    'zh-Hans': '图片：{alt}',
-    en: 'Image: {alt}',
-  },
-  readerNoImageAlt: {
-    'zh-Hans': '无说明',
-    en: 'No description',
-  },
-  readerOpenLink: {
-    'zh-Hans': '打开链接',
-    en: 'Open link',
   },
   readerPdfDocumentTitle: {
     'zh-Hans': 'PDF 文档',
@@ -1914,10 +1850,6 @@ export const messageCatalog = {
     'zh-Hans': '适应窗口',
     en: 'Fit',
   },
-  readerImageActual: {
-    'zh-Hans': '原始尺寸',
-    en: '100%',
-  },
   readerZoomIn: {
     'zh-Hans': '放大',
     en: 'Zoom in',
@@ -1925,10 +1857,6 @@ export const messageCatalog = {
   readerZoomOut: {
     'zh-Hans': '缩小',
     en: 'Zoom out',
-  },
-  readerImageFailed: {
-    'zh-Hans': '无法渲染图片',
-    en: 'Unable to render image',
   },
   readerExpandAllFolds: {
     'zh-Hans': '全部展开',
@@ -1938,23 +1866,7 @@ export const messageCatalog = {
     'zh-Hans': '当前文件查找',
     en: 'Find in current file',
   },
-  readerPreviousMatch: {
-    'zh-Hans': '上一个命中',
-    en: 'Previous match',
-  },
-  readerNextMatch: {
-    'zh-Hans': '下一个命中',
-    en: 'Next match',
-  },
-  noticeSafeTensors: {
-    'zh-Hans': '只读取了 {size} JSON Header；没有请求 tensor 数据。',
-    en: 'Read only the {size} JSON header; no tensor data was requested.',
-  },
   // ponytail: native adds 「；最后一个 Range 可能包含少量首个 tensor 数据。」, true only once D-1 reads 1 MiB chunks.
-  noticeGguf: {
-    'zh-Hans': '只读取了 {size} GGUF 文件前缀。',
-    en: 'Read only a {size} GGUF prefix.',
-  },
   noticeImatrix: {
     'zh-Hans': '读取了完整的 {size} legacy imatrix 文件；只解析，不执行。',
     en: 'Read the whole {size} legacy imatrix file; parsed only, never executed.',
@@ -1999,10 +1911,6 @@ export const messageCatalog = {
   readerReadingView: {
     'zh-Hans': '阅读视图',
     en: 'Reading view',
-  },
-  readerShowingCount: {
-    'zh-Hans': '显示 {visible} / {total}',
-    en: 'Showing {visible} / {total}',
   },
   templateSourceTab: {
     'zh-Hans': '源码',
@@ -2056,13 +1964,9 @@ export const messageCatalog = {
     'zh-Hans': '仓库没有提供文件大小，已拒绝 SafeTensors 检查。',
     en: 'The repository does not provide the file size; SafeTensors inspection was refused.',
   },
-  appSafeTensorsHeaderTooLarge: {
-    'zh-Hans': 'SafeTensors Header 超过文件大小。',
-    en: 'The SafeTensors header exceeds the file size.',
-  },
   appGgufNotOpenedThisSession: {
     'zh-Hans': '未在当前会话打开',
-    en: 'Not opened in this session',
+    en: 'Not opened in the current session',
   },
   appHuggingFaceRepositoryLabel: {
     'zh-Hans': 'Hugging Face 仓库',
@@ -2152,114 +2056,6 @@ export const messageCatalog = {
     'zh-Hans': '为避免意外下载大文件，应用只展示文件名、大小和哈希。',
     en: 'To avoid downloading large files by accident, the app shows only the file name, size and hash.',
   },
-  appParameterTotalLabel: {
-    'zh-Hans': '参数总数',
-    en: 'Parameter total',
-  },
-  appDataRegionSizeLabel: {
-    'zh-Hans': '数据区大小',
-    en: 'Data region size',
-  },
-  appSafeTensorsScopeNote: {
-    'zh-Hans': '名称、dtype、shape、offset 与 Metadata 来自 Header；参数量和字节数为浏览器推导。',
-    en: 'Names, dtype, shape, offsets, and metadata come from the header; parameter and byte totals are derived in the browser.',
-  },
-  appFilterMetadataLabel: {
-    'zh-Hans': '筛选 Metadata',
-    en: 'Filter metadata',
-  },
-  appFilterTensorLabel: {
-    'zh-Hans': '筛选 Tensor',
-    en: 'Filter tensors',
-  },
-  appKeyOrValueContainsPlaceholder: {
-    'zh-Hans': 'Key 或 Value 包含…',
-    en: 'Key or value contains…',
-  },
-  appNameOrDtypeContainsPlaceholder: {
-    'zh-Hans': '名称或 dtype 包含…',
-    en: 'Name or dtype contains…',
-  },
-  appShowingTensorCount: {
-    'zh-Hans': '显示 {visible} 行 / 匹配 {matching} 个 Tensor（总计 {total}）',
-    en: 'Showing {visible} rows / {matching} matching tensors ({total} total)',
-  },
-  appSafeTensorsMetadataTableAriaLabel: {
-    'zh-Hans': 'SafeTensors Metadata',
-    en: 'SafeTensors metadata',
-  },
-  appKeyColumn: {
-    'zh-Hans': 'Key',
-    en: 'Key',
-  },
-  appValueColumn: {
-    'zh-Hans': 'Value',
-    en: 'Value',
-  },
-  appSafeTensorsTensorsTableAriaLabel: {
-    'zh-Hans': 'SafeTensors Tensors',
-    en: 'SafeTensors tensors',
-  },
-  appTensorColumn: {
-    'zh-Hans': 'Tensor',
-    en: 'Tensor',
-  },
-  appDTypeColumn: {
-    'zh-Hans': 'DType',
-    en: 'dtype',
-  },
-  appShapeColumn: {
-    'zh-Hans': 'Shape',
-    en: 'Shape',
-  },
-  appParametersColumn: {
-    'zh-Hans': '参数',
-    en: 'Parameters',
-  },
-  appBytesColumn: {
-    'zh-Hans': 'Bytes',
-    en: 'Bytes',
-  },
-  appTensorGroupCount: {
-    'zh-Hans': '{count} 个 Tensor',
-    en: '{count} tensors',
-  },
-  appExpandGroupAction: {
-    'zh-Hans': '{label}，展开，{count} 个 Tensor',
-    en: '{label}, expand, {count} tensors',
-  },
-  appCollapseGroupAction: {
-    'zh-Hans': '{label}，收起，{count} 个 Tensor',
-    en: '{label}, collapse, {count} tensors',
-  },
-  appCollapseAllAction: {
-    'zh-Hans': '全部收起',
-    en: 'Collapse all',
-  },
-  appHideTensorDetailsAction: {
-    'zh-Hans': '隐藏详情',
-    en: 'Hide details',
-  },
-  appShowTensorDetailsAction: {
-    'zh-Hans': '显示详情',
-    en: 'Show details',
-  },
-  appTensorBreadcrumbAriaLabel: {
-    'zh-Hans': 'Tensor 路径：{path}',
-    en: 'Tensor path: {path}',
-  },
-  appShowMoreTensorRowsAction: {
-    'zh-Hans': '再显示 100 行',
-    en: 'Show 100 more rows',
-  },
-  appSelectedTensorTitle: {
-    'zh-Hans': '选中 Tensor · {name}',
-    en: 'Selected tensor · {name}',
-  },
-  appDataOffsetsLabel: {
-    'zh-Hans': 'Data Offsets',
-    en: 'Data offsets',
-  },
   appViewConsistencyReportAriaLabel: {
     'zh-Hans': '查看仓库一致性报告',
     en: 'View repository consistency report',
@@ -2336,58 +2132,6 @@ export const messageCatalog = {
     'zh-Hans': '正在检查仓库材料…',
     en: 'Checking repository materials…',
   },
-  appRepositoryIdentityAriaLabel: {
-    'zh-Hans': '仓库身份',
-    en: 'Repository identity',
-  },
-  appConsistencyCoverageAriaLabel: {
-    'zh-Hans': '一致性 Coverage',
-    en: 'Consistency coverage',
-  },
-  appMaterialColumn: {
-    'zh-Hans': 'Material',
-    en: 'Material',
-  },
-  appStatusColumn: {
-    'zh-Hans': 'Status',
-    en: 'Status',
-  },
-  appGgufVersionLabel: {
-    'zh-Hans': 'GGUF 版本',
-    en: 'GGUF version',
-  },
-  appTensorCountLabel: {
-    'zh-Hans': 'Tensor 数量',
-    en: 'Tensor count',
-  },
-  appGgufMetadataCountLabel: {
-    'zh-Hans': 'Metadata 数量',
-    en: 'Metadata count',
-  },
-  appEndiannessLabel: {
-    'zh-Hans': '字节序',
-    en: 'Byte order',
-  },
-  appLittleEndianValue: {
-    'zh-Hans': 'Little-endian',
-    en: 'Little-endian',
-  },
-  appBigEndianValue: {
-    'zh-Hans': 'Big-endian',
-    en: 'Big-endian',
-  },
-  appGgufScopeNote: {
-    'zh-Hans': 'v0.1 仅提供 GGUF 基础摘要。完整 metadata/tensor directory 因无法保证 0 bytes tensor 数据而未启用。',
-    en: 'v0.1 provides only a basic GGUF summary. Full metadata/tensor directories are disabled because 0-byte tensor data cannot be guaranteed.',
-  },
-  appMetadataTab: {
-    'zh-Hans': 'Metadata',
-    en: 'Metadata',
-  },
-  appActualReadBytesValue: {
-    'zh-Hans': '{count} bytes',
-    en: '{count} bytes',
-  },
   appLoadingFileTitle: {
     'zh-Hans': '正在后台读取 {name}…',
     en: 'Reading {name} in the background…',
@@ -2395,78 +2139,6 @@ export const messageCatalog = {
   appLoadingSwitchHint: {
     'zh-Hans': '可切换到其他文件取消',
     en: 'switch to another file to cancel',
-  },
-  appEntryCountLabel: {
-    'zh-Hans': 'Entry 数量',
-    en: 'Entry count',
-  },
-  appChunkCountLabel: {
-    'zh-Hans': 'Chunk 数量',
-    en: 'Chunk count',
-  },
-  appDatasetLabel: {
-    'zh-Hans': '数据集',
-    en: 'Dataset',
-  },
-  appFileSizeLabel: {
-    'zh-Hans': '文件大小',
-    en: 'File size',
-  },
-  appNoneValue: {
-    'zh-Hans': '无',
-    en: 'None',
-  },
-  appFilterEntryLabel: {
-    'zh-Hans': '筛选 Entry',
-    en: 'Filter entries',
-  },
-  appTensorNameContainsPlaceholder: {
-    'zh-Hans': 'Tensor 名称包含…',
-    en: 'Tensor name contains…',
-  },
-  appImatrixEntriesTableAriaLabel: {
-    'zh-Hans': 'Imatrix Entries',
-    en: 'Imatrix entries',
-  },
-  appCallsColumn: {
-    'zh-Hans': 'Calls',
-    en: 'Calls',
-  },
-  appValuesColumn: {
-    'zh-Hans': 'Values',
-    en: 'Values',
-  },
-  appMinColumn: {
-    'zh-Hans': 'Min',
-    en: 'Min',
-  },
-  appMaxColumn: {
-    'zh-Hans': 'Max',
-    en: 'Max',
-  },
-  appMeanColumn: {
-    'zh-Hans': 'Mean',
-    en: 'Mean',
-  },
-  appSelectedItemTitle: {
-    'zh-Hans': '选中项 · {name}',
-    en: 'Selected item · {name}',
-  },
-  appCallCountLabel: {
-    'zh-Hans': 'Call Count',
-    en: 'Call count',
-  },
-  appValueCountLabel: {
-    'zh-Hans': 'Value Count',
-    en: 'Value count',
-  },
-  appMinMaxLabel: {
-    'zh-Hans': 'Min / Max',
-    en: 'Min / Max',
-  },
-  appMeanLabel: {
-    'zh-Hans': 'Mean',
-    en: 'Mean',
   },
   comparisonSecondLocalDirectoryLabel: {
     'zh-Hans': '选择第二个本地目录',
@@ -2532,6 +2204,200 @@ export const messageCatalog = {
     'zh-Hans': '已释放',
     en: 'disposed',
   },
+  // Batch 5: issues panel (DetailView ConsistencyReportView, InspectionField.Origin).
+  consistencyInsufficientNote: {
+    'zh-Hans': '核心材料不足；以下 coverage 显示缺失、跳过或失败项。',
+    en: 'Core materials are insufficient; the coverage below shows missing, skipped, or failed items.',
+  },
+  consistencyNoFindings: {
+    'zh-Hans': '未发现可报告的不一致。',
+    en: 'No reportable inconsistencies were found.',
+  },
+  consistencyIdentityTitle: {
+    'zh-Hans': '身份',
+    en: 'Identity',
+  },
+  fieldOriginEmbedded: {
+    'zh-Hans': '文件内嵌',
+    en: 'Embedded in file',
+  },
+  ggufContextMismatchTitle: {
+    'zh-Hans': 'GGUF 上下文长度不一致',
+    en: 'GGUF context length mismatch',
+  },
+  ggufContextMismatchDetail: {
+    'zh-Hans': '已检查 GGUF 的 context_length 与 config.json 不同。',
+    en: 'The checked GGUF context_length differs from config.json.',
+  },
+  ggufVocabMismatchTitle: {
+    'zh-Hans': 'GGUF Token Embedding 与词表不一致',
+    en: 'GGUF token embedding does not match the vocabulary',
+  },
+  ggufVocabMismatchDetail: {
+    'zh-Hans': '保守识别的 token embedding 第一维与 tokenizer 词表项数不同。',
+    en: 'The conservatively identified first token embedding dimension differs from the tokenizer vocabulary count.',
+  },
+  // Batch 5 readers: C-5 find bar (AppKit NSTextFinder bar copy, AppKit NSSearchBar.loctable), C-8 Markdown theme, C-9 image.
+  readerFindPlaceholder: {
+    'zh-Hans': '查找',
+    en: 'Find',
+  },
+  readerFindMenu: {
+    'zh-Hans': '查找菜单',
+    en: 'Find Menu',
+  },
+  readerFindIgnoreCase: {
+    'zh-Hans': '忽略大小写',
+    en: 'Ignore Case',
+  },
+  readerFindWrapAround: {
+    'zh-Hans': '循环查找',
+    en: 'Wrap Around',
+  },
+  readerFindContains: {
+    'zh-Hans': '包含',
+    en: 'Contains',
+  },
+  readerFindStartsWith: {
+    'zh-Hans': '开头是',
+    en: 'Starts With',
+  },
+  readerFindFullWord: {
+    'zh-Hans': '整个词',
+    en: 'Full Word',
+  },
+  readerFindPrevious: {
+    'zh-Hans': '查找文本出现的上一个位置',
+    en: 'Find previous occurrence of the find text',
+  },
+  readerFindNext: {
+    'zh-Hans': '查找文本出现的下一个位置',
+    en: 'Find next occurrence of the find text',
+  },
+  readerFindDone: {
+    'zh-Hans': '完成',
+    en: 'Done',
+  },
+  readerMarkdownTheme: {
+    'zh-Hans': '排版主题',
+    en: 'Typography Theme',
+  },
+  readerMarkdownThemeLabel: {
+    'zh-Hans': 'Markdown 排版主题',
+    en: 'Markdown typography theme',
+  },
+  readerImageCannotDisplay: {
+    'zh-Hans': '无法显示图片',
+    en: 'Unable to Display Image',
+  },
+  readerImageCannotDecode: {
+    'zh-Hans': '系统无法解码此图片格式。',
+    en: 'The system can’t decode this image format.',
+  },
+  // Batch 5 · weights readers (W-1…W-6, G-1, I-1): native DetailView WeightWorkspaceView and IMatrixWorkspaceView.
+  wtSafeTensorsTitle: { 'zh-Hans': 'SafeTensors 权重结构', en: 'SafeTensors weight structure' },
+  wtSafeTensorsSubtitle: {
+    'zh-Hans': 'Header 描述 tensor 目录；权重数据区未读取。',
+    en: 'The header describes the tensor directory; weight data was not read.',
+  },
+  wtTensorCount: { 'zh-Hans': 'Tensor 数量', en: 'Tensor count' },
+  wtParameterTotal: { 'zh-Hans': '参数总数', en: 'total parameter count' },
+  wtWeightDataSize: { 'zh-Hans': '权重数据大小', en: 'Weight data size' },
+  wtPrimaryDataType: { 'zh-Hans': '主要数据类型', en: 'Primary data type' },
+  wtHeaderSize: { 'zh-Hans': 'Header 大小', en: 'Header size' },
+  wtOriginEmbedded: { 'zh-Hans': '文件内嵌', en: 'Embedded in file' },
+  wtOriginDerived: { 'zh-Hans': '应用推导', en: 'Derived by app' },
+  wtOriginRepository: { 'zh-Hans': '来源信息', en: 'Source Information' },
+  wtOriginRuntime: { 'zh-Hans': '运行结果', en: 'Runtime Result' },
+  wtViewAllMetadata: { 'zh-Hans': '查看全部 {count} 条 Metadata', en: 'View all {count} metadata entries' },
+  wtViewAllMetadataOne: { 'zh-Hans': '查看全部 {count} 条 Metadata', en: 'View all {count} metadata entry' },
+  wtViewAllTensors: { 'zh-Hans': '查看全部 {count} 个 Tensors', en: 'View all {count} tensors' },
+  wtViewAllTensorsOne: { 'zh-Hans': '查看全部 {count} 个 Tensors', en: 'View all {count} tensor' },
+  wtItemCount: { 'zh-Hans': '{count} 项', en: '{count} items' },
+  wtItemCountOne: { 'zh-Hans': '{count} 项', en: '{count} item' },
+  wtSearchMetadata: { 'zh-Hans': '搜索 key 或值', en: 'Search keys or values' },
+  wtFieldColumn: { 'zh-Hans': '字段', en: 'Field' },
+  wtTypeColumn: { 'zh-Hans': '类型', en: 'Type' },
+  wtValueColumn: { 'zh-Hans': '值', en: 'Value' },
+  wtSourceColumn: { 'zh-Hans': '来源', en: 'Source' },
+  wtFieldDetails: { 'zh-Hans': '字段详情', en: 'Field details' },
+  wtFullValue: { 'zh-Hans': '完整值', en: 'Full value' },
+  wtSelectMetadata: { 'zh-Hans': '选择 Metadata', en: 'Select metadata' },
+  wtSelectMetadataMessage: { 'zh-Hans': '选择一行查看完整值、类型和来源。', en: 'Select a row to view its full value, type, and source.' },
+  wtCollapseAll: { 'zh-Hans': '全部收起', en: 'Collapse All' },
+  wtSearchTensors: { 'zh-Hans': '搜索名称或 dtype', en: 'Search names or dtype' },
+  wtHideDetails: { 'zh-Hans': '隐藏详情', en: 'Hide details' },
+  wtShowDetails: { 'zh-Hans': '显示详情', en: 'Show details' },
+  wtHideDetailsHelp: { 'zh-Hans': '隐藏右侧 Tensor 详情', en: 'Hide tensor details' },
+  wtShowDetailsHelp: { 'zh-Hans': '显示右侧 Tensor 详情', en: 'Show tensor details' },
+  wtNameColumn: { 'zh-Hans': '名称', en: 'Name' },
+  wtParametersColumn: { 'zh-Hans': '参数', en: 'Parameters' },
+  wtTensorGroupCount: { 'zh-Hans': '{count} 个 Tensors', en: '{count} Tensors' },
+  wtExpandGroup: { 'zh-Hans': '展开 {label}', en: 'Expand {label}' },
+  wtCollapseGroup: { 'zh-Hans': '收起 {label}', en: 'Collapse {label}' },
+  wtTensorDetails: { 'zh-Hans': 'Tensor 详情', en: 'Tensor details' },
+  wtHide: { 'zh-Hans': '隐藏', en: 'Hide' },
+  wtDataSize: { 'zh-Hans': '数据大小', en: 'Data size' },
+  wtDataOffset: { 'zh-Hans': '数据 offset', en: 'Data offset' },
+  wtTensorNote: { 'zh-Hans': '这里只展示目录信息，不读取 tensor 数据。', en: 'Only directory information is shown; tensor data is not read.' },
+  wtSelectTensor: { 'zh-Hans': '选择 Tensor', en: 'Select tensor' },
+  wtSelectTensorMessage: { 'zh-Hans': '选择一行查看 shape、类型和 offset。', en: 'Select a row to view shape, type, and offset.' },
+  wtGgufModelTitle: { 'zh-Hans': 'GGUF 模型结构', en: 'GGUF model structure' },
+  wtGgufImatrixSubtitle: {
+    'zh-Hans': 'GGUF v{version} · importance matrix · 只解析 metadata 与 tensor 目录。',
+    en: 'GGUF v{version} · importance matrix · Parses metadata and tensor directory only.',
+  },
+  wtGgufSubtitle: {
+    'zh-Hans': 'GGUF v{version} · {endianness} · 只解析 metadata 与 tensor 目录。',
+    en: 'GGUF v{version} · {endianness} · Parses metadata and tensor directory only.',
+  },
+  wtMetadataCount: { 'zh-Hans': 'Metadata 数量', en: 'Metadata count' },
+  wtDataAlignment: { 'zh-Hans': '数据区对齐', en: 'Data alignment' },
+  wtTensorDataOffset: { 'zh-Hans': 'Tensor 数据起点', en: 'Tensor data offset' },
+  wtPrefixRead: { 'zh-Hans': '已读取前缀', en: 'Prefix read' },
+  wtImatrixEntries: { 'zh-Hans': 'Imatrix 条目', en: 'Imatrix entries' },
+  wtDataset: { 'zh-Hans': '数据集', en: 'Dataset' },
+  wtChunkCount: { 'zh-Hans': 'Chunk 数', en: 'Chunk count' },
+  wtChunkSize: { 'zh-Hans': 'Chunk 大小', en: 'Chunk size' },
+  wtArchitecture: { 'zh-Hans': '架构', en: 'Architecture' },
+  wtContextLength: { 'zh-Hans': '上下文长度', en: 'Context length' },
+  wtQuantizeImatrix: { 'zh-Hans': '量化 Imatrix', en: 'Quantization Imatrix' },
+  wtImatrixDataset: { 'zh-Hans': 'Imatrix 数据集', en: 'Imatrix dataset' },
+  wtGgufInvalid: { 'zh-Hans': 'GGUF 无效：{message}', en: 'Invalid GGUF: {message}' },
+  wtGgufEndedEarly: {
+    'zh-Hans': '文件在 metadata 与 tensor 目录完成前结束。',
+    en: 'The file ended before the metadata and tensor directory were complete.',
+  },
+  wtGgufTooLarge: {
+    'zh-Hans': 'GGUF metadata 与 tensor 目录超过 32 MB 安全上限。',
+    en: 'The GGUF metadata and tensor directory exceed the 32 MB safe limit.',
+  },
+  wtGgufMissingSize: {
+    'zh-Hans': '来源未提供文件大小，无法安全读取 GGUF 前缀。',
+    en: 'The source did not provide the file size, so the GGUF prefix cannot be read safely.',
+  },
+  wtGgufNotice: {
+    'zh-Hans': '只读取了 {size} GGUF 文件前缀；最后一个 Range 可能包含少量首个 tensor 数据。',
+    en: 'Only the first {size} of the GGUF file was read; the final range may contain a small amount of the first tensor data.',
+  },
+  wtSafeTensorsNotice: {
+    'zh-Hans': '只读取了 {size} JSON Header；没有请求 tensor 数据。',
+    en: 'Only {size} of the JSON header was read; no tensor data was requested.',
+  },
+  wtImatrixSubtitle: {
+    'zh-Hans': 'llama.cpp legacy imatrix.dat · 每个条目记录 tensor 激活的重要性统计。',
+    en: 'llama.cpp legacy imatrix.dat · Each entry records importance statistics for tensor activations.',
+  },
+  wtEntryCount: { 'zh-Hans': '条目数', en: 'Entry Count' },
+  wtNotRecorded: { 'zh-Hans': '未记录', en: 'Not recorded' },
+  wtFileSize: { 'zh-Hans': '文件大小', en: 'File Size' },
+  wtFilterTensors: { 'zh-Hans': '筛选 tensor', en: 'Filter tensors' },
+  wtSafeTensorsHeaderInvalid: { 'zh-Hans': 'SafeTensors header 无效。', en: 'Invalid SafeTensors header.' },
+  wtSafeTensorsHeaderTooLarge: {
+    'zh-Hans': 'SafeTensors header 为 {size} 字节，超过安全上限。',
+    en: 'The SafeTensors header size is {size} and exceeds the safe limit.',
+  },
+  wtSafeTensorsTotalOverflow: { 'zh-Hans': 'SafeTensors 汇总值溢出。', en: 'A SafeTensors aggregate value overflows.' },
 } as const satisfies Record<string, Record<Locale, string>>
 
 export type MessageKey = keyof typeof messageCatalog

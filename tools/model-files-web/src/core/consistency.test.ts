@@ -499,17 +499,37 @@ test('never checks GGUF or emits GGUF findings', () => {
   }
 })
 
-test('skips runtime-available GGUF without emitting findings', () => {
-  const report = analyzeRepositoryConsistency(materials({
-    config: available({ vocab_size: 1 }),
-    gguf: available(undefined as never),
-  }))
-
-  assert.deepEqual(report.coverage.at(-1)?.status, {
-    state: 'skipped',
-    reason: 'Web 仅读取 24-byte prefix，缺少 metadata/tensor directory。',
+test('checks an opened GGUF against config context and tokenizer vocabulary like native', () => {
+  const entry = (key: string, value: bigint | string) => ({
+    key, type: typeof value === 'string' ? 'string' : 'uint32', display: String(value),
+    stringValue: typeof value === 'string' ? value : null, unsignedValue: typeof value === 'string' ? null : value,
   })
-  assert.equal(report.findings.some(item => item.id.startsWith('gguf-')), false)
+  const tensor = (name: string, shape: bigint[]) => ({ name, type: 'F16', shape, parameters: 0n, offset: 0n })
+  const overview = (tensors: ReturnType<typeof tensor>[]) => ({
+    version: 3, endianness: 'little' as const, parameterCount: 0n, tensorDataOffset: 0, alignment: 32n,
+    metadata: [entry('general.architecture', 'qwen2'), entry('llama.context_length', 8192n), entry('qwen2.context_length', 4096n)],
+    tensors,
+  })
+  const report = analyzeRepositoryConsistency(materials({
+    config: available({ max_position_embeddings: 2048 }),
+    tokenizer: available(tokenizer(151643)),
+    gguf: available(overview([tensor('b.token_embd.weight', [7n, 8n]), tensor('a.token_embd.weight', [1000n, 8n])])),
+  }))
+  assert.deepEqual(report.coverage.at(-1)?.status, { state: 'checked' })
+  const context = report.findings.find(item => item.id === 'gguf-context-mismatch')
+  assert.equal(context?.right.value, '4096')
+  assert.deepEqual(context?.anchors, [{ material: 'config', key: 'max_position_embeddings', side: 'left' }])
+  const vocab = report.findings.find(item => item.id === 'gguf-vocab-mismatch')
+  assert.equal(vocab?.left.key, 'GGUF a.token_embd.weight[0]')
+  assert.equal(vocab?.left.value, '1000')
+  assert.deepEqual(vocab?.anchors, [])
+
+  const matching = analyzeRepositoryConsistency(materials({
+    config: available({ max_position_embeddings: 4096 }),
+    tokenizer: available(tokenizer(1000)),
+    gguf: available(overview([tensor('model.embed_tokens.weight', [1000n, 8n])])),
+  }))
+  assert.equal(matching.findings.some(item => item.id.startsWith('gguf-')), false)
 })
 
 test('continues other findings when one JSON material has a bad root', () => {
