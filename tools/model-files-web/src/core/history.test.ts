@@ -2,20 +2,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { addRepositoryHistory, parseRepositoryHistory } from './history.ts'
 
-test('keeps ten recent canonical repositories with case-insensitive deduplication', () => {
-  const history = Array.from({ length: 10 }, (_, index) => `owner/model-${index}`)
-  assert.deepEqual(addRepositoryHistory(history, 'OWNER/model-4'), [
-    'OWNER/model-4',
-    'owner/model-0',
-    'owner/model-1',
-    'owner/model-2',
-    'owner/model-3',
-    'owner/model-5',
-    'owner/model-6',
-    'owner/model-7',
-    'owner/model-8',
-    'owner/model-9',
-  ])
+test('keeps every recent canonical repository with case-insensitive deduplication', () => {
+  const history = Array.from({ length: 12 }, (_, index) => `owner/model-${index}`)
+  const updated = addRepositoryHistory(history, 'OWNER/model-4')
+  assert.equal(updated.length, 12)
+  assert.deepEqual(updated.slice(0, 3), ['OWNER/model-4', 'owner/model-0', 'owner/model-1'])
+  assert.equal(addRepositoryHistory(updated, 'new/model').length, 13)
+  assert.equal(parseRepositoryHistory(JSON.stringify(updated)).length, 12)
 })
 
 test('fails closed for malformed and invalid persisted history', () => {

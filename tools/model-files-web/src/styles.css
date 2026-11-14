@@ -1,19 +1,22 @@
+/* D-12: native keeps system backgrounds (Palette.swift), so these approximate macOS system colors:
+   textBackground for --panel, windowBackground for --bar, the sidebar material, separator for --line. */
 :root {
-  color: #202124;
-  background: #e9eaec;
+  color: #262626;
+  background: #e5e5e5;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --accent: #3478f6;
   --accent-soft: #e8f0ff;
-  --line: #d7d9de;
-  --line-strong: #c7cad0;
-  --muted: #6c7078;
+  --line: #e0e0e0;
+  --line-strong: #d0d0d0;
+  /* ponytail: secondaryLabel is 50% black (3.9:1); darkened to keep 4.5:1 on --sidebar and --bar too. */
+  --muted: #636366;
   --panel: #fff;
-  --panel-alt: #f5f6f8;
-  --sidebar: #f0f0f2;
+  --panel-alt: #f5f5f5;
+  --sidebar: #e8e8e8;
   --danger: #b5332f;
-  --bar: #ececee;
+  --bar: #ececec;
   /* Native Palette.swift */
   --warning: #c27c0e;
   --warning-text: #8a5a00;
@@ -25,7 +28,7 @@
 
 * { box-sizing: border-box; }
 html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
-body { min-height: 100vh; background: #e9eaec; }
+body { min-height: 100vh; background: #e5e5e5; }
 button, input, textarea { color: inherit; font: inherit; }
 button, a, input, textarea { outline-offset: 2px; }
 button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); }
@@ -36,7 +39,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   min-height: 600px;
   margin: 16px;
   overflow: hidden;
-  border: 1px solid #bfc2c8;
+  border: 1px solid #c8c8c8;
   border-radius: 14px;
   background: var(--panel);
   box-shadow: 0 24px 80px rgb(30 35 45 / 18%), 0 2px 8px rgb(30 35 45 / 10%);
@@ -57,11 +60,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 
 .brand { flex: none; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; }
-.web-label { color: var(--muted); font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: .08em; }
 .app-mark { display: inline-flex; flex-shrink: 0; width: 28px; height: 28px; }
 .app-mark img { width: 100%; height: 100%; object-fit: contain; }
 .repository-form { flex: 0 1 600px; display: flex; gap: 8px; min-width: 0; }
-.repository-form > input { min-width: 80px; flex: 1; }
+/* Native ModelHistoryField is 460 pt wide; the guidance popover hangs under it at the same width. */
+.repository-field { position: relative; flex: 0 1 460px; min-width: 80px; }
+.repository-guidance {
+  position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; width: 100%; padding: 5px 0; border: 1px solid var(--line-strong);
+  border-radius: 9px; background: var(--panel); box-shadow: 0 8px 24px rgb(0 0 0 / 16%); pointer-events: none;
+}
+.repository-guidance-row { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 12px; font-size: 12px; white-space: nowrap; overflow: hidden; }
+.repository-guidance-row svg { width: 16px; height: 16px; flex: none; fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-linejoin: round; }
+.repository-guidance-row strong { font-weight: 500; }
+.repository-guidance-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
 .source-select { max-width: 140px; min-width: 0; height: 32px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel); color: inherit; font: inherit; font-size: 11px; }
 .source-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .https-help { margin-bottom: 12px; font-size: 11px; line-height: 1.5; color: var(--muted); }
@@ -78,9 +89,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .primary-button:hover { background: #286be0; }
 .primary-button:disabled { cursor: not-allowed; opacity: .64; }
 .directory-button {
-  height: 32px; display: inline-flex; align-items: center; flex: none; padding: 0 11px; border: 1px solid var(--line-strong);
-  border-radius: 7px; background: #fff; font-size: 11px; cursor: pointer; white-space: nowrap;
+  height: 32px; display: inline-flex; align-items: center; flex: none; padding: 0 9px; border: 1px solid var(--line-strong);
+  border-radius: 7px; background: #fff; cursor: pointer;
 }
+.directory-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linejoin: round; }
 .directory-button input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
 .directory-button:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .history-button {
@@ -94,7 +106,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 :is(.status-ok, .badge-icon) .cut { stroke: var(--bar); stroke-width: 1.6; }
 .status-ok { color: var(--status-green); }
 
-.workspace { min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr); }
+.workspace { min-height: 0; display: grid; grid-template-columns: var(--sidebar-width, 292px) auto minmax(0, 1fr); }
+.workspace[data-sidebar="closed"] { grid-template-columns: minmax(0, 1fr); }
+.sidebar[hidden] { display: none; }
+.workspace > .detail { grid-column: -2 / -1; }
+.sidebar-toggle { flex: none; margin-right: -6px; }
 .sidebar { min-height: 0; overflow: auto; padding: 12px 10px 60px; border-right: 1px solid var(--line-strong); background: var(--sidebar); }
 .search-field { position: relative; display: block; }
 .search-field svg { position: absolute; top: 8px; left: 9px; width: 13px; height: 13px; fill: none; stroke: #858a93; stroke-width: 1.5; }
@@ -157,7 +173,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   width: 100%; padding: 6px 10px; border: 0; border-radius: 5px; background: transparent;
   color: inherit; font-size: 11.5px; text-align: left; cursor: pointer;
 }
-.file-context-menu button:hover { background: rgb(127 127 127 / 18%); }
+.file-context-menu button:hover:not(:disabled) { background: rgb(127 127 127 / 18%); }
+.file-context-menu button:disabled { opacity: .45; cursor: default; }
+.file-context-menu hr { margin: 4px 6px; border: 0; border-top: 1px solid var(--line); }
 
 .detail { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; }
 .detail-main { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto auto; }
@@ -900,7 +918,7 @@ tr:last-child td { border-bottom: 0; }
   .inspector { max-height: 220px; border-left: 0; border-top: 1px solid var(--line-strong); }
   .app-shell { width: 100vw; min-height: 720px; height: 100vh; margin: 0; border: 0; border-radius: 0; }
   .repository-form { flex-basis: 100%; }
-  .workspace { grid-template-columns: 230px minmax(0, 1fr); }
+  .workspace { grid-template-columns: 230px auto minmax(0, 1fr); }
   .metric-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
   .tensor-layout, .tensor-layout-inspector-hidden { grid-template-columns: 1fr; }
   .tensor-inspector { order: 2; }
@@ -912,6 +930,7 @@ tr:last-child td { border-bottom: 0; }
 @media (max-width: 640px) {
   .brand { display: none; }
   .workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: 210px minmax(0, 1fr); }
+  .workspace[data-sidebar="closed"] { grid-template-rows: minmax(0, 1fr); }
   /* ponytail: no room for a third column on phones; the panel rows already show each problem's values. */
   .inspector-column, .inspector-toggle { display: none; }
   .bottom-panel { height: clamp(150px, 28vh, 220px); }
@@ -932,47 +951,47 @@ tr:last-child td { border-bottom: 0; }
 }
 
 @media (prefers-color-scheme: dark) {
-  /* Palette from design D (dark): win #16181d, panel #1b1e24, side #1e2128, bar #121418. */
+  /* D-12 dark: textBackground #1e1e1e, windowBackground-ish bar, dark sidebar material, 10% white separators. */
   :root {
     color-scheme: dark;
-    color: #d8dce3;
-    background: #0e0f12;
+    color: #dfdfdf;
+    background: #161616;
     --accent: #7aa2ff;
     --accent-soft: #2a3142;
-    --line: #2b2f37;
-    --line-strong: #343a46;
-    --muted: #8d95a3;
-    --panel: #1b1e24;
-    --panel-alt: #16181d;
-    --sidebar: #1e2128;
+    --line: #363636;
+    --line-strong: #424242;
+    --muted: #98989d;
+    --panel: #1e1e1e;
+    --panel-alt: #262626;
+    --sidebar: #2a2a2a;
     --danger: #ffaaa4;
-    --bar: #121418;
+    --bar: #2d2d2d;
     --warning: #e5b454;
     --warning-text: #e5b454;
     --ok: #7fd6a4;
     --info: #7aa2ff;
     --status-green: #30d158;
   }
-  body { background: #0e0f12; }
-  .app-shell { border-color: #30343c; box-shadow: 0 24px 80px rgb(0 0 0 / 45%); }
+  body { background: #161616; }
+  .app-shell { border-color: #3a3a3a; box-shadow: 0 24px 80px rgb(0 0 0 / 45%); }
   .icon-button:hover, :is(.inspector-toggle, .panel-toggle)[aria-pressed="true"] { background: rgb(255 255 255 / 8%); }
   .primary-button, .zoom-btn.active, .perspective button[aria-pressed="true"] { border-color: var(--accent); color: #0d1424; }
   .primary-button:hover { background: #93b4ff; }
   .severity-mark[data-severity="warning"] { color: #e5b454; }
   .file-problems[data-severity="warning"] { background: rgb(229 180 84 / 18%); color: #e5b454; }
-  .file-icon[data-category] { color: #aab1bd; }
+  .file-icon[data-category] { color: #a8a8ad; }
   .file-icon[data-category="configuration"] { color: #8fb4ff; }
   .file-icon[data-category="tokenizer"] { color: #b79cff; }
   .file-icon[data-category="templates"] { color: #f0915a; }
   .file-icon:is([data-category="weightMetadata"], [data-category="weights"]) { color: #7fd6a4; }
   .repository-form input, .search-field input, .inspection-toolbar input, .tkp-popover input,
   .tkp-search, .directory-button, .fold-toolbar button, .source-find input { background: var(--panel-alt); }
-  .file-row { color: #c3c8d1; }
+  .file-row { color: #cfcfcf; }
   .file-row:hover { background: rgb(255 255 255 / 6%); }
   .file-row.selected { color: #fff; background: var(--accent-soft); }
   mark.find-match { background: rgb(255 214 102 / 28%); }
   mark.find-match.current { background: rgb(255 190 60 / 45%); }
-  .source-reader, table { background: var(--panel); color: #d8dce3; }
+  .source-reader, table { background: var(--panel); color: #dfdfdf; }
   .reader-canvas, .source-reader {
     --syntax-comment: #8d95a3;
     --syntax-string: #9fd9a8;
@@ -982,14 +1001,14 @@ tr:last-child td { border-bottom: 0; }
     --syntax-structure: #ffa287;
     --syntax-operator: #8d95a3;
   }
-    td { border-bottom-color: #262a31; }
+  td { border-bottom-color: #303030; }
   .inline-error { border-color: #75413e; background: #3a2525; }
   .jinja-expression { color: #0a84ff; }
   .jinja-statement { color: #bf5af2; }
   .jinja-string { color: #ff9f0a; }
   .jinja-keyword, .output-token { color: #ff375f; }
   .jinja-delimiter { color: #40c8e0; }
-  .jinja-editor-layers > textarea { caret-color: #d8dce3; }
+  .jinja-editor-layers > textarea { caret-color: #dfdfdf; }
   .status-icon.error { background: #ff453a; }
   .playground-error, .request-delete, .tkp-render-error { color: #ff453a; }
   :root {
@@ -1001,7 +1020,7 @@ tr:last-child td { border-bottom: 0; }
 @media (max-width: 700px) {
   .topbar { padding: 8px 10px; }
   .repository-form { flex-wrap: wrap; }
-  .repository-form > input { flex-basis: calc(100% - 160px); }
+  .repository-field { flex-basis: calc(100% - 160px); }
 }
 
 /* Batch 5 readers. Selectors carry an extra class so they win over styles.css whatever the bundle order. */

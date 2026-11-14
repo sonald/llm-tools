@@ -62,6 +62,14 @@ type FixtureOptions = {
   omitIndependentChatTemplate?: boolean
   configChatTemplate?: unknown
   largeVocabularyWithoutConfig?: boolean
+  // D-3 reopens the last input on launch; null keeps whatever the app remembered.
+  launchInput?: string | null
+}
+
+// The app reopens its last input at every launch (D-3). Tests start from '' (what a local open stores, like
+// native's directory input), so launch opens nothing, unless they ask for something else.
+export async function setLaunchInput(page: Page, input = ''): Promise<void> {
+  await page.addInitScript(value => localStorage.setItem('model-files.last-repository-input', value), input)
 }
 
 const tokenizer = JSON.stringify({
@@ -245,6 +253,7 @@ const onePixelPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAA
 export async function installFixtureRoutes(page: Page, options: FixtureOptions = {}): Promise<RequestRecord[]> {
   const requests: RequestRecord[] = []
   let manifestFailures = options.manifestFailures ?? 0
+  if (options.launchInput !== null) await setLaunchInput(page, options.launchInput)
   await page.route('https://**', route => route.abort('blockedbyclient'))
   // D-7: model cards now load HTTPS images. Answer the README's third-party image locally; an aborted
   // image request intermittently surfaces in WebKit as a console 404.

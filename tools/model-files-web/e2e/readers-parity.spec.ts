@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
-import { openPerspective } from './fixtures.ts'
+import { openPerspective, setLaunchInput } from './fixtures.ts'
 
 // Batch 5 reader parity: C-4 highlighting, C-5 find bar, C-6/C-7 Markdown, C-8 theme picker, C-9 image reader, D-7 CSP.
 
@@ -40,8 +40,9 @@ async function openReadersFixture(page: Page, testInfo: TestInfo) {
   ].join('\n'))
   await writeFile(join(dir, 'wide.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="400" height="300" fill="#3478f6"/></svg>')
   await page.route('https://example.com/**', route => route.fulfill({ status: 200, contentType: 'image/png', body: onePixelPng }))
+  await setLaunchInput(page)
   await page.goto('/')
-  await page.getByLabel('选择本地目录').setInputFiles(dir)
+  await page.getByLabel('选择文件夹').setInputFiles(dir)
 }
 
 test('C-4 source tokens use native groups, bold only keyword/boolean/literal, comments upright', async ({ page }, testInfo) => {

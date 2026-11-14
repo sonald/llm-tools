@@ -1973,20 +1973,33 @@ export const messageCatalog = {
     en: 'Hugging Face repository',
   },
   appRepositoryPlaceholder: {
-    'zh-Hans': 'owner/model 或 Hugging Face URL',
-    en: 'owner/model or Hugging Face URL',
+    // Native placeholder minus local path / ssh://, which the web cannot open by typing.
+    'zh-Hans': '模型 ID 或仓库 URL…',
+    en: 'Model ID or repository URL…',
   },
-  appRepositoryOpeningAction: {
-    'zh-Hans': '打开中…',
-    en: 'Opening…',
+  appRepositoryHelp: {
+    'zh-Hans': '输入模型 ID 或仓库 URL',
+    en: 'Enter a model ID or repository URL',
+  },
+  appGuidanceModelRepository: {
+    'zh-Hans': '模型仓库',
+    en: 'Model repository',
+  },
+  appGuidanceModelRepositoryExample: {
+    'zh-Hans': 'Qwen/Qwen3-4B 或仓库 URL',
+    en: 'Qwen/Qwen3-4B or repository URL',
   },
   appRepositoryOpenAction: {
     'zh-Hans': '打开',
     en: 'Open',
   },
-  appSelectLocalDirectory: {
-    'zh-Hans': '选择本地目录',
-    en: 'Select local directory',
+  appSelectFolderAction: {
+    'zh-Hans': '选择文件夹',
+    en: 'Choose Folder',
+  },
+  appSelectLocalDirectoryHelp: {
+    'zh-Hans': '选择本地模型目录',
+    en: 'Choose a local model directory',
   },
   appClearHistoryAction: {
     'zh-Hans': '清除历史',
@@ -2083,6 +2096,15 @@ export const messageCatalog = {
   appInspectorAriaLabel: {
     'zh-Hans': '检查器',
     en: 'Inspector',
+  },
+  // AppKit's own NavigationSplitView sidebar toggle labels.
+  appHideSidebarAction: {
+    'zh-Hans': '隐藏边栏',
+    en: 'Hide Sidebar',
+  },
+  appShowSidebarAction: {
+    'zh-Hans': '显示边栏',
+    en: 'Show Sidebar',
   },
   appToggleInspectorAction: {
     'zh-Hans': '显示或隐藏检查器',

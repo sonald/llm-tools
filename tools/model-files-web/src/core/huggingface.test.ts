@@ -75,6 +75,11 @@ test('derives full source paths for hub and HTTPS sources, never local files', (
 test('normalizes only owner/model identifiers and Hugging Face model URLs', () => {
   assert.equal(normalizeModelId(' owner/model '), 'owner/model')
   assert.equal(normalizeModelId('https://huggingface.co/owner/model/tree/main'), 'owner/model')
+  // Native: http as well as https, www., any host case.
+  assert.equal(normalizeModelId('http://huggingface.co/owner/model'), 'owner/model')
+  assert.equal(normalizeModelId('https://WWW.HuggingFace.co/owner/model/blob/main/config.json'), 'owner/model')
+  assert.throws(() => normalizeModelId('https://huggingface.co/owner'), /owner\/model/)
+  assert.throws(() => normalizeModelId('https://example.com/owner/model'), /owner\/model/)
   assert.throws(() => normalizeModelId('https://huggingface.co/owner/%E4%B8%AD%E6%96%87'), /owner\/model/)
   assert.throws(() => normalizeModelId('https://huggingface.co.evil/owner/model'), /owner\/model/)
   assert.throws(() => normalizeModelId('../owner/model'), /owner\/model/)
@@ -105,6 +110,24 @@ test('matches native file intent classification and reader-friendly ordering', a
     localFile('Fixture/tokenizer_config.json', '{}'),
   ])
   assert.deepEqual(local.files.map(item => item.path), ['tokenizer_config.json', 'tokenizer.json', 'merges.txt'])
+
+  // Native FileClassifier: processor configs are configuration and sort by the preferred list;
+  // ties use localizedStandardCompare (numeric, case-insensitive). tif/tiff are images, so not weights.
+  assert.equal(classifyFile('image_processor_config.json'), 'other')
+  assert.equal(classifyFile('feature_preprocessor_config.json'), 'other')
+  assert.equal(classifyFile('scan.TIFF'), 'other')
+  const ordered = loadLocalDirectory([
+    localFile('Fixture/b10.txt', ''),
+    localFile('Fixture/B2.txt', ''),
+    localFile('Fixture/a.txt', ''),
+    localFile('Fixture/processor_config.json', '{}'),
+    localFile('Fixture/preprocessor_config.json', '{}'),
+    localFile('Fixture/adapter_config.json', '{}'),
+    localFile('Fixture/config.json', '{}'),
+  ])
+  assert.deepEqual(ordered.files.map(item => item.path), [
+    'config.json', 'adapter_config.json', 'preprocessor_config.json', 'processor_config.json', 'a.txt', 'B2.txt', 'b10.txt',
+  ])
 })
 
 test('maps exhaustive syntax extensions to exact Prism language IDs', () => {

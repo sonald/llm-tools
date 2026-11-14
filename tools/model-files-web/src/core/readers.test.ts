@@ -180,6 +180,8 @@ test('identifies image files and maps their mime types', () => {
   assert.equal(imageMimeType('diagram.svg'), 'image/svg+xml')
   assert.equal(imageMimeType('logo.png'), 'image/png')
   assert.equal(imageMimeType('photo.jpg'), 'image/jpeg')
+  assert.equal(imageMimeType('scan.TIF'), 'image/tiff')
+  assert.equal(isImagePath('scan.tiff'), true)
   assert.equal(imageMimeType('photo.jpeg'), 'image/jpeg')
   assert.equal(imageMimeType('banner.webp'), 'image/webp')
   assert.equal(imageMimeType('anim.gif'), 'image/gif')

@@ -56,20 +56,19 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
   - 删除或改回原生样式：底部状态栏移回工具栏；读取信息条改成原生的底部提示；去掉占比条和行内问题说明。
   - §4 其余各项实施时逐项按这条原则处理。
 
+- **D-2 / D-3 / D-12**（2026-11-14）：历史不限条数、只记 Hugging Face（本地目录无法凭路径重开，平台限制）；启动时重开上次输入，默认 Qwen/Qwen3-4B（`?repo=` 优先）；背景改成接近 macOS 系统色。
+
 **尚未单独确认，默认对齐原生**（实施到相关批次时再确认）：
 
-- **D-2**：历史不限条数。
-- **D-3**：重开上次输入，默认 Qwen/Qwen3-4B。
 - **D-8**：取消 Chat Template 的 64 KiB 上限。
 - **D-10**：Web 不加 ⌘1–4 视角快捷键，保留浏览器原有的切换标签页（2026-11-13 用户裁决）。
-- **D-12**：背景面跟随原生。
 
 
 | ID | 原生行为 | Web 现状 | 说明 |
 | --- | --- | --- | --- |
 | D-1 | GGUF 完整 metadata + tensor 工作区（DV:348-362,415-459,687-1007） | 只读 24 bytes，显示 4 个计数（App:382-384,1503-1527） | `docs/gguf-feasibility.md` 判 NO-GO，原因是按 1 MiB 顺序读 Range 时，最后一块会越过 tensor 数据起点。Qwen3-0.6B 实测越读了 339,552 字节，但 32 MiB 预算和 2 秒耗时都通过了，没过的只是自定的「0 字节 tensor 数据」规则。原生 `RepositoryService.swift:359-390` 用的正是同一策略，并接受这部分越读。Web 的完整解析器 `core/gguf.ts:42 inspectGGUF()` 已存在，但页面没有调用。连带缺 GGUF 相关一致性问题（Q-9）。→ 批次 5 已实现（G-1、Q-9），2026-11-14 |
-| D-2 | 历史不限条数，含本地路径和 ssh（ST:160-166,1163-1189） | 最多 10 条，只存 HF ID（`core/history.ts:17,27`） | 本地路径无法重开（P-3），条数上限可以对齐 |
-| D-3 | 启动时重开上次输入，默认 **Qwen/Qwen3-4B**（ST:12-14,97） | 固定 Qwen/Qwen3-0.6B，只有带 `?repo=` 时才自动打开（App:121,198-226） | |
+| D-2 | 历史不限条数，含本地路径和 ssh（ST:160-166,1163-1189） | 最多 10 条，只存 HF ID（`core/history.ts:17,27`） | 本地路径无法重开（P-3），条数上限可以对齐 → 已裁决：不限条数，只记 Hugging Face。批次 6 去掉 10 条上限，2026-11-14 |
+| D-3 | 启动时重开上次输入，默认 **Qwen/Qwen3-4B**（ST:12-14,97） | 固定 Qwen/Qwen3-0.6B，只有带 `?repo=` 时才自动打开（App:121,198-226） | → 已裁决：跟原生一样。批次 6：启动时重开上次成功打开的 Hugging Face 输入（`model-files.last-repository-input`），默认 Qwen/Qwen3-4B；`?repo=` 优先。上次打开的是本地目录或 HTTPS 来源时，启动不打开任何东西（同原生 `shouldOpenOnLaunch`，ST:96）。「清除历史」同时清掉它。真实 Hugging Face 首次启动未实测（本机代理不通），只用 fixture 验证，2026-11-14 |
 | D-4 | JSON 不限大小整份渲染；其他语言 ≤128 KB 进代码阅读器，否则用纯文本全量显示（DV:633-650） | 按 128K 字符分页（`Readers.tsx:369,419-422,674-680`） | 性能选择 |
 | D-5 | Token 流、表、IDs 全部显示（TTV:73-77,185-213） | 每页 1,000 条；>2,000 个 id 折叠成一个片段；>100 个 id 合并成一个片段（`core/tokenizer.ts:222`，App:2821,2831,2870,2887,2899）。停靠的 Token IDs 标签**没有**「再显示」按钮，超过 1,000 条看不到 | 性能选择。→ 已裁决：全部显示，内部懒渲染（2026-11-13）。批次 4 已按原生 makeSegments 切片（去掉 100/2,000 合并），Token 表只渲染可见行，Token 流和 IDs 全部渲染 |
 | D-6 | Tensor 列表一次全部显示（DV:869-874） | 每次 100 行（App:1112,1275） | SPEC §4.7。→ 已裁决全部显示；批次 5 改为虚拟表，2026-11-14 |
@@ -78,7 +77,7 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | D-9 | — | Web 独有功能（§4） | 保留、改造还是删除 |
 | D-10 | ⌘1–⌘4 切换视角（DV:262-275） | 没有 | 只查了资料，没有实测：Chrome/Edge、Firefox 页面能拦截（Chromium 保留键列表不含按序号切标签，Mozilla Bug 1074971），Safari 很可能拦不到（只有一篇厂商 KB 佐证）。→ 已裁决：Web 不加，算平台差异（2026-11-13） |
 | D-11 | 状态放在工具栏右侧，原生**没有**底部状态栏（CV:62-77） | 新增底部状态栏：仓库状态，以及与头部重复的「路径 · 格式 · 大小」（App:759-777） | 保留状态栏，还是移回工具栏 → 已移回工具栏右侧，底部状态栏已删除（2026-11-13）；状态内容见 S-6 |
-| D-12 | 原生明确保留系统背景材质（`Support/Palette.swift:5` 注释） | 自定义暗色背景面（CSS:1-19,698-716） | 是否改为接近系统色 |
+| D-12 | 原生明确保留系统背景材质（`Support/Palette.swift:5` 注释） | 自定义暗色背景面（CSS:1-19,698-716） | 是否改为接近系统色 → 已裁决：接近系统色。批次 6 把 `--panel`/`--bar`/`--sidebar`/`--line` 等改成 macOS 中性灰（浅色 textBackground #fff、windowBackground #ececec；深色 #1e1e1e/#2d2d2d），次要文字改为 #636366，浅色下在侧栏、工具栏、白底实测 4.89–5.07:1（系统 secondaryLabel 只有约 3.9:1），2026-11-14 |
 | D-13 | swift-jinja：`tojson` 排序键、紧凑分隔符、`\u00e9` 和 `\/` 转义；JSON 变量里的 `true` 变成 `1`；JSON `null` 报错；小数 `1.0`、`7/2→3.0` 保留小数点；`sort_keys=false` 或其他 separators 直接报错（TR:116-130，2026-11-13 金样） | @huggingface/jinja：插入顺序、`", "`/`": "`、不转义；`true`/`null` 正常；JS 数字不区分 `1.0` 和 `1`；kwargs 全部支持 | transformers `chat_template_utils.py` 的 `tojson` 是 `json.dumps(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False)`，Web 与之一致，原生偏离。可选：①Web 保持 transformers 行为，原生另行修复；②Web 模拟原生输出。→ 已裁决 ①（2026-11-13）。另：原生 `RenderedOutputInspector.prettyPrintedJSON` 遇到标量 JSON 负载（如 `<\|content_x\|>123`）会抛 ObjC 异常导致崩溃，Web 不复刻 |
 | D-14 | swift-transformers 要求显式 `tokenizer_class` 时，失败页给出 Picker + 自定义输入，「使用指定的 tokenizer_class 重试」（TKP:520-545,626，`Support/TokenizerRuntime.swift:23,145`） | Web 没有这个界面 | Web 用 `@huggingface/tokenizers`（`tokenizer.worker.ts:105` `new Tokenizer(tokenizer.json, config)`），按 tokenizer.json 的 model 类型构造，库里没有任何地方读 `tokenizer_class`（dist 中 0 处引用）；实测 config 为 `{}` 或 `tokenizer_class: "NoSuchTokenizerClass"` 时都能正常编码。原生的失败场景在 Web 不会出现。→ 已裁决：算引擎差异，Web 不做（2026-11-13） |
 
@@ -88,17 +87,17 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 
 | ID | 元素 | 原生 | Web | 状态 | 差异 |
 | --- | --- | --- | --- | --- | --- |
-| S-1 | 仓库输入框占位符与 tooltip | CV:41,45,99 | App:618-632 | 不同 | 文案不同，Web 没有 tooltip |
-| S-2 | 输入时弹出的指引（模型仓库 / 本地目录 / SSH） | CV:156-176,205-238 | 缺 | 缺失 | Web 至少可以显示「模型仓库」一行 |
-| S-3 | 历史下拉 | CV:38-44,112-133（只列历史） | App:633-637 | 不同 | Web 用 datalist，并在历史后硬编码 2 个示例 |
-| S-4 | 选择目录按钮 | CV:47-53（只有图标，help「选择本地模型目录」） | App:641-650（文字按钮） | 不同 | 图标形式可以对齐；「先填入再打开」见 P-3 |
-| S-5 | 「打开」按钮：加载中禁用；⌘Return 在整个窗口生效 | CV:55-59 | App:624-629,638-640 | 不同 | Web 不禁用；回车只在输入框有焦点时生效 |
+| S-1 | 仓库输入框占位符与 tooltip | CV:41,45,99 | App:618-632 | 部分 | 2026-11-14：占位符「模型 ID 或仓库 URL…」，tooltip「输入模型 ID 或仓库 URL」。平台调整：去掉「本地路径」「ssh://」，Web 不能凭输入的路径打开（P-1、P-3） |
+| S-2 | 输入时弹出的指引（模型仓库 / 本地目录 / SSH） | CV:156-176,205-238 | 缺 | 部分 | 2026-11-14：聚焦或输入时在输入框下方显示同宽指引，失焦、回车、选历史、Esc 时关闭。平台调整：只保留「模型仓库 — Qwen/Qwen3-4B 或仓库 URL」一行，本地目录和 SSH 两行在 Web 无法输入 |
+| S-3 | 历史下拉 | CV:38-44,112-133（只列历史） | App:633-637 | PASS | 2026-11-14：datalist 只列历史，去掉 2 个硬编码示例。不限条数见 D-2 |
+| S-4 | 选择目录按钮 | CV:47-53（只有图标，help「选择本地模型目录」） | App:641-650（文字按钮） | PASS | 2026-11-14：只有文件夹图标，无障碍名称「选择文件夹」，tooltip「选择本地模型目录」。选中后直接加载属 P-3 |
+| S-5 | 「打开」按钮：加载中禁用；⌘Return 在整个窗口生效 | CV:55-59 | App:624-629,638-640 | PASS | 2026-11-14：按钮固定为「打开」，清单加载期间禁用（同原生，清单返回即解除，不等首个文件）；⌘Return（非 macOS 为 Ctrl+Enter）在整个窗口生效，加载中同样不生效；输入框回车始终可重开（同原生 onSubmit） |
 | S-6 | 来源状态：「来源 · 分支 · 文件 SHA」，加载中显示 spinner | ST:99-111，CV:62-77 | App:759-771（底部状态栏） | PASS | 2026-11-13：工具栏显示「Hugging Face · main · SHA {文件 SHA，未选文件时用 commit}」，绿色对勾，加载中 spinner。本地为「本地 · 实时目录」。HTTPS 来源原生没有，用「HTTPS · 实时来源」 |
-| S-7 | 模型 URL 解析：http(s)、www | `RepositoryService.swift:178-199` | `core/huggingface.ts:64-73` | 不同 | |
+| S-7 | 模型 URL 解析：http(s)、www | `RepositoryService.swift:178-199` | `core/huggingface.ts:64-73` | 部分 | 2026-11-14：接受 http/https、huggingface.co 与 www.huggingface.co（主机不分大小写），取前两段路径。平台调整：modelscope.cn 留到 Web 有 ModelScope 来源时再做 |
 | S-8 | 仓库加载错误：详情区显示「无法打开位置」+ 重试 | DV:70-78 | App:690-697（侧栏内联） | PASS | 2026-11-13：未选文件时详情区显示「无法打开位置」+ 消息；可重试时显示「重试」。本地目录选择失败不可重试，所以没有按钮 |
-| S-9 | 工具栏品牌区 | CV:26-36 | App:605-609 | 不同 | Web 多一个「Web」标签 |
+| S-9 | 工具栏品牌区 | CV:26-36 | App:605-609 | PASS | 2026-11-14：去掉「Web」标签，只剩图标 +「Model Files」 |
 | S-10 | 工具栏两层结构：窗口工具栏 + 详情头（文件名、副标题、徽章、格式、视角、3 个按钮） | CV:38-90，DV:143-276 | App:604-675,858-898（单层可换行） | 部分 | 2026-11-13：两层结构、视角控件、面板开关禁用已对齐。平台调整：手机宽度（≤640px）没有空间放第三栏，检查器和它的开关隐藏 |
-| S-11 | 键盘：⌘Return、⌘1–4、Esc 在任意标签关闭底部面板 | CV:58，DV:266,1708 | App:624-629,1337,175 | 不同 | 见 S-5、L-5；⌘1–4 按 D-10 不做 |
+| S-11 | 键盘：⌘Return、⌘1–4、Esc 在任意标签关闭底部面板 | CV:58，DV:266,1708 | App:624-629,1337,175 | 部分 | 2026-11-14：⌘Return 见 S-5；Esc 在任意标签、窗口任意位置关闭底部面板（输入法组字时除外）。⌘1–4 按 D-10 不做 |
 
 ### 3.2 侧栏
 
@@ -110,10 +109,10 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | B-4 | 权重组折叠，标签「权重文件 · N/M 可预览」，锁定行变暗且不可选 | SV:55-81 | App:702-731 | PASS | 2026-11-13：`<details>` 默认折叠，标签「权重文件 · N/M 可预览」；锁定行 0.62 透明度、aria-disabled、点击无效，右键菜单仍可用；深链仍可打开锁定页。E2E「workbench shell follows native header, sidebar and panel conventions」 |
 | B-5 | 无匹配时显示「没有匹配文件」+「清除筛选」 | SV:27-36 | 缺 | PASS | 2026-11-13：「没有匹配文件」+「清除筛选」 |
 | B-6 | 侧栏空状态（图标 + 文案）和加载中 spinner | SV:13-26 | App:698-700 | PASS | 2026-11-13：未打开时「尚未打开模型」（文案去掉 SSH，加上 HTTPS，P-2），加载中「读取文件清单…」+ spinner |
-| B-7 | 侧栏可调宽（255–360）、可折叠 | CV:11-12 | CSS:93（固定 280px） | 缺失 | |
-| B-8 | 右键菜单：本地来源也显示「复制全路径」（禁用）和「打开原始文件」 | SV:89-109，ST:1127-1152 | App:778-808（本地时隐藏这两项） | 不同 | 本地「打开原始文件」可以用 blob URL 实现 |
+| B-7 | 侧栏可调宽（255–360）、可折叠 | CV:11-12 | CSS:93（固定 280px） | 部分 | 2026-11-14：侧栏默认 292px，拖动范围 255–360px；工具栏最左「隐藏边栏 / 显示边栏」按钮折叠。平台调整：≤900px 固定 230px 不可拖，≤640px 侧栏放到上方；不支持拖到最小以下自动折叠 |
+| B-8 | 右键菜单：本地来源也显示「复制全路径」（禁用）和「打开原始文件」 | SV:89-109，ST:1127-1152 | App:778-808（本地时隐藏这两项） | PASS | 2026-11-14：本地来源也显示「打开原始文件」+ 分隔线：图片、PDF 用 blob URL 在新标签打开，其余文本（含 HTML、SVG）按纯文本打开，避免在本站源下运行；权重文件改为下载，与 Hub resolve 链接的行为一致。三引擎都实测了真实新标签和下载；「复制全路径」保留但禁用（P-4），Hugging Face 来源照常可用 |
 | B-9 | 文件大小：以 1000 为底，本地化（「2 KB」「字节」） | `Support/FileClassifier.swift:113-117` | `core/huggingface.ts:416-420`（以 1024 为底的 KiB，中文界面显示英文 bytes） | 部分 | 2026-11-13：`formatBytes` 改为 ByteCountFormatter(.file) 规则（1000 为底，KB 整数、MB 一位、GB 起两位，先舍入再选单位，「Zero KB / 0 KB」「1 byte / 1 字节」），en 与 zh-Hans 都按 ByteCountFormatter 实际输出核对并写进单元测试。仍有硬编码的「32 MiB」限制文案和 validation strip 里的「N bytes」，随 H-7 / 第 2 批处理 |
-| B-10 | 分类与排序规则（processor 排除、tiff/tif、adapter 与 processor 排序） | `FileClassifier.swift:9-11,65-110` | `core/huggingface.ts:75-95,154-156,482-501` | 不同 | |
+| B-10 | 分类与排序规则（processor 排除、tiff/tif、adapter 与 processor 排序） | `FileClassifier.swift:9-11,65-110` | `core/huggingface.ts:75-95,154-156,482-501` | PASS | 2026-11-14：adapter / preprocessor / processor_config.json 归配置；`*_config.json` 排除含 processor 的名称；图片扩展名加 tiff、tif（只有 WebKit 能解码 TIFF，Chromium、Firefox 显示「无法显示图片」，平台限制）；优先排序表与原生一致；同优先级按数字、不区分大小写比较（localizedStandardCompare；ICU 排序规则在第一层本就不分大小写） |
 | B-11 | 侧栏问题计数：权重组不显示 | SV:60-69,132-140 | App:1431-1440，CSS:110-111,725 | PASS | 2026-11-13：权重组不显示问题计数 |
 
 ### 3.3 详情头部
@@ -127,7 +126,7 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | H-5 | 图标按钮：复制文件路径 / 复制完整路径或 URL / 在浏览器中打开当前版本（本地：在 Finder 中显示）；不可用时禁用 | DV:222-257 | App:867-880 | PASS | 2026-11-13：三个图标按钮，aria-label 用原生标签（复制路径 / 复制全路径 / 在源站打开），title 用原生 help。不可用时禁用（本地文件按 P-4）。保留 Web 独有的「已复制」反馈 |
 | H-6 | config 概览内嵌一致性报告 | — | — | 已关闭 | 两端都改为文件内诊断 + 问题面板（§3.4） |
 | H-7 | 底部只读安全提示条（锁图标） | DV:393-413 | `App.tsx` SafetyNotice + `safetyNotice()` | PASS | 2026-11-13：SafeTensors/GGUF/imatrix/PDF/图片/权重索引用原生文案；PDF 按 P-6 改为「浏览器内置查看器」。Jinja 概览和 tokenizer.json 结构页仍有各自的信息条，归 J-/T- 行。GGUF 提示暂时只保留前半句，「最后一个 Range…」要等 D-1 改成 1 MiB 分块读取后才成立 |
-| H-8 | 状态页：未选文件、加载中（按格式区分文案 +「大小 · 来源 · 可切换到其他文件取消」）、锁定、「没有内容」、「无法读取文件」 | DV:80-139，`Support/EmptyStateView.swift` | App:1022-1040,3042-3067 | 部分 | 2026-11-13：未选文件、加载中（按格式文案 +「大小 · 来源 · 可切换到其他文件取消」）、锁定、无法读取、无法打开位置都按原生文案和图标。「没有内容」在 Web 不可达（每种文件都有对应 inspection），没有实现 |
+| H-8 | 状态页：未选文件、加载中（按格式区分文案 +「大小 · 来源 · 可切换到其他文件取消」）、锁定、「没有内容」、「无法读取文件」 | DV:80-139，`Support/EmptyStateView.swift` | App:1022-1040,3042-3067 | PASS | 2026-11-13：未选文件、加载中（按格式文案 +「大小 · 来源 · 可切换到其他文件取消」）、锁定、无法读取、无法打开位置都按原生文案和图标。2026-11-14：「没有内容」在 Web 不可达（每种文件都有对应 inspection），按不可达关闭 |
 
 ### 3.4 工作台：底部面板、问题与检查器
 

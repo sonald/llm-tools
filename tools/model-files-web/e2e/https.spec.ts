@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   installFixtureRoutes,
+  setLaunchInput,
   writeFixtureDirectory,
   openPlaygroundMode,
   expectRepository,
@@ -79,6 +80,7 @@ test('HTTPS file opens exact SafeTensors header and keeps signed URL out of hist
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()) })
+  await setLaunchInput(page)
   await page.goto('/')
   await expect(page).toHaveTitle('Model Files Web')
   await openHttps(page, 'file', 'model.safetensors?signature=session-only')
@@ -103,6 +105,7 @@ test('HTTPS file opens exact SafeTensors header and keeps signed URL out of hist
 })
 
 test('HTTPS manifest reads related tokenizer files, Markdown links and a comparison source', async ({ page }) => {
+  await setLaunchInput(page)
   await page.goto('/')
   await openHttps(page, 'manifest', 'files.json')
   await expectRepository(page, 'HTTPS · 实时来源', 5)
@@ -130,6 +133,7 @@ test('HTTPS manifest reads related tokenizer files, Markdown links and a compari
 })
 
 test('HTTPS explains missing CORS and size, rejects invalid ranges, then switches back to HF', async ({ page }) => {
+  await setLaunchInput(page)
   await page.goto('/')
   await openHttps(page, 'file', 'config.json?no-cors')
   await expect(page.locator('.detail-body .empty-state')).toContainText('CORS')

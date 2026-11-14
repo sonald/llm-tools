@@ -63,10 +63,18 @@ const modelIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$
 
 export function normalizeModelId(input: string): string {
   const trimmed = input.trim()
-  if (trimmed.startsWith('https://huggingface.co/')) {
-    const parts = new URL(trimmed).pathname.split('/').filter(Boolean)
-    const modelId = parts.length >= 2 ? `${parts[0]}/${parts[1]}` : ''
-    if (modelIdPattern.test(modelId)) return modelId
+  // Native RepositoryService.normalizedModelID: http(s), huggingface.co or www., the first two path components.
+  // ponytail: modelscope.cn is native-only until the web has a ModelScope source.
+  if (/^https?:\/\//i.test(trimmed)) {
+    let url: URL | null = null
+    try { url = new URL(trimmed) } catch { /* rejected below */ }
+    const host = url?.hostname.toLowerCase()
+    if (url !== null && (host === 'huggingface.co' || host === 'www.huggingface.co')) {
+      const parts = url.pathname.split('/').filter(Boolean)
+      const modelId = parts.length >= 2 ? `${parts[0]}/${parts[1]}` : ''
+      if (modelIdPattern.test(modelId)) return modelId
+    }
+    throw new Error(t('huggingfaceModelIdRequired'))
   }
   if (modelIdPattern.test(trimmed)) return trimmed
   throw new Error(t('huggingfaceModelIdRequired'))
@@ -82,11 +90,13 @@ export function classifyFile(path: string): FileCategory {
     return 'weightMetadata'
   }
   if (blockedExtensions.has(ext)) return 'weights'
-  if (name.endsWith('.pdf')) return 'documentation'
+  // Native FileClassifier.category order: processor configs are configuration, then the generic *_config.json.
+  if (name === 'adapter_config.json' || name === 'preprocessor_config.json' || name === 'processor_config.json') return 'configuration'
   if (name === 'config.json' || name === 'configuration.json' || name === 'generation_config.json'
-    || name.endsWith('_config.json') && !name.includes('tokenizer')) return 'configuration'
+    || name.endsWith('_config.json') && !name.includes('tokenizer') && !name.includes('processor')) return 'configuration'
   if (name.includes('tokenizer') || name === 'vocab.json' || name === 'merges.txt'
     || name === 'special_tokens_map.json' || name.startsWith('added_tokens') || name.endsWith('.model')) return 'tokenizer'
+  if (name.endsWith('.pdf')) return 'documentation'
   if (name.includes('template') || name.endsWith('.jinja') || lowerPath.includes('template')) return 'templates'
   if (name === 'readme.md' || name === 'license' || name.startsWith('license.')
     || name === 'notice' || name.endsWith('.md') || name.endsWith('.rst')) return 'documentation'
@@ -152,7 +162,7 @@ export function isImatrixPath(path: string): boolean {
 }
 
 const imageExtensions = new Set([
-  'svg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif',
+  'svg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'tiff', 'tif', 'avif',
 ])
 
 export function isImagePath(path: string): boolean {
@@ -177,6 +187,9 @@ export function imageMimeType(path: string): string {
     case 'bmp': return 'image/bmp'
     case 'ico': return 'image/x-icon'
     case 'avif': return 'image/avif'
+    // ponytail: only WebKit decodes TIFF; Chromium and Firefox fall to the reader's "cannot display" state.
+    case 'tif':
+    case 'tiff': return 'image/tiff'
     default: return 'application/octet-stream'
   }
 }
@@ -492,6 +505,7 @@ function compareFiles(left: RepositoryFile, right: RepositoryFile): number {
   ]
   return order.indexOf(left.category) - order.indexOf(right.category)
     || sortPriority(left.path) - sortPriority(right.path)
+    // Native localizedStandardCompare: numeric; ICU collation already ignores case at the primary level.
     || left.path.localeCompare(right.path, undefined, { numeric: true })
 }
 
@@ -499,6 +513,7 @@ function sortPriority(path: string): number {
   const name = path.split('/').at(-1)?.toLocaleLowerCase() ?? ''
   const preferred = [
     'config.json', 'configuration.json', 'generation_config.json',
+    'adapter_config.json', 'preprocessor_config.json', 'processor_config.json',
     'tokenizer_config.json', 'tokenizer.json', 'vocab.json', 'merges.txt',
     'special_tokens_map.json', 'model.safetensors.index.json',
     'pytorch_model.bin.index.json', 'readme.md', 'license',

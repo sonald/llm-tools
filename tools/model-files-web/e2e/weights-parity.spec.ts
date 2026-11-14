@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import {
   expandWeights, expectRepository, fixtureModelId, ggufFixtureTokenCount, installFixtureRoutes, openPerspective, writeFixtureDirectory,
+  setLaunchInput,
 } from './fixtures.ts'
 
 // Batch 5: native WeightWorkspaceView / IMatrixWorkspaceView (DetailView.swift:332-362,687-1007; IMatrixWorkspaceView.swift).
@@ -224,7 +225,7 @@ test('Imatrix overview and Entries follow native IMatrixWorkspaceView', async ({
   int32(1)
   output.push(...new Uint8Array(new Float32Array([0.25]).buffer))
   await writeFile(join(directory, 'imatrix.dat'), Uint8Array.from(output))
-  await page.getByLabel('选择本地目录').setInputFiles(directory)
+  await page.getByLabel('选择文件夹').setInputFiles(directory)
   await page.getByRole('button', { name: /^imatrix\.dat/ }).click()
   await expect(page.locator('.wt-fact-grid > div')).toHaveText(['条目数1', 'Chunk 数未记录', '数据集未记录', '文件大小27 字节'])
   expect(errors).toEqual([])
@@ -238,8 +239,9 @@ test('local directories open SafeTensors, GGUF and Imatrix workspaces without ne
   })
   const directory = testInfo.outputPath('weights-local-fixture')
   await writeFixtureDirectory(directory)
+  await setLaunchInput(page)
   await page.goto('/')
-  await page.getByLabel('选择本地目录').setInputFiles(directory)
+  await page.getByLabel('选择文件夹').setInputFiles(directory)
   await expect(page.getByRole('heading', { name: 'FixtureModel' })).toBeVisible()
   await page.getByRole('button', { name: /^imatrix-fixture\.dat/ }).click()
   await expect(page.getByRole('heading', { name: 'Importance Matrix' })).toBeVisible()

@@ -14,7 +14,6 @@ export function parseRepositoryHistory(raw: string | null): string[] {
       } catch {
         // Ignore corrupt entries without discarding valid history.
       }
-      if (history.length === 10) break
     }
     return history
   } catch {
@@ -24,5 +23,6 @@ export function parseRepositoryHistory(raw: string | null): string[] {
 
 export function addRepositoryHistory(history: string[], modelId: string): string[] {
   const canonical = normalizeModelId(modelId)
-  return [canonical, ...history.filter(item => item.toLocaleLowerCase() !== canonical.toLocaleLowerCase())].slice(0, 10)
+  // Native updatedHistory: newest first, case-insensitive dedupe, no cap (D-2).
+  return [canonical, ...history.filter(item => item.toLocaleLowerCase() !== canonical.toLocaleLowerCase())]
 }

@@ -69,6 +69,10 @@ const categoryLabels: Record<FileCategory, MessageKey> = {
 }
 
 const historyKey = 'model-files.repository-history'
+// Native ModelFiles.lastRepositoryInput, reopened on launch (D-3). Native skips the launch open when the last
+// input was a directory (shouldOpenOnLaunch); a local or HTTPS open stores '' here for the same effect.
+const lastInputKey = 'model-files.last-repository-input'
+const defaultRepositoryInput = 'Qwen/Qwen3-4B'
 
 type Inspection =
   | { kind: 'empty' }
@@ -94,7 +98,12 @@ type RepositoryError = { message: string; retryable: boolean }
 
 export default function App() {
   const [sourceMode, setSourceMode] = useState<SourceMode>('huggingface')
-  const [repositoryInput, setRepositoryInput] = useState('Qwen/Qwen3-0.6B')
+  const [repositoryInput, setRepositoryInput] = useState(readLastRepositoryInput)
+  const [guidanceOpen, setGuidanceOpen] = useState(false)
+  // Native NavigationSplitView sidebar: min 255, ideal 292, max 360, collapsible.
+  const [sidebarWidth, setSidebarWidth] = useState(292)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const repositoryFormRef = useRef<HTMLFormElement>(null)
   const [repositoryHistory, setRepositoryHistory] = useState(readRepositoryHistory)
   const [snapshot, setSnapshot] = useState<RepositorySnapshot | null>(null)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
@@ -160,6 +169,19 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [panelOpen])
+  // Native: ⌘Return opens from anywhere in the window (Ctrl+Enter off macOS); disabled while loading.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey
+        || event.isComposing || event.defaultPrevented) return
+      event.preventDefault()
+      setGuidanceOpen(false)
+      // click() on the disabled button is a no-op, which is native's disabled keyboardShortcut.
+      repositoryFormRef.current?.querySelector<HTMLButtonElement>('.primary-button')?.click()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null)
   // Native ModelFilesStore.perspective: one header switch for every file kind, reset whenever a file is picked.
   const [perspective, setPerspective] = useState<Perspective>('overview')
@@ -217,6 +239,10 @@ export default function App() {
           setSourceMode('huggingface')
           setRepositoryInput(route.repo)
           void loadRoute(route.repo, route.file, true)
+        } else {
+          // Native ContentView .task: reopen the last input on launch; ?repo= takes priority.
+          const last = readLastRepositoryInput()
+          if (last !== '') void loadRoute(last, null, true)
         }
       }
     })
@@ -260,6 +286,7 @@ export default function App() {
     inspectionCache.current.clear()
     try {
       const next = loadLocalDirectory(selection)
+      saveLastRepositoryInput('')
       consistencySnapshotIdentity.current = snapshotIdentity(next)
       setSnapshot(next)
       const preferred = next.files.find(file => file.path === 'config.json') ?? next.files.find(file => !isBlocked(file))
@@ -301,6 +328,9 @@ export default function App() {
       if (controller.signal.aborted || repositoryAbort.current !== controller) return
       consistencySnapshotIdentity.current = snapshotIdentity(next)
       setSnapshot(next)
+      // Native: loading ends with the manifest; the first file loads on its own.
+      setIsLoadingRepository(false)
+      saveLastRepositoryInput(next.source === 'huggingface' ? next.modelId : '')
       if (next.source === 'huggingface') {
         setRepositoryInput(next.modelId)
         setRepositoryHistory(current => {
@@ -579,12 +609,16 @@ export default function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand" aria-label="Model Files Web">
+        <button className="icon-button sidebar-toggle" type="button" aria-expanded={sidebarOpen} aria-controls="file-sidebar"
+          aria-label={t(sidebarOpen ? 'appHideSidebarAction' : 'appShowSidebarAction')}
+          title={t(sidebarOpen ? 'appHideSidebarAction' : 'appShowSidebarAction')} onClick={() => setSidebarOpen(open => !open)}>
+          <SidebarIcon />
+        </button>
+        <div className="brand">
           <AppMark />
           <span>Model Files</span>
-          <span className="web-label">Web</span>
         </div>
-        <form className="repository-form" onSubmit={openRepository}>
+        <form className="repository-form" onSubmit={openRepository} ref={repositoryFormRef}>
           <SourceSelect value={sourceMode} onChange={mode => {
             clearRepository()
             clearRoute('push')
@@ -592,43 +626,67 @@ export default function App() {
             setRepositoryInput('')
           }} />
           <label className="sr-only" htmlFor="repository">{t(sourceMode === 'huggingface' ? 'appHuggingFaceRepositoryLabel' : 'appHttpsUrlLabel')}</label>
-          <input
-            id="repository"
-            list={sourceMode === 'huggingface' ? 'repository-examples' : undefined}
-            autoComplete="off"
-            value={repositoryInput}
-            onChange={event => setRepositoryInput(event.target.value)}
-            onKeyDown={event => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                event.currentTarget.form?.requestSubmit()
-              }
-            }}
-            placeholder={sourceMode === 'huggingface' ? t('appRepositoryPlaceholder') : 'https://…'}
-            spellCheck={false}
-          />
-          <datalist id="repository-examples">
+          <div className="repository-field">
+            <input
+              id="repository"
+              list={sourceMode === 'huggingface' ? 'repository-history' : undefined}
+              autoComplete="off"
+              value={repositoryInput}
+              onChange={event => {
+                setRepositoryInput(event.target.value)
+                // Native closes the guidance when a history item is picked; picking from a datalist is not typing.
+                const inputType = (event.nativeEvent as InputEvent).inputType
+                setGuidanceOpen(inputType !== undefined && inputType !== 'insertReplacementText')
+              }}
+              onFocus={() => setGuidanceOpen(true)}
+              onBlur={() => setGuidanceOpen(false)}
+              onKeyDown={event => {
+                if (event.key === 'Escape' && guidanceOpen) {
+                  event.preventDefault()
+                  setGuidanceOpen(false)
+                } else if (event.key === 'Enter' && !event.metaKey && !event.ctrlKey) {
+                  event.preventDefault()
+                  setGuidanceOpen(false)
+                  event.currentTarget.form?.requestSubmit()
+                }
+              }}
+              placeholder={sourceMode === 'huggingface' ? t('appRepositoryPlaceholder') : 'https://…'}
+              title={sourceMode === 'huggingface' ? t('appRepositoryHelp') : undefined}
+              aria-describedby={sourceMode === 'huggingface' && guidanceOpen ? 'repository-guidance' : undefined}
+              spellCheck={false}
+            />
+            {sourceMode === 'huggingface' && guidanceOpen ? (
+              // Native RepositoryInputGuidanceView; local paths and ssh:// cannot be typed on the web, so one row.
+              <div className="repository-guidance" id="repository-guidance" role="tooltip">
+                <div className="repository-guidance-row">
+                  <BoxIcon />
+                  <strong>{t('appGuidanceModelRepository')}</strong>
+                  <span>— {t('appGuidanceModelRepositoryExample')}</span>
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <datalist id="repository-history">
             {repositoryHistory.map(modelId => <option value={modelId} key={modelId.toLocaleLowerCase()} />)}
-            <option value="Qwen/Qwen3-0.6B" />
-            <option value="bartowski/Qwen_Qwen3-0.6B-GGUF" />
           </datalist>
-          <button className="primary-button" type="submit">
-            {isLoadingRepository ? t('appRepositoryOpeningAction') : t('appRepositoryOpenAction')}
-          </button>
-          <label className="directory-button">
-            {t('appSelectLocalDirectory')}
+          <label className="directory-button" title={t('appSelectLocalDirectoryHelp')}>
+            <FolderIcon />
             <input
               type="file"
               multiple
-              aria-label={t('appSelectLocalDirectory')}
+              aria-label={t('appSelectFolderAction')}
               onChange={openLocalDirectory}
               {...{ webkitdirectory: '' }}
             />
           </label>
+          <button className="primary-button" type="submit" disabled={isLoadingRepository}>
+            {t('appRepositoryOpenAction')}
+          </button>
           {repositoryHistory.length > 0 ? (
             <button className="history-button" type="button" onClick={() => {
               try {
                 localStorage.removeItem(historyKey)
+                localStorage.removeItem(lastInputKey)
               } catch {
                 // History remains cleared for this session when storage is unavailable.
               }
@@ -656,8 +714,9 @@ export default function App() {
         </div>
       </header>
 
-      <div className="workspace">
-        <aside className="sidebar">
+      <div className="workspace" data-sidebar={sidebarOpen ? 'open' : 'closed'}
+        style={{ '--sidebar-width': `${sidebarWidth}px` } as React.CSSProperties}>
+        <aside className="sidebar" id="file-sidebar" hidden={!sidebarOpen}>
           {sourceMode !== 'huggingface' ? <details className="https-help" open>
             <summary>{t('appHttpsHelp')}</summary>
             <p>{t('appHttpsHint')}</p>
@@ -706,6 +765,7 @@ export default function App() {
             ) : null}
           </nav>
         </aside>
+        {sidebarOpen ? <ResizeHandle axis="x" before value={sidebarWidth} min={255} max={360} onChange={setSidebarWidth} /> : null}
         <Detail
           header={<FileHeader
             inspection={inspection}
@@ -761,18 +821,19 @@ export default function App() {
               top: Math.max(8, Math.min(fileMenu.y, window.innerHeight - 148)),
             }}
           >
-            {url !== null ? (
+            {/* Native: local files open too (here as a blob URL); a separator follows. */}
+            {url !== null || snapshot.source === 'local' ? <>
               <button type="button" role="menuitem" onClick={() => {
-                window.open(url, '_blank', 'noopener,noreferrer')
+                openOriginalFile(snapshot, fileMenu.file, url)
                 setFileMenu(null)
               }}>{t('appOpenOriginalFileAction')}</button>
-            ) : null}
-            {url !== null ? (
-              <button type="button" role="menuitem" onClick={() => {
-                void navigator.clipboard.writeText(url).catch(() => {})
-                setFileMenu(null)
-              }}>{t('appCopyFullPathAction')}</button>
-            ) : null}
+              <hr role="separator" />
+            </> : null}
+            {/* ponytail: a browser never sees a local file's absolute path, so the item stays but is disabled. */}
+            <button type="button" role="menuitem" disabled={url === null} onClick={() => {
+              if (url !== null) void navigator.clipboard.writeText(url).catch(() => {})
+              setFileMenu(null)
+            }}>{t('appCopyFullPathAction')}</button>
             <button type="button" role="menuitem" onClick={() => {
               void navigator.clipboard.writeText(fileMenu.file.path).catch(() => {})
               setFileMenu(null)
@@ -1577,6 +1638,19 @@ function ExternalIcon() {
   return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2.5h4.5V7" /><path d="M13.5 2.5 7.5 8.5" /><path d="M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3" /></svg>
 }
 
+// SF Symbols sidebar.left / folder / shippingbox.
+function SidebarIcon() {
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M6 3v10" /></svg>
+}
+
+function FolderIcon() {
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4v8.5h13V5.5H7.3L5.8 4z" /></svg>
+}
+
+function BoxIcon() {
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.8 14 4.8v6.4L8 14.2 2 11.2V4.8zM2 4.8l6 3 6-3M8 7.8v6.4M5 3.3l6 3" /></svg>
+}
+
 function CloseIcon() {
   return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg>
 }
@@ -1738,6 +1812,45 @@ function readRepositoryHistory(): string[] {
     return parseRepositoryHistory(localStorage.getItem(historyKey))
   } catch {
     return []
+  }
+}
+
+function openOriginalFile(snapshot: RepositorySnapshot, file: RepositoryFile, url: string | null): void {
+  if (url !== null) {
+    window.open(url, '_blank', 'noopener,noreferrer')
+    return
+  }
+  const blob = snapshot.source === 'local' ? snapshot.localFiles.get(file.path) : undefined
+  if (blob === undefined) return
+  // A blob: page runs in this origin, so only inert types keep theirs. Weights download, like their Hub
+  // resolve URL; every other file (HTML, SVG, JSON, code…) opens as plain text.
+  if (isBlocked(file) || file.category === 'weights') {
+    const blobUrl = URL.createObjectURL(blob)
+    const link = Object.assign(document.createElement('a'), { href: blobUrl, download: file.path.split('/').at(-1) ?? file.path })
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000)
+    return
+  }
+  const inert = /^(image\/(png|jpeg|gif|webp|bmp|avif|tiff|x-icon|vnd\.microsoft\.icon)|application\/pdf|text\/plain)$/.test(blob.type)
+  const blobUrl = URL.createObjectURL(inert ? blob : new Blob([blob], { type: 'text/plain;charset=utf-8' }))
+  window.open(blobUrl, '_blank', 'noopener,noreferrer')
+  // ponytail: the new tab has already resolved the URL by then; revoke so the File isn't pinned for the session.
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000)
+}
+
+function readLastRepositoryInput(): string {
+  try {
+    return localStorage.getItem(lastInputKey) ?? defaultRepositoryInput
+  } catch {
+    return defaultRepositoryInput
+  }
+}
+
+function saveLastRepositoryInput(modelId: string): void {
+  try {
+    localStorage.setItem(lastInputKey, modelId)
+  } catch {
+    // Launch falls back to the default repository when storage is unavailable.
   }
 }
 

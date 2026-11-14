@@ -18,6 +18,7 @@ import {
   tokenizerMetric,
   expectRepository,
   expandWeights,
+  setLaunchInput,
 } from './fixtures.ts'
 
 test('workbench shell follows native header, sidebar and panel conventions', async ({ page }) => {
@@ -1069,8 +1070,9 @@ test('opens every supported local directory reader without network upload', { ti
   }))
   const localFixture = testInfo.outputPath('complete-local-fixture')
   await writeFixtureDirectory(localFixture)
+  await setLaunchInput(page)
   await page.goto('/')
-  const picker = page.getByLabel('选择本地目录')
+  const picker = page.getByLabel('选择文件夹')
   await picker.setInputFiles(localFixture)
 
   await expectRepository(page, '本地 · 实时目录', 23)
@@ -1119,6 +1121,7 @@ test('dispatches local Python and PDF readers safely', async ({ page }, testInfo
   const errors = collectErrors(page)
   const localFixture = testInfo.outputPath("reader-local-fixture")
   await writeFixtureDirectory(localFixture)
+  await setLaunchInput(page)
   await page.goto('/')
   await page.evaluate(() => {
     const states: Record<string, { revoked?: boolean }> = {}
@@ -1136,7 +1139,7 @@ test('dispatches local Python and PDF readers safely', async ({ page }, testInfo
     }
     ;(window as unknown as { __objectUrls: Record<string, { revoked?: boolean }> }).__objectUrls = states
   })
-  await page.getByLabel('选择本地目录').setInputFiles(localFixture)
+  await page.getByLabel('选择文件夹').setInputFiles(localFixture)
 
   const csp = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content')
   expect(csp).toContain("object-src 'none'")
@@ -1194,8 +1197,9 @@ test('folds Python YAML and JSON while preserving the full source', async ({ pag
   const errors = collectErrors(page)
   const localFixture = testInfo.outputPath('folding-local-fixture')
   await writeFixtureDirectory(localFixture)
+  await setLaunchInput(page)
   await page.goto('/')
-  await page.getByLabel('选择本地目录').setInputFiles(localFixture)
+  await page.getByLabel('选择文件夹').setInputFiles(localFixture)
 
   await page.getByRole('button', { name: /^reader\.py/ }).click()
   await expect(page.getByRole('button', { name: '折叠第 1 行结构' })).toBeVisible()
@@ -1244,8 +1248,9 @@ test('folds Python YAML and JSON while preserving the full source', async ({ pag
 test('source find navigates matches and reveals collapsed ancestors', async ({ page }, testInfo) => {
   const localFixture = testInfo.outputPath('source-find-local-fixture')
   await writeFixtureDirectory(localFixture)
+  await setLaunchInput(page)
   await page.goto('/')
-  await page.getByLabel('选择本地目录').setInputFiles(localFixture)
+  await page.getByLabel('选择文件夹').setInputFiles(localFixture)
   const filter = page.getByPlaceholder('筛选文件')
   await filter.fill('reader')
   await page.getByRole('button', { name: /^reader\.py/ }).click()
@@ -1406,8 +1411,9 @@ test('finds the tail of an almost 32 MiB progressive text within budget', async 
   const localFixture = testInfo.outputPath('performance-find-fixture')
   const exactBytes = await writePerformanceFindFixture(localFixture)
   const loadStarted = Date.now()
+  await setLaunchInput(page)
   await page.goto('/')
-  const picker = page.getByLabel('选择本地目录')
+  const picker = page.getByLabel('选择文件夹')
   await picker.setInputFiles(localFixture)
 
   const reader = page.locator('.source-reader.plain-text')
@@ -1553,8 +1559,9 @@ test('a far diagnostic jumps its line to the upper third of the reader', async (
   const directory = testInfo.outputPath('far-diagnostic')
   await writeFixtureDirectory(directory)
   await writeFile(join(directory, 'config.json'), '{' + '\n'.repeat(900) + '"vocab_size":1005,' + '\n'.repeat(900) + '"model_type":"fixture"}')
+  await setLaunchInput(page)
   await page.goto('/')
-  await page.getByLabel('选择本地目录').setInputFiles(directory)
+  await page.getByLabel('选择文件夹').setInputFiles(directory)
   const problems = page.getByRole('region', { name: '文件问题' })
   await expect(problems).toContainText('第 901 行')
   await problems.getByRole('button').click()
@@ -1953,8 +1960,9 @@ test('a newer repository request cancels and wins over a slow request', async ({
   await repository.fill('fixture/slow')
   await open.click()
   await repository.fill(fixtureModelId)
-  await expect(open).toBeEnabled()
-  await open.click()
+  // Native: Open is disabled while the manifest loads, but Return in the field still restarts.
+  await expect(open).toBeDisabled()
+  await repository.press('Enter')
 
   await expectRepository(page, 'Hugging Face · main', 13)
   await expect(repository).toHaveValue(fixtureModelId)
@@ -2181,6 +2189,11 @@ test('keeps controls reachable across target viewports, keyboard, and dark mode'
   }
 
   await page.goto('/')
+  // Native toolbar order: the split view's sidebar toggle comes first. WebKit's default Tab skips buttons.
+  if (testInfo.project.name !== 'webkit') {
+    await page.keyboard.press('Tab')
+    await expect(page.getByRole('button', { name: '隐藏边栏' })).toBeFocused()
+  }
   await page.keyboard.press('Tab')
   await expect(page.getByRole('combobox', { name: '加载方式' })).toBeFocused()
   await page.keyboard.press('Tab')
@@ -2241,8 +2254,9 @@ test('renders image files and verifies blob url within CSP without console error
     0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
   ]))
   await writeFile(join(dir, 'icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5"/></svg>')
+  await setLaunchInput(page)
   await page.goto('/')
-  await page.getByLabel('选择本地目录').setInputFiles(dir)
+  await page.getByLabel('选择文件夹').setInputFiles(dir)
   await page.getByRole('button', { name: /^logo\.png/ }).click()
   await expect(page.locator('.inspected-image')).toBeVisible()
   await expect(page.getByText('1 × 1 px', { exact: true })).toBeVisible()

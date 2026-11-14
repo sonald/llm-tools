@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
-import { openPerspective } from './fixtures.ts'
+import { openPerspective, setLaunchInput } from './fixtures.ts'
 
 test('tokenizer JSON remains readable without a usable tokenizer runtime', async ({ page }, testInfo) => {
   const directory = testInfo.outputPath('json-parity')
@@ -10,8 +10,9 @@ test('tokenizer JSON remains readable without a usable tokenizer runtime', async
   await writeFile(join(directory, 'tokenizer.json'), source)
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
+  await setLaunchInput(page)
   await page.goto('/')
-  await page.getByLabel('选择本地目录').setInputFiles(directory)
+  await page.getByLabel('选择文件夹').setInputFiles(directory)
   await page.getByRole('button', { name: '原文', exact: true }).click()
   const reader = page.locator('.source-reader')
   await expect(reader).toHaveAttribute('data-highlighted', 'true')
@@ -44,8 +45,9 @@ test('all JSON file routes highlight and fold source, including large tokenizers
   await writeFile(join(directory, 'tokenizer.json'), large)
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
+  await setLaunchInput(page)
   await page.goto('/')
-  await page.getByLabel('选择本地目录').setInputFiles(directory)
+  await page.getByLabel('选择文件夹').setInputFiles(directory)
   for (const path of paths) {
     await page.getByRole('button', { name: new RegExp(`^${path.replaceAll('.', '\\.')}`) }).click()
     await page.getByRole('button', { name: '原文', exact: true }).click()
@@ -78,8 +80,9 @@ test('JSON roots and malformed input remain inspectable, template JSON renders v
   await mkdir(directory, { recursive: true })
   const contents = { 'null.json': 'null', 'array.json': '[\n  {"a": true}\n]', 'invalid.json': '{"broken":', 'chat_template.jinja': '{\n  "items": [\n    true, null\n  ]\n}' }
   for (const [path, source] of Object.entries(contents)) await writeFile(join(directory, path), source)
+  await setLaunchInput(page)
   await page.goto('/')
-  await page.getByLabel('选择本地目录').setInputFiles(directory)
+  await page.getByLabel('选择文件夹').setInputFiles(directory)
   for (const path of ['null.json', 'array.json', 'invalid.json'] as const) {
     await page.getByRole('button', { name: new RegExp(`^${path.replace('.', '\\.')}`) }).click()
     if (path !== 'invalid.json') await page.getByRole('button', { name: '原文', exact: true }).click()
@@ -105,8 +108,9 @@ test('JSON fields show lexeme-preserving formatted source like native JSONReader
   const directory = testInfo.outputPath('json-fields')
   await mkdir(directory, { recursive: true })
   await writeFile(join(directory, 'metadata.json'), `{"nested":{"padding":"${'x'.repeat(600)}","needle":"LATE_FIELD","exact":9007199254740993},"one":1,"yes":true}`)
+  await setLaunchInput(page)
   await page.goto('/')
-  await page.getByLabel('选择本地目录').setInputFiles(directory)
+  await page.getByLabel('选择文件夹').setInputFiles(directory)
   await page.getByRole('button', { name: '全部字段' }).click()
   const reader = page.locator('.source-reader')
   await expect(reader).toHaveAttribute('data-highlighted', 'true')
@@ -124,8 +128,9 @@ test('YAML null literals share the literal syntax color', async ({ page }, testI
   const directory = testInfo.outputPath('yaml-null')
   await mkdir(directory, { recursive: true })
   await writeFile(join(directory, 'reader.yaml'), 'count: 2\nempty: null\n')
+  await setLaunchInput(page)
   await page.goto('/')
-  await page.getByLabel('选择本地目录').setInputFiles(directory)
+  await page.getByLabel('选择文件夹').setInputFiles(directory)
   await page.getByRole('button', { name: /^reader\.yaml/ }).click()
   const reader = page.locator('.source-reader')
   await expect(reader).toHaveAttribute('data-highlighted', 'true')
@@ -146,8 +151,9 @@ test('a minified multi-megabyte vocab stays highlighted, complete and searchable
   await writeFile(join(directory, 'vocab.json'), source)
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
+  await setLaunchInput(page)
   await page.goto('/')
-  await page.getByLabel('选择本地目录').setInputFiles(directory)
+  await page.getByLabel('选择文件夹').setInputFiles(directory)
   await expect(page.getByText('共 150,001 个 token；列表最多展示当前筛选结果的前 1,000 项。')).toBeVisible()
   const started = Date.now()
   await page.getByRole('button', { name: '原文', exact: true }).click()
