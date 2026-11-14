@@ -30,11 +30,10 @@ describe('messageCatalog', () => {
       const zhHansPlaceholders = (
         messages['zh-Hans'].match(/\{[^}]+\}/g) ?? []
       ).sort()
-      const enPlaceholders = (
-        messages.en.match(/\{[^}]+\}/g) ?? []
-      ).sort()
-
-      assert.deepEqual(enPlaceholders, zhHansPlaceholders, key)
+      const forms: string[] = typeof messages.en === 'string' ? [messages.en] : [messages.en.one, messages.en.other]
+      for (const form of forms) {
+        assert.deepEqual((form.match(/\{[^}]+\}/g) ?? []).sort(), zhHansPlaceholders, key)
+      }
     }
   })
 
@@ -45,6 +44,16 @@ describe('messageCatalog', () => {
     initializeLocalization(['zh-CN'])
     assert.equal(translate('greeting', { name: '<Sian>' }), '你好，<Sian>')
     assert.equal(translate('fileCount', { count: '1,024' }), '1,024 个文件')
+  })
+
+  it('groups integers and picks English plural forms like native xcstrings', () => {
+    initializeLocalization(['en-US'])
+    assert.equal(translate('consistencyWarningCount', { count: 1 }), '1 warning')
+    assert.equal(translate('consistencyWarningCount', { count: '1,000' }), '1,000 warnings')
+    assert.equal(translate('consistencyWarningCount', { count: 12345 }), '12,345 warnings')
+    assert.equal(translate('ggufParseFailed', { reason: '1234' }), 'Failed to parse GGUF: 1234')
+    initializeLocalization(['zh-CN'])
+    assert.equal(translate('consistencyWarningCount', { count: 1 }), '1 项警告')
   })
 
   it('rejects missing and extra values', () => {

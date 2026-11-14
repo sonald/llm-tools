@@ -109,11 +109,16 @@ export function chatTemplateMaterial(
   jinjaMaterial: ConsistencyMaterial<string>,
 ): ConsistencyMaterial<ChatTemplateCatalog> {
   if (configMaterial.state === 'skipped') return configMaterial
-  if (configMaterial.state === 'failed' && jinjaMaterial.state !== 'available') return configMaterial
+  // Native ChatTemplateCatalog.parse(configData:) wraps a JSON failure in its own tokenizer_config message.
+  if (configMaterial.state === 'failed' && jinjaMaterial.state !== 'available') {
+    return configMaterial.message === t('jsonDataCorrupted')
+      ? { state: 'failed', message: t('tokenizerConfigJsonInvalid', { reason: configMaterial.message }) }
+      : configMaterial
+  }
 
   let config: ChatTemplateCatalog
   if (configMaterial.state === 'available') {
-    if (!isRecord(configMaterial.value)) return { state: 'failed', message: t('jsonRootNotObject') }
+    if (!isRecord(configMaterial.value)) return { state: 'failed', message: t('tokenizerConfigRootNotObject') }
     try {
       config = parseChatTemplates(configMaterial.value.chat_template)
     } catch (error) {

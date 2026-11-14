@@ -182,17 +182,17 @@ test('accepts only bounded same-directory tokenizer bundles', () => {
   assert.equal(tokenizerBundleBytes(file('nested/TOKENIZER.JSON', 31), file('nested/TOKENIZER_CONFIG.JSON', 1), template), 42)
   assert.equal(tokenizerBundleBytes(file('nested/tokenizer.model', 31), undefined, template), 41)
   assert.throws(() => tokenizerBundleBytes(file('nested/tokenizer.json', 31), file('nested/tokenizer_config.json', 1),
-    file('nested/template.jinja', 1)), /同目录/)
+    file('nested/template.jinja', 1)), /只能为 tokenizer.json 或 SentencePiece .model 打开分词试验台：/)
   assert.throws(() => tokenizerBundleBytes(file('nested/tokenizer.json', 31), file('nested/tokenizer_config.json', 1),
-    file('chat_template.jinja', 1)), /同目录/)
+    file('chat_template.jinja', 1)), /只能为 tokenizer.json 或 SentencePiece .model 打开分词试验台：/)
   assert.throws(() => tokenizerBundleBytes(file('nested/tokenizer.json', 31), file('nested/tokenizer_config.json', 1),
-    { ...template, size: null }), /资源大小/)
-  assert.throws(() => tokenizerBundleBytes(file('nested/tokenizer.json', 32 * 1024 * 1024 + 1)), /33\.6 MB/)
+    { ...template, size: null }), /来源没有提供 nested\/chat_template.jinja 的大小，无法在安全上限内读取。/)
+  assert.throws(() => tokenizerBundleBytes(file('nested/tokenizer.json', 32 * 1024 * 1024 + 1)), /nested\/tokenizer.json 大小为 33\.6 MB，超过分词器单文件上限 33\.6 MB。/)
   assert.throws(() => tokenizerBundleBytes(file('nested/tokenizer.json', 30 * 1024 * 1024), file('nested/tokenizer_config.json', 2 * 1024 * 1024),
-    file('nested/chat_template.jinja', 1025)), /33\.6 MB/)
-  assert.throws(() => tokenizerBundleBytes(tokenizer, file('tokenizer_config.json', 1)), /同目录/)
+    file('nested/chat_template.jinja', 1025)), /分词器资源合计 33\.6 MB，超过 33\.6 MB 安全上限。/)
+  assert.throws(() => tokenizerBundleBytes(tokenizer, file('tokenizer_config.json', 1)), /只能为 tokenizer.json 或 SentencePiece .model 打开分词试验台：/)
   assert.throws(() => tokenizerBundleBytes(tokenizer, file('nested/tokenizer_config.json', 2 * 1024 * 1024 + 1)), /33\.6 MB/)
-  assert.throws(() => tokenizerBundleBytes({ ...tokenizer, size: null }, file('nested/tokenizer_config.json', 1)), /资源大小/)
+  assert.throws(() => tokenizerBundleBytes({ ...tokenizer, size: null }, file('nested/tokenizer_config.json', 1)), /来源没有提供 .* 的大小/)
   assert.equal(tokenizerBundleBytes(file('tokenizer.json', 10)), 10)
 })
 
@@ -393,7 +393,7 @@ test('includes SentencePiece model targets and rejects wrong-directory companion
   assert.throws(() => tokenizerBundleBytes(
     files[0],
     file('tokenizer_config.json', 10),
-  ), /同目录/)
+  ), /只能为 tokenizer.json 或 SentencePiece .model 打开分词试验台：/)
 })
 
 test('detects tokenizer entries and SentencePiece models without case sensitivity', () => {

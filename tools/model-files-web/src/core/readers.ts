@@ -40,15 +40,20 @@ export function perspectiveLabel(perspective: Perspective, document: Perspective
   }
 }
 
+// Native generic files: valid UTF-8 without NUL bytes, else unsupportedBinary.
 export function decodeStrictText(data: ArrayBuffer): string {
-  let text: string
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(data)
-  } catch {
-    throw new Error(t('invalidUtf8Text'))
-  }
-  if (text.includes('\0')) throw new Error(t('textContainsNulByte'))
+  const text = decodeUtf8Text(data, t('unsupportedBinary'))
+  if (text.includes('\0')) throw new Error(t('unsupportedBinary'))
   return text
+}
+
+// Native String(data:encoding:.utf8): NUL is allowed; the caller names the error (.jinja: invalidUTF8).
+export function decodeUtf8Text(data: ArrayBuffer, message: string): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(data)
+  } catch {
+    throw new Error(message)
+  }
 }
 
 export function validatePdfData(data: ArrayBuffer): void {

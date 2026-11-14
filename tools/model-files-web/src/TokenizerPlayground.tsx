@@ -6,7 +6,7 @@ import {
 import {
   formatBytes, loadHttpsSource, loadLocalDirectory, loadRepository, readWholeFile, type RepositoryFile, type RepositorySnapshot,
 } from './core/huggingface.ts'
-import { decodeStrictText } from './core/readers.ts'
+import { decodeStrictText, decodeUtf8Text } from './core/readers.ts'
 import type { ChatAttributionMessage, ChatTokenRole } from './core/tokenAttribution.ts'
 import {
   compareTokenizerTokenizations, InputTooLargeError, isSentencePieceFile, parseTokenIds, selectTokenizerComparisonTargets,
@@ -206,7 +206,7 @@ export function TokenizerPlayground({ snapshot, file }: { snapshot: RepositorySn
         const structure = await mainTokenizerSession.inspectTokenizer(snapshot, file, config, controller.signal)
         const [template, configObject] = await Promise.all([
           templateFile === undefined ? null
-            : readWholeFile(snapshot, templateFile, controller.signal).then(data => decodeStrictText(data)),
+            : readWholeFile(snapshot, templateFile, controller.signal).then(data => decodeUtf8Text(data, t('chatTemplateJinjaNotUtf8'))),
           readConfig(),
         ])
         if (!controller.signal.aborted) setBundle({ structure, template, config: configObject })
@@ -929,7 +929,7 @@ function useComparison(
         const config = companion(target, entry, 'tokenizer_config.json')
         const templateFile = companion(target, entry, 'chat_template.jinja')
         const structure = await rightSession.inspectTokenizer(target, entry, config, signal)
-        const template = templateFile === undefined ? null : decodeStrictText(await readWholeFile(target, templateFile, signal))
+        const template = templateFile === undefined ? null : decodeUtf8Text(await readWholeFile(target, templateFile, signal), t('chatTemplateJinjaNotUtf8'))
         if (isSentencePieceFile(file) || isSentencePieceFile(entry)) vocabulary = { skipped: t('cmpSkipSentencePiece') }
         // Native ModelFilesStore:477: a primary without a loaded bundle skips the diff, it does not wait.
         else if (!primaryReadyRef.current) vocabulary = { skipped: t('cmpSkipPrimaryNotReady') }

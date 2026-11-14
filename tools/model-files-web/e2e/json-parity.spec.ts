@@ -88,7 +88,7 @@ test('JSON roots and malformed input remain inspectable, template JSON renders v
     if (path !== 'invalid.json') await page.getByRole('button', { name: '原文', exact: true }).click()
     // Native JSONReaderView: the parser error above the original text.
     else {
-      await expect(page.getByRole('alert')).toContainText(/^⚠︎ JSON: /)
+      await expect(page.getByRole('alert')).toContainText('⚠︎ JSON: 未能读取数据，因为它的格式不正确。')
       // Native keeps every perspective for invalid JSON instead of forcing 原文.
       await expect(page.getByRole('button', { name: '全部字段', exact: true })).toHaveAttribute('aria-pressed', 'false')
       await expect(page.getByRole('button', { name: '原文', exact: true })).toBeVisible()

@@ -36,7 +36,7 @@ test('builds a bounded local snapshot and reads exact local bytes', async () => 
 })
 
 test('rejects unsafe, duplicate, multi-root, and oversized local paths', () => {
-  assert.throws(() => loadLocalDirectory([localFile('Fixture/../secret', 'x')]), /路径无效/)
+  assert.throws(() => loadLocalDirectory([localFile('Fixture/../secret', 'x')]), /文件路径不安全，已拒绝读取：/)
   assert.throws(() => loadLocalDirectory([
     localFile('Fixture/config.json', 'one'),
     localFile('Fixture/config.json', 'two'),
@@ -45,7 +45,7 @@ test('rejects unsafe, duplicate, multi-root, and oversized local paths', () => {
     localFile('One/config.json', 'one'),
     localFile('Two/config.json', 'two'),
   ]), /多个根目录/)
-  assert.throws(() => loadLocalDirectory([localFile(`Fixture/${'a'.repeat(4097)}`, 'x')]), /4 KiB/)
+  assert.throws(() => loadLocalDirectory([localFile(`Fixture/${'a'.repeat(4097)}`, 'x')]), /文件路径不安全，已拒绝读取：/)
 })
 
 const file: RepositoryFile = {
@@ -78,11 +78,11 @@ test('normalizes only owner/model identifiers and Hugging Face model URLs', () =
   // Native: http as well as https, www., any host case.
   assert.equal(normalizeModelId('http://huggingface.co/owner/model'), 'owner/model')
   assert.equal(normalizeModelId('https://WWW.HuggingFace.co/owner/model/blob/main/config.json'), 'owner/model')
-  assert.throws(() => normalizeModelId('https://huggingface.co/owner'), /owner\/model/)
-  assert.throws(() => normalizeModelId('https://example.com/owner/model'), /owner\/model/)
-  assert.throws(() => normalizeModelId('https://huggingface.co/owner/%E4%B8%AD%E6%96%87'), /owner\/model/)
-  assert.throws(() => normalizeModelId('https://huggingface.co.evil/owner/model'), /owner\/model/)
-  assert.throws(() => normalizeModelId('../owner/model'), /owner\/model/)
+  assert.throws(() => normalizeModelId('https://huggingface.co/owner'), /模型 ID 无效，请使用类似 Qwen\/Qwen3-4B 的格式。/)
+  assert.throws(() => normalizeModelId('https://example.com/owner/model'), /模型 ID 无效，请使用类似 Qwen\/Qwen3-4B 的格式。/)
+  assert.throws(() => normalizeModelId('https://huggingface.co/owner/%E4%B8%AD%E6%96%87'), /模型 ID 无效，请使用类似 Qwen\/Qwen3-4B 的格式。/)
+  assert.throws(() => normalizeModelId('https://huggingface.co.evil/owner/model'), /模型 ID 无效，请使用类似 Qwen\/Qwen3-4B 的格式。/)
+  assert.throws(() => normalizeModelId('../owner/model'), /模型 ID 无效，请使用类似 Qwen\/Qwen3-4B 的格式。/)
 })
 
 test('matches native file intent classification and reader-friendly ordering', async () => {
@@ -212,7 +212,7 @@ test('rejects unsafe repository paths from the Hub manifest', async () => {
     sha: snapshot.revision,
     siblings: [{ rfilename: '../secret', size: 1 }],
   }), async () => {
-    await assert.rejects(loadRepository('owner/model'), /文件路径无效/)
+    await assert.rejects(loadRepository('owner/model'), /文件路径不安全，已拒绝读取：/)
   })
 })
 
@@ -235,7 +235,7 @@ test('reads an exact confirmed range without credentials', async () => {
 
 test('rejects HTTP 200, wrong Content-Range, and short range responses', async () => {
   await withFetch(async () => new Response(new Uint8Array(8), { status: 200 }), async () => {
-    await assert.rejects(readExactRange(snapshot, file, 8, 15), /未确认 Range/)
+    await assert.rejects(readExactRange(snapshot, file, 8, 15), /源站未确认 HTTP Range（状态码 200），已取消以避免下载完整权重。/)
   })
   await withFetch(async () => new Response(new Uint8Array(8), {
     status: 206,
@@ -247,7 +247,7 @@ test('rejects HTTP 200, wrong Content-Range, and short range responses', async (
     status: 206,
     headers: { 'Content-Range': 'bytes 8-15/100' },
   }), async () => {
-    await assert.rejects(readExactRange(snapshot, file, 8, 15), /Range 短读/)
+    await assert.rejects(readExactRange(snapshot, file, 8, 15), /Range 响应不完整：需要 8 字节，只收到 [0-9,]+ 字节。/)
   })
 })
 
@@ -435,7 +435,7 @@ test('range refusal cancels the response stream without consuming whole weights'
   await withFetch(async () => new Response(new ReadableStream({
     cancel() { cancelled = true },
   }), { status: 200 }), async () => {
-    await assert.rejects(readExactRange(snapshot, file, 0, 7), /未确认 Range/)
+    await assert.rejects(readExactRange(snapshot, file, 0, 7), /源站未确认 HTTP Range（状态码 200），已取消以避免下载完整权重。/)
     assert.equal(cancelled, true)
   })
 })

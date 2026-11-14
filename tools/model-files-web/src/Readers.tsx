@@ -112,7 +112,8 @@ function FormattedJson({ content, valid, label }: { content: string; valid: bool
   const source = useMemo(() => valid ? formatJsonSource(content) : content, [content, valid])
   const error = useMemo(() => {
     if (valid) return null
-    try { JSON.parse(content) } catch (failure) { return `JSON: ${failure instanceof Error ? failure.message : String(failure)}` }
+    // Native JSONFormatter.formattedSource: "JSON: " + JSONSerialization's localizedDescription.
+    try { JSON.parse(content) } catch { return `JSON: ${t('jsonDataCorrupted')}` }
     return null
   }, [content, valid])
   return (

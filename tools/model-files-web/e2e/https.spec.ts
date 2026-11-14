@@ -142,7 +142,7 @@ test('HTTPS explains missing CORS and size, rejects invalid ranges, then switche
   for (const query of ['ignore-range', 'hidden-range']) {
     await openHttps(page, 'file', `model.safetensors?${query}`)
     await expect(page.getByRole('heading', { name: '无法读取文件' })).toBeVisible()
-    await expect(page.locator('.detail-body')).toContainText(query === 'ignore-range' ? 'HTTP 200' : 'Content-Range')
+    await expect(page.locator('.detail-body')).toContainText(query === 'ignore-range' ? '状态码 200' : 'Content-Range')
   }
   expect(requests.filter(item => item.path === 'model.safetensors' && item.method === 'GET')).toEqual([
     { path: 'model.safetensors', method: 'GET', range: 'bytes=0-7' },

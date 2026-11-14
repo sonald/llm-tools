@@ -127,8 +127,9 @@ function variableValue(item: TemplateVariable): unknown {
 function parseJSON(source: string, label: string): unknown {
   try {
     return JSON.parse(source)
-  } catch (failure) {
-    throw new Error(t('templateJsonInvalid', { label, message: failure instanceof Error ? failure.message : String(failure) }))
+  } catch {
+    // Native: JSONSerialization's localizedDescription, never the parser's position detail.
+    throw new Error(t('templateJsonInvalid', { label, message: t('jsonDataCorrupted') }))
   }
 }
 

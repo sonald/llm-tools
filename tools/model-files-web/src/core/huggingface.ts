@@ -196,8 +196,8 @@ export function imageMimeType(path: string): string {
 
 export async function loadRepository(input: string, signal?: AbortSignal): Promise<HuggingFaceSnapshot> {
   const modelId = normalizeModelId(input)
-  const response = await fetch(`https://huggingface.co/api/models/${encodePath(modelId)}?blobs=true`, requestOptions(signal))
-  if (!response.ok) throw new Error(t('huggingfaceManifestRequestFailed', { status: response.status }))
+  const response = await fetchHub(`https://huggingface.co/api/models/${encodePath(modelId)}?blobs=true`, requestOptions(signal))
+  if (!response.ok) throw await requestFailed(response)
   const payload = await response.json() as HubResponse
   if (typeof payload.id !== 'string' || normalizeModelId(payload.id).toLocaleLowerCase() !== modelId.toLocaleLowerCase()
     || typeof payload.sha !== 'string' || !revisionPattern.test(payload.sha) || !Array.isArray(payload.siblings)) {
@@ -215,7 +215,7 @@ export async function loadRepository(input: string, signal?: AbortSignal): Promi
 export function loadLocalDirectory(selection: Iterable<File>): LocalDirectorySnapshot {
   const selected = []
   for (const file of selection) {
-    if (selected.length === 100_000) throw new Error(t('localDirectoryFileLimitExceeded', { limit: "100,000" }))
+    if (selected.length === 100_000) throw new Error(t('localDirectoryFileLimitExceeded', { limit: 100_000 }))
     selected.push(file)
   }
   if (selected.length === 0) throw new Error(t('localDirectoryNotSelected'))
@@ -227,7 +227,7 @@ export function loadLocalDirectory(selection: Iterable<File>): LocalDirectorySna
   const localFiles = new Map<string, File>()
   const files = selected.map((blob, index): RepositoryFile => {
     const path = safeRepositoryPath(relativePaths[index].slice(name.length + 1))
-    if (new TextEncoder().encode(path).byteLength > 4096) throw new Error(t('localFilePathTooLarge', { limit: '4 KiB' }))
+    if (new TextEncoder().encode(path).byteLength > 4096) throw new Error(t('invalidRepositoryPath', { path }))
     if (!Number.isSafeInteger(blob.size) || blob.size < 0) throw new Error(t('localFileSizeInvalid'))
     if (localFiles.has(path)) throw new Error(t('duplicateRepositoryPath', { path }))
     localFiles.set(path, blob)
@@ -265,10 +265,7 @@ export async function loadHttpsSource(
   } else {
     if (!new URL(url).pathname.toLowerCase().endsWith('.json')) throw new Error(t('httpsManifestJsonRequired'))
     const response = await fetchHttps(url, requestOptions(signal))
-    if (!response.ok) {
-      await response.body?.cancel()
-      throw new Error(t('fileRequestFailed', { status: response.status }))
-    }
+    if (!response.ok) throw await requestFailed(response)
     const data = await readBounded(response, 1024 * 1024)
     const payload: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(data))
     if (typeof payload !== 'object' || payload === null || !('files' in payload)
@@ -282,7 +279,7 @@ export async function loadHttpsSource(
         throw new Error(t('httpsManifestInvalid'))
       }
       const path = safeRepositoryPath(entry.path)
-      if (new TextEncoder().encode(path).byteLength > 4096) throw new Error(t('localFilePathTooLarge', { limit: '4 KiB' }))
+      if (new TextEncoder().encode(path).byteLength > 4096) throw new Error(t('invalidRepositoryPath', { path }))
       if (urls.has(path)) throw new Error(t('duplicateRepositoryPath', { path }))
       urls.set(path, httpsUrl(entry.url, response.url || url))
       return { path, size: entry.size, hash: null, category: classifyFile(path) }
@@ -299,6 +296,37 @@ function httpsUrl(input: string, base?: string): string {
   if (url.protocol !== 'https:' || url.username !== '' || url.password !== '') throw new Error(t('httpsUrlRequired'))
   url.hash = ''
   return url.href
+}
+
+// Native maps URLSession failures to Foundation's localized text; the browser only exposes an English TypeError.
+async function fetchHub(url: string, options: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, options)
+  } catch (error) {
+    options.signal?.throwIfAborted()
+    if (error instanceof TypeError) throw new Error(t('serverConnectionFailed'))
+    throw error
+  }
+}
+
+// Native RepositoryService.validate: 「请求失败（HTTP N）：」 plus the first 512 bytes of the body as UTF-8, else 「未知错误」.
+async function requestFailed(response: Response): Promise<Error> {
+  let message = t('unknownError')
+  try {
+    const reader = response.body?.getReader()
+    const bytes = new Uint8Array(512)
+    let length = 0
+    while (reader !== undefined && length < 512) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const take = value.subarray(0, 512 - length)
+      bytes.set(take, length)
+      length += take.byteLength
+    }
+    await reader?.cancel()
+    if (length > 0) message = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, length))
+  } catch { /* keep 未知错误, as native does for a non-UTF-8 prefix */ }
+  return new Error(t('fileRequestFailed', { status: response.status, message }))
 }
 
 async function fetchHttps(url: string, options: RequestInit): Promise<Response> {
@@ -322,7 +350,7 @@ export async function readWholeFile(
   maximumBytes = 32 * 1024 * 1024,
 ): Promise<ArrayBuffer> {
   if (file.size === null) throw new Error(t('fileSizeUnavailableForWholeRead'))
-  if (file.size > maximumBytes) throw new Error(t('wholeFileLimitExceeded', { limit: formatBytes(maximumBytes) }))
+  if (file.size > maximumBytes) throw new Error(t('wholeFileLimitExceeded', { size: formatBytes(file.size) }))
   signal?.throwIfAborted()
   const cached = wholeFileCache.get(snapshot)?.get(file.path)
   if (cached !== undefined) {
@@ -351,14 +379,11 @@ async function readUncachedWholeFile(
     signal?.throwIfAborted()
     const data = await blob.arrayBuffer()
     signal?.throwIfAborted()
-    if (data.byteLength !== file.size) throw new Error(t('changedLocalFile'))
+    if (data.byteLength !== file.size) throw new Error(t('changedLocalFile', { path: file.path }))
     return data
   }
-  const response = await (snapshot.source === 'https' ? fetchHttps : fetch)(contentUrl(snapshot, file), requestOptions(signal))
-  if (!response.ok) {
-    await response.body?.cancel()
-    throw new Error(t('fileRequestFailed', { status: response.status }))
-  }
+  const response = await (snapshot.source === 'https' ? fetchHttps : fetchHub)(contentUrl(snapshot, file), requestOptions(signal))
+  if (!response.ok) throw await requestFailed(response)
   return await readBounded(response, maximumBytes)
 }
 
@@ -380,10 +405,10 @@ export async function readExactRange(
     signal?.throwIfAborted()
     const data = await blob.slice(start, end + 1).arrayBuffer()
     signal?.throwIfAborted()
-    if (data.byteLength !== expected) throw new Error(t('rangeShortRead', { actual: data.byteLength, expected }))
+    if (data.byteLength !== expected) throw new Error(t('localShortRead', { actual: data.byteLength, expected }))
     return data
   }
-  const response = await (snapshot.source === 'https' ? fetchHttps : fetch)(contentUrl(snapshot, file), {
+  const response = await (snapshot.source === 'https' ? fetchHttps : fetchHub)(contentUrl(snapshot, file), {
     headers: { Range: `bytes=${start}-${end}` },
     credentials: 'omit',
     referrerPolicy: 'no-referrer',
@@ -406,7 +431,7 @@ export async function readExactRange(
 export function contentUrl(snapshot: HuggingFaceSnapshot | HttpsSnapshot, file: RepositoryFile): string {
   if (snapshot.source === 'https') {
     const url = snapshot.urls.get(file.path)
-    if (url === undefined) throw new Error(t('invalidRepositoryPath'))
+    if (url === undefined) throw new Error(t('invalidRepositoryPath', { path: file.path }))
     return httpsUrl(url)
   }
   const modelId = normalizeModelId(snapshot.modelId)
@@ -448,9 +473,9 @@ function requestOptions(signal?: AbortSignal): RequestInit {
 }
 
 function safeRepositoryPath(path: unknown): string {
-  if (typeof path !== 'string' || path === '' || path.includes('\\')) throw new Error(t('invalidRepositoryPath'))
+  if (typeof path !== 'string' || path === '' || path.includes('\\')) throw new Error(t('invalidRepositoryPath', { path: String(path) }))
   const parts = path.split('/')
-  if (parts.some(part => part === '' || part === '.' || part === '..')) throw new Error(t('invalidRepositoryPath'))
+  if (parts.some(part => part === '' || part === '.' || part === '..')) throw new Error(t('invalidRepositoryPath', { path }))
   return path
 }
 
@@ -462,7 +487,7 @@ function safeSize(value: unknown): number | null {
 
 function localFile(snapshot: LocalDirectorySnapshot, file: RepositoryFile): File {
   const blob = snapshot.localFiles.get(file.path)
-  if (blob === undefined || blob.size !== file.size) throw new Error(t('changedLocalFile'))
+  if (blob === undefined || blob.size !== file.size) throw new Error(t('changedLocalFile', { path: file.path }))
   return blob
 }
 

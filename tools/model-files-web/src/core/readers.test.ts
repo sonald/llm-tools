@@ -156,7 +156,7 @@ test('decodes fatal UTF-8 text and rejects invalid sequences', () => {
 })
 
 test('rejects NUL bytes in strict text', () => {
-  assert.throws(() => decodeStrictText(Uint8Array.from([97, 0]).buffer), /NUL/)
+  assert.throws(() => decodeStrictText(Uint8Array.from([97, 0]).buffer), /该文件没有专用阅读器/)
 })
 
 test('validates PDF data by its first five signature bytes', () => {

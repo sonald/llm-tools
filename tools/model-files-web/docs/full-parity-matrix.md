@@ -1,6 +1,6 @@
 # ModelFiles Web ↔ 原生全量对照矩阵
 
-日期：2026-11-12 初版；2026-11-13 按工作台重设计后的代码重新审计
+日期：2026-11-12 初版；2026-11-13 按工作台重设计后的代码重新审计；2026-11-14 批次 6 后复核剩余「部分」行（原生自 `6e32ede` 起无新提交）
 原生对照：`tools/model-files` @ `6e32ede`（含工作台重设计 `7b69613`、`595a44f`、`0d68126`、`6e32ede`）
 Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2dc`、`e87a905`、`81a8884`）
 
@@ -21,13 +21,13 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 - Web：App = `App.tsx`，TK = `TokenizerPlayground.tsx`，WR = `WeightsReaders.tsx`，TW = `TemplateWorkbench.tsx`，TP = `TemplatePlayground.tsx`，TQ = `core/templateRequest.ts`，RO = `core/renderedOutput.ts`，CSS = `styles.css`
 - E2E：MF = `e2e/model-files.spec.ts`，JP = `e2e/json-parity.spec.ts`；单测 TPT = `core/templatePlayground.test.ts`
 
-状态：`缺失`（Web 没有）· `不同`（有，但行为、布局或文案不同）· `平台限制`（已有证据）· `待裁决` · `未验证`（需要实测或黄金用例）· `Web 独有` · `已关闭`
+状态：`缺失`（Web 没有）· `不同`（有，但行为、布局或文案不同）· `平台限制`（已有证据）· `待裁决` · `未验证`（需要实测或黄金用例）· `Web 独有` · `已关闭` · `部分`（已做一部分，**仍有可做的缺口**）· `PASS（平台调整）`（其余已对齐，剩下的差异全是写明证据的平台调整或用户裁决）
 
 **本表是压缩版。** 每行只概括差异。实现某一批前，必须重新阅读两侧引用的行号范围，逐个控件、逐条文案核对。
 
 ### 未审计范围（不在表中不代表一致）
 
-- 英文界面文案与原生英文本地化的逐条对照（本次只对比了 zh-Hans）
+- ~~英文界面文案~~：2026-11-14 已审计，见 §3.13
 - 视觉样式、间距、系统选中色、材质：要靠截图对比，代码判断不了
 - 颜色只对比了代码里的色值，没有用截图核对
 
@@ -62,6 +62,7 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 
 - **D-8**：取消 Chat Template 的 64 KiB 上限。
 - **D-10**：Web 不加 ⌘1–4 视角快捷键，保留浏览器原有的切换标签页（2026-11-13 用户裁决）。
+- **D-15**（2026-11-14 用户裁决）：原生有 7 处中文字面量不在 xcstrings（图片阅读器、图片提示，E-4），英文界面显示中文。Web 保留英文，原生另行补进 catalog。
 
 
 | ID | 原生行为 | Web 现状 | 说明 |
@@ -87,17 +88,17 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 
 | ID | 元素 | 原生 | Web | 状态 | 差异 |
 | --- | --- | --- | --- | --- | --- |
-| S-1 | 仓库输入框占位符与 tooltip | CV:41,45,99 | App:618-632 | 部分 | 2026-11-14：占位符「模型 ID 或仓库 URL…」，tooltip「输入模型 ID 或仓库 URL」。平台调整：去掉「本地路径」「ssh://」，Web 不能凭输入的路径打开（P-1、P-3） |
-| S-2 | 输入时弹出的指引（模型仓库 / 本地目录 / SSH） | CV:156-176,205-238 | 缺 | 部分 | 2026-11-14：聚焦或输入时在输入框下方显示同宽指引，失焦、回车、选历史、Esc 时关闭。平台调整：只保留「模型仓库 — Qwen/Qwen3-4B 或仓库 URL」一行，本地目录和 SSH 两行在 Web 无法输入 |
+| S-1 | 仓库输入框占位符与 tooltip | CV:41,45,99 | App:618-632 | PASS（平台调整） | 2026-11-14：占位符「模型 ID 或仓库 URL…」，tooltip「输入模型 ID 或仓库 URL」。平台调整：去掉「本地路径」「ssh://」，Web 不能凭输入的路径打开（P-1、P-3）。2026-11-14 复核：剩余差异均为平台调整或裁决，没有可做的缺口 |
+| S-2 | 输入时弹出的指引（模型仓库 / 本地目录 / SSH） | CV:156-176,205-238 | 缺 | PASS（平台调整） | 2026-11-14：聚焦或输入时在输入框下方显示同宽指引，失焦、回车、选历史、Esc 时关闭。平台调整：只保留「模型仓库 — Qwen/Qwen3-4B 或仓库 URL」一行，本地目录和 SSH 两行在 Web 无法输入。2026-11-14 复核：剩余差异均为平台调整或裁决，没有可做的缺口 |
 | S-3 | 历史下拉 | CV:38-44,112-133（只列历史） | App:633-637 | PASS | 2026-11-14：datalist 只列历史，去掉 2 个硬编码示例。不限条数见 D-2 |
 | S-4 | 选择目录按钮 | CV:47-53（只有图标，help「选择本地模型目录」） | App:641-650（文字按钮） | PASS | 2026-11-14：只有文件夹图标，无障碍名称「选择文件夹」，tooltip「选择本地模型目录」。选中后直接加载属 P-3 |
 | S-5 | 「打开」按钮：加载中禁用；⌘Return 在整个窗口生效 | CV:55-59 | App:624-629,638-640 | PASS | 2026-11-14：按钮固定为「打开」，清单加载期间禁用（同原生，清单返回即解除，不等首个文件）；⌘Return（非 macOS 为 Ctrl+Enter）在整个窗口生效，加载中同样不生效；输入框回车始终可重开（同原生 onSubmit） |
 | S-6 | 来源状态：「来源 · 分支 · 文件 SHA」，加载中显示 spinner | ST:99-111，CV:62-77 | App:759-771（底部状态栏） | PASS | 2026-11-13：工具栏显示「Hugging Face · main · SHA {文件 SHA，未选文件时用 commit}」，绿色对勾，加载中 spinner。本地为「本地 · 实时目录」。HTTPS 来源原生没有，用「HTTPS · 实时来源」 |
-| S-7 | 模型 URL 解析：http(s)、www | `RepositoryService.swift:178-199` | `core/huggingface.ts:64-73` | 部分 | 2026-11-14：接受 http/https、huggingface.co 与 www.huggingface.co（主机不分大小写），取前两段路径。平台调整：modelscope.cn 留到 Web 有 ModelScope 来源时再做 |
+| S-7 | 模型 URL 解析：http(s)、www | `RepositoryService.swift:178-199` | `core/huggingface.ts:64-73` | PASS（平台调整） | 2026-11-14：接受 http/https、huggingface.co 与 www.huggingface.co（主机不分大小写），取前两段路径。平台调整：modelscope.cn 留到 Web 有 ModelScope 来源时再做。2026-11-14 复核：剩余差异均为平台调整或裁决，没有可做的缺口 |
 | S-8 | 仓库加载错误：详情区显示「无法打开位置」+ 重试 | DV:70-78 | App:690-697（侧栏内联） | PASS | 2026-11-13：未选文件时详情区显示「无法打开位置」+ 消息；可重试时显示「重试」。本地目录选择失败不可重试，所以没有按钮 |
 | S-9 | 工具栏品牌区 | CV:26-36 | App:605-609 | PASS | 2026-11-14：去掉「Web」标签，只剩图标 +「Model Files」 |
-| S-10 | 工具栏两层结构：窗口工具栏 + 详情头（文件名、副标题、徽章、格式、视角、3 个按钮） | CV:38-90，DV:143-276 | App:604-675,858-898（单层可换行） | 部分 | 2026-11-13：两层结构、视角控件、面板开关禁用已对齐。平台调整：手机宽度（≤640px）没有空间放第三栏，检查器和它的开关隐藏 |
-| S-11 | 键盘：⌘Return、⌘1–4、Esc 在任意标签关闭底部面板 | CV:58，DV:266,1708 | App:624-629,1337,175 | 部分 | 2026-11-14：⌘Return 见 S-5；Esc 在任意标签、窗口任意位置关闭底部面板（输入法组字时除外）。⌘1–4 按 D-10 不做 |
+| S-10 | 工具栏两层结构：窗口工具栏 + 详情头（文件名、副标题、徽章、格式、视角、3 个按钮） | CV:38-90，DV:143-276 | App:604-675,858-898（单层可换行） | PASS（平台调整） | 2026-11-13：两层结构、视角控件、面板开关禁用已对齐。平台调整：手机宽度（≤640px）没有空间放第三栏，检查器和它的开关隐藏。2026-11-14 复核：剩余差异均为平台调整或裁决，没有可做的缺口 |
+| S-11 | 键盘：⌘Return、⌘1–4、Esc 在任意标签关闭底部面板 | CV:58，DV:266,1708 | App:624-629,1337,175 | PASS（平台调整） | 2026-11-14：⌘Return 见 S-5；Esc 在任意标签、窗口任意位置关闭底部面板（输入法组字时除外）。⌘1–4 按 D-10 不做。2026-11-14 复核：剩余差异均为平台调整或裁决，没有可做的缺口 |
 
 ### 3.2 侧栏
 
@@ -109,9 +110,9 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | B-4 | 权重组折叠，标签「权重文件 · N/M 可预览」，锁定行变暗且不可选 | SV:55-81 | App:702-731 | PASS | 2026-11-13：`<details>` 默认折叠，标签「权重文件 · N/M 可预览」；锁定行 0.62 透明度、aria-disabled、点击无效，右键菜单仍可用；深链仍可打开锁定页。E2E「workbench shell follows native header, sidebar and panel conventions」 |
 | B-5 | 无匹配时显示「没有匹配文件」+「清除筛选」 | SV:27-36 | 缺 | PASS | 2026-11-13：「没有匹配文件」+「清除筛选」 |
 | B-6 | 侧栏空状态（图标 + 文案）和加载中 spinner | SV:13-26 | App:698-700 | PASS | 2026-11-13：未打开时「尚未打开模型」（文案去掉 SSH，加上 HTTPS，P-2），加载中「读取文件清单…」+ spinner |
-| B-7 | 侧栏可调宽（255–360）、可折叠 | CV:11-12 | CSS:93（固定 280px） | 部分 | 2026-11-14：侧栏默认 292px，拖动范围 255–360px；工具栏最左「隐藏边栏 / 显示边栏」按钮折叠。平台调整：≤900px 固定 230px 不可拖，≤640px 侧栏放到上方；不支持拖到最小以下自动折叠 |
+| B-7 | 侧栏可调宽（255–360）、可折叠 | CV:11-12 | CSS:93（固定 280px） | 部分 | 2026-11-14：侧栏默认 292px，拖动范围 255–360px；工具栏最左「隐藏边栏 / 显示边栏」按钮折叠。平台调整：≤900px 固定 230px 不可拖，≤640px 侧栏放到上方；不支持拖到最小以下自动折叠。**仍缺（不是平台限制）**：原生侧栏拖到最小宽度以下会自动折叠，Web 停在 255px |
 | B-8 | 右键菜单：本地来源也显示「复制全路径」（禁用）和「打开原始文件」 | SV:89-109，ST:1127-1152 | App:778-808（本地时隐藏这两项） | PASS | 2026-11-14：本地来源也显示「打开原始文件」+ 分隔线：图片、PDF 用 blob URL 在新标签打开，其余文本（含 HTML、SVG）按纯文本打开，避免在本站源下运行；权重文件改为下载，与 Hub resolve 链接的行为一致。三引擎都实测了真实新标签和下载；「复制全路径」保留但禁用（P-4），Hugging Face 来源照常可用 |
-| B-9 | 文件大小：以 1000 为底，本地化（「2 KB」「字节」） | `Support/FileClassifier.swift:113-117` | `core/huggingface.ts:416-420`（以 1024 为底的 KiB，中文界面显示英文 bytes） | 部分 | 2026-11-13：`formatBytes` 改为 ByteCountFormatter(.file) 规则（1000 为底，KB 整数、MB 一位、GB 起两位，先舍入再选单位，「Zero KB / 0 KB」「1 byte / 1 字节」），en 与 zh-Hans 都按 ByteCountFormatter 实际输出核对并写进单元测试。仍有硬编码的「32 MiB」限制文案和 validation strip 里的「N bytes」，随 H-7 / 第 2 批处理 |
+| B-9 | 文件大小：以 1000 为底，本地化（「2 KB」「字节」） | `Support/FileClassifier.swift:113-117` | `core/huggingface.ts:416-420`（以 1024 为底的 KiB，中文界面显示英文 bytes） | PASS | 2026-11-13：`formatBytes` 改为 ByteCountFormatter(.file) 规则（1000 为底，KB 整数、MB 一位、GB 起两位，先舍入再选单位，「Zero KB / 0 KB」「1 byte / 1 字节」），en 与 zh-Hans 都按 ByteCountFormatter 实际输出核对并写进单元测试。2026-11-14 复核：「32 MiB」硬编码文案和 validation strip 已随批次 2 / D-11 删除，剩下的「1 MiB」只出现在 Web 独有的 HTTPS 清单说明里。错误消息的文案见 §3.12 |
 | B-10 | 分类与排序规则（processor 排除、tiff/tif、adapter 与 processor 排序） | `FileClassifier.swift:9-11,65-110` | `core/huggingface.ts:75-95,154-156,482-501` | PASS | 2026-11-14：adapter / preprocessor / processor_config.json 归配置；`*_config.json` 排除含 processor 的名称；图片扩展名加 tiff、tif（只有 WebKit 能解码 TIFF，Chromium、Firefox 显示「无法显示图片」，平台限制）；优先排序表与原生一致；同优先级按数字、不区分大小写比较（localizedStandardCompare；ICU 排序规则在第一层本就不分大小写） |
 | B-11 | 侧栏问题计数：权重组不显示 | SV:60-69,132-140 | App:1431-1440，CSS:110-111,725 | PASS | 2026-11-13：权重组不显示问题计数 |
 
@@ -119,13 +120,13 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 
 | ID | 元素 | 原生 | Web | 状态 | 差异 |
 | --- | --- | --- | --- | --- | --- |
-| H-1 | **头部统一分段控件「概览 / 全部字段 / 原文（/ 试验台）」，所有文件类型共用** | DV:207-220，`Models/InspectionDocument.swift:119-134` | 每个阅读器自带一排标签（`Readers.tsx:110-112,191,283`，TW:130，App:1153,2379） | 部分 | 信息架构差异最大的一项。2026-11-13：已改为 `FileHeader` 内的统一分段控件，视角集合见 `core/readers.ts` `inspectionPerspectives`，选文件或换仓库时回到概览。过渡做法：Markdown 的「全部字段」和「原文」都显示高亮源码；纯文本和代码在三个视角下显示同一阅读器；无效 JSON 仍强制原文（R-3）；GGUF 只有概览（D-1）；内嵌模板试验台仍保留「源码 / 试验台」小标签（T-1） |
+| H-1 | **头部统一分段控件「概览 / 全部字段 / 原文（/ 试验台）」，所有文件类型共用** | DV:207-220，`Models/InspectionDocument.swift:119-134` | 每个阅读器自带一排标签（`Readers.tsx:110-112,191,283`，TW:130，App:1153,2379） | PASS | 2026-11-13：统一分段控件在 `FileHeader`，视角集合 `core/readers.ts` `inspectionPerspectives` 与 `InspectionDocument.perspectives` 逐项一致（另加原生 ST:86-94 的 tokenizer.json / `.model` 试验台），选文件或换仓库时回到概览。2026-11-14 复核：过渡项都已消失——Markdown 三视角（C-8）、代码概览高亮其余纯文本（C-1）、无效 JSON 保留视角（R-3）、GGUF 三视角（G-1）、内嵌模板不再有小标签（R-8）；格式胶囊含「GGUF Imatrix」 |
 | H-2 | 副标题「用途 · 大小 · 来源 · 分支 · SHA」，文件名 21pt | DV:149-173,278-297 | App:863-866（13px 面包屑 +「格式 · 大小」） | PASS | 2026-11-13：h1 21px 圆体；副标题「用途 · 大小 · 来源 · 分支 · SHA」，大小未知时省略。E2E「workbench shell follows native header, sidebar and panel conventions」 |
 | H-3 | 一致性徽章：带图标，有 help，只在选中文件后出现；点击打开问题面板 | DV:178-196,305-320 | App:883-885,1296-1319 | PASS | 2026-11-13：四种状态的图标（时钟 / 三角 / 问号 / 对勾）、title「查看仓库一致性报告」、胶囊 14% 着色、Palette 色值；只在有文件时显示。图标是手绘 SVG，形状与 SF Symbol 不完全相同 |
 | H-4 | 格式标签只用于结构化格式（SafeTensors / GGUF v3 / Imatrix DAT / Jinja / PDF / SVG / Image） | DV:198-205，`InspectionDocument.swift:136-146` | App:865,3138-3150（并进副标题） | PASS | 2026-11-13：独立格式胶囊，规则同原生：载入后用文档的格式名（GGUF v{n}、SVG、Imatrix DAT），载入前用文件结构格式；JSON、文本、Markdown、tokenizer 不显示 |
 | H-5 | 图标按钮：复制文件路径 / 复制完整路径或 URL / 在浏览器中打开当前版本（本地：在 Finder 中显示）；不可用时禁用 | DV:222-257 | App:867-880 | PASS | 2026-11-13：三个图标按钮，aria-label 用原生标签（复制路径 / 复制全路径 / 在源站打开），title 用原生 help。不可用时禁用（本地文件按 P-4）。保留 Web 独有的「已复制」反馈 |
 | H-6 | config 概览内嵌一致性报告 | — | — | 已关闭 | 两端都改为文件内诊断 + 问题面板（§3.4） |
-| H-7 | 底部只读安全提示条（锁图标） | DV:393-413 | `App.tsx` SafetyNotice + `safetyNotice()` | PASS | 2026-11-13：SafeTensors/GGUF/imatrix/PDF/图片/权重索引用原生文案；PDF 按 P-6 改为「浏览器内置查看器」。Jinja 概览和 tokenizer.json 结构页仍有各自的信息条，归 J-/T- 行。GGUF 提示暂时只保留前半句，「最后一个 Range…」要等 D-1 改成 1 MiB 分块读取后才成立 |
+| H-7 | 底部只读安全提示条（锁图标） | DV:393-413 | `App.tsx` SafetyNotice + `safetyNotice()` | PASS | 2026-11-13：SafeTensors/GGUF/imatrix/PDF/图片/权重索引用原生文案；PDF 按 P-6 改为「浏览器内置查看器」。Jinja 概览和 tokenizer.json 结构页仍有各自的信息条，归 J-/T- 行。2026-11-14：GGUF 提示已是原生全文（含「最后一个 Range…」，`wtGgufNotice`） |
 | H-8 | 状态页：未选文件、加载中（按格式区分文案 +「大小 · 来源 · 可切换到其他文件取消」）、锁定、「没有内容」、「无法读取文件」 | DV:80-139，`Support/EmptyStateView.swift` | App:1022-1040,3042-3067 | PASS | 2026-11-13：未选文件、加载中（按格式文案 +「大小 · 来源 · 可切换到其他文件取消」）、锁定、无法读取、无法打开位置都按原生文案和图标。2026-11-14：「没有内容」在 Web 不可达（每种文件都有对应 inspection），按不可达关闭 |
 
 ### 3.4 工作台：底部面板、问题与检查器
@@ -137,7 +138,7 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | L-3 | 问题标签激活时，右侧显示徽章状态文字 | DV:1696-1709 | App:1354-1356 | PASS | 2026-11-13：问题标签激活时右侧显示徽章状态文字 |
 | L-4 | 面板高度可拖动（110–600，默认 240） | DV:42,1654-1677 | CSS:175-176,675（固定） | PASS | 2026-11-13：顶边拖动，110–600，默认 240。手机宽度仍用固定高度 |
 | L-5 | Esc 在任意标签、全局关闭面板 | DV:1708 | App:1337-1343（只在问题标签、焦点在面板内） | PASS | 2026-11-13：窗口级 Esc 在任意标签关闭面板；查找框、右键菜单先消费 Esc。关闭时焦点回到徽章（Web 保留） |
-| L-6 | 检查器：默认打开，窗口 <1100pt 自动关闭，宽 220–380 可调 | CV:7,15-24 | App:145-148，CSS:200-203,650-653,674 | 部分 | 2026-11-13：默认打开，窗口 <1100 自动关闭且不自动重开，宽度 220–380 可拖（默认 260）。平台调整：≤900px 堆到下方，≤640px 隐藏（见 S-10） |
+| L-6 | 检查器：默认打开，窗口 <1100pt 自动关闭，宽 220–380 可调 | CV:7,15-24 | App:145-148，CSS:200-203,650-653,674 | PASS（平台调整） | 2026-11-13：默认打开，窗口 <1100 自动关闭且不自动重开，宽度 220–380 可拖（默认 260）。平台调整：≤900px 堆到下方，≤640px 隐藏（见 S-10）。2026-11-14 复核：剩余差异均为平台调整或裁决，没有可做的缺口 |
 | L-7 | 检查器「文件」区与空文案 | IV:49-62 | App:1389-1398 | 一致 | 大小格式见 B-9 |
 | Q-1 | 问题面板空状态与「核心材料不足」提示 | DV:1778-1835 | App `ConsistencyReportBody` | PASS | 2026-11-14：材料不足提示、「未发现可报告的不一致。」、加载中转圈（MF 一致性用例） |
 | Q-2 | 问题行：中间截断 | DV:1840-1867，IV:137-145 | App `ConsistencyReportBody` / `MiddleTruncated` / `SeverityIcon` | PASS | 2026-11-14：中间截断用两段（头部省略号 + 尾部 rtl 裁剪）；严重度图标改为三角 / 圆形 SVG，颜色取原生色板 |
@@ -157,7 +158,7 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | --- | --- | --- | --- | --- | --- |
 | R-1 | **JSON「全部字段」是整份格式化的代码阅读器（高亮、折叠、查找）** | DV:544-545,654-685 | `Readers.tsx` FormattedJson + `core/jsonSource.ts` formatJsonSource | PASS | 2026-11-13：移植原生 formattedSource（按字符，保留数字和字符串原样） |
 | R-2 | 没有专门摘要的 JSON，概览也是格式化代码 | DV:544,615-626 | `Readers.tsx` JsonInspection | PASS | 2026-11-13 |
-| R-3 | 无效 JSON：代码上方显示红色错误详情，视角保留 | DV:660-666 | `Readers.tsx` FormattedJson | PASS | 2026-11-13：错误文字是浏览器 JSON.parse 的消息，前缀同为「JSON: 」 |
+| R-3 | 无效 JSON：代码上方显示红色错误详情，视角保留 | DV:660-666 | `Readers.tsx` FormattedJson | PASS | 2026-11-13：2026-11-14 改为同原生「JSON: 」+ Foundation 原文（M-2） |
 | R-4 | 摘要布局：标题 + 副标题 + 分组属性行 | DV:2134-2187 | `Readers.tsx` SummaryView，CSS `.reader-title/.property-group/.key-value-row` | PASS | 2026-11-13 |
 | R-5 | 取值格式：null、数组、对象内联显示，大整数完整显示 | DV:2222-2230 | `core/jsonValue.ts` nativeInline/nativeNumberString | PASS | 2026-11-13：单元测试固定了 Swift 输出 |
 | R-6 | config.json：标题为 architectures[0]，没有就用 model_type，再没有就用「模型配置」；副标题 `model_type · torch_dtype · N layers`；分组「模型规模 / Attention / 上下文」，含 intermediate_size、num_attention_heads、num_key_value_heads、head_dim、max_position_embeddings、rope_theta | DV:1929-1973 | `core/readers.ts` jsonSummary(config) | PASS | 2026-11-13 |
@@ -196,8 +197,8 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | W-2 | Metadata 表：类型和来源列、详情检查器、⌘F 聚焦 | DV:705-710,739-813 | `WeightsReaders.tsx` | PASS | 2026-11-14：详情是视图内右侧面板（260–390 px，同原生 HSplitView）。**平台调整**：原生列表最小 520 + 面板最小 260 = 780，窗口会被撑宽；浏览器做不到，内容区窄于 780 px 时面板移到列表下方（WP） |
 | W-3 | Tensor 列表：列顺序（名称 / Shape / 类型 / 参数），默认不选中，面包屑在列表上方，图标按钮 | DV:815-945 | `WeightsReaders.tsx` `VirtualTable` | PASS | 2026-11-14：全部显示（D-6），28 px 行虚拟渲染；↑ / ↓ 逐行移动选中；面包屑中间截断；搜索不自动展开分组，同原生（WP）。窄于 780 px 的布局同 W-2 |
 | W-4 | Tensor 检查器：参数、格式化大小、offset、说明文字、面板内隐藏按钮 | DV:940-990 | `WeightsReaders.tsx` `TensorDetail` | PASS | 2026-11-14：面板 260–390 px 可拖动（WP） |
-| W-5 | 大小以 1000 为底 | `FileClassifier.swift:114-116` | `core/huggingface.ts:416-420` | 部分 | 2026-11-13：随 B-9（`formatBytes` 已改；硬编码的 MiB / bytes 文案随第 2 批） |
-| W-6 | Header 校验严格度 | `Support/SafetensorsInspector.swift:1-129`，`RepositoryService.loadSafetensorsHeader` | `core/inspectors.ts` | 部分 | 2026-11-14：按原生逐项移植（长度 ≤1 / >25,000,000 / 超出文件、首字节 `{`、严格 UTF-8、`__metadata__` 字符串字典、`[NSNumber]` → Int64 语义、offsets 恰好 2 个且 end ≥ start、溢出检查），删除 Web 独有的 dtype / 对齐 / 连续性检查；金样由 swiftc 编译原生 inspector 生成（`inspectors.test.ts`）。**仍缺**：>2^53 的整数在不支持 `JSON.parse` source 访问的引擎里按 double 取整；没有声明文件大小时 Web 仍拒绝读取（原生会尝试本地读取） |
+| W-5 | 大小以 1000 为底 | `FileClassifier.swift:114-116` | `core/huggingface.ts:416-420` | PASS | 随 B-9 |
+| W-6 | Header 校验严格度 | `Support/SafetensorsInspector.swift:1-129`，`RepositoryService.loadSafetensorsHeader` | `core/inspectors.ts` | 部分 | 2026-11-14：按原生逐项移植（长度 ≤1 / >25,000,000 / 超出文件、首字节 `{`、严格 UTF-8、`__metadata__` 字符串字典、`[NSNumber]` → Int64 语义、offsets 恰好 2 个且 end ≥ start、溢出检查），删除 Web 独有的 dtype / 对齐 / 连续性检查；金样由 swiftc 编译原生 inspector 生成（`inspectors.test.ts`）。平台限制：>2^53 的整数在不支持 `JSON.parse` source 访问的引擎里按 double 取整。**仍缺**：Hub 清单没给 size 时 Web 拒绝读取（`core/inspectors.ts:42`），原生不需要 size 也照读 header（`RepositoryService.swift:405` 只在有 size 时比较） |
 | G-1 | GGUF 完整概览、metadata、tensor | DV:348-362,415-459,687-1007，`RepositoryService.swift:359-392`，`GGUFInspector.swift` | `core/gguf.ts`，`WeightsReaders.tsx` GGUFReader | PASS | 2026-11-14 按 D-1：1 MiB 顺序 Range、32 MiB 上限、接受越读；浮点显示同 Swift `String(Float)`；事实行顺序同原生。HTTP 200 回 Range 仍失败关闭，结果按 snapshot 缓存不重复读取（`gguf.test.ts`、WP、MF） |
 | I-1 | imatrix：分概览和 Entries 两页；标题「Importance Matrix」；缺失值显示「未记录」；列顺序 Mean / Min / Max；数字取 5 位有效数字 | `Views/IMatrixWorkspaceView.swift:1-104` | `WeightsReaders.tsx` ImatrixReader，`core/imatrix.ts` | PASS | 2026-11-14：5 位有效数字用 halfEven，37 个 Swift 打印金样（含 12344.5→12,344、1.03125→1.0312） |
 
@@ -272,23 +273,47 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 | X-5 | 词表差集：仅主 / 仅对照（默认仅主）、搜索、「显示 N 条，最多 1,000 条」、「（空 Token）」 | TCV:73-113 | TK `VocabularyDiff` | PASS | 2026-11-13：SentencePiece、词表无法解析、主侧尚未就绪时显示跳过原因（主侧未就绪时直接跳过，同原生 `ModelFilesStore.swift:477-478`，不等待） |
 | X-6 | 「另一仓库」popover：一个输入框，空时「加载对照」禁用，提交后关闭 | TKP:354-372 | TK `ComparisonMenu` | PASS | 2026-11-13：另保留来源选择和本地目录（D-9 Web 独有，不冲突） |
 
-## 4. Web 独有（D-9 待裁决：保留、改造还是删除）
+### 3.12 错误消息（zh-Hans，2026-11-14 首次审计）
 
-- HTTPS 文件 / HTTPS 清单来源，以及「使用说明」（App:611-616,679-684，`core/huggingface.ts:235-281`）
-- 「清除历史」（App:651-660）
-- `?repo=&file=` 深链与浏览器前进/后退（App:198-226,3201-3218）
-- 复制按钮的「已复制」对勾反馈（App:849-856,868-875）
-- ~~底部状态栏（见 D-11）~~：已删除
-- 「读取方式 / 实际读取 / 解析结果」条（与 H-7 一起考虑）
+明细见 `docs/copy-audit.md` 第二部分。约 49 条逐字一致。
+
+| ID | 元素 | 原生 | Web | 状态 | 差异 |
+| --- | --- | --- | --- | --- | --- |
+| M-1 | 读取、Range、超限、请求失败、路径、UTF-8 / 二进制、图片、imatrix 外壳、tokenizer bundle 与 runtime 外壳、chat_template、一致性检查的错误文案 | `RepositoryService.swift:41-99`，`HTTPRangeLoader.swift`，`TokenizerBundleLoader.swift`，`TokenizerRuntime.swift`，`ChatTemplateCatalog.swift`，`IMatrixInspector.swift` | `i18n.ts`，`core/huggingface.ts`，`tokenizer.worker.ts` | PASS | 2026-11-14 修复：按原生 errorDescription 逐条改写，补回路径、实际大小，拆开「读取不完整 / Range 响应不完整」「单文件 / 合计超限」；请求失败带服务端返回的前 512 字节（同 `RepositoryService.validate`）；补 Imatrix、tokenizer.json、tokenizer_config.json、运行时、chat_template.jinja 外壳；普通文件非 UTF-8 / 含 NUL 用 unsupportedBinary，`.jinja` 允许 NUL；图片先用 `createImageBitmap` 校验（同 `NSImage(data:)`）。平台调整：本地文件变化提示「请重新选择目录」（P-3）。单测 + E2E 三引擎 |
+| M-2 | 中文界面不出现英文 | 原生用 Foundation 中文描述 | JSON.parse / TextDecoder / HF fetch 的英文错误透出；文案夹 bytes、safe integer；写死 64 KiB / 4 KiB | PASS | 2026-11-14：JSON 解析失败一律显示 Foundation 原文「未能读取数据，因为它的格式不正确。」（tokenizer、模板变量、Token ID、一致性检查）；Hugging Face 的 fetch 网络错误显示「未能连接到服务器。」；64 KiB / 4 KiB 改为 `formatBytes`（66 KB），去掉 bytes、safe integer 等英文；R-3 JSON 阅读器同原生 `formattedSource` 显示「JSON: 未能读取数据，因为它的格式不正确。」 |
+| M-3 | 错误里的数字分组 | 插值 Int 分组 | Token 序号、named index、GGUF typeCode、`wholeFileSizeMismatch` 未分组 | PASS | 2026-11-14：`translate()` 对所有整数插值做千分位分组（同 `String(localized:)`，swift 实测），一处改完覆盖全部调用方（`i18n.test.ts`） |
+| M-4 | `tokenIdInputTooLarge` 缺 `{limit}` | — | `tokenizerClient.ts:277` | 已关闭 | 2026-11-14：补上 `{ limit }` |
+
+### 3.13 英文界面（2026-11-14 首次审计）
+
+明细见 `docs/copy-audit.md` 第一部分。zh 精确匹配 466 条，其中英文一致 381 条。
+
+| ID | 元素 | 原生 | Web | 状态 | 差异 |
+| --- | --- | --- | --- | --- | --- |
+| E-1 | 英文措辞 | `Localizable.xcstrings` | `i18n.ts` | PASS | 2026-11-14：76 条按 xcstrings 原文逐条替换（脚本按 zh 精确匹配生成，占位符按顺序映射） |
+| E-2 | 英文单复数 | xcstrings plural | `t(key, { count })` | PASS | 2026-11-14：`i18n.ts` 的 en 支持 `{ one, other }`，按 `count`（可为已分组字符串）用 `Intl.PluralRules` 选择，15 条照原生 plural 变体（`i18n.test.ts`） |
+| E-3 | zh 也有偏差的条目 | — | — | PASS | 2026-11-14：imatrix 小写、「SentencePiece model」、去掉多余的「：{reason}」与「左侧」、chat_template 补尾句、named 条目去句号、折叠按钮拆成「展开 / 折叠第 N 行结构」两条、Object 摘要单复数。保留：问题面板 aria-label「仓库一致性报告」（原生 help 在徽章上，Web 徽章 title 已一致）、加载提示的「· 」由模板拼接（显示相同）；chat_template 对象值英文的双句点是原生 bug，Web 不照抄 |
+| E-4 | 原生在英文界面显示中文的字面量（图片阅读器 6 条 + 图片提示） | catalog 外字面量 | Web 给英文 | 已关闭 | D-15：Web 保留英文，原生补进 catalog |
+
+## 4. Web 独有（按 D-9 / D-11 处理，2026-11-14 复核）
+
+**保留**（不与原生冲突）：
+- HTTPS 文件 / HTTPS 清单来源，以及「使用说明」
+- 「清除历史」（同时清掉 D-3 的启动输入）
+- `?repo=&file=` 深链与浏览器前进/后退
+- 复制按钮的「已复制」对勾反馈
+- Tokenizer 对照的 HTTPS 来源和第二本地目录（X-6）
+
+**已删除或改回原生**：
+- 底部状态栏（D-11）
+- 「读取方式 / 实际读取 / 解析结果」条：改为原生底部安全提示（H-7）
 - 原文行右侧浮动的问题说明（Q-10）
 - 选中问题时强制打开检查器（Q-6）
-- 「正文 / 模板」占比条（App:2932-2937）
-- 带行号和每行计数的 Token 流，标题「Grapheme-safe 片段」（App:2838-2852,2941-2980）
-- 检查器隐藏时内联显示的选中 Token 详情（App:2982,2988）
-- 模板工作台的概览标签、源码内查找（TW:136-189）
-- 对照时的「共有」列表、HTTPS 对照来源、取消加载、第二本地目录
-- imatrix 选中条目面板
-- ~~`.model` 的「结构与词表」视图~~：已删除，原生 `.model` 只有试验台（K-1）
+- 「正文 / 模板」占比条，带行号和每行计数的「Grapheme-safe 片段」Token 流，检查器隐藏时内联的选中 Token 详情：批次 4 按原生 TKP 重写（K-6、K-9、K-16）
+- 模板工作台的概览标签、源码内查找：批次 3 按原生 Jinja 工作区重写（C-10）
+- 对照的「取消加载」（原表误把原生也有的「共有 N」列为 Web 独有，原生 TCV:82 有）
+- imatrix 选中条目面板（I-1）
+- `.model` 的「结构与词表」视图（K-1）
 
 ## 5. 建议实施顺序
 
@@ -306,3 +331,8 @@ Web 对照：`tools/model-files-web` @ `81a8884`（含工作台重设计 `762f2d
 4. **Tokenizer 试验台、词表与对照**：K-*、V-*、X-*。
 5. **其余阅读器与问题面板正文**：C-4 至 C-10，W-1 至 W-4、W-6，I-1，Q-1 至 Q-5；D-1 裁决后做 G-1 和 Q-9。
 6. **细节**：S-1 至 S-9、S-11，B-5 至 B-8、B-10、B-11，H-7。
+7. **复核后剩余（2026-11-14）**：
+   - ~~文案：M-1 至 M-4、E-1 至 E-3~~（2026-11-14 已完成）
+   - 功能缺口：B-7 拖到最小以下自动折叠；W-6 无 size 时照读 header；C-5 查找框清除按钮、最近搜索
+   - 需要截图对照原生：C-8 Markdown 三套主题；§0「未审计范围」的视觉样式
+   - 原生侧待修（两端一起）：C-6 CRLF front matter、Q-9 `token_embd` 取 `shape.first`、D-13 `tojson`、标量 JSON 负载崩溃、chat_template 对象值英文双句点、E-4 的 7 处字面量补进 xcstrings

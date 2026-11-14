@@ -22,8 +22,29 @@ import {
 } from './core/tokenAttribution.ts'
 import { parseChatTemplates } from './core/chatTemplates.ts'
 import { initializeLocalization, translate as t } from './i18n.ts'
+import { formatBytes } from './core/huggingface.ts'
 import { isTokenizerRequest, type TokenizerReply, type TokenizerRequest } from './tokenizerProtocol.ts'
 import { SentencePieceWasm } from './sentencepieceWasm.ts'
+
+// Native TokenizerRuntime: decode failures carry Foundation's localized description inside the file's error shell.
+function parseTokenizerJson(data: ArrayBuffer): unknown {
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(data))
+  } catch {
+    throw new Error(t('tokenizerJsonInvalid', { reason: t('jsonDataCorrupted') }))
+  }
+}
+
+function parseTokenizerConfig(data: ArrayBuffer): Record<string, unknown> {
+  let value: unknown
+  try {
+    value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(data))
+  } catch {
+    throw new Error(t('tokenizerConfigInvalid', { reason: t('jsonDataCorrupted') }))
+  }
+  if (!isRecord(value)) throw new Error(t('tokenizerConfigInvalid', { reason: t('rootNodeNotObject') }))
+  return value
+}
 
 const workerLocale = self.name
 initializeLocalization(workerLocale === 'zh-Hans' || workerLocale === 'en' ? [workerLocale] : undefined)
@@ -43,7 +64,7 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
   if (!isTokenizerRequest(request)) return
   try {
     if (request.operation === 'inspect-structure') {
-      const parsedTokenizer: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(request.tokenizerData))
+      const parsedTokenizer = parseTokenizerJson(request.tokenizerData)
       if (!isRecord(parsedTokenizer)) throw new Error(t('tokenizerRootNotObject'))
       self.postMessage(reply(request, true, inspectTokenizerStructure(parsedTokenizer)))
       return
@@ -59,7 +80,6 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
       vocabularyIndex = null
       vocabularyDiff = null
       loadedTokenizerIdentity = ''
-      const decoder = new TextDecoder('utf-8', { fatal: true })
       let structure: TokenizerStructure
       if (request.format === 'sentencepiece') {
         const loadedSentencePiece = await SentencePieceWasm.load(new Uint8Array(request.tokenizerData))
@@ -77,8 +97,7 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
         }
         if (request.configData !== null) {
           try {
-            const parsedConfig: unknown = JSON.parse(decoder.decode(request.configData))
-            if (!isRecord(parsedConfig)) throw new Error(t('tokenizerConfigRootNotObject'))
+            const parsedConfig = parseTokenizerConfig(request.configData)
             structure.chatTemplates = parseChatTemplates(parsedConfig.chat_template)
             specialIndex = buildSpecialTokenIndex(parsedConfig, [], piece => loadedSentencePiece.encodeAsIds(piece))
           } catch (error) {
@@ -89,7 +108,7 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
         sentencePiece = loadedSentencePiece
         tokenizerError = t('sentencepieceVocabularyUnavailable')
       } else {
-        const parsedTokenizer: unknown = JSON.parse(decoder.decode(request.tokenizerData))
+        const parsedTokenizer = parseTokenizerJson(request.tokenizerData)
         if (!isRecord(parsedTokenizer)) throw new Error(t('tokenizerRootNotObject'))
         structure = inspectTokenizerStructure(parsedTokenizer)
         const model = isRecord(parsedTokenizer.model) ? parsedTokenizer.model : null
@@ -98,8 +117,7 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
         if (request.configData === null) {
           tokenizerError = t('missingTokenizerConfigRuntime')
         } else {
-          const parsedConfig: unknown = JSON.parse(decoder.decode(request.configData))
-          if (!isRecord(parsedConfig)) throw new Error(t('tokenizerConfigRootNotObject'))
+          const parsedConfig = parseTokenizerConfig(request.configData)
           structure.chatTemplates = parseChatTemplates(parsedConfig.chat_template)
           try {
             tokenizer = new Tokenizer(parsedTokenizer, parsedConfig)
@@ -110,7 +128,7 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
             )
             tokenizerError = ''
           } catch (error) {
-            tokenizerError = error instanceof Error ? error.message : String(error)
+            tokenizerError = t('tokenizerRuntimeUnsupported', { reason: error instanceof Error ? error.message : String(error) })
           }
         }
       }
@@ -127,7 +145,7 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
       if (!vocabularyAvailable) throw new Error(tokenizerError)
       vocabularyIndex ??= buildTokenizerVocabularyIndex(vocabularySource)
       if (vocabularyIndex.entries === null) {
-        throw new Error(t('vocabularySearchUnsupported', { reason: vocabularyIndex.error }))
+        throw new Error(t('vocabularySearchUnsupported'))
       }
       self.postMessage(reply(request, true, filterTokenizerVocabulary(vocabularyIndex.entries, request.query)))
       return
@@ -137,8 +155,8 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
       if (request.leftFormat === 'sentencepiece' || sentencePiece !== null) {
         throw new Error(t('sentencepieceVocabularyUnavailable'))
       }
-      const leftParsed: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(request.tokenizerData))
-      if (!isRecord(leftParsed)) throw new Error(t('leftTokenizerRootNotObject'))
+      const leftParsed = parseTokenizerJson(request.tokenizerData)
+      if (!isRecord(leftParsed)) throw new Error(t('tokenizerRootNotObject'))
       const leftModel = isRecord(leftParsed.model) ? leftParsed.model : null
       if (leftModel === null) throw new Error(t('leftTokenizerMissingModel'))
       const leftIndex = buildTokenizerVocabularyIndex(leftModel.vocab)
@@ -238,7 +256,7 @@ function reply(
 }
 
 function encodeText(tokenizer: Tokenizer | SentencePieceWasm, text: string, label: string) {
-  if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new Error(t('encodedInputTooLarge', { label }))
+  if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new Error(t('encodedInputTooLarge', { label, limit: formatBytes(64 * 1024) }))
   if (tokenizer instanceof SentencePieceWasm) {
     return { ids: tokenizer.encodeAsIds(text), tokens: tokenizer.encodeAsPieces(text) }
   }

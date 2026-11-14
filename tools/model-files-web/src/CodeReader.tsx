@@ -218,10 +218,8 @@ export function CodeReader({ content, language, label, marks = [], jump = null }
                       <span className="fold-markers">
                         {folds.map(range => {
                           const isCollapsed = collapsed.has(foldKey(range))
-                          const action = t('readerFoldStructureLine', {
-                            action: isCollapsed ? t('readerExpandAction') : t('readerCollapseAction'),
-                            line: formatNumber(range.startLine),
-                          })
+                          const action = t(isCollapsed ? 'readerExpandStructureLine' : 'readerCollapseStructureLine',
+                            { line: range.startLine })
                           return (
                             <button aria-label={action} title={action} type="button" key={foldKey(range)}
                               className={`fold-marker${isCollapsed ? ' collapsed' : ''}`}

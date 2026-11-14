@@ -159,7 +159,7 @@ class ClientTokenizerSession implements TokenizerSession {
       direction: 'encode', input: text, ids: [], pieces: [], decoded: '', segments: [], mapping: 'Exact', flags: [],
       overhead: null, roles: null,
     }
-    if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new Error(t('textTooLarge'))
+    if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new Error(t('textTooLarge', { limit: formatBytes(64 * 1024) }))
     const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
     return validateTokenization(await this.request({
       operation: 'tokenize',
@@ -217,7 +217,7 @@ class ClientTokenizerSession implements TokenizerSession {
     this.assertUsable()
     const term = query.trim()
     if (term.length === 0) return []
-    if (new TextEncoder().encode(term).byteLength > 64 * 1024) throw new Error(t('vocabularySearchInputTooLarge'))
+    if (new TextEncoder().encode(term).byteLength > 64 * 1024) throw new Error(t('vocabularySearchInputTooLarge', { limit: formatBytes(64 * 1024) }))
     const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
     return validateTokenizerVocabularySearch(await this.request({
       operation: 'search-vocabulary',
@@ -251,7 +251,7 @@ class ClientTokenizerSession implements TokenizerSession {
     if (this.loadedIdentity === '') throw new Error(t('vocabularyDiffNotPrepared'))
     const term = query.trim()
     if (new TextEncoder().encode(term).byteLength > 64 * 1024) {
-      throw new Error(t('vocabularyDiffSearchInputTooLarge'))
+      throw new Error(t('vocabularyDiffSearchInputTooLarge', { limit: formatBytes(64 * 1024) }))
     }
     return validateTokenizerVocabularyDiffSearch(await this.request({
       operation: 'search-vocabulary-diff',
@@ -274,7 +274,7 @@ class ClientTokenizerSession implements TokenizerSession {
       throw new Error(t('tokenIdArrayInvalid'))
     }
     if (new TextEncoder().encode(originalInput).byteLength > 64 * 1024) {
-      throw new Error(t('tokenIdInputTooLarge'))
+      throw new Error(t('tokenIdInputTooLarge', { limit: formatBytes(64 * 1024) }))
     }
     const { identity } = await this.ensureLoaded(snapshot, tokenizerFile, configFile, signal)
     return validateTokenization(await this.request({

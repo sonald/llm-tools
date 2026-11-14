@@ -190,7 +190,7 @@ test('GGUF fails closed when a source answers a range with HTTP 200', async ({ p
   await expandWeights(page)
   await page.getByRole('button', { name: /^model\.gguf/ }).click()
   await expect(page.getByRole('heading', { name: '无法读取文件' })).toBeVisible()
-  await expect(page.getByText(/未确认 Range/)).toBeVisible()
+  await expect(page.getByText(/源站未确认 HTTP Range（状态码 200），已取消以避免下载完整权重。/)).toBeVisible()
 })
 
 test('Imatrix overview and Entries follow native IMatrixWorkspaceView', async ({ page }, testInfo) => {

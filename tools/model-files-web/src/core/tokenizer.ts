@@ -172,18 +172,20 @@ export function tokenizerBundleBytes(
     && (parts.pop()?.toLocaleLowerCase() !== name || tokenizerParts.join('/') !== parts.join('/'))
   if (!validEntry || sameDirectory(configParts, 'tokenizer_config.json')
     || sameDirectory(templateParts, 'chat_template.jinja')) {
-    throw new Error(t('tokenizerBundleSameDirectory'))
+    throw new Error(t('tokenizerBundleSameDirectory', { path: tokenizerFile.path }))
   }
-  const tokenizerSize = tokenizerFile.size
-  const configSize = configFile?.size
-  const templateSize = templateFile?.size
-  if (tokenizerSize === null || configSize === null || templateSize === null) {
-    throw new Error(t('tokenizerBundleSizeMissing'))
+  // Native TokenizerBundleLoader: per file, size known and ≤ limit, then the running total.
+  const limit = 32 * 1024 * 1024
+  let total = 0
+  for (const file of [tokenizerFile, configFile, templateFile]) {
+    if (file === undefined) continue
+    if (file.size === null) throw new Error(t('tokenizerBundleSizeMissing', { path: file.path }))
+    if (file.size > limit) {
+      throw new Error(t('tokenizerFileTooLarge', { path: file.path, size: formatBytes(file.size), limit: formatBytes(limit) }))
+    }
+    total += file.size
+    if (total > limit) throw new Error(t('tokenizerBundleTooLarge', { size: formatBytes(total), limit: formatBytes(limit) }))
   }
-  const sizes = [tokenizerSize, configSize ?? 0, templateSize ?? 0]
-  if (sizes.some(size => size > 32 * 1024 * 1024)) throw new Error(t('tokenizerBundleTooLarge', { limit: formatBytes(32 * 1024 * 1024) }))
-  const total = sizes.reduce((sum, size) => sum + size, 0)
-  if (total > 32 * 1024 * 1024) throw new Error(t('tokenizerBundleTooLarge', { limit: formatBytes(32 * 1024 * 1024) }))
   return total
 }
 
@@ -268,8 +270,8 @@ export function parseTokenIds(input: string): number[] {
     let value: unknown
     try {
       value = JSON.parse(input)
-    } catch (error) {
-      throw new Error(t('tokenIdJsonInvalid', { message: error instanceof Error ? error.message : String(error) }))
+    } catch {
+      throw new Error(t('tokenIdJsonInvalid', { message: t('jsonDataCorrupted') }))
     }
     if (!Array.isArray(value)) throw new Error(t('tokenIdJsonInvalid', { message: t('tokenIdJsonRootArray') }))
     tokens = value.map(item => item === null ? 'null' : typeof item === 'string' ? `"${item}"`

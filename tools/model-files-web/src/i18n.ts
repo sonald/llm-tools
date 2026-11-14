@@ -1,5 +1,8 @@
 export type Locale = 'zh-Hans' | 'en'
 
+// Native xcstrings plural variations (English only; zh-Hans has one form). Chosen by `count`.
+export type PluralText = { readonly one: string, readonly other: string }
+
 export const messageCatalog = {
   summaryModelConfigTitle: {
     'zh-Hans': '模型配置',
@@ -7,7 +10,7 @@ export const messageCatalog = {
   },
   summaryModelScale: {
     'zh-Hans': '模型规模',
-    en: 'Model scale',
+    en: 'Model size',
   },
   summaryHiddenSize: {
     'zh-Hans': '隐藏层维度（hidden_size）',
@@ -51,7 +54,7 @@ export const messageCatalog = {
   },
   summaryGenerationSubtitle: {
     'zh-Hans': '推理框架在调用 generate 时使用的模型目录默认参数。',
-    en: 'Defaults from the model folder that inference frameworks use when calling generate.',
+    en: 'Defaults from the model directory that inference frameworks use when calling generate.',
   },
   summarySampling: {
     'zh-Hans': '采样',
@@ -63,7 +66,7 @@ export const messageCatalog = {
   },
   summaryMaxNewTokens: {
     'zh-Hans': '最大新 token',
-    en: 'Max new tokens',
+    en: 'Maximum new tokens',
   },
   summaryRepetitionPenalty: {
     'zh-Hans': '重复惩罚',
@@ -91,7 +94,7 @@ export const messageCatalog = {
   },
   summaryWeightIndexSubtitle: {
     'zh-Hans': '只读取映射关系，不读取任何权重分片。',
-    en: 'Reads only the mapping, never any weight shard.',
+    en: 'Only mappings are read; no weight shards are read.',
   },
   summaryOverview: {
     'zh-Hans': '概览',
@@ -119,7 +122,7 @@ export const messageCatalog = {
   },
   summaryVocabSubtitle: {
     'zh-Hans': '共 {count} 个 token；列表最多展示当前筛选结果的前 1,000 项。',
-    en: '{count} tokens in total; the list shows at most the first 1,000 matches.',
+    en: { one: '{count} token total; the list shows at most the first 1,000 filtered items.', other: '{count} tokens total; the list shows at most the first 1,000 filtered items.' },
   },
   summaryVocabSearch: {
     'zh-Hans': '搜索 token 或 ID',
@@ -131,15 +134,15 @@ export const messageCatalog = {
   },
   appNoteEmbeddedChatTemplate: {
     'zh-Hans': '含内嵌 Chat Template（如有）',
-    en: 'Includes the embedded chat template (if any)',
+    en: 'Contains an embedded chat template (if present)',
   },
   appNoteSafeTensors: {
     'zh-Hans': '只读取 JSON Header',
-    en: 'Reads only the JSON header',
+    en: 'Reads the JSON header only',
   },
   appNoteGGUF: {
     'zh-Hans': '只读取 metadata 前缀',
-    en: 'Reads only the metadata prefix',
+    en: 'Reads the metadata prefix only',
   },
   appNoteLocked: {
     'zh-Hans': '不可预览',
@@ -147,11 +150,11 @@ export const messageCatalog = {
   },
   appUnableToOpenLocationTitle: {
     'zh-Hans': '无法打开位置',
-    en: 'Unable to open location',
+    en: "Can't open location",
   },
   appNoModelOpenTitle: {
     'zh-Hans': '尚未打开模型',
-    en: 'No model open',
+    en: 'No model open yet',
   },
   appNoModelOpenMessage: {
     'zh-Hans': '输入模型 ID 或 HTTPS 地址，或选择本地目录后打开。',
@@ -163,7 +166,7 @@ export const messageCatalog = {
   },
   appNoMatchingFilesMessage: {
     'zh-Hans': '换个关键词，或清除当前筛选。',
-    en: 'Try another keyword, or clear the filter.',
+    en: 'Try another keyword, or clear the current filter.',
   },
   appClearFilterAction: {
     'zh-Hans': '清除筛选',
@@ -199,15 +202,15 @@ export const messageCatalog = {
   },
   appHeaderCopyPathHelp: {
     'zh-Hans': '复制文件路径',
-    en: 'Copy file path',
+    en: 'Copy the file path',
   },
   appHeaderCopyFullPathHelp: {
     'zh-Hans': '复制文件完整路径或 URL',
-    en: 'Copy the file’s full path or URL',
+    en: "Copy the file's full path or URL",
   },
   appHeaderOpenSourceHelp: {
     'zh-Hans': '在浏览器中打开当前版本',
-    en: 'Open this version in the browser',
+    en: 'Open the current version in a browser',
   },
   appPurposeConfiguration: {
     'zh-Hans': '模型配置',
@@ -215,11 +218,11 @@ export const messageCatalog = {
   },
   appPurposeTokenizer: {
     'zh-Hans': '分词器资源',
-    en: 'Tokenizer resource',
+    en: 'Tokenizer resources',
   },
   appPurposeTemplates: {
     'zh-Hans': '对话模板',
-    en: 'Chat template',
+    en: 'Chat templates',
   },
   appPurposeWeightIndex: {
     'zh-Hans': '权重分片索引',
@@ -231,7 +234,7 @@ export const messageCatalog = {
   },
   appPurposeOther: {
     'zh-Hans': '模型文件',
-    en: 'Model file',
+    en: 'Model files',
   },
   appPurposeSafeTensors: {
     'zh-Hans': 'SafeTensors 权重结构',
@@ -243,7 +246,7 @@ export const messageCatalog = {
   },
   appPurposeLockedWeights: {
     'zh-Hans': '模型权重（禁止加载）',
-    en: 'Model weights (not loaded)',
+    en: 'Model weights (loading disabled)',
   },
   appSourceLocal: {
     'zh-Hans': '本地',
@@ -251,7 +254,7 @@ export const messageCatalog = {
   },
   appLiveDirectoryStatus: {
     'zh-Hans': '实时目录',
-    en: 'Live folder',
+    en: 'Live directory',
   },
   appLiveSourceStatus: {
     'zh-Hans': '实时来源',
@@ -330,32 +333,28 @@ export const messageCatalog = {
     en: '{count} files',
   },
   chatTemplateUnsupportedObjectValue: {
-    'zh-Hans': 'chat_template 不支持的形态：对象值必须是字符串。',
-    en: 'Unsupported chat_template shape: object values must be strings.',
+    'zh-Hans': 'chat_template 不支持的形态：对象值必须是字符串。支持字符串、对象字典或 named 数组。',
+    en: 'Unsupported chat_template shape: object values must be strings. Supported forms are a string, an object dictionary, or a named array.',
   },
   chatTemplateNamedItemInvalidShape: {
-    'zh-Hans': 'chat_template 的第 {index} 个 named 条目无效：必须是包含 name 和 template 的对象。',
-    en: 'Invalid named chat_template item at index {index}: expected an object containing name and template.',
+    'zh-Hans': 'chat_template 的第 {index} 个 named 条目无效：必须是包含 name 和 template 的对象',
+    en: 'The named chat_template entry at index {index} is invalid: Must be an object containing name and template.',
   },
   chatTemplateNamedItemInvalidName: {
-    'zh-Hans': 'chat_template 的第 {index} 个 named 条目无效：name 必须是非空字符串。',
-    en: 'Invalid named chat_template item at index {index}: name must be a non-empty string.',
+    'zh-Hans': 'chat_template 的第 {index} 个 named 条目无效：name 必须是非空字符串',
+    en: 'The named chat_template entry at index {index} is invalid: name must be a non-empty string.',
   },
   chatTemplateNamedItemInvalidTemplate: {
-    'zh-Hans': 'chat_template 的第 {index} 个 named 条目无效：template 必须是字符串。',
-    en: 'Invalid named chat_template item at index {index}: template must be a string.',
+    'zh-Hans': 'chat_template 的第 {index} 个 named 条目无效：template 必须是字符串',
+    en: 'The named chat_template entry at index {index} is invalid: template must be a string.',
+  },
+  chatTemplateJinjaNotUtf8: {
+    'zh-Hans': 'chat_template.jinja 无效：不是有效 UTF-8',
+    en: 'Invalid chat_template.jinja: Not valid UTF-8.',
   },
   chatTemplateUnsupportedValue: {
     'zh-Hans': 'chat_template 不支持的形态：null、数字或布尔值。支持字符串、对象字典或 named 数组。',
-    en: 'Unsupported chat_template shape: null, number, or boolean. Supported forms are a string, an object map, or a named array.',
-  },
-  invalidUtf8Text: {
-    'zh-Hans': '文本不是有效的 UTF-8。',
-    en: 'Text is not valid UTF-8.',
-  },
-  textContainsNulByte: {
-    'zh-Hans': '文本包含 NUL 字节。',
-    en: 'Text contains a NUL byte.',
+    en: 'Unsupported chat_template shape: null, a number, or a Boolean value. Supported forms are a string, an object dictionary, or a named array.',
   },
   invalidPdfSignature: {
     'zh-Hans': '不是有效的 PDF 文件签名。',
@@ -386,7 +385,7 @@ export const messageCatalog = {
     en: 'Typed Variables cannot use the reserved key: {key}.',
   },
   tokenOverheadCountInvalid: {
-    'zh-Hans': 'Token overhead count 必须是非负安全整数。',
+    'zh-Hans': 'Token 开销数量必须是非负安全整数。',
     en: 'A Token overhead count must be a non-negative safe integer.',
   },
   jsonRootNotObject: {
@@ -399,7 +398,7 @@ export const messageCatalog = {
   },
   consistencyWarningCount: {
     'zh-Hans': '{count} 项警告',
-    en: '{count} warnings',
+    en: { one: '{count} warning', other: '{count} warnings' },
   },
   consistencyConsistent: {
     'zh-Hans': '一致',
@@ -407,19 +406,19 @@ export const messageCatalog = {
   },
   consistencyInsufficientMaterials: {
     'zh-Hans': '材料不足',
-    en: 'Insufficient materials',
+    en: 'Insufficient data',
   },
   vocabularyMismatchTitle: {
     'zh-Hans': '词表大小不一致',
-    en: 'Vocabulary sizes do not match',
+    en: 'Vocabulary size mismatch',
   },
   vocabularyMismatchDetail: {
     'zh-Hans': 'config.json 与 tokenizer.json 的词表项数不同。',
-    en: 'The vocabulary counts in config.json and tokenizer.json differ.',
+    en: 'config.json and tokenizer.json have different vocabulary counts.',
   },
   missingTokenizerClassTitle: {
     'zh-Hans': '缺少 tokenizer_class',
-    en: 'tokenizer_class is missing',
+    en: 'Missing tokenizer_class',
   },
   missingTokenizerClassDetail: {
     'zh-Hans': '严格 tokenizer runtime 无法在未显式指定 class 时构造。',
@@ -435,7 +434,7 @@ export const messageCatalog = {
   },
   missingChatTemplateTitle: {
     'zh-Hans': '缺少可用 Chat Template',
-    en: 'No usable chat template',
+    en: 'Missing usable chat template',
   },
   missingChatTemplateDetail: {
     'zh-Hans': '仓库中没有可用的独立或内嵌 Chat Template。',
@@ -447,15 +446,15 @@ export const messageCatalog = {
   },
   safeTensorsMetadataNotStringDictionary: {
     'zh-Hans': 'SafeTensors __metadata__ 必须是字符串字典。',
-    en: 'SafeTensors __metadata__ must be a string dictionary.',
+    en: 'SafeTensors __metadata__ must be a dictionary of strings.',
   },
   safeTensorsTensorShapeInvalid: {
     'zh-Hans': 'SafeTensors tensor {name} 的结构无效。',
-    en: 'The structure of SafeTensors tensor {name} is invalid.',
+    en: 'Invalid structure for SafeTensors tensor {name}.',
   },
   safeTensorsTensorOffsetsInvalid: {
     'zh-Hans': 'SafeTensors tensor {name} 的 data_offsets 无效。',
-    en: 'The data_offsets of SafeTensors tensor {name} are invalid.',
+    en: 'Invalid data_offsets for SafeTensors tensor {name}.',
   },
   safeTensorsShapeOverflow: {
     'zh-Hans': 'SafeTensors tensor {name} 的 shape 溢出。',
@@ -471,11 +470,11 @@ export const messageCatalog = {
   },
   eosMismatchTitle: {
     'zh-Hans': 'EOS Token 不一致',
-    en: 'EOS tokens do not match',
+    en: 'EOS token mismatch',
   },
   eosMismatchDetail: {
     'zh-Hans': 'generation_config 与 tokenizer 的可靠 EOS ID 不同。',
-    en: 'generation_config and tokenizer report different reliable EOS IDs.',
+    en: 'generation_config and the tokenizer have different reliable EOS IDs.',
   },
   contextLengthMismatchTitle: {
     'zh-Hans': '上下文长度声明不同',
@@ -483,11 +482,11 @@ export const messageCatalog = {
   },
   contextLengthMismatchDetail: {
     'zh-Hans': '模型与 tokenizer 的长度上限经常承担不同语义，请人工确认。',
-    en: 'Model and tokenizer length limits often carry different semantics; review them manually.',
+    en: 'Model and tokenizer length limits often have different semantics; confirm manually.',
   },
   missingModelConfigTitle: {
     'zh-Hans': '缺少模型配置',
-    en: 'Model configuration is missing',
+    en: 'Missing model configuration',
   },
   currentRepository: {
     'zh-Hans': '当前仓库',
@@ -499,51 +498,51 @@ export const messageCatalog = {
   },
   ggufParseFailed: {
     'zh-Hans': 'GGUF 解析失败：{reason}',
-    en: 'GGUF parsing failed: {reason}',
+    en: 'Failed to parse GGUF: {reason}',
   },
   ggufMagicInvalid: {
     'zh-Hans': 'GGUF magic 无效。',
-    en: 'The GGUF magic is invalid.',
+    en: 'Invalid GGUF magic.',
   },
   ggufVersionUnsupported: {
     'zh-Hans': '不支持的 GGUF 版本。',
-    en: 'The GGUF version is unsupported.',
+    en: 'Unsupported GGUF version.',
   },
   ggufTensorCountExceeded: {
     'zh-Hans': 'GGUF tensor 数量超过安全上限。',
-    en: 'The GGUF tensor count exceeds the safety limit.',
+    en: 'The GGUF tensor count exceeds the safe limit.',
   },
   ggufMetadataCountExceeded: {
     'zh-Hans': 'GGUF metadata 数量超过安全上限。',
-    en: 'The GGUF metadata count exceeds the safety limit.',
+    en: 'The GGUF metadata count exceeds the safe limit.',
   },
   ggufMetadataKeyInvalidOrDuplicate: {
     'zh-Hans': 'GGUF metadata key 无效或重复。',
-    en: 'The GGUF metadata key is invalid or duplicated.',
+    en: 'Invalid or duplicate GGUF metadata key.',
   },
   ggufAlignmentInvalid: {
     'zh-Hans': 'GGUF general.alignment 无效。',
-    en: 'The GGUF general.alignment is invalid.',
+    en: 'Invalid GGUF general.alignment.',
   },
   ggufTensorNameInvalidOrDuplicate: {
     'zh-Hans': 'GGUF tensor 名称无效或重复。',
-    en: 'The GGUF tensor name is invalid or duplicated.',
+    en: 'Invalid or duplicate GGUF tensor name.',
   },
   ggufTensorDimensionCountExceeded: {
     'zh-Hans': 'GGUF tensor {name} 的维数超过安全上限。',
-    en: 'The GGUF tensor {name} dimension count exceeds the safety limit.',
+    en: 'GGUF tensor {name} has too many dimensions.',
   },
   ggufTensorOffsetMisaligned: {
     'zh-Hans': 'GGUF tensor {name} 的 offset 未按 alignment 对齐。',
-    en: 'The GGUF tensor {name} offset is not aligned to alignment.',
+    en: 'The offset of GGUF tensor {name} is not aligned to alignment.',
   },
   ggufShapeOverflow: {
     'zh-Hans': 'GGUF {context} 溢出。',
-    en: 'The GGUF {context} overflows.',
+    en: 'GGUF {context} overflow.',
   },
   ggufParameterTotalOverflowContext: {
     'zh-Hans': '参数总数',
-    en: 'parameter total',
+    en: 'total parameter count',
   },
   ggufTensorDataOffsetOverflow: {
     'zh-Hans': 'GGUF tensor data offset 溢出。',
@@ -555,11 +554,11 @@ export const messageCatalog = {
   },
   ggufStringLimitExceeded: {
     'zh-Hans': 'GGUF 字符串超过安全上限。',
-    en: 'The GGUF string exceeds the safety limit.',
+    en: 'A GGUF string exceeds the safe length limit.',
   },
   ggufStringUtf8Invalid: {
     'zh-Hans': 'GGUF 字符串不是有效 UTF-8。',
-    en: 'The GGUF string is not valid UTF-8.',
+    en: 'A GGUF string is not valid UTF-8.',
   },
   ggufV1MetadataTypeUnsupported: {
     'zh-Hans': 'GGUF v1 包含不支持的 metadata 类型 {typeCode}。',
@@ -567,19 +566,19 @@ export const messageCatalog = {
   },
   ggufBoolValueInvalid: {
     'zh-Hans': 'GGUF bool 值必须为 0 或 1。',
-    en: 'A GGUF bool value must be 0 or 1.',
+    en: 'A GGUF boolean must be 0 or 1.',
   },
   ggufArrayDepthExceeded: {
     'zh-Hans': 'GGUF metadata array 嵌套超过安全上限。',
-    en: 'The GGUF metadata array nesting exceeds the safety limit.',
+    en: 'GGUF metadata array nesting exceeds the safe limit.',
   },
   ggufArrayElementTypeInvalid: {
     'zh-Hans': 'GGUF metadata array 类型无效。',
-    en: 'The GGUF metadata array type is invalid.',
+    en: 'Invalid GGUF metadata array type.',
   },
   ggufArrayElementCountExceeded: {
     'zh-Hans': 'GGUF metadata array 元素数量超过安全上限。',
-    en: 'The GGUF metadata array element count exceeds the safety limit.',
+    en: 'The GGUF metadata array element count exceeds the safe limit.',
   },
   ggufArrayPreviewDisplay: {
     'zh-Hans': '[{preview}] · {count} 项',
@@ -587,63 +586,63 @@ export const messageCatalog = {
   },
   ggufMetadataTypeInvalid: {
     'zh-Hans': 'GGUF metadata 类型 {typeCode} 无效。',
-    en: 'The GGUF metadata type {typeCode} is invalid.',
+    en: 'Invalid GGUF metadata type {typeCode}.',
   },
   imatrixFileTooLarge: {
-    'zh-Hans': 'Imatrix 文件超过 {limit} 上限。',
-    en: 'The Imatrix file exceeds the {limit} limit.',
+    'zh-Hans': 'imatrix 文件超过 {limit} 上限。',
+    en: 'The imatrix file exceeds the {limit} limit.',
   },
   imatrixEntryCountInvalid: {
-    'zh-Hans': 'Imatrix 条目数量无效或超过安全上限。',
-    en: 'The Imatrix entry count is invalid or exceeds the safety limit.',
+    'zh-Hans': 'imatrix 条目数量无效或超过安全上限。',
+    en: 'The imatrix entry count is invalid or exceeds the safe limit.',
   },
   imatrixTensorNameInvalid: {
-    'zh-Hans': 'Imatrix tensor 名称无效或重复。',
-    en: 'The Imatrix tensor name is invalid or duplicated.',
+    'zh-Hans': 'imatrix tensor 名称无效或重复。',
+    en: 'Invalid or duplicate imatrix tensor name.',
   },
   imatrixCountsInvalid: {
-    'zh-Hans': 'Imatrix {name} 的计数无效或超过安全上限。',
-    en: 'The Imatrix counts for {name} are invalid or exceed the safety limit.',
+    'zh-Hans': 'imatrix {name} 的计数无效或超过安全上限。',
+    en: 'The counts for imatrix {name} are invalid or exceed the safe limit.',
   },
   imatrixNonFiniteValues: {
-    'zh-Hans': 'Imatrix {name} 包含非有限数值。',
-    en: 'The Imatrix values for {name} include non-finite numbers.',
+    'zh-Hans': 'imatrix {name} 包含非有限数值。',
+    en: 'Imatrix {name} contains a non-finite value.',
   },
   imatrixChunkCountInvalid: {
-    'zh-Hans': 'Imatrix chunk 数量无效。',
-    en: 'The Imatrix chunk count is invalid.',
+    'zh-Hans': 'imatrix chunk 数量无效。',
+    en: 'Invalid imatrix chunk count.',
   },
   imatrixDatasetLengthInvalid: {
-    'zh-Hans': 'Imatrix dataset 长度无效。',
-    en: 'The Imatrix dataset length is invalid.',
+    'zh-Hans': 'imatrix dataset 长度无效。',
+    en: 'Invalid imatrix dataset length.',
   },
   imatrixDatasetInvalid: {
-    'zh-Hans': 'Imatrix dataset 无效。',
-    en: 'The Imatrix dataset is invalid.',
+    'zh-Hans': 'imatrix dataset 无效。',
+    en: 'Invalid imatrix dataset.',
   },
   imatrixUtf8Invalid: {
-    'zh-Hans': 'Imatrix tensor 名称或 dataset 不是有效 UTF-8。',
-    en: 'The Imatrix tensor name or dataset is not valid UTF-8.',
+    'zh-Hans': 'imatrix tensor 名称或 dataset 不是有效 UTF-8。',
+    en: 'The imatrix tensor name or dataset is not valid UTF-8.',
   },
   imatrixFileTruncated: {
-    'zh-Hans': 'Imatrix 文件提前结束。',
-    en: 'The Imatrix file ends prematurely.',
+    'zh-Hans': 'imatrix 文件提前结束。',
+    en: 'The imatrix file ended early.',
+  },
+  imatrixInvalid: {
+    'zh-Hans': 'Imatrix 无效：{reason}',
+    en: 'Invalid Imatrix: {reason}',
   },
   huggingfaceModelIdRequired: {
-    'zh-Hans': '请输入 owner/model 或公开 Hugging Face 仓库 URL。',
-    en: 'Enter owner/model or a public Hugging Face repository URL.',
-  },
-  huggingfaceManifestRequestFailed: {
-    'zh-Hans': 'Hugging Face 清单请求失败：HTTP {status}',
-    en: 'The Hugging Face manifest request failed: HTTP {status}',
+    'zh-Hans': '模型 ID 无效，请使用类似 Qwen/Qwen3-4B 的格式。',
+    en: 'Invalid model ID; use a format like Qwen/Qwen3-4B.',
   },
   huggingfaceManifestInvalid: {
     'zh-Hans': 'Hugging Face 清单格式无效。',
     en: 'The Hugging Face manifest is invalid.',
   },
   localDirectoryFileLimitExceeded: {
-    'zh-Hans': '本地目录超过 {limit} 个文件上限。',
-    en: 'The local directory exceeds the {limit}-file limit.',
+    'zh-Hans': '模型目录超过 {limit} 个文件，请选择更小的目录。',
+    en: 'The model directory entry count exceeds {limit}; choose a smaller directory.',
   },
   localDirectoryNotSelected: {
     'zh-Hans': '没有选择本地目录。',
@@ -652,10 +651,6 @@ export const messageCatalog = {
   localDirectoryMultipleRoots: {
     'zh-Hans': '本地目录清单包含多个根目录。',
     en: 'The local directory contains multiple root directories.',
-  },
-  localFilePathTooLarge: {
-    'zh-Hans': '本地文件路径超过 {limit} 上限。',
-    en: 'The local file path exceeds the {limit} limit.',
   },
   localFileSizeInvalid: {
     'zh-Hans': '本地文件大小无效。',
@@ -670,8 +665,8 @@ export const messageCatalog = {
     en: 'The source does not provide a file size; whole-file reading is refused.',
   },
   wholeFileLimitExceeded: {
-    'zh-Hans': '文件超过 {limit} 阅读上限。',
-    en: 'The file exceeds the {limit} reading limit.',
+    'zh-Hans': '文件大小为 {size}，超过 32 MB 阅读上限。',
+    en: 'The file size is {size} and exceeds the 32 MB reading limit.',
   },
   responseOverLimit: {
     'zh-Hans': '响应超过 {limit} 阅读上限。',
@@ -682,12 +677,36 @@ export const messageCatalog = {
     en: 'The file response has {actual} bytes, which differs from the declared {expected}.',
   },
   changedLocalFile: {
-    'zh-Hans': '本地文件已变化，请重新选择目录。',
-    en: 'The local file has changed; select the directory again.',
+    'zh-Hans': '文件已在清单生成后发生变化，请重新选择目录：{path}',
+    en: 'The file changed after the listing was generated; choose the directory again: {path}',
   },
   fileRequestFailed: {
-    'zh-Hans': '文件请求失败：HTTP {status}',
-    en: 'The file request failed: HTTP {status}',
+    'zh-Hans': '请求失败（HTTP {status}）：{message}',
+    en: 'Request failed (HTTP {status}): {message}',
+  },
+  fileInvalidUtf8: {
+    'zh-Hans': '文件不是有效的 UTF-8 文本。',
+    en: 'The file is not valid UTF-8 text.',
+  },
+  unsupportedBinary: {
+    'zh-Hans': '该文件没有专用阅读器，且内容不是可安全显示的 UTF-8 文本。',
+    en: 'This file has no dedicated reader, and its content is not safely displayable UTF-8 text.',
+  },
+  invalidImage: {
+    'zh-Hans': '无法解析图片文件。',
+    en: 'Unable to parse the image file.',
+  },
+  jsonDataCorrupted: {
+    'zh-Hans': '未能读取数据，因为它的格式不正确。',
+    en: 'The data couldn’t be read because it isn’t in the correct format.',
+  },
+  unknownError: {
+    'zh-Hans': '未知错误',
+    en: 'Unknown error',
+  },
+  serverConnectionFailed: {
+    'zh-Hans': '未能连接到服务器。',
+    en: 'Could not connect to the server.',
   },
   rangeInvalid: {
     'zh-Hans': 'Range 无效。',
@@ -702,12 +721,16 @@ export const messageCatalog = {
     en: 'The Range exceeds the file size declared by the source.',
   },
   rangeShortRead: {
-    'zh-Hans': 'Range 短读：期望 {expected}，收到 {actual} bytes。',
-    en: 'Short Range read: expected {expected}, received {actual} bytes.',
+    'zh-Hans': 'Range 响应不完整：需要 {expected} 字节，只收到 {actual} 字节。',
+    en: 'Incomplete range response: expected {expected} bytes, received {actual} bytes.',
+  },
+  localShortRead: {
+    'zh-Hans': '读取不完整：需要 {expected} 字节，只收到 {actual} 字节。',
+    en: 'Incomplete read: expected {expected} bytes, received {actual} bytes.',
   },
   rangeNotConfirmed: {
-    'zh-Hans': '源站未确认 Range（HTTP {status}），已停止以避免完整下载。',
-    en: 'The origin did not confirm the Range (HTTP {status}); stopped to avoid a full download.',
+    'zh-Hans': '源站未确认 HTTP Range（状态码 {status}），已取消以避免下载完整权重。',
+    en: 'The origin did not confirm HTTP Range (status {status}); canceled to avoid downloading full weights.',
   },
   contentRangeInvalid: {
     'zh-Hans': '源站 Content-Range 无效：{contentRange}。',
@@ -718,28 +741,32 @@ export const messageCatalog = {
     en: 'The repository revision is invalid.',
   },
   invalidRepositoryPath: {
-    'zh-Hans': '仓库文件路径无效。',
-    en: 'The repository file path is invalid.',
+    'zh-Hans': '文件路径不安全，已拒绝读取：{path}',
+    en: 'Unsafe file path; reading was refused: {path}',
   },
   repositoryFileSizeInvalid: {
     'zh-Hans': '仓库文件大小无效。',
     en: 'The repository file size is invalid.',
   },
   tokenizerBundleSameDirectory: {
-    'zh-Hans': 'Tokenizer 资源必须是同目录的 tokenizer.json 与 tokenizer_config.json。',
-    en: 'Tokenizer resources must be tokenizer.json and tokenizer_config.json in the same directory.',
+    'zh-Hans': '只能为 tokenizer.json 或 SentencePiece .model 打开分词试验台：{path}',
+    en: 'Only tokenizer.json or a SentencePiece .model can open the tokenizer playground: {path}',
   },
   tokenizerBundleSizeMissing: {
-    'zh-Hans': '仓库未提供完整的 tokenizer 资源大小，已拒绝加载。',
-    en: 'The repository does not provide complete tokenizer resource sizes; loading was rejected.',
+    'zh-Hans': '来源没有提供 {path} 的大小，无法在安全上限内读取。',
+    en: 'The source did not provide the size of {path}; it cannot be read within the safety limit.',
   },
   tokenizerBundleTooLarge: {
-    'zh-Hans': 'Tokenizer 资源超过 {limit} 上限。',
-    en: 'Tokenizer resources exceed the {limit} limit.',
+    'zh-Hans': '分词器资源合计 {size}，超过 {limit} 安全上限。',
+    en: 'Tokenizer resources total {size}, exceeding the {limit} safety limit.',
+  },
+  tokenizerFileTooLarge: {
+    'zh-Hans': '{path} 大小为 {size}，超过分词器单文件上限 {limit}。',
+    en: '{path} is {size}, exceeding the tokenizer single-file limit of {limit}.',
   },
   tokenizerRootNotObject: {
     'zh-Hans': 'tokenizer.json 根节点不是对象。',
-    en: 'The tokenizer.json root is not an object.',
+    en: 'The tokenizer.json root node is not an object.',
   },
   tokenizerIdPieceCountMismatch: {
     'zh-Hans': 'Tokenizer 返回的 ID 与 piece 数量不一致。',
@@ -791,15 +818,15 @@ export const messageCatalog = {
   },
   arrayValueSummary: {
     'zh-Hans': '数组 · {count} 项',
-    en: 'array · {count} items',
+    en: { one: 'Array · {count} item', other: 'Array · {count} items' },
   },
   objectValueSummary: {
     'zh-Hans': '对象 · {count} 字段{suffix}',
-    en: 'object · {count} fields{suffix}',
+    en: { one: 'Object · {count} field{suffix}', other: 'Object · {count} fields{suffix}' },
   },
   stringValueSummary: {
     'zh-Hans': '字符串 · {count} 字符',
-    en: 'string · {count} characters',
+    en: { one: 'String · {count} character', other: 'String · {count} characters' },
   },
   valueTypeSuffix: {
     'zh-Hans': ' · type: {type}',
@@ -810,24 +837,40 @@ export const messageCatalog = {
     en: 'The Tokenizer is not loaded.',
   },
   missingTokenizerConfigRuntime: {
-    'zh-Hans': '缺少 tokenizer_config.json，当前运行时无法严格构造 Tokenizer。',
-    en: 'tokenizer_config.json is missing; the current runtime cannot construct a strict Tokenizer.',
+    'zh-Hans': '当前运行时无法加载该 tokenizer：缺少 tokenizer_config.json。',
+    en: 'The current runtime cannot load this tokenizer: tokenizer_config.json is missing.',
+  },
+  tokenizerJsonInvalid: {
+    'zh-Hans': 'tokenizer.json 无效：{reason}',
+    en: 'Invalid tokenizer.json: {reason}',
+  },
+  tokenizerConfigInvalid: {
+    'zh-Hans': 'tokenizer_config.json 无效：{reason}',
+    en: 'Invalid tokenizer_config.json: {reason}',
+  },
+  tokenizerRuntimeUnsupported: {
+    'zh-Hans': '当前运行时无法加载该 tokenizer：{reason}',
+    en: 'The current runtime cannot load this tokenizer: {reason}',
+  },
+  rootNodeNotObject: {
+    'zh-Hans': '根节点不是对象。',
+    en: 'The root node is not an object.',
   },
   tokenizerConfigRootNotObject: {
     'zh-Hans': 'tokenizer_config.json 根节点不是对象。',
     en: 'The tokenizer_config.json root is not an object.',
+  },
+  tokenizerConfigJsonInvalid: {
+    'zh-Hans': 'tokenizer_config.json 不是有效 JSON：{reason}',
+    en: 'tokenizer_config.json is not valid JSON: {reason}',
   },
   tokenizerIdentityChanged: {
     'zh-Hans': 'Tokenizer 身份已变化，请重新加载。',
     en: 'The Tokenizer identity has changed; reload it.',
   },
   vocabularySearchUnsupported: {
-    'zh-Hans': '当前 vocab 结构无法搜索：{reason}',
-    en: 'The current vocab structure cannot be searched: {reason}',
-  },
-  leftTokenizerRootNotObject: {
-    'zh-Hans': '左侧 tokenizer.json 根节点不是对象。',
-    en: 'The left tokenizer.json root is not an object.',
+    'zh-Hans': '当前 vocab 结构无法搜索。',
+    en: 'The current vocab structure cannot be searched.',
   },
   leftTokenizerMissingModel: {
     'zh-Hans': '左侧 tokenizer.json 缺少 model 节点。',
@@ -855,11 +898,11 @@ export const messageCatalog = {
   },
   inputLabel: {
     'zh-Hans': '输入',
-    en: 'The input',
+    en: 'Input',
   },
   encodedInputTooLarge: {
-    'zh-Hans': '{label}超过 64 KiB 上限。',
-    en: '{label} exceeds the 64 KiB limit.',
+    'zh-Hans': '{label}超过 {limit} 上限。',
+    en: '{label} exceeds the {limit} limit.',
   },
   tokenizerDataTooLarge: {
     'zh-Hans': 'Tokenizer 数据超过 {limit} 上限。',
@@ -870,19 +913,19 @@ export const messageCatalog = {
     en: 'The Tokenizer request was cancelled.',
   },
   textTooLarge: {
-    'zh-Hans': '输入超过 64 KiB 上限。',
-    en: 'The input exceeds the 64 KiB limit.',
+    'zh-Hans': '输入超过 {limit} 上限。',
+    en: 'The input exceeds the {limit} limit.',
   },
   vocabularySearchInputTooLarge: {
-    'zh-Hans': '词表搜索输入超过 64 KiB 上限。',
-    en: 'The vocabulary search input exceeds the 64 KiB limit.',
+    'zh-Hans': '词表搜索输入超过 {limit} 上限。',
+    en: 'The vocabulary search input exceeds the {limit} limit.',
   },
   vocabularyDiffSearchInputTooLarge: {
-    'zh-Hans': '词表差集搜索输入超过 64 KiB 上限。',
-    en: 'The vocabulary diff search input exceeds the 64 KiB limit.',
+    'zh-Hans': '词表差集搜索输入超过 {limit} 上限。',
+    en: 'The vocabulary diff search input exceeds the {limit} limit.',
   },
   tokenIdArrayInvalid: {
-    'zh-Hans': 'Token ID 数组必须是非负 safe integer。',
+    'zh-Hans': 'Token ID 数组必须是非负安全整数。',
     en: 'The Token ID array must contain non-negative safe integers.',
   },
   tokenizerSessionReleased: {
@@ -1096,7 +1139,7 @@ export const messageCatalog = {
   },
   templateLines: {
     'zh-Hans': '{count} 行',
-    en: '{count} lines',
+    en: { one: '{count} line', other: '{count} lines' },
   },
   templateOutputPane: {
     'zh-Hans': '渲染结果',
@@ -1104,7 +1147,7 @@ export const messageCatalog = {
   },
   templateBytes: {
     'zh-Hans': '{count} 字节',
-    en: '{count} bytes',
+    en: { one: '{count} byte', other: '{count} bytes' },
   },
   templateNotGenerated: {
     'zh-Hans': '未生成',
@@ -1192,7 +1235,7 @@ export const messageCatalog = {
   },
   tkpBytes: {
     'zh-Hans': '{count} 字节',
-    en: '{count} bytes',
+    en: { one: '{count} byte', other: '{count} bytes' },
   },
   tkpClear: {
     'zh-Hans': '清空',
@@ -1212,11 +1255,11 @@ export const messageCatalog = {
   },
   tkpDecodedDetail: {
     'zh-Hans': '由 Token ID 解码 · {count} 字节',
-    en: 'Decoded from Token IDs · {count} bytes',
+    en: { one: 'Decoded from Token IDs · {count} byte', other: 'Decoded from Token IDs · {count} bytes' },
   },
   tkpSourceDetail: {
     'zh-Hans': '{source} · {count} 字节',
-    en: '{source} · {count} bytes',
+    en: { one: '{source} · {count} byte', other: '{source} · {count} bytes' },
   },
   tkpSourceRendered: {
     'zh-Hans': 'chat_template 渲染结果',
@@ -1352,7 +1395,7 @@ export const messageCatalog = {
   },
   tkpTableAria: {
     'zh-Hans': 'Token 表，共 {count} 行',
-    en: 'Token table, {count} rows',
+    en: { one: 'Token table, {count} row', other: 'Token table, {count} rows' },
   },
   tkpRowAria: {
     'zh-Hans': 'Token {index}，ID {id}，Piece {piece}，Decoded {decoded}，Role {role}，Special {special}，{mapping}',
@@ -1400,11 +1443,11 @@ export const messageCatalog = {
   },
   cmpLeftCount: {
     'zh-Hans': '主 {count}',
-    en: 'Primary {count}',
+    en: { one: 'Primary: {count} token', other: 'Primary: {count} tokens' },
   },
   cmpRightCount: {
     'zh-Hans': '对照 {count}',
-    en: 'Comparison {count}',
+    en: { one: 'Comparison: {count} token', other: 'Comparison: {count} tokens' },
   },
   cmpDelta: {
     'zh-Hans': '差值 {delta}',
@@ -1436,15 +1479,15 @@ export const messageCatalog = {
   },
   cmpPrimaryOnlyCount: {
     'zh-Hans': '仅主 {count}',
-    en: 'Primary only {count}',
+    en: { one: 'Primary only: {count} token', other: 'Primary only: {count} tokens' },
   },
   cmpComparisonOnlyCount: {
     'zh-Hans': '仅对照 {count}',
-    en: 'Comparison only {count}',
+    en: { one: 'Comparison only: {count} token', other: 'Comparison only: {count} tokens' },
   },
   cmpSharedCount: {
     'zh-Hans': '共有 {count}',
-    en: 'Shared {count}',
+    en: { one: 'Shared: {count} token', other: 'Shared: {count} tokens' },
   },
   cmpPrimaryOnly: {
     'zh-Hans': '仅主',
@@ -1564,7 +1607,7 @@ export const messageCatalog = {
   },
   tjvSearchCount: {
     'zh-Hans': '匹配 {count} 条',
-    en: '{count} matches',
+    en: { one: '{count} match', other: '{count} matches' },
   },
   tjvSearchUnsupported: {
     'zh-Hans': '当前 vocab 结构无法搜索。',
@@ -1576,7 +1619,7 @@ export const messageCatalog = {
   },
   tjvLengthSubtitle: {
     'zh-Hans': '基础词表 {count} 项；按原始 Token Piece 的 Unicode 标量计数。',
-    en: 'Base vocabulary: {count} entries; counted in Unicode scalars of the original token pieces.',
+    en: { one: '{count} base vocabulary entry; counted as Unicode scalars of the original token piece.', other: '{count} base vocabulary entries; counted as Unicode scalars of the original token piece.' },
   },
   tjvAverage: {
     'zh-Hans': '平均',
@@ -1592,11 +1635,11 @@ export const messageCatalog = {
   },
   tjvBucketAria: {
     'zh-Hans': '长度 {label}，{count} 个 Token，占 {percent}',
-    en: 'Length {label}, {count} tokens, {percent}',
+    en: { one: 'Length {label}, {count} token, {percent}', other: 'Length {label}, {count} tokens, {percent}' },
   },
   tjvBucketSummary: {
     'zh-Hans': '长度 {label}：{count} 项，占基础词表 {percent}。',
-    en: 'Length {label}: {count} entries, {percent} of the base vocabulary.',
+    en: { one: 'Length {label}: {count} entry, {percent} of base vocabulary.', other: 'Length {label}: {count} entries, {percent} of base vocabulary.' },
   },
   tjvBasis: {
     'zh-Hans': '统计口径',
@@ -1860,16 +1903,15 @@ export const messageCatalog = {
   },
   readerExpandAllFolds: {
     'zh-Hans': '全部展开',
-    en: 'Expand all',
+    en: 'Expand All',
   },
   readerCurrentFileFind: {
     'zh-Hans': '当前文件查找',
     en: 'Find in current file',
   },
-  // ponytail: native adds 「；最后一个 Range 可能包含少量首个 tensor 数据。」, true only once D-1 reads 1 MiB chunks.
   noticeImatrix: {
     'zh-Hans': '读取了完整的 {size} legacy imatrix 文件；只解析，不执行。',
-    en: 'Read the whole {size} legacy imatrix file; parsed only, never executed.',
+    en: 'Read the complete {size} legacy imatrix file; parsed only, never executed.',
   },
   // Platform adaptation (matrix P-6): the browser's built-in viewer replaces PDFKit.
   noticePdf: {
@@ -1882,7 +1924,7 @@ export const messageCatalog = {
   },
   noticeWeightIndex: {
     'zh-Hans': '只读取权重分片索引；不会请求任何权重文件。',
-    en: 'Reads only the weight shard index; no weight file is requested.',
+    en: 'Only the weight shard index is read; no weight files are requested.',
   },
   readerFileProblems: {
     'zh-Hans': '文件问题',
@@ -1894,19 +1936,15 @@ export const messageCatalog = {
   },
   appFileProblemCount: {
     'zh-Hans': '{count} 个问题',
-    en: 'Problems: {count}',
+    en: '{count} problems',
   },
-  readerFoldStructureLine: {
-    'zh-Hans': '{action}第 {line} 行结构',
-    en: '{action} structure on line {line}',
+  readerExpandStructureLine: {
+    'zh-Hans': '展开第 {line} 行结构',
+    en: 'Expand structure at line {line}',
   },
-  readerExpandAction: {
-    'zh-Hans': '展开',
-    en: 'Expand',
-  },
-  readerCollapseAction: {
-    'zh-Hans': '折叠',
-    en: 'Collapse',
+  readerCollapseStructureLine: {
+    'zh-Hans': '折叠第 {line} 行结构',
+    en: 'Collapse structure at line {line}',
   },
   readerReadingView: {
     'zh-Hans': '阅读视图',
@@ -1942,7 +1980,7 @@ export const messageCatalog = {
   },
   appCategoryWeightMetadata: {
     'zh-Hans': '权重元数据',
-    en: 'Weight metadata',
+    en: 'Weight Metadata',
   },
   appCategoryDocumentation: {
     'zh-Hans': '文档',
@@ -1954,7 +1992,7 @@ export const messageCatalog = {
   },
   appCategoryWeights: {
     'zh-Hans': '权重文件',
-    en: 'Weights',
+    en: 'Weight Files',
   },
   appDeepLinkFileMissing: {
     'zh-Hans': '深链接文件不存在：{path}',
@@ -2023,19 +2061,19 @@ export const messageCatalog = {
   },
   appCopyPathAction: {
     'zh-Hans': '复制路径',
-    en: 'Copy path',
+    en: 'Copy Path',
   },
   appCopyRelativePathAction: {
     'zh-Hans': '复制相对路径',
-    en: 'Copy relative path',
+    en: 'Copy Relative Path',
   },
   appCopyFullPathAction: {
     'zh-Hans': '复制全路径',
-    en: 'Copy full path',
+    en: 'Copy Full Path',
   },
   appOpenOriginalFileAction: {
     'zh-Hans': '打开原始文件',
-    en: 'Open original file',
+    en: 'Open Original File',
   },
   appFileActionsMenuAriaLabel: {
     'zh-Hans': '文件操作',
@@ -2047,7 +2085,7 @@ export const messageCatalog = {
   },
   appSelectFileMessage: {
     'zh-Hans': '文件内容只会在选中后加载。',
-    en: 'File contents load only after you select a file.',
+    en: 'File contents load after a file is selected.',
   },
   appUnknownSize: {
     'zh-Hans': '未知大小',
@@ -2055,11 +2093,11 @@ export const messageCatalog = {
   },
   appSourceLinkAction: {
     'zh-Hans': '在源站打开',
-    en: 'Open on source',
+    en: 'Open at source',
   },
   appUnableToReadFileTitle: {
     'zh-Hans': '无法读取文件',
-    en: 'Unable to read file',
+    en: "Can't read file",
   },
   appLockedWeightsTitle: {
     'zh-Hans': '权重文件已锁定',
@@ -2067,7 +2105,7 @@ export const messageCatalog = {
   },
   appLockedWeightsMessage: {
     'zh-Hans': '为避免意外下载大文件，应用只展示文件名、大小和哈希。',
-    en: 'To avoid downloading large files by accident, the app shows only the file name, size and hash.',
+    en: 'To avoid accidentally downloading large files, the app shows only the file name, size, and hash.',
   },
   appViewConsistencyReportAriaLabel: {
     'zh-Hans': '查看仓库一致性报告',
@@ -2180,7 +2218,7 @@ export const messageCatalog = {
   },
   sentencepieceVocabularyUnavailable: {
     'zh-Hans': 'SentencePiece 不提供可解析的 tokenizer.json 词表；编码对照仍可用。',
-    en: 'SentencePiece does not provide a parsable tokenizer.json vocabulary; encoding comparison remains available.',
+    en: 'SentencePiece does not provide a parseable tokenizer.json vocabulary; encoding comparison remains available.',
   },
   sentencepieceModelBytesRequired: {
     'zh-Hans': 'SentencePiece 模型必须是 Uint8Array。',
@@ -2211,7 +2249,7 @@ export const messageCatalog = {
     en: 'SentencePiece IDs must be an array.',
   },
   sentencepieceInvalidModel: {
-    'zh-Hans': 'SentencePiece 模型无效：{reason}',
+    'zh-Hans': 'SentencePiece model 无效：{reason}',
     en: 'Invalid SentencePiece model: {reason}',
   },
   sentencepieceTiktokenRanks: {
@@ -2420,7 +2458,7 @@ export const messageCatalog = {
     en: 'The SafeTensors header size is {size} and exceeds the safe limit.',
   },
   wtSafeTensorsTotalOverflow: { 'zh-Hans': 'SafeTensors 汇总值溢出。', en: 'A SafeTensors aggregate value overflows.' },
-} as const satisfies Record<string, Record<Locale, string>>
+} as const satisfies Record<string, { 'zh-Hans': string, en: string | PluralText }>
 
 export type MessageKey = keyof typeof messageCatalog
 
@@ -2454,8 +2492,15 @@ function placeholders(text: string) {
   return new Set((text.match(/\{[^}]+\}/g) ?? []).map((placeholder) => placeholder.slice(1, -1)))
 }
 
+export function messageText(entry: string | PluralText, count?: unknown): string {
+  if (typeof entry === 'string') return entry
+  // Counts often arrive pre-formatted ("1,000"); strip grouping before choosing the form.
+  const value = typeof count === 'number' ? count : Number(String(count ?? '').replace(/[^\d.-]/g, ''))
+  return new Intl.PluralRules('en').select(value) === 'one' ? entry.one : entry.other
+}
+
 export function translate(key: MessageKey, values?: Record<string, unknown>) {
-  const text = messageCatalog[key][current]
+  const text = messageText(messageCatalog[key][current], values?.count)
   const expected = placeholders(text)
   const supplied = Object.keys(values ?? {})
   const missing = [...expected].filter((name) => !supplied.includes(name))
@@ -2465,7 +2510,12 @@ export function translate(key: MessageKey, values?: Record<string, unknown>) {
     throw new Error(`Translation values mismatch for "${key}": missing ${missing}, extra ${extra}`)
   }
 
-  return text.replace(/\{([^}]+)\}/g, (_, name: string) => String(values![name]))
+  // Native String(localized:) groups every interpolated integer ("第 12,345 个 token"); pass a string to opt out.
+  return text.replace(/\{([^}]+)\}/g, (_, name: string) => {
+    const value = values![name]
+    return (typeof value === 'number' && Number.isInteger(value)) || typeof value === 'bigint'
+      ? formatNumber(value) : String(value)
+  })
 }
 
 export function formatNumber(

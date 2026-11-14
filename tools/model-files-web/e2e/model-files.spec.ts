@@ -580,7 +580,7 @@ test('keeps the main tokenizer usable while shared workspaces compare both sides
 
   await comparison.getByRole('button', { name: '关闭对照' }).click()
   await openComparison(page, 'broken/tokenizer.json')
-  await expect(comparison.getByRole('status')).toContainText(/Expected|Unexpected|unterminated|JSON Parse|JSON\.parse/, { timeout: 5_000 })
+  await expect(comparison.getByRole('status')).toContainText('tokenizer.json 无效：未能读取数据，因为它的格式不正确。', { timeout: 5_000 })
   await expect(leftTemplate).toContainText('system=You are a concise assistant.')
   await expect(tokenizerMetric(page, 'Token 数量')).toHaveText('40')
 
@@ -1008,9 +1008,9 @@ test('runs official SentencePiece models through Raw IDs Chat comparison and rec
   const modelRequestCountBeforeOversize = requests.filter(request => request.path.endsWith('/tokenizer.model')).length
   await page.getByRole('button', { name: /^oversized\/tokenizer\.model/ }).click()
   const failure = resultPanel(page).getByRole('status')
-  await expect(failure).toContainText('Tokenizer 资源超过 33.6 MB 上限。', { timeout: 10_000 })
+  await expect(failure).toContainText('oversized/tokenizer.model 大小为 33.6 MB，超过分词器单文件上限 33.6 MB。', { timeout: 10_000 })
   await failure.getByRole('button', { name: '重试' }).click()
-  await expect(failure).toContainText('Tokenizer 资源超过 33.6 MB 上限。', { timeout: 10_000 })
+  await expect(failure).toContainText('oversized/tokenizer.model 大小为 33.6 MB，超过分词器单文件上限 33.6 MB。', { timeout: 10_000 })
   expect(requests.filter(request => request.path.endsWith('/tokenizer.model')))
     .toHaveLength(modelRequestCountBeforeOversize)
   expect(requests.filter(request => request.path === 'oversized/tokenizer.model')).toHaveLength(0)
@@ -1188,7 +1188,7 @@ test('dispatches local Python and PDF readers safely', async ({ page }, testInfo
   await page.getByRole('button', { name: /^unknown\.dat/ }).click()
   const binaryError = page.getByRole('heading', { name: '无法读取文件' })
   await expect(binaryError).toBeVisible()
-  await expect(binaryError.locator('..')).toContainText(/NUL|二进制/)
+  await expect(binaryError.locator('..')).toContainText('该文件没有专用阅读器，且内容不是可安全显示的 UTF-8 文本。')
   await expect(page.locator('.source-reader')).toHaveCount(0)
   expect(errors).toEqual([])
 })
@@ -1829,7 +1829,7 @@ test('fails closed when a source returns HTTP 200 for a range', async ({ page })
   await page.getByRole('button', { name: /^model\.safetensors\s/ }).click()
 
   await expect(page.getByRole('heading', { name: '无法读取文件' })).toBeVisible()
-  await expect(page.getByText(/未确认 Range/)).toBeVisible()
+  await expect(page.getByText(/源站未确认 HTTP Range（状态码 200），已取消以避免下载完整权重。/)).toBeVisible()
 })
 
 test('consistency background acquires materials once and reports repository warnings', async ({ page }) => {
@@ -1937,7 +1937,7 @@ test('rejects oversized readers and keeps unsupported weights locked without con
 
   await page.getByRole('button', { name: /^oversized\.json/ }).click()
   await expect(page.getByRole('heading', { name: '无法读取文件' })).toBeVisible()
-  await expect(page.getByText('文件超过 33.6 MB 阅读上限。')).toBeVisible()
+  await expect(page.getByText('文件大小为 33.6 MB，超过 32 MB 阅读上限。')).toBeVisible()
   // Native: locked rows are dimmed and unselectable; a deep link still lands on the locked page.
   await expandWeights(page)
   const locked = page.getByRole('button', { name: /^pytorch_model\.bin/ })
@@ -2162,7 +2162,7 @@ test('filters locally, avoids duplicate reads, and retries a failed manifest', a
 test('fails safely for invalid deep-link parameters', async ({ page }) => {
   await installFixtureRoutes(page)
   await page.goto('/?repo=invalid&file=..%2Fsecret')
-  await expect(page.getByRole('alert')).toContainText('owner/model')
+  await expect(page.getByRole('alert')).toContainText('模型 ID 无效，请使用类似 Qwen/Qwen3-4B 的格式。')
   await expect(page.getByRole('heading', { level: 2, name: '无法打开位置' })).toBeVisible()
   await expect(page.getByRole('heading', { level: 2, name: '尚未打开模型' })).toBeVisible()
 })

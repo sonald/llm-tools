@@ -25,6 +25,7 @@ import { readSafeTensors, type SafeTensorsSummary } from './core/inspectors.ts'
 import { ggufIsIMatrix, loadGGUF, type GGUFOverview } from './core/gguf.ts'
 import {
   decodeStrictText,
+  decodeUtf8Text,
   inspectionPerspectives,
   perspectiveLabel,
   validatePdfData,
@@ -424,6 +425,10 @@ export default function App() {
         let textContent: string | undefined
         if (isSvg) {
           try { textContent = decodeStrictText(data) } catch { /* ignore */ }
+        } else {
+          // Native NSImage(data:) check before the reader opens. TIFF fails here outside WebKit (B-10 platform limit).
+          await createImageBitmap(new Blob([data], { type: imageMimeType(file.path) })).then(bitmap => bitmap.close(),
+            () => { throw new Error(t('invalidImage')) })
         }
         next = {
           kind: 'image',
@@ -436,10 +441,14 @@ export default function App() {
         }
       } else if (lower.endsWith('.jinja')) {
         // D-8: native reads .jinja like any readable file, without a template-specific 64 KiB cap.
-        next = { kind: 'template', file, source: decodeStrictText(await readWholeFile(activeSnapshot, file, controller.signal)) }
+        next = { kind: 'template', file, source: decodeUtf8Text(await readWholeFile(activeSnapshot, file, controller.signal), t('fileInvalidUtf8')) }
       } else if (isImatrixPath(file.path)) {
         const data = await readWholeFile(activeSnapshot, file, controller.signal)
-        next = { kind: 'imatrix', file, summary: inspectImatrix(data), bytesRead: data.byteLength }
+        let summary: ReturnType<typeof inspectImatrix>
+        try { summary = inspectImatrix(data) } catch (failure) {
+          throw new Error(t('imatrixInvalid', { reason: errorMessage(failure) }), { cause: failure })
+        }
+        next = { kind: 'imatrix', file, summary, bytesRead: data.byteLength }
       } else {
         const language = syntaxLanguage(file.path)
         if (file.size !== null && file.size <= 128 * 1024 && language !== null && language !== 'json') {
@@ -514,7 +523,9 @@ export default function App() {
         if (file === undefined) return { state: 'missing' } as ConsistencyMaterial<unknown>
         try {
           const data = await readWholeFile(activeSnapshot, file, controller.signal)
-          return available(JSON.parse(decodeStrictText(data)) as unknown)
+          const text = decodeStrictText(data)
+          // Native ConsistencyAnalyzer.jsonObject: JSONSerialization's localizedDescription.
+          try { return available(JSON.parse(text) as unknown) } catch { return { state: 'failed' as const, message: t('jsonDataCorrupted') } }
         } catch (error) {
           if (controller.signal.aborted) throw error
           return failed(error)

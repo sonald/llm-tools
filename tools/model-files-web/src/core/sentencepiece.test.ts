@@ -13,7 +13,7 @@ async function loadFixture(name: string): Promise<SentencePieceWasm> {
 
 test('rejects an invalid serialized model', async () => {
   const invalidModel = new TextEncoder().encode('__NOT_A_PROTO__')
-  await assert.rejects(() => SentencePieceWasm.load(invalidModel), /SentencePiece 模型无效/)
+  await assert.rejects(() => SentencePieceWasm.load(invalidModel), /SentencePiece model 无效：/)
 })
 
 test('rejects tiktoken BPE ranks before protobuf parse', async () => {

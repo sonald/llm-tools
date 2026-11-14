@@ -467,7 +467,7 @@ test('local load errors keep their original reason', { timeout: 1_000 }, async (
       path: 'tokenizer.json', size: 3, hash: null, category: 'tokenizer',
     }, undefined)
     await assert.rejects(changed, error => {
-      assert.match((error as Error).message, /本地文件已变化/)
+      assert.match((error as Error).message, /文件已在清单生成后发生变化，请重新选择目录：tokenizer.json/)
       assert.equal(isAbort(error), false)
       return true
     })
@@ -541,7 +541,7 @@ test('comparison vocabulary diff is isolated, cleared by reload, and rejected af
     const requestCountBeforeOversized = worker.sent.length
     await assert.rejects(
       comparison.searchVocabularyDiff('shared', 'x'.repeat(64 * 1024 + 1)),
-      /词表差集搜索输入超过 64 KiB 上限。/,
+      /词表差集搜索输入超过 66 KB 上限。/,
     )
     assert.equal(worker.sent.length, requestCountBeforeOversized)
 
